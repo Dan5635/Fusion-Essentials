@@ -493,22 +493,22 @@ def _top_handle(area):
     return ("sm_top", lambda p: _top_match(p, area)["handle"])
 
 
-def _line_match(p, x=25):
-    """Find one vertical 40 mm bend line at the requested local x."""
+def _line_match(p, x=25, span=(0, 40)):
+    """Find one vertical bend line with the requested local endpoints."""
     matches = []
     for row in p.get("entities") or []:
         if row.get("type") != "line":
             continue
         a, b = row.get("start") or {}, row.get("end") or {}
         if (_near(a.get("x"), x, 0.01) and _near(b.get("x"), x, 0.01)
-                and sorted([round(a.get("y", -999), 2), round(b.get("y", -999), 2)]) == [0.0, 40.0]):
+                and sorted([round(a.get("y", -999), 2), round(b.get("y", -999), 2)]) == list(span)):
             matches.append(row)
     return matches[0] if len(matches) == 1 else None
 
 
-def _bend_line(p, x=25):
+def _bend_line(p, x=25, span=(0, 40)):
     """Require a unique intended line despite auto-projected boundary curves."""
-    line = _line_match(p, x)
+    line = _line_match(p, x, span)
     return _measured("one intended bend line", {"line": line,
                      "line_count": len([e for e in p.get("entities") or []
                                         if e.get("type") == "line"])},
@@ -645,10 +645,13 @@ def _unfolded(p):
 
 
 def _fold_cylinders_check(p):
-    """Require the coupon's one fold to answer exactly its inner and outer cylinder face."""
+    """Require both quarter-cylinder bend faces to span the full 40 mm sheet."""
     rows = [m for m in (p.get("matches") or []) if m.get("kind") == "cylinder_face"]
-    return _measured("fold cylinder faces", {"count": len(rows), "match_count": p.get("match_count")},
-                     len(rows) == 2)
+    spans = [(r.get("area") / (math.pi * r["radius"] / 2)
+              if isinstance(r.get("area"), (int, float))
+              and isinstance(r.get("radius"), (int, float)) and r["radius"] > 0 else None) for r in rows]
+    return _measured("interior bend extends across the full sheet", {"count": len(rows), "spans_mm": spans},
+                     len(rows) == 2 and all(_near(span, 40, 0.01) for span in spans))
 
 
 def _fold_cylinder_handles(p):
@@ -1393,12 +1396,14 @@ _SHEET_BUILD = [
     ("sketch_create", lambda c: {"name": _BEND, "on_face": _ctx_get(c, "sm_top", "sheet top face")},
      "ok", None),
     ("sketch_add_geometry", {"sketch_name": _BEND, "geometry": [
-        {"kind": "line", "x1": 25, "y1": 0, "x2": 25, "y2": 40}]}, "ok", None),
+        {"kind": "line", "x1": 25, "y1": 10, "x2": 25, "y2": 30}]}, "ok", None),
     ("sketch_get", {"sketch_name": _BEND, "include_entities": True},
-     _bend_line, ("sm_line", lambda p: _BEND + "/" + _line_match(p)["id"])),
+     lambda p: _bend_line(p, span=(10, 30)),
+     ("sm_line", lambda p: _BEND + "/" + _line_match(p, span=(10, 30))["id"])),
     ("sheet_create_fold", lambda c: {"stationary_face": _ctx_get(c, "sm_top", "sheet top face"),
                                       "bend_line": _ctx_get(c, "sm_line", "intended bend line"),
-                                      "component": _PART, "angle_deg": 90}, _folded, None),
+                                      "component": _PART, "angle_deg": 90},
+     lambda p: _folded(p) and "beyond its endpoints" in p.get("note", ""), None),
 ]
 
 _SHEET = _SHEET_BUILD + [

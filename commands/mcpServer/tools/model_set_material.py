@@ -26,7 +26,7 @@ from . import _outputs
 _TARGET = _inputs.TargetRef("target", allow=("body", "mesh", "occurrence", "component", "design"))
 
 RETURNS = [
-    _outputs.ReturnsName("material", of="material", consumers=["model_inspect"]),
+    _outputs.ReturnsName("material", of="material"),
     _outputs.ReturnsValue("density_kg_per_m3", "the assigned material's density - makes model_inspect mass trustworthy"),
 ]
 

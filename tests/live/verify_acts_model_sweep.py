@@ -1350,7 +1350,18 @@ def _d_loft_rows():
         ("d_loft_before", _recall("d_loft_before", lambda p: p)))
     rows.append(("design_get", lambda c: {
         "include": ["definition"], "feature": loft_feature(c)},
-        _d_loft_definition(("DSectionA", "DSectionB", "DSectionC")), None))
+        lambda p: _d_loft_definition(("DSectionA", "DSectionB", "DSectionC"))(p)
+        and _measured("Loft note names the properties the mass read exposes",
+                      (p.get("definition") or {}).get("note"),
+                      "model_inspect include=['mass'] reads mass, volume and density"
+                      in ((p.get("definition") or {}).get("note") or "")
+                      and "reads material" not in ((p.get("definition") or {}).get("note") or "")), None))
+    rows.append(("model_inspect", {"target": "Body1", "include": ["mass"], "units": "mm"},
+        lambda p: _measured("solid witness mass and density read independently", p.get("mass"),
+                           _near((p.get("mass") or {}).get("volume"), 1000, .01)
+                           and all(_num((p.get("mass") or {}).get(k))
+                                   for k in ("mass_kg", "density_kg_per_cm3"))
+                           and not any("material" in k for k in (p.get("mass") or {}))), None))
     write("model_edit_loft", lambda c: {"feature": loft_feature(c),
         "action": "reorder", "section_index": 1, "new_index": 0}, _d_loft_edit_reply)
     rows.append(("sys_execute_script", lambda c: _combine_pin(c, "d_loft_doc", {

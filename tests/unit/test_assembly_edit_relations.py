@@ -1,8 +1,8 @@
 """Unit tests for assembly_edit_relations - the lifecycle of the three assembly relations.
 
 Pinned: the kind/action matrix, name resolution (case-insensitive EXACT, a repeated name refused),
-and every verification gate - a suppress re-read, a delete re-listed, set_occurrences refused
-without reaching the platform call or the timeline, and setMotionData confirmed off
+and every verification gate - a suppress re-read, a delete re-listed, set_occurrences rolled,
+restored and confirmed off the members re-read, and setMotionData confirmed off
 valueOne/valueTwo - in the native rad/cm the display-unit ratio converts to.
 
 AssemblyConstraint has no shared conftest fake (no live SHAPES dump), so the constraint objects are
@@ -18,6 +18,7 @@ import adsk.core
 import adsk.fusion
 
 from conftest import (_NamedCollection, error_message, FakeMotionLink, FakeMotionLinks,
+                      FakeOccurrence,
                       FakeRigidGroup, FakeRigidGroups, FakeTimeline, FakeTimelineObject, go_stale,
                       install, load_tool, make_design, make_occurrence, MakeComp, MakeDesign,
                       payload)
@@ -106,18 +107,74 @@ class _IntFlagGroup(FakeRigidGroup):
         self._flag = bool(value)
 
 
-class _RefusingGroup(FakeRigidGroup):
-    """A rigid group whose setOccurrences RAISES, as measured on Fusion 2705.0.87: '3 : Cannot be
-    edited before rolling back', with the members reading back unchanged after it. The shared fake
-    records every attempt in _sets, so a test can prove the tool refuses WITHOUT reaching it."""
+_ROLL_FIRST = "3 : Cannot be edited before rolling back"
 
-    def __init__(self, name, **kw):
+
+class _Row(FakeTimelineObject):
+    """A timeline row whose rollTo(True) also lands the timeline marker on its own index."""
+
+    def __init__(self, timeline, **kw):
+        FakeTimelineObject.__init__(self, **kw)
+        self._timeline = timeline
+
+    def rollTo(self, roll_before):
+        did = FakeTimelineObject.rollTo(self, roll_before)
+        if did:
+            self._timeline._marker = self.index if roll_before else self.index + 1
+        return did
+
+
+class _EditableGroup(FakeRigidGroup):
+    """A rigid group at timeline row `index` whose setOccurrences raises unless the marker sits on
+    that row. `lands` is what a true answer leaves as members instead of the request, `fails` the
+    text it raises even when rolled, and `breaks` a row it puts into error."""
+
+    def __init__(self, name, timeline, index=1, lands=None, fails=None, breaks=None, **kw):
         FakeRigidGroup.__init__(self, name=name, **kw)
-        self.timelineObject = FakeTimelineObject(name=name)
+        self._timeline = timeline
+        self.timelineObject = _Row(timeline, name=name, index=index)
+        self._lands, self._fails, self._breaks = lands, fails, breaks
 
     def setOccurrences(self, occurrences, include_children):
         self._sets.append((list(occurrences), bool(include_children)))
-        raise RuntimeError("3 : Cannot be edited before rolling back")
+        if self._timeline._marker != self.timelineObject.index:
+            raise RuntimeError(_ROLL_FIRST)
+        if self._fails:
+            raise RuntimeError(self._fails)
+        if not self._set_ok:
+            return False
+        self.occurrences = (_NamedCollection(list(occurrences)) if self._lands is None
+                            else self._lands)
+        if self._breaks is not None:
+            self._breaks.healthState = FHS.ErrorFeatureHealthState
+        return True
+
+
+_NO_NATIVE_TOKEN = ("3 : Tokens can only be created for proxies whose top-level parent is the root "
+                    "component.")
+
+
+class _OwnOccurrence(FakeOccurrence):
+    """A nested component's OWN occurrence: its entityToken raises, and createForAssemblyContext
+    answers the root proxy registered for that placement, or nothing."""
+
+    def __init__(self, name):
+        super().__init__(path=name)
+        self.proxies = {}
+
+    @property
+    def entityToken(self):
+        raise RuntimeError(_NO_NATIVE_TOKEN)
+
+    def createForAssemblyContext(self, occurrence):
+        return self.proxies.get(occurrence.entityToken)
+
+
+class _StuckTimeline(FakeTimeline):
+    """A timeline whose markerPosition assignment is swallowed, so a restore never lands."""
+
+    markerPosition = property(lambda self: self._marker,
+                              lambda self, value: self._moves.append(value))
 
 
 class _BreakingGroup(FakeRigidGroup):
@@ -631,61 +688,263 @@ class TestDelete:
             assert "readable" in out["note"]        # 'remaining' counts readable names only
 
 
-class TestSetOccurrencesIsRefused:
-    """setOccurrences is unusable on this Fusion build, so the action answers with the measured
-    failure and the path that works - and must reach NEITHER the platform call nor the timeline on
-    its way there."""
+class TestSetOccurrences:
+    """The member replacement: rolled to before the group, written once, restored, and judged off
+    the members, marker, suppression flag and health it re-reads."""
 
-    def _group(self):
-        return _RefusingGroup("RG1", occurrences=[_occ("Frame:1"), _occ("Carrier:1")])
+    @pytest.fixture
+    def rig(self, world):
+        """(group, timeline, occurrences by letter) - RG1 of A and B at row 1 of 3, marker at 3."""
+        def _build(timeline_cls=FakeTimeline, **group_kw):
+            occs = {k: make_occurrence(path=f"{k}:1", entity_token=f"TOK_{k}") for k in "ABC"}
+            tl = timeline_cls()
+            rg = _EditableGroup("RG1", tl, occurrences=[occs["A"], occs["B"]], **group_kw)
+            tl._items = [FakeTimelineObject("Sketch1", index=0), rg.timelineObject,
+                         FakeTimelineObject("Extrude1", index=2)]
+            tl._marker = 3
+            world(rigid=[rg], occurrences=list(occs.values()), timeline=tl)
+            return rg, tl, occs
+        return _build
 
-    def test_refused_without_touching_the_platform_or_the_timeline(self, world):
-        rg = self._group()
+    def _set(self, occurrences=("A:1", "C:1"), **kw):
+        return rel.handler(kind="rigid_group", name="RG1", action="set_occurrences",
+                           occurrences=list(occurrences), **kw)
+
+    def _members(self, rg):
+        return [o.fullPathName for o in rg.occurrences]
+
+    def test_the_edit_lands_rolled_and_ends_with_the_marker_back_and_exact_members(self, rig):
+        rg, tl, occs = rig()
+        out = payload(self._set())
+        assert rg._sets == [([occs["A"], occs["C"]], False)]       # written once, at the row
+        assert rg.timelineObject._rolls == [True]
+        assert tl.markerPosition == 3 and out["marker_position"] == 3
+        assert out["members"] == ["A:1", "C:1"] and out["members_before"] == ["A:1", "B:1"]
+        assert out["changed"] is True and out["health"] == "healthy"
+        assert out["is_suppressed"] is False and out["member_count"] == 2
+
+    def test_a_marker_not_at_the_end_is_refused_before_any_write(self, rig):
+        rg, tl, _occs = rig()
+        tl._marker = 2
+        msg = error_message(self._set())
+        assert "marker is at 2 of 3" in msg
+        assert "design_edit_timeline(action='roll', to='end')" in msg
+        assert rg._sets == [] and rg.timelineObject._rolls == [] and tl._moves == []
+        assert tl.markerPosition == 2                               # the caller's marker is left
+
+    def test_a_raise_while_rolled_restores_the_marker_and_reports_the_members_reread(self, rig):
+        rg, tl, _occs = rig(fails="3 : some platform refusal")
+        msg = error_message(self._set())
+        assert "setOccurrences raised: 3 : some platform refusal" in msg
+        assert "re-read unchanged: A:1, B:1" in msg
+        assert tl.markerPosition == 3 and "stood at" not in msg
+
+    def test_a_false_answer_is_an_error_with_the_members_reread(self, rig):
+        rg, tl, _occs = rig(set_ok=False)
+        msg = error_message(self._set())
+        assert "setOccurrences returned False" in msg and "re-read unchanged: A:1, B:1" in msg
+        assert tl.markerPosition == 3
+
+    def test_a_marker_that_does_not_come_back_is_reported_with_its_position_and_remedy(self, rig):
+        rg, tl, _occs = rig(timeline_cls=_StuckTimeline)
+        msg = error_message(self._set())
+        assert "stood at 3 before the edit and reads 1 after it" in msg
+        assert "design_edit_timeline(action='roll', to='end')" in msg
+        assert "setOccurrences returned true" in msg
+
+    def test_members_that_read_back_as_the_old_set_are_an_error_naming_both(self, rig):
+        _rg, _tl, occs = rig(lands=_NamedCollection([None, None]))
+        _rg._lands = _NamedCollection([occs["A"], occs["B"]])
+        msg = error_message(self._set())
+        assert "reads members A:1, B:1, not the requested A:1, C:1" in msg
+
+    def test_a_namesake_member_is_not_the_requested_one(self, rig):
+        # the same path under another identity: a comparison on names would call this the request
+        rg, _tl, occs = rig()
+        rg._lands = _NamedCollection([occs["A"],
+                                      make_occurrence(path="C:1", entity_token="TOK_OTHER")])
+        assert "not the requested A:1, C:1" in error_message(self._set())
+
+    def test_members_that_do_not_read_back_are_unconfirmed_not_success(self, rig):
+        rg, tl, _occs = rig(lands=_unreadable_items(2))
+        msg = error_message(self._set())
+        assert "UNCONFIRMED" in msg and tl.markerPosition == 3
+
+    @pytest.mark.parametrize("occurrences, clause", [
+        (["A:1", "A:1"], "lists 'A:1' and 'A:1', which are one occurrence"),
+        (["A:1"], "at least two occurrences; 'occurrences' names 1 (A:1)"),
+        ([], "at least two occurrences; 'occurrences' names 0"),
+    ])
+    def test_a_duplicate_or_a_single_member_is_refused_before_any_write(self, rig, occurrences,
+                                                                        clause):
+        rg, tl, _occs = rig()
+        msg = error_message(self._set(occurrences))
+        assert clause in msg and "Nothing was changed" in msg
+        assert rg._sets == [] and rg.timelineObject._rolls == [] and tl.markerPosition == 3
+
+    def test_an_occurrence_that_does_not_resolve_is_refused_naming_it(self, rig):
+        rg, _tl, _occs = rig()
+        msg = error_message(self._set(["A:1", "Ghost:1"]))
+        assert "Ghost:1" in msg and rg._sets == []
+
+    def test_a_roll_the_platform_declines_never_reaches_the_write(self, rig):
+        rg, tl, _occs = rig()
+        rg.timelineObject._roll_ok = False
+        msg = error_message(self._set())
+        assert "rollTo did not return true" in msg and "re-read unchanged: A:1, B:1" in msg
+        assert rg._sets == [] and tl.markerPosition == 3
+
+    def test_a_declined_roll_that_still_moved_the_marker_is_put_back(self, rig):
+        rg, tl, _occs = rig()
+
+        def roll(_before):
+            tl._marker = 1
+            return False
+        rg.timelineObject.rollTo = roll
+        msg = error_message(self._set())
+        assert "rollTo did not return true" in msg and "stood at" not in msg
+        assert tl.markerPosition == 3 and rg._sets == []
+
+    def test_a_roll_that_leaves_the_marker_off_the_groups_row_never_reaches_the_write(self, rig):
+        rg, tl, _occs = rig()
+        rg.timelineObject = tl._items[1] = FakeTimelineObject("RG1", index=1)
+        msg = error_message(self._set())
+        assert "the marker read 3, not the group's row 1" in msg and rg._sets == []
+
+    def test_a_member_reading_invalid_is_refused(self, rig):
+        rg, _tl, occs = rig()
+        occs["C"].isValid = False
+        assert "'C:1' reads isValid=False" in error_message(self._set())
+        assert rg._sets == []
+
+    def test_a_group_reading_broken_after_the_edit_is_an_error_stating_what_it_holds(self, rig):
+        rg, _tl, _occs = rig()
+        rg._breaks = rg.timelineObject
+        msg = error_message(self._set())
+        assert "now holds A:1, C:1" in msg and "health broken" in msg
+
+    def test_a_later_feature_put_into_error_is_reported_on_the_success(self, rig):
+        rg, tl, _occs = rig()
+        rg._breaks = tl._items[2]
+        out = payload(self._set())
+        assert out["timeline_errors_after"] == ["Extrude1"] and "Extrude1" in out["note"]
+
+    @pytest.mark.parametrize("state", [True, None])
+    def test_a_group_not_reading_unsuppressed_is_refused(self, world, state):
+        occs = [make_occurrence(path=f"{k}:1", entity_token=f"TOK_{k}") for k in "ABC"]
         tl = FakeTimeline()
-        world(rigid=[rg], occurrences=[_occ("Frame:1"), _occ("Carrier:1"), _occ("Pedestal:1")],
-              timeline=tl)
-        error_message(rel.handler(kind="rigid_group", name="RG1", action="set_occurrences",
-                                  occurrences=["Frame:1", "Pedestal:1"]))
-        assert rg._sets == []                            # the platform call is never attempted
-        assert rg.timelineObject._rolls == []            # nothing rolls
-        assert tl._moves == []                           # and no marker restore is needed
-        assert [o.fullPathName for o in rg.occurrences] == ["Frame:1", "Carrier:1"]
+        cls = _EditableGroup if state else type("_Blind", (_BlindSuppress, _EditableGroup), {})
+        rg = cls("RG1", tl, index=0, occurrences=occs[:2], suppressed=True)
+        tl._items, tl._marker = [rg.timelineObject], 1
+        world(rigid=[rg], occurrences=occs, timeline=tl)
+        msg = error_message(self._set())
+        assert f"isSuppressed={state}" in msg and rg._sets == []
 
-    def test_the_refusal_quotes_the_measured_failure_and_pins_it_to_the_build(self, world):
-        # The refusal is a platform fact with a build attached: quoting a raise measured on an older
-        # build as if it were this one's is the provenance defect. The message names the build it was
-        # measured on and the sentence that build actually raises.
-        world(rigid=[self._group()], occurrences=[_occ("Frame:1"), _occ("Carrier:1")])
+    def test_a_group_with_no_timeline_row_is_refused(self, world):
+        occs = [make_occurrence(path=f"{k}:1", entity_token=f"TOK_{k}") for k in "ABC"]
+        rg = FakeRigidGroup("RG1", occurrences=occs[:2])
+        world(rigid=[rg], occurrences=occs)
+        assert "no readable timeline row" in error_message(self._set())
+        assert rg._sets == []
+
+    def test_a_design_whose_timeline_does_not_read_is_refused(self, rig):
+        rg, tl, _occs = rig()
+        tl._raises = "3 : no timeline in direct modeling"
+        assert "needs a parametric design" in error_message(self._set())
+        assert rg._sets == []
+
+    def test_the_members_already_held_change_nothing_and_roll_nothing(self, rig):
+        rg, tl, _occs = rig()
+        out = payload(self._set(["B:1", "A:1"]))
+        assert out["changed"] is False and out["members"] == ["A:1", "B:1"]
+        assert rg._sets == [] and rg.timelineObject._rolls == []
+
+    def test_include_children_accepts_extra_members_beside_the_requested(self, rig):
+        rg, _tl, occs = rig()
+        rg._lands = _NamedCollection([occs["A"], occs["C"], occs["B"]])
+        out = payload(self._set(include_children=True))
+        assert out["member_count"] == 3 and rg._sets[0][1] is True
+        rg2, _tl2, occs2 = rig()
+        rg2._lands = _NamedCollection([occs2["A"], occs2["B"]])
+        assert "not the requested" in error_message(self._set(include_children=True))
+
+    def _nested(self, world, members=("1A", "1B")):
+        """RG1 owned by Hub, which is placed as Hub:1 and Hub:2 over its own A, B and C; X is
+        root's. `members` are placement digit + letter; returns (group, {that key: root proxy})."""
+        tl = FakeTimeline()
+        hub = _component("Hub")
+        own = {k: _OwnOccurrence(f"{k}:1") for k in "ABC"}
+        hubs, kids = [], {}
+        for n in "12":
+            hub_occ = make_occurrence(path=f"Hub:{n}", component=hub, entity_token=f"TOK_HUB{n}")
+            hubs.append(hub_occ)
+            for k, native in own.items():
+                kid = make_occurrence(path=f"Hub:{n}+{k}:1", assembly_context=hub_occ,
+                                      entity_token=f"TOK_{n}{k}")
+                kid.nativeObject = native
+                native.proxies[hub_occ.entityToken] = kids[n + k] = kid
+        rg = _EditableGroup("RG1", tl, index=0, occurrences=[kids[m] for m in members])
+        hub.rigidGroups = FakeRigidGroups(groups=[rg])
+        tl._items, tl._marker = [rg.timelineObject], 1
+        outsider = make_occurrence(path="X:1", entity_token="TOK_X")
+        world(occurrences=[*hubs, *kids.values(), outsider], subs=[hub], timeline=tl)
+        return rg, kids
+
+    def _set_nested(self, *occurrences):
+        return rel.handler(kind="rigid_group", name="Hub/RG1", action="set_occurrences",
+                           occurrences=list(occurrences))
+
+    def test_a_nested_groups_members_are_compared_by_their_root_proxy_tokens(self, world):
+        # the measured shape: the proxies read a token and a path, their nativeObject's token raises
+        rg, kids = self._nested(world)
+        with pytest.raises(RuntimeError, match="top-level parent is the root"):
+            kids["1A"].nativeObject.entityToken
+        out = payload(self._set_nested("Hub:1+A:1", "Hub:1+C:1"))
+        assert out["component"] == "Hub" and out["members"] == ["Hub:1+A:1", "Hub:1+C:1"]
+        assert out["member_count"] == 2 and out["members_before"] == ["Hub:1+A:1", "Hub:1+B:1"]
+        assert rg._sets == [([kids["1A"], kids["1C"]], False)]
+
+    def test_an_alias_through_the_owners_other_placement_is_the_groups_own_member(self, world):
+        rg, kids = self._nested(world)
+        out = payload(self._set_nested("Hub:2+A:1", "Hub:1+C:1"))
+        assert out["members"] == ["Hub:1+A:1", "Hub:1+C:1"]
+        assert rg._sets == [([kids["1A"], kids["1C"]], False)]
+
+    def test_two_aliases_of_one_occurrence_are_refused_as_a_duplicate(self, world):
+        rg, _kids = self._nested(world)
+        msg = error_message(self._set_nested("Hub:1+A:1", "Hub:2+A:1"))
+        assert "lists 'Hub:1+A:1' and 'Hub:2+A:1', which are one occurrence of component 'Hub'" in msg
+        assert rg._sets == [] and rg.timelineObject._rolls == []
+
+    def test_a_member_read_back_through_two_aliases_counts_once(self, world):
+        rg, kids = self._nested(world)
+        rg._lands = _NamedCollection([kids["1A"], kids["2A"], kids["1C"]])
+        out = payload(self._set_nested("Hub:1+A:1", "Hub:1+C:1"))
+        assert out["member_count"] == 2 and out["members"] == ["Hub:1+A:1", "Hub:1+C:1"]
+
+    def test_members_read_in_two_placements_are_refused_not_first_matched(self, world):
+        rg, _kids = self._nested(world, members=("1A", "2B"))
+        msg = error_message(self._set_nested("Hub:1+A:1", "Hub:1+C:1"))
+        assert "'RG1' do not read in one placement of component 'Hub'" in msg
+        assert rg._sets == [] and rg.timelineObject._rolls == []
+
+    @pytest.mark.parametrize("blind", ["no proxy in the group's placement", "no native"])
+    def test_a_member_unread_in_the_groups_placement_is_refused_naming_both(self, world, blind):
+        rg, kids = self._nested(world)
+        if blind == "no native":
+            del kids["2C"].nativeObject
+        else:
+            del kids["2C"].nativeObject.proxies["TOK_HUB1"]
+        msg = error_message(self._set_nested("Hub:1+A:1", "Hub:2+C:1"))
+        assert "'Hub:2+C:1' has no readable identity in placement 'Hub:1'" in msg
+        assert rg._sets == [] and rg.timelineObject._rolls == []
+
+    def test_an_occurrence_outside_the_owning_component_is_refused_naming_both(self, world):
+        rg, _kids = self._nested(world)
         msg = error_message(rel.handler(kind="rigid_group", name="RG1", action="set_occurrences",
-                                        occurrences=["Frame:1", "Carrier:1"]))
-        assert "Cannot be edited before rolling back" in msg
-        assert "2705.0.87" in msg
-        assert "2704" not in msg
-        assert "members read back unchanged" in msg
-
-    def test_the_refusal_names_the_workaround(self, world):
-        world(rigid=[self._group()], occurrences=[_occ("Frame:1"), _occ("Carrier:1")])
-        msg = error_message(rel.handler(kind="rigid_group", name="RG1", action="set_occurrences",
-                                        occurrences=["Frame:1", "Carrier:1"]))
-        assert "action='delete'" in msg and "assembly_rigid_group" in msg
-        assert "Nothing was changed" in msg
-
-    def test_refused_before_the_group_or_its_occurrences_are_resolved(self, world):
-        # neither an unknown group nor an unresolvable occurrence changes the answer - resolving
-        # first would only put a second failure in front of the teaching.
-        world(rigid=[self._group()], occurrences=[_occ("Frame:1")])
-        for name, occs in (("Ghost", ["Frame:1", "Carrier:1"]), ("RG1", ["Ghost:1"]), ("RG1", None)):
-            msg = error_message(rel.handler(kind="rigid_group", name=name,
-                                            action="set_occurrences", occurrences=occs))
-            assert "set_occurrences' is refused" in msg
-
-    def test_the_action_is_still_offered_so_the_agent_is_taught(self, world):
-        # keeping it in the kind's action set is what turns a dead end into a teaching moment: the
-        # kind/action refusal for a motion link must still LIST it for a rigid group.
-        world(links=[_link("ML1")])
-        msg = error_message(rel.handler(kind="motion_link", name="ML1", action="set_occurrences"))
-        assert "does not apply to a motion link" in msg
-        assert "set_occurrences" in rel._KIND_ACTIONS["rigid_group"]
+                                        occurrences=["Hub:1+A:1", "X:1"]))
+        assert "'X:1' does not read as placed directly in component 'Hub'" in msg
+        assert rg._sets == [] and rg.timelineObject._rolls == []
 
 
 class TestReverse:

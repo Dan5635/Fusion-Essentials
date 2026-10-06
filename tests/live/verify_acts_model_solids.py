@@ -25,7 +25,7 @@ from verify_acts_model_precision import (
     _FINE_ANGLE_DEG, _HOLE_ACTIVE, _HOLE_ACTIVE_X0, _HOLE_HOST, _HOLE_VOLUME, _HOLE_X0, _PRECISION_READS, _control_top_args, _fine_angle_param, _fine_angle_plane, _hole_active_handle, _hole_active_tree, _hole_body_state, _hole_created, _hole_cylinder_args, _hole_cylinders, _hole_face_bounds, _hole_host_tree, _hole_inspect_args, _hole_lower_handle, _hole_timeline, _hole_upper_handle, _radius_body_size, _radius_filtered_handle, _scoped_bore_args, _scoped_hole_args, _scoped_top_args, _sweep_brep_list_edited, _sweep_dependent_survived, _sweep_edit_at_volume, _sweep_inspected_at_volume, _unscoped_hole_args)
 from verify_acts_model_sweep import (
     _LATER_OPERAND, _LOFT_ALIGNMENT, _LOFT_EDITOR, _LOFT_PARTICIPANTS, _SOLID_TOOL,
-    _SWEEP_EDIT_MODES, _TANGENT_PATH, _retire_compare, _retire_material_state,
+    _SWEEP_EDIT_MODES, _TANGENT_PATH, _retire_compare, _retire_material_state, _sweep_mode_box_equal,
     _retire_reads, _retire_design_state, _rolled_back_body)
 
 
@@ -1961,8 +1961,39 @@ def _placed_extent_refusal_rows():
             "symmetric": symmetric, "units": "mm", "operation": "cut",
             **({"target_bodies": [_ctx_get(c, "placed_extent_bodies", "exact fixture bodies")["stock"]]} if scoped else {})},
             _refused("body not found", "does not establish why", "sketch_get for the profile and frame", "find_geometry for the target body geometry",
-                     "sign cannot fix a symmetric extent" if symmetric else "If an on-face"))
+                     "sign cannot fix a symmetric extent" if symmetric else "try extent='distance'"))
         read_states(True)
+
+    def finite_cut_effect(p):
+        now = _retire_material_state(p)
+        before = _RECALL.get("placed_extent_PlacedStock:1")
+        valid = now is not None and before is not None
+        if valid:
+            removed = before["shape"]["volume"] - now["shape"]["volume"]
+            expected = math.pi * .5 ** 2 * (before["shape"]["volume"] / (12 * 8)) / 2
+            valid = (_near(removed, expected, .001)
+                     and _sweep_mode_box_equal(now["shape"], before["shape"]))
+        return _measured("finite distance cuts only the positive half of placed stock", now, valid)
+
+    write("model_extrude", {"sketch_name": "Cut", "component": "PlacedStock:1",
+        "extent": "distance", "distance": 10, "units": "mm", "operation": "cut"}, _extruded)
+    rows.extend([
+        ("model_inspect", {"target": "PlacedStock:1", "include": ["default", "mass"],
+            "per_body": True, "accuracy": "very_high", "units": "mm"}, finite_cut_effect, None),
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, "placed_extent_bodies", "fixture bodies")["witness"]),
+            "per_body": True}, _retire_compare("placed_extent_witness", _symmetric_target_body_state, True), None),
+        ("assembly_get", {"include": ["all_occurrences", "poses"], "units": "mm",
+            "max_occurrences": 100, "max_all_occurrences": 100, "max_joints": 100},
+            _retire_compare("placed_extent_poses", _placed_extent_pose_state, True), None),
+        ("design_get", {"include": ["timeline"], "max_results": 2000},
+         lambda p: _measured("distance remedy leaves healthy history at the end", p.get("timeline"),
+            (p.get("timeline") or {}).get("marker_position") == (p.get("timeline") or {}).get("count")
+            and not (p.get("timeline") or {}).get("truncated")
+            and (p.get("timeline") or {}).get("count") == (p.get("timeline") or {}).get("returned")
+                == len((p.get("timeline") or {}).get("timeline") or []) > 0
+            and (p.get("timeline") or {}).get("summary", {}).get("states")
+                == {"healthy": (p.get("timeline") or {}).get("count")}), None),
+    ])
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "placed_extent_home", "story"),
                "expect_document": _ctx_get(c, "placed_extent_doc", "scratch")}, _activated(), None),
              ("doc_close", lambda c: {"name": _ctx_get(c, "placed_extent_doc", "scratch"), "save_changes": False,

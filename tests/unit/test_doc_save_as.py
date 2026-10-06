@@ -242,6 +242,8 @@ class TestSaveDocumentAs:
         assert out["cloud_processing_complete"] is False
         assert out["cloud_processing_was_incomplete"] is True
         assert "still read false" in out["note"] and "version.latest_number" in out["note"]
+        assert "no dwell" not in out["note"]
+        assert "read data_get(file=<URN>) before opening it" in out["note"]
 
     def test_the_settle_wait_stops_at_the_window_the_module_declares(self, _install, monkeypatch):
         # A flag that never settles must stop at _doc_common's OWN window: a hard-wired bound would
@@ -648,7 +650,9 @@ class TestSameNameFilesInOneFolder:
         out = _payload(dm.handler(name="X", project="CAM"))
         assert out["saved"] is True and out["recovered_from_error"] is True
         assert out["document_id"] is None                  # never the source lineage
-        assert "SOURCE" not in json.dumps(out)
+        assert out["source_file"]["before"]["id"] == "urn:adsk.wipprod:dm.lineage:SOURCE"
+        assert out["source_file"]["after"] is None
+        assert out["source_file"]["changed"] is None
         # and the ambiguity this recovery MEASURED reaches the caller: the count and both URNs
         assert out["same_name_document_ids"] == ["urn:adsk.file:landed", "urn:adsk.file:landed-2"]
         assert "2 files named 'X'" in out["note"]
@@ -751,3 +755,60 @@ class TestFolderResolveEventual:
         # it actually saved INTO the recovered folder
         _, target, _, _ = doc.saveas_args
         assert target.name == "Stage-v1"
+
+
+@pytest.fixture
+def source_save(_install, monkeypatch):
+    def build(relocate=False, recovered=False, unread=False, wrong_identity=False):
+        project = FakeProject("CAM")
+        project.rootFolder.id = "root-cam"
+        source = FakeDataFile("Original", file_id="urn:source",
+                              parent_project=project, parent_folder=project.rootFolder)
+        document = FakeSaveAsDoc(is_saved=True, raise_on_save=recovered,
+                                 land_on_save=recovered)
+        document.dataFile = source
+        lookup = ({} if unread else {"urn:source": FakeFile("Wrong", "urn:wrong")}
+                  if wrong_identity else {"urn:source": source})
+        _install([project], active=document, by_id=lookup)
+        save_as = document.saveAs
+
+        def save(name, folder, description="", tag=""):
+            try:
+                return save_as(name, folder, description, tag)
+            finally:
+                if relocate:
+                    system = FakeProject("System Project - CONFIG", "system")
+                    source.name = "Configuration 1"
+                    source.parentProject = system
+                    source.parentFolder = _add_child(system.rootFolder, "NewLineage")
+                document.dataFile = FakeDataFile(name, file_id="urn:adsk.file:landed",
+                                                parent_project=project, parent_folder=folder)
+
+        monkeypatch.setattr(document, "saveAs", save)
+        return document
+    return build
+
+
+@pytest.mark.parametrize("relocate,recovered", [(False, False), (True, False), (True, True)])
+def test_save_as_discloses_source_state_without_losing_its_before_snapshot(source_save, relocate, recovered):
+    source_save(relocate=relocate, recovered=recovered)
+    out = _payload(dm.handler(name="SavedCopy", project="CAM"))
+    state = out["source_file"]
+    assert state["before"]["name"] == "Original"
+    assert state["before"]["project"] == "CAM"
+    assert state["after"]["id"] == "urn:source"
+    assert state["changed"] is relocate
+    assert out["document_id"] == "urn:adsk.file:landed"
+    if relocate:
+        assert state["after"]["name"] == "Configuration 1"
+        assert state["after"]["project"] == "System Project - CONFIG"
+        assert "source file's name or location changed" in out["note"]
+
+
+@pytest.mark.parametrize("unread,wrong_identity", [(True, False), (False, True)])
+def test_save_as_never_claims_source_preserved_when_the_exact_file_does_not_read(source_save, unread, wrong_identity):
+    source_save(unread=unread, wrong_identity=wrong_identity)
+    out = _payload(dm.handler(name="SavedCopy", project="CAM"))
+    assert out["source_file"]["changed"] is None
+    assert out["source_file"]["after"] is None
+    assert "Source name/location is unverified" in out["note"]

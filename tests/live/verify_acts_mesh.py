@@ -9,7 +9,10 @@ nesting last, because it adds Arrange/Envelope occurrences beside what it nests.
 """
 
 import copy
+import hashlib
 import math
+from pathlib import Path
+import struct
 
 from verify_core import (
     EXPORT_DIR, _RECALL, _activated, _arranged, _base_feature_open, _box, _captured, _ctx_get,
@@ -55,6 +58,73 @@ def _mesh_remedy_brep(p):
                    for k in ("volume", "area", "mass_kg"))):
         return None
     return {"bounds": [p["min_point"], p["max_point"]], "mass": mass, "lump_count": p["lump_count"]}
+
+
+def _refinement_source(p, after=False):
+    """Compare the cylinder's readable geometry before and after exports."""
+    now, before = _mesh_remedy_brep(p), _RECALL.get("stl_refinement_source")
+    valid = now is not None and (not after or before is not None and now == before)
+    if valid and not after:
+        _RECALL["stl_refinement_source"] = now
+        _RECALL["stl_refinement_files"] = {}
+    return _measured("STL export preserves the curved source", now, valid)
+
+
+def _refinement_artifact(quality, repeat, path):
+    """Check the binary triangles, source bounds and same-run refinement effect."""
+    def check(p):
+        data = Path(path).read_bytes() if Path(path).is_file() else b""
+        count = struct.unpack_from("<I", data, 80)[0] if len(data) >= 84 else 0
+        valid = (p.get("exported") is True and p.get("file_path") == path
+                 and p.get("format") == "stl" and p.get("refinement") == quality
+                 and (p.get("options_applied") or {}).get("stl_units") == "mm"
+                 and p.get("size_bytes") == len(data) == 84 + 50 * count and count > 0)
+        vertices = []
+        if valid:
+            for offset in range(84, len(data), 50):
+                row = struct.unpack_from("<12fH", data, offset)
+                valid = valid and all(math.isfinite(v) for v in row[:12])
+                vertices.extend((row[3:6], row[6:9], row[9:12]))
+        source = _RECALL.get("stl_refinement_source") or {}
+        bounds = source.get("bounds") or []
+        if vertices and len(bounds) == 2:
+            actual = [[fn(v[i] for v in vertices) for i in range(3)] for fn in (min, max)]
+            valid = valid and all(_near(actual[end][i], bounds[end].get(axis), .05)
+                                  for end in range(2) for i, axis in enumerate("xyz"))
+        else:
+            valid = False
+        digest = hashlib.sha256(data[84:]).hexdigest()
+        observed = {"triangles": count, "sha256": digest, "bytes": len(data)}
+        files = _RECALL.get("stl_refinement_files") or {}
+        if repeat:
+            valid = valid and observed == files.get(quality)
+        else:
+            valid = valid and all(digest != row["sha256"] for row in files.values())
+        if quality == "low":
+            valid = valid and count < files.get("medium", {}).get("triangles", 0)
+        elif quality == "high":
+            valid = valid and count > files.get("medium", {}).get("triangles", float("inf"))
+        if valid and not repeat:
+            files[quality] = observed
+            _RECALL["stl_refinement_files"] = files
+        return _measured("STL refinement changes triangles; repeats agree", observed, valid)
+    return check
+
+
+def _refinement_rows():
+    """Export the same curved body at three settings and repeat both finer settings."""
+    args = lambda c: {"target": _ctx_get(c, "cyl_brep", "curved source body"),
+                      "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"}
+    rows = [("model_inspect", args, _refinement_source, None)]
+    for quality, repeat in (("medium", False), ("high", False), ("low", False),
+                            ("medium", True), ("high", True)):
+        path = EXPORT_DIR + "/eval_refinement_" + quality + ("_repeat" if repeat else "") + ".stl"
+        rows.append(("mesh_export", lambda c, q=quality, f=path: {
+            "target": _ctx_get(c, "cyl_body", "curved source"), "file_path": f,
+            "format": "stl", "refinement": q, "stl_units": "mm"},
+            _refinement_artifact(quality, repeat, path), None))
+    rows.append(("model_inspect", args, lambda p: _refinement_source(p, True), None))
+    return rows
 
 
 def _mesh_remedy_reduced(p):
@@ -3069,8 +3139,11 @@ _MESH = [
     ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 260, "cy": 360,
                                            "radius": 15}],
                              "sketch_name": "MshCyl"}, "ok", None),
-    ("model_extrude", {"sketch_name": "MshCyl", "profile_index": 0, "distance": 20}, _extruded, None),
+    ("model_extrude", {"sketch_name": "MshCyl", "profile_index": 0, "distance": 20},
+     lambda p: _extruded(p) and len(p.get("result_bodies") or []) == 1,
+     ("cyl_brep", lambda p: "Msh:1:" + p["result_bodies"][0])),
     ("find_geometry", {"target": "Msh", "kind": "cylinder_face", "nearest_to": [260, 360, 10], "max_results": 1}, "ok", _fg("cyl_body")),
+] + _refinement_rows() + [
     ("save_as_mesh", lambda c: {"body": _ctx_get(c, "cyl_body", "cyl body"), "name": "MRED", "quality": "high"}, "ok", None),
     ("save_as_mesh", lambda c: {"body": _ctx_get(c, "msh_body", "box body"), "name": "MA", "quality": "low"}, "ok", None),
     ("save_as_mesh", lambda c: {"body": _ctx_get(c, "msh_body", "box body"), "name": "MC", "quality": "low"}, "ok", None),

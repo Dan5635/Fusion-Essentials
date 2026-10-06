@@ -401,7 +401,9 @@ def _no_target_body_hint(ext_key, distance, symmetric=False) -> str:
     if ext_key == "through_all":
         return (qualification + " extent=through_all follows the sketch-plane normal. If an on-face "
                 "sketch points AWAY from the material, try a "
-                f"{flip_to} 'distance' for the other side." + inspect)
+                f"{flip_to} 'distance' for the other side." + inspect
+                + " If this is a placed component, try extent='distance' with a length spanning the body; "
+                  "read model_inspect(include=['mass']) to confirm removal.")
     went = "" if negative is None else f" - 'distance' was {'negative' if negative else 'positive'}"
     return (f" The extrude reached no body the way it went{went}, and a sketch ON a body's face "
             f"points its normal AWAY from the material. Pass a {flip_to} 'distance' to go the "

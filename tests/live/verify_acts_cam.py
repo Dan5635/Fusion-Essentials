@@ -1334,6 +1334,22 @@ def _selector_conflict_rows():
              lambda p: _measured("shared selector library index 0 is a 12 mm cutter", p.get("library"),
                  any(t.get("index") == 0 and t.get("diameter_mm") == 12
                      for t in (p.get("library") or {}).get("tools", []))), None),
+            ("cam_get", {"include": ["library"], "scope": "fusion", "library": library,
+                         "tool_type": "ball"},
+             lambda p: _measured("full ball catalog", p.get("library"),
+                 (p.get("library") or {}).get("tool_count", 0) > 6
+                 and len((p.get("library") or {}).get("tools", []))
+                     == (p.get("library") or {}).get("tool_count")
+                     == (p.get("library") or {}).get("returned")
+                 and (p.get("library") or {}).get("truncated") is False),
+             ("ball_catalog", _recall("ball_catalog", lambda p: p["library"]))),
+            ("cam_get", {"include": ["library"], "scope": "fusion", "library": library,
+                         "tool_type": "ball", "max_results": 6},
+             lambda p: _measured("bounded catalog equals the head of the full same-run catalog", p.get("library"),
+                 (p.get("library") or {}).get("tools") == _RECALL["ball_catalog"]["tools"][:6]
+                 and (p.get("library") or {}).get("returned") == 6
+                 and (p.get("library") or {}).get("tool_count") == _RECALL["ball_catalog"]["tool_count"]
+                 and (p.get("library") or {}).get("truncated") is True), None),
             ("cam_create_operation", {"setup": CAM_SETUP, "strategy": "face", "name": operation,
                  "tool_library_url": library, "tool_index": 0, "generate": False},
              _op_named(CAM_SETUP, "face", operation), None),
@@ -4388,12 +4404,13 @@ def _requested_parameter_rows(payload):
     return params, raw, {row.get("requested_name"): row for row in raw}
 
 
-def _expressions_read(op, want):
+def _expressions_read(op, want, exact_operation=False):
     """cam_get parameters: each named row of `op` reads the expression `want` maps it to."""
     def check(p):
-        _params, _raw, rows = _requested_parameter_rows(p)
+        params, _raw, rows = _requested_parameter_rows(p)
         got = {name: (rows.get(name) or {}).get("expression") for name in want}
-        return _measured(f"{op} rows read back", got, got == want)
+        return _measured(f"{op} rows read back", {"operation": params.get("operation"), "expressions": got},
+                         got == want and (not exact_operation or params.get("operation") == op))
     return check
 
 
@@ -4484,6 +4501,28 @@ _PARTIAL_EDIT_ROWS = [
               "which was NOT restored", "Operation.hasError reads False"), None),
     ("sys_execute_script", _derived_row_read,
      _derived_row_reads("the value is back and the expression is the literal", "'vertical'"), None),
+    ("cam_create_operation", {"setup": _PE_SETUP, "strategy": "parallel", "name": "RestoreNames5x",
+                              "tool_library_url": _DR_LIBRARY, "tool_index": 3, "generate": False},
+     lambda p: _op_created(_PE_SETUP, "parallel")(p)
+               and "6mm Ball Endmill" in (p.get("tool") or ""), None),
+    ("cam_edit_operation", {"operation": "RestoreNames5x",
+                            "parameters": {"multiAxisMachiningType": "'five_axis'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'five_axis'", None),
+    ("cam_edit_operation", {"operation": "RestoreNames5x",
+                            "parameters": {"toolAxisMode": "'lead_lean'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'lead_lean'", None),
+    ("cam_get", {"include": ["parameters"], "operation": "RestoreNames5x",
+                 "parameter_names": ["leadAngle", "leanAngle"]},
+     _expressions_read("RestoreNames5x", {"leadAngle": "0deg", "leanAngle": "0deg"}, exact_operation=True), None),
+    ("cam_edit_operation", {"operation": "RestoreNames5x", "parameters": {
+        "tiltToolMode": "'automatic'", "leadAngle": "10 deg", "leanAngle": "5 deg",
+        "shaftClearance": "0.5 mm", "holderClearance": "3 mm"}},
+     _refused("does not accept a write to: tiltToolMode, shaftClearance, holderClearance",
+              "WROTE 2 parameter(s) on the operation and then restored each one",
+              "'leadAngle' reads '0deg', 'leanAngle' reads '0deg'"), None),
+    ("cam_get", {"include": ["parameters"], "operation": "RestoreNames5x",
+                 "parameter_names": ["leadAngle", "leanAngle"]},
+     _expressions_read("RestoreNames5x", {"leadAngle": "0deg", "leanAngle": "0deg"}, exact_operation=True), None),
     ("cam_delete", {"entity": _PE_SETUP},
      lambda p: p.get("deleted") is True and p.get("entity_type") == "setup", None),
 ]

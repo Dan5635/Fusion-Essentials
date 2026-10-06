@@ -618,9 +618,9 @@ def _do_add_material(design, table, body, materials):
 
     unset = [c for c in _row_names(table) if c not in applied]
     note = ("Material column added for this body, each listed configuration linked to its own "
-            "theme row; the names above are read back off the table cells. A body material read "
-            "right after design_configure(action='activate', name=...) can still report the other "
-            "configuration's material, so read the table, not the body, to confirm what is configured.")
+            "theme row; the names above are read back off the table cells. Read "
+            "design_get(include=['configurations']) for the configured table; this reply does not "
+            "verify the body's assigned material.")
     out = {"body": body, "themes": len(applied), "materials": applied,
            "column_id": safe(lambda: col.id), "column_title": safe(lambda: col.title)}
     if unset:

@@ -194,6 +194,20 @@ def test_loft_definition_caps_section_list(definition_scene):
     assert len(out["sections"]) == 64 and out["sections"][-1]["index"] == 63
 
 
+def test_loft_note_points_model_inspect_at_the_properties_it_returns(definition_scene):
+    s = definition_scene
+    s.hole.objectType = "adsk::fusion::LoftFeature"
+    s.hole.loftSections = SimpleNamespace(count=0, item=lambda i: None)
+    s.hole.centerLineOrRails = SimpleNamespace(count=0)
+    note = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]["note"]
+    assert "model_inspect include=['mass'] reads mass, volume and density, not" in note
+    assert "reads material" not in note
+    mi = load_tool("model_inspect")
+    props = mi._full_props(SimpleNamespace(mass=1.0, volume=1.0, area=1.0, density=1.0), 1.0)
+    assert "mass" in mi._SLICES and {"mass_kg", "volume", "density_kg_per_cm3"} <= set(props)
+    assert not [k for k in props if "material" in k]
+
+
 # ── ROUTER composition: stub the slice SEAMS (not the source-tool internals) ────────────────────────
 #
 # design_get's slices DELEGATE to the 5 source handlers — so the router's own job (compose the default,

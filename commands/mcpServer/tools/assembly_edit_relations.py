@@ -2,9 +2,8 @@
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
 """Lifecycle for the three assembly relations - rigid group, motion link, assembly constraint:
-suppress/unsuppress, delete, and reverse or re-value a motion link. Editing a rigid group's
-MEMBERSHIP after creation raises on Fusion 2705.0.87, so set_occurrences refuses up front and
-names the delete-and-recreate path instead.
+suppress/unsuppress, delete, reverse or re-value a motion link, and replace a rigid group's members
+with the timeline marker rolled to before the group and put back.
 """
 
 import adsk.core
@@ -12,15 +11,15 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, ok, safe, timeline_health
+from ._common import counted, error, ok, safe, timeline_health
+from . import _assert
 from . import _common
 from . import _inputs
 from . import _joints
 from . import _relations
 
 # Which actions each relation kind supports. Only a motion link carries a direction and a pair of
-# coupled values; all three carry isSuppressed and deleteMe. set_occurrences stays in the rigid
-# group's set so the caller meets the refusal below rather than an unknown verb.
+# coupled values; all three carry isSuppressed and deleteMe.
 _KIND_ACTIONS = {
     "rigid_group": ("suppress", "unsuppress", "delete", "set_occurrences"),
     "motion_link": ("suppress", "unsuppress", "delete", "reverse", "set_values"),
@@ -38,16 +37,8 @@ def _flag(obj, prop):
     unreadable-flag read; this only names the property."""
     return _common.read_flag(lambda: getattr(obj, prop))
 
-# Measured on Fusion 2705.0.87: RigidGroup.setOccurrences on a group created in the same session
-# raises "3 : Cannot be edited before rolling back", and the members read back unchanged - so
-# post-creation membership editing is unusable on this build and the tool refuses it up front.
-_SET_OCCURRENCES_REFUSAL = (
-    "action='set_occurrences' is refused: this Fusion build (2705.0.87) will not edit a rigid "
-    "group's members after it is created - setOccurrences raises '3 : Cannot be edited before "
-    "rolling back' and the members read back unchanged. To change them: "
-    "assembly_edit_relations(kind='rigid_group', name=..., action='delete'), then "
-    "assembly_rigid_group with the occurrences you want. Nothing was changed."
-)
+_UNREAD = object()      # an assemblyContext read that RAISED - None there means "placed in root"
+_ROLL_END = "(action='roll', to='end')"
 
 # What suppression/deletion OBSERVABLY did, per kind - the flag this call read back, plus the tool
 # that re-creates the kind. What a suppressed relation does to the parts it relates is not measured.
@@ -132,6 +123,241 @@ def _do_delete(design, obj, kind, name):
         out["timeline_errors_after"] = new_errors
         out["note"] += (f" WARNING: {len(new_errors)} feature(s) are now in error: "
                         + ", ".join(new_errors) + ".")
+    elif warnings:
+        out["timeline_warnings"] = warnings
+    return ok(out)
+
+
+def _path(occ):
+    """An occurrence's fullPathName, else its name, for a message."""
+    return safe(lambda: occ.fullPathName) or safe(lambda: occ.name) or "?"
+
+
+def _token(occ):
+    """An occurrence's own entityToken as read, or None."""
+    return (safe(lambda: occ.entityToken) or None) if occ is not None else None
+
+
+def _parent(occ, root):
+    """The component `occ` reads as placed directly in, or None when its context did not read."""
+    ctx = safe(lambda: occ.assemblyContext, _UNREAD)
+    return root if ctx is None else None if ctx is _UNREAD else safe(lambda: ctx.component)
+
+
+def _anchor(rg, owner, root):
+    """(found, the ONE assembly context the group's direct members read in - None in the root)."""
+    seen = {}
+    for o in _common.iter_collection(safe(lambda: rg.occurrences)):
+        if _common.same_component(_parent(o, root), owner) is True:
+            ctx = safe(lambda o=o: o.assemblyContext)
+            seen[None if ctx is None else _token(ctx) or _UNREAD] = ctx
+    if len(seen) != 1 or _UNREAD in seen:
+        return False, None
+    return True, next(iter(seen.values()))
+
+
+def _canon(occ, scope):
+    """`occ` as the group's own context places it (itself in the root), or None when unread."""
+    anchor, owner, root = scope
+    if anchor is None or _common.same_component(_parent(occ, root), owner) is not True:
+        return occ
+    # A nested component's own occurrences raise on entityToken ("Tokens can only be created for
+    # proxies whose top-level parent is the root component"); createForAssemblyContext(the members'
+    # context) answers the root proxy carrying the token the group's own member reads.
+    native = safe(lambda: occ.nativeObject)
+    return None if native is None else safe(lambda: native.createForAssemblyContext(anchor))
+
+
+def _members(rg, scope):
+    """[(group-context token, path)] per distinct member read, or None when any did not read."""
+    occs = safe(lambda: rg.occurrences)
+    n = counted(lambda: occs.count) if occs is not None else None
+    if n is None:
+        return None
+    out = []
+    for i in range(n):
+        o = safe(lambda i=i: occs.item(i))
+        key = _token(_canon(o, scope)) if o is not None else None
+        if key is None:
+            return None
+        if all(k != key for k, _p in out):
+            out.append((key, _path(o)))
+    return out
+
+
+def _listed(members):
+    """The member paths as one message fragment."""
+    return ", ".join(p for _k, p in members) or "(none)"
+
+
+def _same_members(a, b):
+    """Whether two member lists hold the same occurrences, by count and group-context token."""
+    return len(a) == len(b) and {k for k, _p in a} == {k for k, _p in b}
+
+
+def _reread(before, after):
+    """What a re-read of the members showed after a failed edit."""
+    if after is None:
+        return "Its members could not be re-read"
+    if _same_members(before, after):
+        return f"Its members re-read unchanged: {_listed(after)}"
+    return f"Its members now read {_listed(after)} (were {_listed(before)})"
+
+
+def _requested_members(design, rg, owner, name, occurrences):
+    """([(group-context token, path)], the occurrences to hand over, scope, error)."""
+    occs, oerr = _OCCURRENCES.resolve(occurrences)
+    if oerr:
+        return None, None, None, f"{oerr} Nothing was changed."
+    root = safe(lambda: design.rootComponent)
+    owner_name = safe(lambda: owner.name) or "?"
+    found, anchor = _anchor(rg, owner, root)
+    if not found:
+        return None, None, None, (
+            f"The members of rigid group '{name}' do not read in one placement of component "
+            f"'{owner_name}', so a requested occurrence has no one context to be compared in. "
+            "Nothing was changed.")
+    scope = (anchor, owner, root)
+    where = "" if anchor is None else f" in placement '{_path(anchor)}'"
+    wanted, handed, asked = [], [], []
+    for o in occs or []:
+        path = _path(o)
+        valid = safe(lambda o=o: o.isValid)
+        if valid is not True:
+            return None, None, None, (
+                f"Occurrence '{path}' reads isValid={valid}. Re-read the tree with "
+                "design_get(include=['tree']). Nothing was changed.")
+        if _common.same_component(_parent(o, root), owner) is not True:
+            return None, None, None, (
+                f"Occurrence '{path}' does not read as placed directly in component "
+                f"'{owner_name}', which owns rigid group '{name}'. Pass occurrences of that "
+                "component, or action='delete' and re-create the group with "
+                "assembly_rigid_group. Nothing was changed.")
+        canon = _canon(o, scope)
+        key = _token(canon)
+        if key is None:
+            return None, None, None, (
+                f"Occurrence '{path}' has no readable identity{where}, so a read-back could not "
+                "tell it from another. Nothing was changed.")
+        twin = [a for (k, _p), a in zip(wanted, asked) if k == key]
+        if twin:
+            return None, None, None, (
+                f"'occurrences' lists '{twin[0]}' and '{path}', which are one occurrence of "
+                f"component '{owner_name}'. List each member once. Nothing was changed.")
+        wanted.append((key, _path(canon)))
+        handed.append(canon)
+        asked.append(path)
+    if len(wanted) < 2:
+        return None, None, None, (
+            f"A rigid group needs at least two occurrences; 'occurrences' names "
+            f"{len(wanted)} ({_listed(wanted)}). Nothing was changed.")
+    return wanted, handed, scope, None
+
+
+def _do_set_occurrences(design, rg, owner, name, occurrences, include_children):
+    wanted, handed, scope, werr = _requested_members(design, rg, owner, name, occurrences)
+    if werr:
+        return error(werr)
+    timeline = safe(lambda: design.timeline)
+    end = counted(lambda: timeline.count) if timeline is not None else None
+    marker = counted(lambda: timeline.markerPosition) if timeline is not None else None
+    if end is None or marker is None:
+        return error("set_occurrences needs a parametric design: this design's timeline count and "
+                     "marker do not read. Nothing was changed.")
+    if marker != end:
+        return error(f"The timeline marker is at {marker} of {end}; set_occurrences starts with "
+                     f"it at the end. Call design_edit_timeline{_ROLL_END} and retry. Nothing was "
+                     "changed.")
+    index = counted(lambda: rg.timelineObject.index)
+    if index is None:
+        return error(f"Rigid group '{name}' has no readable timeline row, so the marker cannot be "
+                     "rolled to before it. Nothing was changed.")
+    was_suppressed = _flag(rg, "isSuppressed")
+    if was_suppressed is not False:
+        return error(f"Rigid group '{name}' reads isSuppressed={was_suppressed}; set_occurrences "
+                     "edits an unsuppressed group (action='unsuppress' first). Nothing was changed.")
+    before = _members(rg, scope)
+    if before is None:
+        return error(f"The members of rigid group '{name}' could not be read, so an edit could not "
+                     "be confirmed against them. Nothing was changed.")
+    include = bool(include_children)
+    if not include and _same_members(before, wanted):
+        return ok({"kind": "rigid_group", "name": name, "changed": False,
+                   "members": [p for _k, p in before],
+                   "note": "The group already holds exactly these members; nothing was changed."})
+    errors_before, _w, _t = timeline_health(design)
+    coll = adsk.core.ObjectCollection.create()
+    for o in handed:
+        coll.add(o)
+    attempt = {}
+
+    # Fusion 2706.0.116: setOccurrences raises "3 : Cannot be edited before rolling back" with the
+    # marker at the end, and returns true with the marker just before the group's own row.
+    def write():
+        at = counted(lambda: timeline.markerPosition)
+        if at != index:
+            attempt["marker"] = at
+            return
+        try:
+            attempt["returned"] = rg.setOccurrences(coll, include)
+        except Exception as e:
+            attempt["raised"] = str(e)
+
+    _common.rolled_to(design, rg, write, f"rigid group '{name}'")
+    if counted(lambda: timeline.markerPosition) != end:
+        safe(lambda: setattr(timeline, "markerPosition", end))
+    now = counted(lambda: timeline.markerPosition)
+    after = _members(rg, scope)
+    stuck = ("" if now == end else
+             " Also, " + _common.marker_clause(end, now, "the edit") + _ROLL_END + ".")
+    if attempt.get("returned") is not True:
+        if "raised" in attempt:
+            what = f"setOccurrences raised: {attempt['raised']}"
+        elif "returned" in attempt:
+            what = f"setOccurrences returned {attempt['returned']!r}"
+        elif "marker" in attempt:
+            what = (f"after rollTo the marker read {attempt['marker']}, not the group's row "
+                    f"{index}, so setOccurrences was not called")
+        else:
+            what = ("the marker did not roll to before the group (rollTo did not return true), so "
+                    "setOccurrences was not called")
+        return error(f"Editing rigid group '{name}' failed: {what}. {_reread(before, after)}."
+                     + stuck)
+    if now != end:
+        return error(f"setOccurrences returned true on rigid group '{name}', but "
+                     + _common.marker_clause(end, now, "the edit") + _ROLL_END
+                     + f". {_reread(before, after)} at that marker; re-read them with "
+                     "assembly_get(include=['relations']) once it is back.")
+    if after is None:
+        return error(f"setOccurrences returned true on rigid group '{name}' but its members could "
+                     "not be read back, so the edit is UNCONFIRMED. Re-read it with "
+                     "assembly_get(include=['relations']).")
+    want_keys, got_keys = {k for k, _p in wanted}, {k for k, _p in after}
+    if not (want_keys <= got_keys if include else _same_members(after, wanted)):
+        return error(f"setOccurrences returned true but rigid group '{name}' reads members "
+                     f"{_listed(after)}, not the requested {_listed(wanted)}.")
+    suppressed = _flag(rg, "isSuppressed")
+    state, _failure = _assert.compute_state(rg)
+    if suppressed is not False or state != "healthy":
+        return error(f"Rigid group '{name}' now holds {_listed(after)} with the marker back at "
+                     f"{end}, but it reads isSuppressed="
+                     f"{'unread' if suppressed is None else suppressed} and health "
+                     f"{'unread' if state == 'unknown' else state}. Inspect it with "
+                     "assembly_get(include=['relations']).")
+    new_errors, warnings = _health_delta(errors_before, design)
+    out = {"kind": "rigid_group", "name": name, "changed": True,
+           "component": safe(lambda: owner.name) or None,
+           "members": [p for _k, p in after], "member_count": len(after),
+           "members_before": [p for _k, p in before],
+           "include_children": include, "is_suppressed": suppressed, "health": state,
+           "marker_position": now, "timeline_count": end,
+           "note": "Members re-read as requested with the timeline marker back at the end. "
+                   "Re-read positions with assembly_get."}
+    if new_errors:
+        out["timeline_errors_after"] = new_errors
+        out["note"] = (f"Members re-read as requested, but {len(new_errors)} feature(s) are now "
+                       "in error: " + ", ".join(new_errors) + ". Set the previous members to "
+                       "restore them.")
     elif warnings:
         out["timeline_warnings"] = warnings
     return ok(out)
@@ -242,17 +468,11 @@ def handler(kind: str = "", name: str = "", action: str = "", occurrences=None,
     if action not in allowed:
         return error(f"action='{action}' does not apply to a {_relations.kind_label(kind)} - it "
                      f"supports: {', '.join(allowed)}.")
-    # Refused BEFORE anything is resolved or rolled: the platform refuses the edit itself, so
-    # resolving the group and its occurrences first would only add failure modes ahead of the
-    # teaching. Kept in the action set so the agent is taught, not met with an unknown verb.
-    if action == "set_occurrences":
-        return error(_SET_OCCURRENCES_REFUSAL)
-
     design = _common.design()
     if not design:
         return error("No active design with components.")
 
-    obj, _comp, rerr = _relations.find_relation(design, kind, name)
+    obj, comp, rerr = _relations.find_relation(design, kind, name)
     if rerr:
         return error(rerr)
     nm = safe(lambda: obj.name) or (name or "").strip()
@@ -261,6 +481,8 @@ def handler(kind: str = "", name: str = "", action: str = "", occurrences=None,
         return _do_suppress(design, obj, kind, nm, action == "suppress")
     if action == "delete":
         return _do_delete(design, obj, kind, nm)
+    if action == "set_occurrences":
+        return _do_set_occurrences(design, obj, comp, nm, occurrences, include_children)
     if action == "reverse":
         return _do_reverse(obj, nm)
     return _do_set_values(obj, nm, ratio)

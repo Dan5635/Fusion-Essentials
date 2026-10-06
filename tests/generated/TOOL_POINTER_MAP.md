@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 705
+**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 708
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -45,11 +45,11 @@ close orphans, factor duplicated guards into shared helpers.
 - `design_delete_feature`  <- 39  (desc 16, note 23)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
-- `model_inspect`  <- 30  (desc 5, note 25)
+- `model_inspect`  <- 31  (desc 5, note 26)
 - `sketch_get`  <- 26  (desc 7, note 19)
+- `data_get`  <- 25  (desc 9, note 16)
 - `doc_open`  <- 25  (desc 5, note 20)
 - `sketch_create`  <- 25  (desc 7, note 18)
-- `data_get`  <- 24  (desc 9, note 15)
 - `doc_get`  <- 23  (desc 10, note 13)
 
 ## The detected guidance surface
@@ -272,17 +272,45 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' (deleteMe returned false) - it is still in the design.
 - deleteMe reported success but
 - ' is still listed - it was not deleted.
+- Members re-read as requested with the timeline marker back at the end. Re-read positions with assembly_get.
+- . Set the previous members to restore them.
+- Members re-read as requested, but
+- feature(s) are now in error:
+- set_occurrences needs a parametric design: this design's timeline count and marker do not read. Nothing was changed.
+- The timeline marker is at
+- ; set_occurrences starts with it at the end. Call design_edit_timeline
+- and retry. Nothing was changed.
+- ' has no readable timeline row, so the marker cannot be rolled to before it. Nothing was changed.
+- ' reads isSuppressed=
+- ; set_occurrences edits an unsuppressed group (action='unsuppress' first). Nothing was changed.
+- The members of rigid group '
+- ' could not be read, so an edit could not be confirmed against them. Nothing was changed.
+- Editing rigid group '
+- at that marker; re-read them with assembly_get(include=['relations']) once it is back.
+- setOccurrences returned true on rigid group '
+- ' but its members could not be read back, so the edit is UNCONFIRMED. Re-read it with assembly_get(include=['relations']).
+- setOccurrences returned true but rigid group '
+- with the marker back at
+- , but it reads isSuppressed=
+- . Inspect it with assembly_get(include=['relations']).
+- The group already holds exactly these members; nothing was changed.
 - ' does not report isReversed, so there is no direction to flip.
 - isReversed cannot be read on motion link '
 - , so the flip is UNCONFIRMED. Re-read the link with assembly_get(include=['relations']).
 - The linked joints now move in the opposite sense relative to each other. Drive ONE member (joint_drive) and read the partner back.
 - Could not set isReversed on motion link '
-- action='set_occurrences' is refused: this Fusion build (2705.0.87) will not edit a rigid group's members after it is created - setOccurrences raises '3 : Cannot be edited before rolling back' and t...
 - isSuppressed now reads  on the motion link, which couples two joints' motion. Drive one member (joint_drive) and read the partner back to see what changed.
 - isSuppressed now reads  on the assembly constraint - the flag is what this call confirmed; what suppression does to its geometric relationships is not measured here.
 - isSuppressed now reads  on the rigid group; it stays in the timeline until action='delete'. Re-read positions with assembly_get to see the effect.
 - isSuppressed cannot be read on  '' after setting it to , so the change is UNCONFIRMED. Re-read the relation with assembly_get(include=['relations']).
 - The  is no longer listed (re-read to confirm); 'remaining' counts the readable s left. Undo in Fusion if unintended - the API cannot restore it. Re-create one with .
+- The members of rigid group '' do not read in one placement of component '', so a requested occurrence has no one context to be compared in. Nothing was changed.
+- Occurrence '' does not read as placed directly in component '', which owns rigid group ''. Pass occurrences of that component, or action='delete' and re-create the group with assembly_rigid_group. ...
+- The timeline marker is at  of ; set_occurrences starts with it at the end. Call design_edit_timeline and retry. Nothing was changed.
+- Rigid group '' reads isSuppressed=; set_occurrences edits an unsuppressed group (action='unsuppress' first). Nothing was changed.
+- setOccurrences returned true on rigid group '', but .  at that marker; re-read them with assembly_get(include=['relations']) once it is back.
+- setOccurrences returned true on rigid group '' but its members could not be read back, so the edit is UNCONFIRMED. Re-read it with assembly_get(include=['relations']).
+- Rigid group '' now holds  with the marker back at , but it reads isSuppressed= and health . Inspect it with assembly_get(include=['relations']).
 - isReversed cannot be read on motion link '' after setting it to , so the flip is UNCONFIRMED. Re-read the link with assembly_get(include=['relations']).
 - Motion link '' does not report both coupled motions (motionOne/motionTwo), so its values cannot be re-set without guessing which degrees of freedom it links.
 - setMotionData reported success on '' but its valueOne/valueTwo parameters cannot be read back, so nothing confirms the new ratio.
@@ -633,9 +661,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - toolPreset now reads '' on '' - the preset this operation runs. cam_get(include=['tool'], operation='', preset='') reads its cutting expressions. The toolpath is now OUT OF DATE - regenerate it wit...
 - operationState did not answer after the edit; re-read with cam_get(include=['operations']) in the Manufacture workspace.
 - Operation '{operation}' does not accept a write to: {names} (isEditable reads False on each{after}). {applied}  marks each refusing row editable false; set a row it does not mark.
-- This call WROTE {n} parameter(s) on the operation and then restored each one - every restored expression reads back what it held. No other state was read, so re-read the operation with cam_get(incl...
-- This call WROTE {n} parameter(s) on the operation and restored {k} of {n}; {bad} did NOT come back: {rows}. The operation is left holding those values - set each one back by hand.
-- Restored the expression of {k} of {n} parameter(s); {v} came back by VALUE only, the expression now a literal: {rows}. {failed}Operation.hasError reads {flag}.
+- This call WROTE {n} parameter(s) on the operation and then restored each one - every restored expression reads back what it held: {rows}. No other state was read, so re-read the operation with cam_...
+- Restored the expression of {k} of {n} parameter(s); {v} came back by VALUE only, the expression now a literal: {rows}. {failed}Operation.hasError reads {flag}.{reread}
 - A cutting-TOOL dimension is edited on the document-library entry this operation runs - cam_edit_tools(action='edit', scope='document') - which it reads at once, leaving the toolpath out of date.
 - A row another parameter in the SAME call unlocks is written after it - deburr's numberOfStepovers reads editable once doMultiplePasses is true.
 - ; hasToolpath read True before the set and False after - the suppression DISCARDED the toolpath, and the operation carries none until it is regenerated. Restore it with suppressed=false, then regen...
@@ -1376,7 +1403,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - after the set - the assignment did not verifiably take.
 - No theme cell for configuration '
 - after the set - the theme link did not verifiably take.
-- Material column added for this body, each listed configuration linked to its own theme row; the names above are read back off the table cells. A body material read right after design_configure(acti...
+- Material column added for this body, each listed configuration linked to its own theme row; the names above are read back off the table cells. Read design_get(include=['configurations']) for the co...
 - Provide 'body' - the body whose physical material varies per configuration.
 - Provide 'materials' - {configuration_name: material_name} for at least one configuration.
 - Material map references unknown configurations:
@@ -1655,7 +1682,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The active design is not a Configured Design (it has no configuration table) - e.g. a design with Variant A/Variant B style options.
 - include=['attributes'] needs 'attribute_group' - the group to read (the same group design_edit_timeline(action='set_attribute') wrote with). Leave 'attribute_key' empty to get every key in that group.
 - Read at the current marker without rolling. Null is unknown unless applicable=false; unavailable gives getter failures. Through-all extent_side_count is its native one/two-side flag; extrude direct...
-- Loft sections are in order; null fields are unreadable. Use profile_handle with model_edit_loft; model_inspect reads material.
+- Loft sections are in order; null fields are unreadable. Use profile_handle with model_edit_loft; model_inspect include=['mass'] reads mass, volume and density, not the assigned material's name.
 - tapped=false or thread_present=false means absent; applicable=false means inapplicable. Other null fields are unknown. Measure tapped bore geometry with find_geometry/model_inspect; full-length thr...
 - adsk::fusion::ExtrudeFeature
 - adsk::fusion::SweepFeature
@@ -2004,10 +2031,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The active document has never been saved (no cloud file yet). Use doc_save_as to give it a name and folder first.
 - Fusion declined to save '
 - Document had no unsaved changes - nothing to version.
-- THIS SAVE MOVED THE DOCUMENT TO A NEW LINEAGE URN. Address the file by lineage_changed.to from now on - lineage_changed.from opens the file this one forked from, and its version history does not co...
+- THIS SAVE MOVED THE DOCUMENT TO A NEW LINEAGE URN. Address the file by lineage_changed.to from now on. The two version histories are separate; an advance cannot be inferred across them. Read data_g...
 
 ### `doc_save_as`
-- The saved document becomes the active document. Its 'document_id' is the lineage URN - the stable identity to address it by (doc_open/doc_activate/data_delete_file); a NAME can be shared by several...
+- The saved document becomes active. 'document_id' is its lineage URN; use it with doc_open/doc_activate/data_delete_file instead of a shared name. 'urn_wait_seconds' records the wait for that URN. A...
 - NAME CENSUS INCOMPLETE - allow_duplicate_name authorized the save despite an incomplete pre-save collision check.
 - Provide 'name' for the saved document.
 - Provide 'project' (name) or 'project_id' for the destination.
@@ -2034,6 +2061,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ), and the destination name census was incomplete, so whether a file landed is unconfirmed:
 - ); this saveAs added another one (a new lineage - Fusion allows this). To add a version to one of them instead, open that URN (doc_open) and use doc_save. Address files by URN, not name, from here.
 - Could not prepare destination path '
+- The source file's name or location changed; see source_file.before/after.
+- The source file's name and location read unchanged at this read.
+- Source name/location is unverified; read data_get(file='
 - Destination folder path not found: '' (missing segment ''). Folders at project root: . Pass create_path=true, or use data_get(include=['folders']) to see the structure.
 - folder '' did not resolve on the first read though it was present in the project's folder list, then resolved on a retry - cloud folder listings can lag right after a save/outage (eventual-consiste...
 - A file named '' already exists in '' (URN ). doc_save_as would FORK a SECOND file with the same name (a new lineage) - refused by default. To add a version to the EXISTING file, open it by that URN...
@@ -3270,7 +3300,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - profile_index '' is not an int, list, 'all', or '0,1,2'. To target a specific region, pass a profile handle from sketch_get instead.
 - profile_index list holds the profile handle : a list takes integer indices. Pass one handle alone, or the regions' indices from sketch_get.
 - Extrude built '' but its  reads back  , not the requested . '' REMAINS in the timeline - inspect it with design_get and remove it with design_delete_feature.
-- extent=through_all follows the sketch-plane normal. If an on-face sketch points AWAY from the material, try a  'distance' for the other side.
+- extent=through_all follows the sketch-plane normal. If an on-face sketch points AWAY from the material, try a  'distance' for the other side. If this is a placed component, try extent='distance' wi...
 - The extrude reached no body the way it went, and a sketch ON a body's face points its normal AWAY from the material. Pass a  'distance' to go the other way, or check the profile overlaps the body a...
 - symmetric=true is not supported with extent= and to_object. Use symmetric=false for a one-sided to-face extrude, or omit to_object and use extent='distance' with a non-zero distance for symmetry.
 - profile_index mixes the sketch text '' with other regions. A sketch text extrudes on its own - pass just '', and a separate call for the closed regions.
@@ -4100,7 +4130,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' remains, but its angle did not read back as
 - deg. Inspect or remove it with design_delete_feature.
 - ' remains, but changed body topology was not verified. Inspect it before retrying.
-- Fold created. Inspect the stationary side with view_screenshot; sheet_create_flat_pattern creates a native flat whose development remains unverified.
+- Fold created. An interior bend line can extend across the sheet beyond its endpoints. Inspect the stationary side with view_screenshot; sheet_create_flat_pattern creates a native flat whose develop...
 - bend_line was not accepted; choose a line across the sheet face.
 - Fold failed for bend_line=
 

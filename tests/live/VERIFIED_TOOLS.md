@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source f83a236216ddf601040f103dd6828a043003a335f70e9c7fe54c29bf9742cc5f | Fusion 2706.0.116 | verified 2026-10-06
-Loaded: implementation 369a4e52952cf549a7666c7fb204bc01ff3c9ad30a699b7f0c3e564821be1cff | schema 0c990d1b7597f2bccae70fc809155ab76408722cebef1fbbecd957ed917ebe3a | load cf93fd3942274fd1bf2eba877ecc893c | session 8c7e0f3fcdec4e4e8ed4c5649518e53e
+Stamp: source 098aff5e3edc63c5a2587e1ae614afbb7ecadc608bbdb54e9fb53f7e0422f85a | Fusion 2706.0.116 | verified 2026-10-06
+Loaded: implementation b7d7de56fb127bf23d2aedb753138b9e226a4a3979bbc84e78010334cf8bd7f8 | schema cea3579ecd3ee5367c680ab9c9a13f0ce7dcabb7d2ddfbc85c1ac0e4f805546f | load f9370af949de4931830e77a6156febd7 | session 365c6763290b493d94d9f99eb053a8c0
 
 209 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending
 
@@ -102,7 +102,7 @@ Loaded: implementation 369a4e52952cf549a7666c7fb204bc01ff3c9ad30a699b7f0c3e56482
 | assembly_capture_position | covered | status, discard the pending pose, re-arm and capture |
 | assembly_constrain | covered | flush-constrain a scratch cameo pair through the single-pair shorthand; then the SET form - one constraint feature carrying two relationship rows of different inferred types, a face-to-face mate at a 2 mm offset with the normals flipped plus a concentric one on the same two discs, which is how Fusion's own Constrain dialog locates a part. The count read off the CREATED constraint is what says both rows live in the one feature - the tool refuses a constraint holding fewer than submitted |
 | assembly_edit_contacts | covered | build a contact set from two story parts, meet the single-member refusal, re-member it, rename it reading the landed name back, suppress round-trip, switch contact analysis on and back off, then delete it |
-| assembly_edit_relations | covered | suppress/unsuppress a scratch rigid group, re-value the bench link with was_reversed disclosed, and meet the measured set_occurrences refusal in the words that make it a fact - the build it was measured on and the platform sentence it would raise - with the group's members re-read unchanged afterwards |
+| assembly_edit_relations | covered | suppress/unsuppress a rigid group, re-value a motion link, refuse one-member replacement, then replace two members with independent membership, health and restored-marker reads |
 | assembly_get | covered | read the joint wiring, driven angles, and the StockCenter anchor back |
 | assembly_ground | covered | ground the vise base the jaw slides on, and the bench base every station's motion is read against |
 | assembly_inspect_interference | covered | check interference at rest and driven |

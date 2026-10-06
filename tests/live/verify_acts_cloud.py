@@ -4733,7 +4733,76 @@ def _lineage_open_rows():
         change = p.get("lineage_changed") or {}
         return _measured("the in-place save moved the lineage", change,
                          p.get("saved") is True and change.get("from") == _RECALL.get("lin_first")
-                         and bool(change.get("to")) and change.get("to") != change.get("from"))
+                         and bool(change.get("to")) and change.get("to") != change.get("from")
+                         and p.get("version_confirmed") is False and p.get("cloud_tip_advanced") is False
+                         and "advance cannot be inferred across them" in p.get("note", "")
+                         and "configuration backing file" in p.get("note", ""))
+
+    def source_state(p):
+        file, location = p.get("file") or {}, p.get("location") or {}
+        project, folder = location.get("project") or {}, location.get("parent_folder") or {}
+        return {"id": file.get("id"), "name": file.get("name"),
+                "project_id": project.get("id"), "project": project.get("name"),
+                "folder": folder.get("name")}
+
+    def source_args(key):
+        def args(c):
+            urn = _ctx_get(c, key, "the configured source")
+            missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
+                       "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+            for i in range(min(_SETTLE_POLLS, 16)):
+                failed, last = facade("call")("data_get", {"file": urn})
+                if failed:
+                    _measured("only this source's pending resolution is retried", last, last == missing)
+                else:
+                    _measured("the source read resolves the exact retained lineage", last,
+                              (last.get("file") or {}).get("id") == urn)
+                    if all(isinstance(v, str) and v for v in source_state(last).values()):
+                        return {"file": urn}
+                if i + 1 < min(_SETTLE_POLLS, 16):
+                    time.sleep(_SETTLE_GAP_S)
+            raise AssertionError(f"Configured source {urn!r} did not read within the bound: {last!r}")
+        return args
+
+    def prior_backing(p):
+        state = source_state(p)
+        return _measured("independent pre-conversion lineage is now a backing file", state,
+                         state["id"] == _RECALL.get("lin_first")
+                         and state["name"] == "Configuration 1"
+                         and state["project"] == "System Project - CONFIG"
+                         and all(isinstance(v, str) and v for v in state.values()))
+
+    def source_before(p):
+        state = source_state(p)
+        valid = (state["id"] == _RECALL.get("lin_inplace")
+                 and all(isinstance(v, str) and v for v in state.values())
+                 and state["name"] == first and state["project"] == PROJECT)
+        return _measured("configured source before Save As", state, valid)
+
+    def saved_copy(p):
+        source = p.get("source_file") or {}
+        before, after = source.get("before") or {}, source.get("after") or {}
+        baseline = _RECALL.get("lin_source_before")
+        valid = (baseline is not None and all(before.get(k) == v for k, v in baseline.items())
+                 and source.get("changed") is True and after.get("id") == baseline["id"]
+                 and after.get("name") == "Configuration 1"
+                 and after.get("project") == "System Project - CONFIG"
+                 and "does not confirm publication" in p.get("note", "")
+                 and "the same URN again" in p.get("note", "")
+                 and p.get("document_id") not in (_RECALL.get("lin_first"), _RECALL.get("lin_inplace")))
+        _measured("Save As discloses relocated source and publication limitation", source, valid)
+        _RECALL["lin_source_claim"] = source
+        return _saved_as(second, FOLDER)(p)
+
+    def source_after(p):
+        now = source_state(p)
+        claimed = (_RECALL.get("lin_source_claim") or {}).get("after") or {}
+        before = _RECALL.get("lin_source_before") or {}
+        return _measured("independent read confirms source relocation", now,
+                         all(isinstance(v, str) and v and claimed.get(k) == v for k, v in now.items())
+                         and now["id"] == before.get("id")
+                         and now["name"] != before.get("name")
+                         and now["project_id"] != before.get("project_id"))
 
     def reopened(p):
         active = p.get("active") or {}
@@ -4791,10 +4860,14 @@ def _lineage_open_rows():
          lambda p: p.get("parameter") == "ProbeW" and p.get("set") == 1, None),
         ("doc_save", write({"description": "lineage replay: in-place save after conversion"}), moved,
          ("lin_inplace", _recall("lin_inplace", lambda p: p["lineage_changed"]["to"]))),
+        ("data_get", source_args("lin_first"), prior_backing, None),
+        ("data_get", source_args("lin_inplace"), source_before,
+         ("lin_source_before", _recall("lin_source_before", source_state))),
         ("doc_save_as", write({"name": second, "project": PROJECT, "folder": FOLDER, "create_path": False}),
-         lambda p: _saved_as(second, FOLDER)(p) and p.get("document_id") not in (
-             _RECALL.get("lin_first"), _RECALL.get("lin_inplace")),
+         saved_copy,
          ("lin_saveas", _recall("lin_saveas", lambda p: p["document_id"]))),
+        ("data_get", lambda c: {"file": _ctx_get(c, "lin_inplace", "in-place lineage")},
+         source_after, None),
         ("doc_get", {}, published, None),
         ("doc_activate", lambda c: {"name": home(c)}, _activated(), None),
         ("doc_close", lambda c: {"name": _ctx_get(c, "lin_owned", "the coupon"), "save_changes": False,

@@ -711,7 +711,7 @@ STORY = {
                            "off the feature's own patternElements, then along TWO connected edge "
                            "handles - a list is used EXACTLY, with no chaining, and the label says "
                            "which of the two path rules ran"),
-    "assembly_edit_relations": ("suppress/unsuppress a scratch rigid group, re-value the bench link with was_reversed disclosed, and meet the measured set_occurrences refusal in the words that make it a fact - the build it was measured on and the platform sentence it would raise - with the group's members re-read unchanged afterwards"),
+    "assembly_edit_relations": ("suppress/unsuppress a rigid group, re-value a motion link, refuse one-member replacement, then replace two members with independent membership, health and restored-marker reads"),
     "assembly_edit_contacts": ("build a contact set from two story parts, meet the single-member refusal, re-member it, rename it reading the landed name back, suppress round-trip, switch contact analysis on and back off, then delete it"),
     "model_hole": ("drill a cameo mounting hole, then the three additive placements - centred on "
                    "its rim, on an edge at middle and at start, and by plane offsets; a circular "

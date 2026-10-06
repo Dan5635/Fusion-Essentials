@@ -67,10 +67,10 @@ def handler(stationary_face="", bend_line="", angle_deg=90.0, position="center",
         return error(f"Fold '{feature.name}' remains, but changed body topology was not verified. Inspect it before retrying.")
     return ok({"created": True, "feature": feature.name, "body": body.name,
                "angle_deg": math.degrees(angle), "faces_before": before_faces, "faces_after": after_faces,
-               "note": "Fold created. Inspect the stationary side with view_screenshot; sheet_create_flat_pattern creates a native flat whose development remains unverified."})
+               "note": "Fold created. An interior bend line can extend across the sheet beyond its endpoints. Inspect the stationary side with view_screenshot; sheet_create_flat_pattern creates a native flat whose development remains unverified."})
 
 
-TOOL_DESCRIPTION = "Fold a sheet body along one sketch line. The API is preview; inspect the stationary side after creation."
+TOOL_DESCRIPTION = "Fold at a sketch line; an interior line can extend across the sheet. Preview API; inspect the stationary side."
 tool = (Tool.create_simple(name="sheet_create_fold", description=TOOL_DESCRIPTION)
         .add_input_property(*_FACE.as_property()).add_input_property(*_LINE.as_property())
         .add_input_property("angle_deg", {"type": "number"})

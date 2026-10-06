@@ -9,7 +9,8 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import CM_TO_UNIT, apply_rename, ok, error, safe, read_flag
+from ._common import (CM_TO_UNIT, apply_rename, named_with_remainder, ok, error, safe, read_flag,
+                      short_ref)
 from ._cam_common import (NONFINITE_POST, PARAM_READ, get_cam, enumeration_remedy,
                           expression_error, matched_quoting, op_primary_state, op_settled,
                           op_state_facts, operation_name_clash, owning_setup, parse_parameters,
@@ -389,20 +390,41 @@ _LOCKED_REFUSAL = (
 # put back, and no read taken here settles that.
 _WROTE_THEN_RESTORED = (
     "This call WROTE {n} parameter(s) on the operation and then restored each one - every restored "
-    "expression reads back what it held. No other state was read, so re-read the operation with "
+    "expression reads back what it held: {rows}. No other state was read, so re-read the operation with "
     "cam_get(include=['operations']) before relying on it.")
 
 _RESTORE_FAILED = (
-    "This call WROTE {n} parameter(s) on the operation and restored {k} of {n}; {bad} did NOT "
-    "come back: {rows}. The operation is left holding those values - set each one back by hand.")
+    "This call WROTE {n} parameter(s) on the operation and restored {k} of {n}; the {unconfirmed}"
+    "{reread}")
+
+# True of a row that reads something else and of one that did not read: each row states which.
+_NOT_CONFIRMED = ("restore of {bad} is NOT confirmed: {rows}. Read each with " + PARAM_READ
+                  + " before relying on it.")
 
 
 # A row put back through its value object: the value reads as it did, the expression does not.
 _VALUE_RESTORED = (
     "Restored the expression of {k} of {n} parameter(s); {v} came back by VALUE only, the "
-    "expression now a literal: {rows}. {failed}Operation.hasError reads {flag}.")
+    "expression now a literal: {rows}. {failed}Operation.hasError reads {flag}.{reread}")
 
-_NOT_BACK = "{bad} did NOT come back and the operation is left holding them: {rows}. "
+
+
+def _unconfirmed(failed) -> str:
+    """The sentence tail naming each row whose restore the re-read did not confirm."""
+    return _NOT_CONFIRMED.format(bad=len(failed), rows="; ".join(failed))
+
+# The rows a refusal names as restored: only those whose restored expression was re-read and matched.
+_REREAD_NAMES = 6
+
+
+def _reread_rows(restored) -> str:
+    """The restored rows, each with its re-read expression, capped with the rest counted."""
+    return named_with_remainder(restored, cap=_REREAD_NAMES)
+
+
+def _reread_clause(restored) -> str:
+    """The trailing sentence naming the rows that did come back beside ones that did not."""
+    return f" Restored and re-read: {_reread_rows(restored)}." if restored else ""
 
 # The typed values a prior read is written back as - never an entity list, never an unread value.
 _SCALARS = (str, bool, int, float)
@@ -428,17 +450,18 @@ def _restore_value(p, rec, prior, refusal):
                   + (f"; its error reads {err!r}" if err else ""))
 
 
-def _value_restored_clause(n, valued, failed, op) -> str:
+def _value_restored_clause(restored, valued, failed, op) -> str:
     """The restore sentence when a row came back by value only, with the operation's error flag."""
-    not_back = _NOT_BACK.format(bad=len(failed), rows="; ".join(failed)) if failed else ""
-    return _VALUE_RESTORED.format(k=n - len(valued) - len(failed), n=n, v=len(valued),
-                                  rows="; ".join(valued), failed=not_back,
-                                  flag=_flag_word(read_flag(lambda: op.hasError)))
+    not_back = f"The {_unconfirmed(failed)} " if failed else ""
+    return _VALUE_RESTORED.format(k=len(restored), n=len(restored) + len(valued) + len(failed),
+                                  v=len(valued), rows="; ".join(valued), failed=not_back,
+                                  flag=_flag_word(read_flag(lambda: op.hasError)),
+                                  reread=_reread_clause(restored))
 
 
 def _restore(changed, resolved, priors):
-    """(value-only rows, rows that did not come back) after restoring and re-reading every row."""
-    valued, failed = [], []
+    """(re-read rows, value-only rows, rows that did not come back) after restoring every row."""
+    restored, valued, failed = [], [], []
     for rec in changed:
         p = resolved[rec["name"]]
         try:
@@ -453,9 +476,14 @@ def _restore(changed, resolved, priors):
                           f"{back!r}")
             continue
         back = safe(lambda p=p: p.expression)
-        if back != rec["before"]:
+        if back is None:
+            failed.append(f"'{rec['name']}' did not read back after the restore, held "
+                          f"{rec['before']!r}")
+        elif back != rec["before"]:
             failed.append(f"'{rec['name']}' reads {back!r}, held {rec['before']!r}")
-    return valued, failed
+        else:
+            restored.append(f"'{rec['name']}' reads {short_ref(back)!r}")
+    return restored, valued, failed
 
 
 def _restored_clause(changed, resolved, priors, op) -> str:
@@ -463,14 +491,15 @@ def _restored_clause(changed, resolved, priors, op) -> str:
     restore and its re-read, worded on whether every expression actually came back."""
     if not changed:
         return "Nothing was applied."
-    valued, failed = _restore(changed, resolved, priors)
+    restored, valued, failed = _restore(changed, resolved, priors)
     if valued:
         return (f"This call WROTE {len(changed)} parameter(s) on the operation. "
-                + _value_restored_clause(len(changed), valued, failed, op))
+                + _value_restored_clause(restored, valued, failed, op))
     if failed:
-        return _RESTORE_FAILED.format(n=len(changed), k=len(changed) - len(failed),
-                                      bad=len(failed), rows="; ".join(failed))
-    return _WROTE_THEN_RESTORED.format(n=len(changed))
+        return _RESTORE_FAILED.format(n=len(changed), k=len(restored),
+                                      unconfirmed=_unconfirmed(failed),
+                                      reread=_reread_clause(restored))
+    return _WROTE_THEN_RESTORED.format(n=len(changed), rows=_reread_rows(restored))
 
 
 # The operation's tool IS the document-library entry: a flute count edited there read back on the
@@ -717,7 +746,7 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
         # Read once every write has landed and before the restore: a mode write can disable a row.
         disabled = {n for n, _e, _why in eval_failures
                     if read_flag(lambda n=n: resolved[n].isEnabled) is False}
-        valued, restore_failed = _restore(changed, resolved, priors)
+        restored, valued, restore_failed = _restore(changed, resolved, priors)
         parts = []
         if eval_failures:
             detail = "; ".join(f"'{n}' = '{e}' ({why})" + (_DISABLED_CLAUSE if n in disabled else "")
@@ -742,14 +771,13 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
         else:
             remedy = "(Re-read the operation with cam_get(include=['operations']).)"
         if valued:
-            rolled = _value_restored_clause(len(changed), valued, restore_failed, op)
+            rolled = _value_restored_clause(restored, valued, restore_failed, op)
         elif restore_failed:
-            rolled = (f"Restored {len(changed) - len(restore_failed)} of {len(changed)} "
-                      f"parameter(s); {len(restore_failed)} did NOT come back and the operation is "
-                      f"left holding them: {'; '.join(restore_failed)}.")
+            rolled = (f"Restored {len(restored)} of {len(changed)} parameter(s); the "
+                      + _unconfirmed(restore_failed) + _reread_clause(restored))
         else:
             rolled = (f"Rolled back all {len(changed)} parameter(s), each restored expression "
-                      "re-read.")
+                      f"re-read: {_reread_rows(restored)}.")
         return error(f"Operation '{operation}': {'; '.join(parts)}. {rolled} {remedy}"
                      + _applied_clause(pre_landed))
 

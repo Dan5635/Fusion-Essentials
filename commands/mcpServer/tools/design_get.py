@@ -1116,7 +1116,8 @@ def _slice_definition(feature, units):
                    "symmetric_full_length=false means distance is per side."
                    if kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature") else
                    "Loft sections are in order; null fields are unreadable. Use profile_handle "
-                   "with model_edit_loft; model_inspect reads material."
+                   "with model_edit_loft; model_inspect include=['mass'] reads mass, volume and "
+                   "density, not the assigned material's name."
                    if kind == "adsk::fusion::LoftFeature" else
                    "tapped=false or thread_present=false means absent; applicable=false means "
                    "inapplicable. Other null fields are unknown. Measure tapped bore geometry "

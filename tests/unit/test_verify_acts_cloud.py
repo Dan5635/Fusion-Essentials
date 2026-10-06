@@ -634,7 +634,8 @@ def test_reopened_lineage_table_accepts_either_active_row_but_requires_its_ident
 def test_lineage_save_as_is_published_before_close_and_reopen(monkeypatch, fault):
     rows = acts._lineage_open_rows()
     publication = next(i for i, row in enumerate(rows) if getattr(row[2], "__name__", "") == "published")
-    assert rows[publication - 1][0] == "doc_save_as"
+    assert [row[0] for row in rows[publication - 2:publication]] == ["doc_save_as", "data_get"]
+    assert rows[publication - 1][1]({"lin_inplace": "urn:source"}) == {"file": "urn:source"}
     assert [row[0] for row in rows[publication + 1:publication + 4]] == ["doc_activate", "doc_close", "doc_open"]
     name = "SweepLineageSaveAs." + acts._STAMP
     complete = {"file": {"id": "urn:owned", "name": name},
@@ -664,3 +665,37 @@ def test_lineage_save_as_is_published_before_close_and_reopen(monkeypatch, fault
             rows[publication][2](start)
     assert len(calls) == (1 if fault == "other_error" else 3 if fault == "timeout" else 2)
     assert all(call == ("data_get", {"file": "urn:owned"}) for call in calls)
+
+
+@pytest.mark.parametrize("fault", [None, "permission", "wrong_record", "timeout"])
+def test_configured_source_wait_retries_only_the_exact_pending_lineage(monkeypatch, fault):
+    rows = acts._lineage_open_rows()
+    step = next(row for row in rows if getattr(row[2], "__name__", "") == "prior_backing")
+    urn = "urn:source"
+    missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
+               "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+    record = {"file": {"id": urn, "name": "Configuration 1"},
+              "location": {"project": {"id": "config", "name": "System Project - CONFIG"},
+                           "parent_folder": {"name": "Backing"}},
+              "state": {"is_complete": False}}
+    replies = [(True, missing), (False, record)]
+    if fault == "permission":
+        replies[0] = (True, "permission denied")
+    elif fault == "wrong_record":
+        record["file"]["id"] = "urn:other"
+    elif fault == "timeout":
+        replies[:] = [(True, missing)] * 3
+    calls = []
+    def call(tool, args):
+        calls.append((tool, args))
+        return replies.pop(0)
+    monkeypatch.setattr(acts, "facade", lambda key: call)
+    monkeypatch.setattr(acts.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(acts, "_SETTLE_POLLS", 3)
+    if fault is None:
+        assert step[1]({"lin_first": urn}) == {"file": urn}
+    else:
+        with pytest.raises(AssertionError):
+            step[1]({"lin_first": urn})
+    assert len(calls) == (1 if fault == "permission" else 3 if fault == "timeout" else 2)
+    assert all(call == ("data_get", {"file": urn}) for call in calls)

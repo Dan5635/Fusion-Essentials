@@ -243,6 +243,19 @@ def _slice_library_types(cam):
     return _unwrap(cam_edit_tools._do_list_types())
 
 
+def _bounded(payload, max_results, *keys):
+    """payload with its first present `keys` list cut to 'max_results' (unset keeps every row)."""
+    key = next((k for k in keys if isinstance(payload.get(k), list)), None)
+    if key is not None:
+        rows = payload[key]
+        cap = clamp_rows(max_results, len(rows), len(rows))
+        payload[key] = rows[:cap]
+        payload["returned"] = len(payload[key])
+        # A slice's own truncated (its walk hit a bound) stays true beside this cap.
+        payload["truncated"] = bool(payload.get("truncated")) or cap < len(rows)
+    return payload
+
+
 def _slice_machines(cam, vendor, machine_type, max_results):
     """The machine catalog cam_edit_setup's 'machine' input can resolve from (Local + Fusion360
     locations), each row name/vendor/model/location/kind/simulation_ready. 'vendor' and
@@ -826,14 +839,17 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
         out["tools"], e = _slice_tools(cam)
         if e:
             return e
+        _bounded(out["tools"], max_results, "tools")
     if "library" in inc:                        # the tool-library catalog (tools you can ADD)
         out["library"], e = _slice_library(cam, scope, library, tool_type)
         if e:
             return e
+        _bounded(out["library"], max_results, "tools", "libraries")
     if "library_types" in inc:                  # the from_type vocabulary add_tools clones from
         out["library_types"], e = _slice_library_types(cam)
         if e:
             return e
+        _bounded(out["library_types"], max_results, "types")
     if "machines" in inc:                       # the machine catalog (names cam_edit_setup accepts)
         out["machines"], e = _slice_machines(cam, vendor, machine_type, max_results)
         if e:

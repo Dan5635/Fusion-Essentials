@@ -44,6 +44,17 @@ def test_landed_angle_must_match_requested(fold):
     assert "angle" in str(result)
 
 
+def test_success_discloses_that_interior_endpoints_do_not_bound_the_fold(fold):
+    mod, body, factory, feature = fold
+    def add(inp):
+        body.faces.count = 14
+        return feature
+    factory.add.side_effect = add
+    result = mod.handler(stationary_face="face", bend_line="Bend/line:4")
+    assert result["isError"] is False
+    assert "beyond its endpoints" in str(result)
+
+
 @pytest.mark.parametrize("angle", [0, 180, -180, float("nan"), float("inf"), True])
 def test_invalid_angle_does_not_mutate(fold, angle):
     mod, body, factory, feature = fold

@@ -496,7 +496,9 @@ class TestStuckParameter:
         assert "cam_get(include=['operations'])" in res["message"]
         # the other row is rolled back; the unreadable one is not claimed restored
         assert "Restored 1 of 2 parameter(s)" in res["message"]
-        assert "'tolerance' reads None, held '0.01'" in res["message"]
+        assert "'tolerance' did not read back after the restore, held '0.01'" in res["message"]
+        assert res["message"].count("'tolerance'") == 2     # the request and the unread restore
+        assert "Restored and re-read: 'tool_stepover' reads '2.'." in res["message"]
         assert op.parameters.itemByName("tool_stepover").expression == "2."
 
     def test_two_unreadable_reads_are_UNCONFIRMED_never_a_nothing_moved_verdict(self, monkeypatch):
@@ -508,6 +510,14 @@ class TestStuckParameter:
         assert res["isError"] is True
         assert "UNCONFIRMED" in res["message"]
         assert "did not take" not in res["message"]
+        # None == None is not a restore that was re-read
+        assert "Rolled back all" not in res["message"]
+        assert ("Restored 0 of 1 parameter(s); the restore of 1 is NOT confirmed: 'tolerance' did "
+                "not read back after the restore, held None. Read each with "
+                "cam_get(include=['parameters'], operation=<name>) before relying on it."
+                ) in res["message"]
+        # an unread row supports no claim about what the operation holds
+        assert "left holding" not in res["message"] and "come back" not in res["message"]
 
     def test_a_request_the_parameter_already_holds_is_an_ok_no_op(self, monkeypatch):
         # Nothing moved, but nothing was asked to move: an idempotent set is a success, disclosed
@@ -716,9 +726,10 @@ class TestNotEditable:
         res = ce.handler(operation="Adaptive1",
                          parameters={"tool_feedCutting": "3000", "tool_diameter": "12"})
         assert res["isError"] is True
-        assert "tool_diameter" in res["message"] and "tool_feedCutting" not in res["message"]
+        assert "does not accept a write to: tool_diameter (" in res["message"]
         assert "WROTE 1 parameter(s) on the operation and then restored each one" in res["message"]
-        assert "every restored expression reads back what it held" in res["message"]
+        assert ("every restored expression reads back what it held: 'tool_feedCutting' reads "
+                "'5210.23'. No other") in res["message"]
         assert "No other state was read" in res["message"]        # no claim it is as it was found
         assert op.parameters.itemByName("tool_feedCutting").expression == "5210.23"
         assert op.parameters.itemByName("tool_diameter").expression == "10."
@@ -2080,9 +2091,9 @@ class TestASwitchInTheSameCall:
         res = ce.handler(operation="Adaptive1",
                          parameters={"tool_feedCutting": "3000", "numberOfStepovers": "3"})
         assert res["isError"] is True
-        assert "restored 0 of 1; 1 did NOT come back" in res["message"]
-        assert "'tool_feedCutting' reads '3000', held '5210.23'" in res["message"]
-        assert "set each one back by hand" in res["message"]
+        assert ("restored 0 of 1; the restore of 1 is NOT confirmed: 'tool_feedCutting' reads "
+                "'3000', held '5210.23'. Read each with cam_get(include=['parameters'], "
+                "operation=<name>) before relying on it.") in res["message"]
         # and NOT the clean-restore sentence, which would contradict the line beside it
         assert "every restored expression reads back what it held" not in res["message"]
 
@@ -2094,9 +2105,10 @@ class TestASwitchInTheSameCall:
         res = ce.handler(operation="Adaptive1",
                          parameters={"toolAxisMode": "'lead_lean'", "tolerance": "0.02 mm"})
         assert res["isError"] is True
-        assert "Restored 1 of 2 parameter(s); 1 did NOT come back" in res["message"]
+        assert "Restored 1 of 2 parameter(s); the restore of 1 is NOT confirmed" in res["message"]
         assert ("'toolAxisMode' refused its prior \"'vertical'\" (3 : Invalid enumeration "
                 "value.) and reads \"'lead_lean'\"") in res["message"]
+        assert res["message"].count("Restored and re-read: 'tolerance' reads '0.01mm'.") == 1
         assert "Rolled back all" not in res["message"]
         assert op.parameters.itemByName("tolerance").expression == "0.01mm"
 
@@ -2201,32 +2213,33 @@ class TestRestoreByValue:
                 f"{_DERIVED!r} ({_ENUM}), which was NOT restored. Operation.hasError reads False."
                 ) in res["message"]
         assert "Rolled back all" not in res["message"]
-        assert "did NOT come back" not in res["message"]
+        assert "NOT confirmed" not in res["message"]
 
     def test_both_write_backs_refused_names_both_refusals(self, monkeypatch):
         p, res = self._edit(monkeypatch, value_refusal="3 : value refused")
         assert res["isError"] is True and p.value_writes == ["vertical"]
-        assert ("Restored 0 of 1 parameter(s); 1 did NOT come back and the operation is left "
-                f"holding them: 'toolAxisMode' refused its prior {_DERIVED!r} ({_ENUM}) and reads "
+        assert ("Restored 0 of 1 parameter(s); the restore of 1 is NOT confirmed: 'toolAxisMode' "
+                f"refused its prior {_DERIVED!r} ({_ENUM}) and reads "
                 "\"'lead_lean'\", and value.value refused the prior value 'vertical' "
                 "(3 : value refused).") in res["message"]
 
     def test_a_swallowed_value_write_is_not_counted_as_back(self, monkeypatch):
         _p, res = self._edit(monkeypatch, swallows=True)
-        assert "Restored 0 of 1 parameter(s); 1 did NOT come back" in res["message"]
+        assert "Restored 0 of 1 parameter(s); the restore of 1 is NOT confirmed" in res["message"]
         assert ("value.value took the prior value 'vertical' and reads 'lead_lean'"
                 in res["message"])
 
     def test_an_expression_that_restores_never_writes_the_value(self, monkeypatch):
         p, res = self._edit(monkeypatch, takes_restore=True)
         assert res["isError"] is True and p.value_writes == []
-        assert "Rolled back all 1 parameter(s), each restored expression re-read." in res["message"]
+        assert ("Rolled back all 1 parameter(s), each restored expression re-read: 'toolAxisMode' "
+                f"reads {ce.short_ref(_DERIVED)!r}. (") in res["message"]
         assert p.expression == _DERIVED
 
     def test_an_unread_prior_value_is_never_written(self, monkeypatch):
         p, res = self._edit(monkeypatch, readable=False)
         assert p.value_writes == []
-        assert (f"1 did NOT come back and the operation is left holding them: 'toolAxisMode' "
+        assert (f"the restore of 1 is NOT confirmed: 'toolAxisMode' "
                 f"refused its prior {_DERIVED!r} ({_ENUM}) and reads \"'lead_lean'\"."
                 ) in res["message"]
 
@@ -2247,3 +2260,45 @@ class TestRestoreByValue:
         assert ("This call WROTE 1 parameter(s) on the operation. Restored the expression of 0 of "
                 "1 parameter(s); 1 came back by VALUE only") in res["message"]
         assert "restored each one" not in res["message"]
+
+
+class TestRestoredRowsAreNamed:
+    """A refusal after a multi-row write names each row it restored with the expression re-read."""
+
+    def _locked(self, monkeypatch, written):
+        params = {n: FakeParam(n, "0deg") for n in written}
+        params["tiltToolMode"] = FakeParam("tiltToolMode", "'from_point'", editable=False)
+        _install(monkeypatch, params=params)
+        asked = {n: "10 deg" for n in written}
+        asked["tiltToolMode"] = "'automatic'"
+        return ce.handler(operation="Adaptive1", parameters=asked)["message"]
+
+    def test_the_two_rows_written_around_a_locked_one_are_named_with_their_reading(self,
+                                                                                   monkeypatch):
+        msg = self._locked(monkeypatch, ["leadAngle", "leanAngle"])
+        assert "does not accept a write to: tiltToolMode (" in msg
+        assert ("WROTE 2 parameter(s) on the operation and then restored each one - every restored "
+                "expression reads back what it held: 'leadAngle' reads '0deg', 'leanAngle' reads "
+                "'0deg'. No other state was read") in msg
+
+    @pytest.mark.parametrize("count, remainder", [(6, ""), (7, ", ... (+1 more not listed)")])
+    def test_the_named_rows_stop_at_six_and_the_rest_are_counted(self, monkeypatch, count,
+                                                                 remainder):
+        msg = self._locked(monkeypatch, [f"row{i}" for i in range(count)])
+        assert f"WROTE {count} parameter(s)" in msg
+        assert f"'row5' reads '0deg'{remainder}. No other state was read" in msg
+        assert "'row6'" not in msg
+
+    def test_a_row_that_stuck_is_kept_out_of_the_restored_names(self, monkeypatch):
+        gate = FakeParam("doMultiplePasses", "false")
+        _install(monkeypatch, params={
+            "tool_feedCutting": _StuckAfterFirstWrite("tool_feedCutting", "5210.23"),
+            "tolerance": FakeParam("tolerance", "0.01"),
+            "doMultiplePasses": gate,
+            "numberOfStepovers": GatedParam("numberOfStepovers", "1", gate=gate)})
+        msg = ce.handler(operation="Adaptive1",
+                         parameters={"tool_feedCutting": "3000", "tolerance": "0.02",
+                                     "numberOfStepovers": "3"})["message"]
+        assert ("restored 1 of 2; the restore of 1 is NOT confirmed: 'tool_feedCutting' reads "
+                "'3000', held '5210.23'. Read each with") in msg
+        assert "before relying on it. Restored and re-read: 'tolerance' reads '0.01'." in msg

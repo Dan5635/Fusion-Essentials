@@ -2313,6 +2313,8 @@ class TestJoinLandedANewBody:
         assert res["isError"] is True
         msg = res["message"]
         assert "NEGATIVE" in msg and "sketch-plane normal" in msg
+        assert "try extent='distance' with a length spanning the body" in msg
+        assert "model_inspect(include=['mass']) to confirm removal" in msg
 
     def test_generic_add_failure_keeps_the_plain_hint(self):
         # a non-through_all add() failure is not a direction problem - it keeps the existing hint.

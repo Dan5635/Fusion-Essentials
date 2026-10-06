@@ -120,15 +120,16 @@ class TestSaveDocument:
         assert doc._saves == []
 
     def test_a_forking_save_reports_the_new_lineage_loudly(self, install_app):
-        # A save can move the document onto a NEW lineage URN (the first save after a
-        # configured-design conversion does; the superseded URN keeps opening the pre-conversion file).
-        # The payload must carry the change, not just swap identities silently.
+        # A configured save can move to a new lineage and relocate its source as a backing file.
         doc = _ForkingSave(name="PartA", is_saved=True, is_modified=True,
                            data_file=FakeDataFile("PartA", file_id="urn:old"))
         install_app(doc)
         out = _payload(dm.handler())
         assert out["lineage_changed"] == {"from": "urn:old", "to": "urn:new"}
         assert "NEW LINEAGE" in out["note"] and "lineage_changed.to" in out["note"]
+        assert "an advance cannot be inferred across them" in out["note"]
+        assert "configuration backing file" in out["note"]
+        assert "opens the file this one forked from" not in out["note"]
 
     def test_a_same_lineage_save_reports_no_lineage_change(self, install_app):
         doc = _doc(is_modified=True, urn="urn:same")

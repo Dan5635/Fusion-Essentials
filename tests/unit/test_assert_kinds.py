@@ -26,6 +26,7 @@ from conftest import (
     FakeDataFile,
     FakeDocumentReference,
     FakeFusionDocument,
+    FakeMatrix3D,
     FakeTimeline,
     FakeTimelineObject,
     load_tool,
@@ -1254,6 +1255,43 @@ def _placed(x, y=0.0, z=0.0, rotation=None):
 _GRID = (("quantity_one", "spacing_one", 2, 10.0), ("quantity_two", "spacing_two", 1, 10.0))
 
 
+class _OccurrenceVector:
+    """An element's occurrences as the live vector answers them: iterable, with no count."""
+
+    def __init__(self, occurrences):
+        self._occurrences = list(occurrences)
+
+    def __iter__(self):
+        return iter(self._occurrences)
+
+
+class _OccurrenceElement:
+    """A pattern element carrying occurrences; `touched` records every read of its transform,
+    which answers the zero translation a circular element reads."""
+
+    def __init__(self, occurrences, touched):
+        self.occurrences = _OccurrenceVector(occurrences)
+        self._touched = touched
+
+    @property
+    def transform(self):
+        self._touched.append(self)
+        return _placed(0).transform
+
+
+def _posed(x=0.0, y=0.0, deg=0.0):
+    """One patterned occurrence at (x, y) cm, turned `deg` about Z."""
+    return make_occurrence(path="Seed:1", transform2=FakeMatrix3D(deg=deg, t=(x, y, 0.0)))
+
+
+def _celled(**cells):
+    """One occurrence whose transform2 is the identity with the given row-major cells replaced."""
+    arr = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    for cell, value in cells.items():
+        arr[int(cell[1:])] = value
+    return types.SimpleNamespace(transform2=types.SimpleNamespace(asArray=lambda: arr))
+
+
 class TestPatternElementsPlaced:
     def _wire(self, monkeypatch, tl, **kw):
         p = kernel.PatternElementsPlaced(**kw)
@@ -1369,6 +1407,85 @@ class TestPatternElementsPlaced:
         p = self._wire(monkeypatch, tl)
         out = _payload(kernel.wrap(self._boxed_handler(tl, []), [p])())
         assert out["pattern_elements_confirmed"] is False
+
+    def _occurrence_ring(self, monkeypatch, elements, quantity=None, bodies=(), **payload):
+        """The wrapped reply of a soft bodiless pattern whose elements hold `elements` (a list of
+        occurrence lists), plus the list recording element.transform reads."""
+        tl, touched = FakeTimeline(), []
+        p = self._wire(monkeypatch, tl, severity="soft")
+
+        def handler(**kw):
+            feature = types.SimpleNamespace(
+                patternElements=_coll([_OccurrenceElement(occs, touched) for occs in elements]),
+                bodies=_coll(list(bodies)))
+            tl._items.append(FakeTimelineObject(name="Ring1", entity=feature))
+            return _ok({"patterned": True, "feature": "Ring1", "quantity": quantity, **payload})
+        return _payload(kernel.wrap(handler, [p])()), touched
+
+    def test_an_occurrence_ring_of_distinct_placements_confirms_the_count(self, monkeypatch):
+        ring = [[_posed(4.2, 0)], [_posed(-12.5, -23)], [_posed(-39.6, -14.2)],
+                [_posed(-39.6, 14.2)], [_posed(-12.5, 23)]]
+        out, touched = self._occurrence_ring(monkeypatch, ring, quantity=5)
+        assert out["elements_placed"] == 5 and "pattern_elements_confirmed" not in out
+        assert touched == []                    # the element transform is never the read
+
+    def test_an_occurrence_ring_with_two_copies_at_one_pose_is_not_confirmed(self, monkeypatch):
+        ring = [[_posed(4, 0)], [_posed(0, 4)], [_posed(-4, 0)], [_posed(0, 4)]]
+        out, _touched = self._occurrence_ring(monkeypatch, ring, quantity=4)
+        assert out["pattern_elements_confirmed"] is False
+        assert "elements_placed" not in out and "verified" not in out
+
+    def test_an_on_axis_ring_is_told_apart_by_orientation(self, monkeypatch):
+        ring = [[_posed(deg=d)] for d in (0, 90, 180, 270)]
+        out, _touched = self._occurrence_ring(monkeypatch, ring, quantity=4)
+        assert out["elements_placed"] == 4
+
+    @pytest.mark.parametrize("blind", [
+        [],                                                              # an element holding none
+        [make_occurrence(path="Seed:1", raises_on={"transform2": "3 : no transform"})],
+        [types.SimpleNamespace(transform2=types.SimpleNamespace(asArray=lambda: [0.0] * 12))],
+        [_celled(c3=float("nan"))],
+    ])
+    def test_a_placement_that_does_not_read_is_unknown(self, monkeypatch, blind):
+        out, _touched = self._occurrence_ring(monkeypatch, [[_posed(4, 0)], blind], quantity=2)
+        assert out["pattern_elements_confirmed"] is False and "elements_placed" not in out
+
+    def test_an_element_holding_no_occurrence_is_unknown_not_one_placement(self, monkeypatch):
+        out, _touched = self._occurrence_ring(monkeypatch, [[]])
+        assert out["pattern_elements_confirmed"] is False and "elements_placed" not in out
+
+    def test_fewer_elements_than_the_reported_quantity_is_not_confirmed(self, monkeypatch):
+        ring = [[_posed(4, 0)], [_posed(0, 4)], [_posed(-4, 0)]]
+        out, _touched = self._occurrence_ring(monkeypatch, ring, quantity=4)
+        assert out["pattern_elements_confirmed"] is False and "elements_placed" not in out
+
+    def test_a_reply_with_no_quantity_confirms_the_elements_read(self, monkeypatch):
+        # the path pattern's reply carries quantity null when its own count read fails
+        out, _touched = self._occurrence_ring(monkeypatch, [[_posed(0, 0)], [_posed(3, 0)]])
+        assert out["elements_placed"] == 2
+
+    def test_position_and_orientation_tolerances_include_their_boundary(self, monkeypatch):
+        tol, turn = kernel._PLACE_TOL_CM, kernel._TURN_TOL
+        for pair, placed in (([_celled(), _celled(c3=tol)], None),
+                             ([_celled(), _celled(c3=2 * tol)], 2),
+                             ([_celled(), _celled(c1=turn)], None),
+                             ([_celled(), _celled(c1=2 * turn)], 2)):
+            out, _touched = self._occurrence_ring(monkeypatch, [[o] for o in pair], quantity=2)
+            assert out.get("elements_placed") == placed, pair
+
+    def test_elements_of_several_seeds_differ_when_any_seed_does(self, monkeypatch):
+        ring = [[_posed(0, 0), _posed(5, 0)], [_posed(0, 0), _posed(5, 0, deg=90)]]
+        out, _touched = self._occurrence_ring(monkeypatch, ring, quantity=2)
+        assert out["elements_placed"] == 2
+        uneven = [[_posed(0, 0), _posed(5, 0)], [_posed(9, 0)]]
+        out, _touched = self._occurrence_ring(monkeypatch, uneven, quantity=2)
+        assert out["pattern_elements_confirmed"] is False
+
+    def test_a_body_ring_whose_box_does_not_read_is_never_judged_by_occurrences(self, monkeypatch):
+        blind_body = BRepBody(name="B0", bbox=types.SimpleNamespace(minPoint=None, maxPoint=None))
+        out, _touched = self._occurrence_ring(
+            monkeypatch, [[_posed(4, 0)], [_posed(0, 4)]], quantity=2, bodies=[blind_body])
+        assert out["pattern_elements_confirmed"] is False and "elements_placed" not in out
 
     def test_spacing_keys_the_handler_lacks_are_refused_at_wiring(self):
         p = kernel.PatternElementsPlaced(spacings=_GRID)

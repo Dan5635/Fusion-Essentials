@@ -336,7 +336,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `sheet_convert` | Convert a uniform solid using a design rule or rule='active'. |
 | ✎ | `sheet_create_flange` | Add a native flange to a sheet body: an edge flange along rim edges, or a base flange from a closed profile |
 | ✎ | `sheet_create_flat_pattern` | Create a native flat pattern; inspect sheet_get features before export |
-| ✎ | `sheet_create_fold` | Fold a sheet body along one sketch line |
+| ✎ | `sheet_create_fold` | Fold at a sketch line; an interior line can extend across the sheet |
 | ✎ | `sheet_create_hem` | Hem a sheet body's rim edge: flat, open, rolled, rope, teardrop or double, each with its own dimensions |
 | ✎ | `sheet_create_join_by_bend` | Join two sheet bodies with a bend between two rim edges (the preview API merges them into one body) |
 | ✎ | `sheet_create_refold` | Refold one explicit unfold feature after adding flat-state edits |

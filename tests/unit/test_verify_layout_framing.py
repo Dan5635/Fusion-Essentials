@@ -33,6 +33,21 @@ import verify_acts_mesh  # noqa: E402
 import verify_acts_sheet  # noqa: E402
 
 
+def test_nested_group_ambiguity_lists_both_addresses_in_either_order():
+    rows = verify_acts_motion._nested_relation_rows()
+    matches = [row[2] for row in rows if hasattr(row[2], "fragments")
+               and any("names 2 rigid groups" in f for f in row[2].fragments)]
+    assert len(matches) == 1
+    check = matches[0]
+    prefix = "'Rigid Group 1' names 2 rigid groups - refusing to guess which one. Pass one as listed: "
+    for addresses in ("'NrEye/Rigid Group 1', 'NrRet/Rigid Group 1'.",
+                      "'NrRet/Rigid Group 1', 'NrEye/Rigid Group 1'."):
+        assert check.missing(prefix + addresses) == []
+    assert check.missing(prefix + "'NrRet/Rigid Group 1'.")
+    assert check.missing(prefix + "'NrEye/Rigid Group 1'.")
+    assert check.missing("'NrEye/Rigid Group 1', 'NrRet/Rigid Group 1'.")
+
+
 def test_loft_refusal_fixture_defers_handler_until_script_entry():
     namespace = {}
     exec(verify_acts_model_sweep._loft_refusal_details_script("LoftEdit/Loft1"), namespace)
@@ -880,8 +895,9 @@ def test_placed_extent_refusal_scene_keeps_recorded_pose_and_local_requests_in_f
         return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in selected if tool in wanted]
     assert requests(rows[start:end]) == requests(authored)
     cuts = [args for tool, args in requests(authored) if tool == "model_extrude" and args.get("operation") == "cut"]
-    assert [(r["distance"], r["symmetric"], "target_bodies" in r) for r in cuts] == [
+    assert [(r["distance"], r["symmetric"], "target_bodies" in r) for r in cuts if r["extent"] == "through_all"] == [
         (1, False, True), (-1, False, True), (1, True, True)]
+    assert [r["distance"] for r in cuts if r["extent"] == "distance"] == [10]
     assert all(r["component"] == "PlacedStock:1" for r in cuts)
 
 

@@ -570,6 +570,10 @@ _CENSUS_BODY_CAP = 2000
 _AREA_TOL_CM2 = 1e-6
 _PLACE_TOL_CM = 1e-4
 _ELEMENT_CAP = 400
+# The rotation cells of a row-major 4x4 and the cell difference two orientations may read apart by
+# and still count as one: adjacent copies of a 400-instance ring differ by 1.6e-2.
+_ROTATION_CELLS = (0, 1, 2, 4, 5, 6, 8, 9, 10)
+_TURN_TOL = 1e-6
 
 
 def census_bodies():
@@ -738,8 +742,8 @@ def _left_by(payload, always=False, since=None):
 class PatternElementsPlaced(Postcondition):
     """After a pattern: the copies sit at DISTINCT places. With ``spacings`` ((quantity key,
     spacing key, quantity default, spacing default) per grid direction, direction one innermost)
-    the read is the element transforms and the first instance along each direction must be one
-    spacing from the seed; without them it is the result bodies' boxes."""
+    the read is the element transforms, the first instance one spacing from the seed; without
+    them it is the result bodies' boxes, or a bodiless pattern's element occurrence poses."""
 
     # A circular element's transform is NOT its placement (a 4 x 360 deg ring reads 0/180/270/0 deg
     # while its bodies sit at 0/90/180/270, the seed LAST in feature.bodies), so a ring is read by
@@ -817,6 +821,51 @@ class PatternElementsPlaced(Postcondition):
             out.append((lo + hi, lo))
         return out
 
+    @staticmethod
+    def _occurrence_poses(feature):
+        """[[16 transform2 values per occurrence] per element], or None when any did not read."""
+        from ._common import finite_number
+        els = safe(lambda: feature.patternElements)
+        n = counted(lambda: els.count) if els is not None else None
+        if not n or n > _ELEMENT_CAP:
+            return None
+        out = []
+        for i in range(n):
+            # An element's occurrences are an OccurrenceVector: it iterates and carries no count.
+            occs = safe(lambda k=i: list(els.item(k).occurrences))
+            if not occs or (out and len(occs) != len(out[0])):
+                return None
+            poses = []
+            for o in occs:
+                arr = safe(lambda o=o: [finite_number(v) for v in o.transform2.asArray()])
+                if arr is None or len(arr) != 16 or None in arr:
+                    return None
+                poses.append(arr)
+            out.append(poses)
+        return out
+
+    @staticmethod
+    def _one_pose(a, b):
+        """Whether two poses read one position (within _PLACE_TOL_CM) and one orientation."""
+        moved = ChildGeometryMoved._dist((a[3], a[7], a[11]), (b[3], b[7], b[11]))
+        return moved <= _PLACE_TOL_CM and all(abs(a[k] - b[k]) <= _TURN_TOL
+                                              for k in _ROTATION_CELLS)
+
+    def _occurrences_placed(self, feature, quantity):
+        """Count pairwise-distinct occurrence poses for bodiless patterns, else return unconfirmed."""
+        # A circular element's own transform reads a zero translation, so it is never the read.
+        unknown = {"pattern_elements_confirmed": False}
+        placed = self._occurrence_poses(feature)
+        if placed is None:
+            return unknown
+        if isinstance(quantity, int) and not isinstance(quantity, bool) and quantity != len(placed):
+            return unknown
+        for i, poses in enumerate(placed):
+            if any(all(self._one_pose(a, b) for a, b in zip(poses, other))
+                   for other in placed[:i]):
+                return unknown
+        return {"elements_placed": len(placed)}
+
     def _spacing_miss(self, kwargs, placed):
         """The clause naming the first direction whose landed step is not the requested spacing."""
         from ._common import scale
@@ -842,7 +891,10 @@ class PatternElementsPlaced(Postcondition):
         elif self.spacings:
             placed = self._transforms(feature)
         else:
+            from ._common import result_bodies
             placed = self._body_boxes(feature)
+            if placed is None and not result_bodies(feature):
+                return "", self._occurrences_placed(feature, payload.get("quantity"))
         if placed is None:
             return "", {"pattern_elements_confirmed": False}
         seen = {}

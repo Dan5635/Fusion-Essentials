@@ -8355,6 +8355,85 @@ ROWS = [
 """,
     },
     {
+        "id": "rigid-group-set-occurrences-rolled-back",
+        "claim": "RigidGroup.setOccurrences replaces two root members when rolled before its row; end restoration reads exact members, healthy and unsuppressed.",
+        "encoded_in": "assembly_edit_relations._do_set_occurrences; test_assembly_edit_relations._EditableGroup",
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        des = adsk.fusion.Design.cast(tmp.products.itemByProductType('DesignProductType'))
+        root = des.rootComponent
+        occs = []
+        for i in range(3):
+            matrix = adsk.core.Matrix3D.create()
+            matrix.translation = adsk.core.Vector3D.create(i * 4, 0, 0)
+            occ = root.occurrences.addNewComponent(matrix)
+            sk = occ.component.sketches.add(occ.component.xYConstructionPlane)
+            sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0,0,0), adsk.core.Point3D.create(.4,.4,0))
+            occ.component.features.extrudeFeatures.addSimple(sk.profiles.item(0), adsk.core.ValueInput.createByReal(1),
+                                                           adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+            occs.append(occ)
+        initial = adsk.core.ObjectCollection.create()
+        initial.add(occs[0]); initial.add(occs[1])
+        rg = root.rigidGroups.add(initial, False)
+        end = des.timeline.count
+        rolled = rg.timelineObject.rollTo(True)
+        at = des.timeline.markerPosition
+        wanted = adsk.core.ObjectCollection.create()
+        wanted.add(occs[0]); wanted.add(occs[2])
+        returned = rg.setOccurrences(wanted, False)
+        des.timeline.markerPosition = end
+        actual = sorted(o.entityToken for o in rg.occurrences)
+        expected = sorted(o.entityToken for o in (occs[0], occs[2]))
+        emit(rolled is True and at == rg.timelineObject.index and returned is True
+             and actual == expected and des.timeline.markerPosition == end
+             and rg.isSuppressed is False and rg.timelineObject.healthState == 0,
+             'rigid-group-set-occurrences-rolled-back: members=' + repr(actual)
+             + ' expected=' + repr(expected) + ' marker=' + str(des.timeline.markerPosition))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
+        "id": "circular-occurrence-pattern-owns-no-body",
+        "claim": "Circular occurrence patterns hold an iterable OccurrenceVector per element, no result bodies, distinct occurrence poses and zero element translations.",
+        "encoded_in": "_assert.PatternElementsPlaced._occurrence_poses; test_assert_kinds._OccurrenceVector and _OccurrenceElement",
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        des = adsk.fusion.Design.cast(tmp.products.itemByProductType('DesignProductType'))
+        root = des.rootComponent
+        matrix = adsk.core.Matrix3D.create()
+        matrix.translation = adsk.core.Vector3D.create(4, 0, 0)
+        seed = root.occurrences.addNewComponent(matrix)
+        sk = seed.component.sketches.add(seed.component.xYConstructionPlane)
+        sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0,0,0), adsk.core.Point3D.create(1,1,0))
+        seed.component.features.extrudeFeatures.addSimple(sk.profiles.item(0), adsk.core.ValueInput.createByReal(1),
+                                                        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        coll = adsk.core.ObjectCollection.create()
+        coll.add(seed)
+        features = root.features.circularPatternFeatures
+        inp = features.createInput(coll, root.zConstructionAxis)
+        inp.quantity = adsk.core.ValueInput.createByReal(5)
+        inp.totalAngle = adsk.core.ValueInput.createByString('360 deg')
+        feature = features.add(inp)
+        poses, zero, vector_only = [], True, True
+        for i in range(feature.patternElements.count):
+            el = feature.patternElements.item(i)
+            occs = list(el.occurrences)
+            vector_only = vector_only and not hasattr(el.occurrences, 'count') and len(occs) == 1
+            poses.extend(tuple(round(v, 6) for v in o.transform2.asArray()) for o in occs)
+            t = el.transform.translation
+            zero = zero and abs(t.x) + abs(t.y) + abs(t.z) < 1e-9
+        emit(feature.bodies.count == 0 and feature.patternElements.count == len(poses) == len(set(poses)) == 5
+             and zero and vector_only,
+             'circular-occurrence-pattern-owns-no-body: bodies=' + str(feature.bodies.count)
+             + ' poses=' + repr(poses) + ' zero=' + str(zero) + ' vector=' + str(vector_only))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
         "id": "sketch-profiles-under-compute-deferred",
         "claim": ("With isComputeDeferred True, Sketch.profiles still answers and holds the "
                   "regions closed BEFORE the deferral: two regions read 2, a third region drawn "

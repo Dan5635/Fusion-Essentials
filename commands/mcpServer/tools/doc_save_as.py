@@ -63,6 +63,40 @@ def _resolve_folder_eventual(root, segments):
     return target, missing, False
 
 
+def _source_file_state(data_file):
+    """Return the readable identity, name and location of one source file."""
+    lineage = safe(lambda: data_file.id)
+    if not isinstance(lineage, str) or not lineage.startswith("urn:"):
+        return None
+    project = safe(lambda: data_file.parentProject)
+    folder = safe(lambda: data_file.parentFolder)
+    return {"id": lineage, "name": safe(lambda: data_file.name),
+            "project_id": safe(lambda: project.id), "project": safe(lambda: project.name),
+            "folder_id": safe(lambda: folder.id), "folder": safe(lambda: folder.name)}
+
+
+def _disclose_source_change(payload, before):
+    """Append the source file's observed name/location change or unread state."""
+    if before is None:
+        return
+    fresh = _doc_common.fresh_version_read(app, before["id"])
+    after = (_source_file_state(fresh["data_file"])
+             if fresh.get("lineage") == before["id"] else None)
+    fields = ("name", "project_id", "folder_id")
+    pairs = [(before.get(key), after.get(key) if after else None) for key in fields]
+    readable = [(a, b) for a, b in pairs if isinstance(a, str) and isinstance(b, str)]
+    changed = (True if any(a != b for a, b in readable)
+               else False if len(readable) == len(fields) else None)
+    payload["source_file"] = {"before": before, "after": after, "changed": changed}
+    if changed is True:
+        note = "The source file's name or location changed; see source_file.before/after."
+    elif changed is False:
+        note = "The source file's name and location read unchanged at this read."
+    else:
+        note = f"Source name/location is unverified; read data_get(file='{before['id']}')."
+    payload["note"] += " " + note
+
+
 def handler(name: str = "", project: str = "", project_id: str = "",
             folder: str = "", create_path: bool = False,
             description: str = "", allow_duplicate_name: bool = False) -> dict:
@@ -79,6 +113,8 @@ def handler(name: str = "", project: str = "", project_id: str = "",
 
     # Report whether this was an unsaved doc (the expected Phase-3 case) for the caller.
     was_saved = safe(lambda: doc.isSaved, None)
+    source_before = (_source_file_state(safe(lambda: doc.dataFile))
+                     if was_saved is True else None)
 
     try:
         data = _data()
@@ -222,6 +258,7 @@ def handler(name: str = "", project: str = "", project_id: str = "",
         recovered, recovered_note = _doc_common.publication_read(doc)
         payload.update(recovered)
         payload["note"] += " " + recovered_note
+        _disclose_source_change(payload, source_before)
         return ok(payload)
 
     try:
@@ -259,10 +296,12 @@ def handler(name: str = "", project: str = "", project_id: str = "",
     new_id, urn_wait = _settled_lineage_urn(doc)
     published, publication_note = _doc_common.publication_read(doc)
 
-    note = ("The saved document becomes the active document. Its 'document_id' is the lineage URN - "
-            "the stable identity to address it by (doc_open/doc_activate/data_delete_file); a NAME can "
-            "be shared by several files, the URN cannot. 'urn_wait_seconds' is how long this call "
-            "waited for it, so a caller needs no dwell of its own.")
+    note = ("The saved document becomes active. 'document_id' is its lineage URN; use it with "
+            "doc_open/doc_activate/data_delete_file instead of a shared name. 'urn_wait_seconds' "
+            "records the wait for that URN. A returned URN does not confirm publication; read "
+            "data_get(file=<URN>) "
+            "before opening it. If that new URN is not found yet, publication is pending; read "
+            "the same URN again.")
     if new_id is None:
         note += (f" It had NOT arrived after {urn_wait}s - what dataFile.id reads meanwhile is a "
                  "LOCAL path, not an address. Read the URN from doc_get before using one.")
@@ -309,6 +348,7 @@ def handler(name: str = "", project: str = "", project_id: str = "",
         result["folder_resolve_retried"] = True
         note = folder_retry_note + " " + note
     result["note"] = note
+    _disclose_source_change(result, source_before)
     return ok(result)
 
 

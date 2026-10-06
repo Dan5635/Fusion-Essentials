@@ -958,6 +958,37 @@ class TestLibrarySlice:
         assert out["library"]["tool_count"] == 1
         assert seen == {"scope": "cloud", "library": "Shop", "tool_type": "ball"}
 
+    @pytest.mark.parametrize("asked, returned, truncated", [
+        (6, 6, True), (11, 11, True), (12, 12, False), (0, 12, False), (-3, 1, True)])
+    def test_max_results_caps_the_library_rows_and_keeps_the_matching_total(
+            self, monkeypatch, stub_slices, asked, returned, truncated):
+        rows = [{"index": i} for i in range(12)]
+        monkeypatch.setattr(cg, "_slice_library", lambda cam, scope, library, tool_type: (
+            {"tool_count": 12, "tools": list(rows), "filtered_by_type": "ball"}, None))
+        lib = _payload(cg.handler(include=["library"], tool_type="ball",
+                                  max_results=asked))["library"]
+        assert lib["tools"] == rows[:returned]
+        assert (lib["tool_count"], lib["returned"], lib["truncated"]) == (12, returned, truncated)
+
+    def test_the_cap_reaches_the_library_listing_the_used_tools_and_the_types(
+            self, monkeypatch, stub_slices):
+        monkeypatch.setattr(cg, "_slice_library", lambda cam, scope, library, tool_type: (
+            {"library_count": 3, "libraries": ["a", "b", "c"], "truncated": True}, None))
+        monkeypatch.setattr(cg, "_slice_tools", lambda cam: (
+            {"distinct_tool_count": 3, "tools": [{"tool": t} for t in "abc"]}, None))
+        monkeypatch.setattr(cg, "_slice_library_types", lambda cam: (
+            {"type_count": 3, "types": ["a", "b", "c"]}, None))
+        out = _payload(cg.handler(include=["library", "tools", "library_types"], scope="cloud",
+                                  max_results=2))
+        assert out["library"]["libraries"] == ["a", "b"] and out["library"]["library_count"] == 3
+        assert [t["tool"] for t in out["tools"]["tools"]] == ["a", "b"]
+        assert out["library_types"]["types"] == ["a", "b"]
+        assert [out[k]["returned"] for k in ("library", "tools", "library_types")] == [2, 2, 2]
+        assert all(out[k]["truncated"] is True for k in ("library", "tools", "library_types"))
+        # the library walk's own bound survives a cap that cut nothing
+        whole = _payload(cg.handler(include=["library"], scope="cloud", max_results=3))
+        assert whole["library"]["returned"] == 3 and whole["library"]["truncated"] is True
+
     def test_the_scope_enum_matches_the_scopes_read_library_accepts(self):
         # The enum is spelled here and the vocabulary lives in cam_edit_tools, whose read_library
         # this slice calls - a scope missing from the enum is unreachable through cam_get, and one

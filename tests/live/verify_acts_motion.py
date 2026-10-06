@@ -1107,9 +1107,171 @@ def _scratch(tag, steps):
                                  "expect_document": _ctx_get(c, tag + "_story", "story")}, _document_closed, None)]
 
 
+_RIGID_EDIT_SETUP = _PART_RECIPE + """
+def run(context):
+    root = _root()
+    assert root.occurrences.count == 0 and root.bRepBodies.count == 0
+    for name, x in (('RgA', 0), ('RgB', 40), ('RgC', 80)):
+        _part(root, name, x, -200)
+    print(json.dumps({'paths': sorted(o.fullPathName for o in root.occurrences)}))
+"""
+
+_RIGID_EDIT_STATE = """import adsk.core, adsk.fusion, json
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    assert adsk.core.Application.get().activeDocument.dataFile is None
+    root, tl = design.rootComponent, design.timeline
+    assert root.rigidGroups.count == 1
+    g = root.rigidGroups.item(0)
+    def read(f):
+        try:
+            return f()
+        except Exception:
+            return None
+    print(json.dumps({'groups': root.rigidGroups.count,
+        'members': read(lambda: sorted(o.fullPathName for o in g.occurrences)),
+        'tokens': read(lambda: sorted(o.entityToken for o in g.occurrences)),
+        'wanted_tokens': sorted(o.entityToken for o in root.occurrences if o.name in ('RgA:1', 'RgC:1')),
+        'marker': tl.markerPosition, 'count': tl.count,
+        'suppressed': read(lambda: g.isSuppressed),
+        'health': read(lambda: int(g.timelineObject.healthState)),
+        'rolled_back': read(lambda: g.timelineObject.isRolledBack)}))
+"""
+
+
+def _rigid_edit_rows():
+    """Replace a group's members and check the marker, exact identities and healthy state."""
+    group = lambda c: _ctx_get(c, "rg_edit", "edited group")
+    edit = lambda c: {"kind": "rigid_group", "name": group(c), "action": "set_occurrences",
+                      "occurrences": ["RgA:1", "RgC:1"]}
+    def state(members):
+        return lambda p: _measured("independent rigid group state", p,
+            p.get("groups") == 1 and p.get("members") == members
+            and p.get("marker") == p.get("count") == _RECALL.get("rg_edit_count")
+            and p.get("suppressed") is False and p.get("health") == 0 and p.get("rolled_back") is False)
+    return _scratch("rigid_edit", [
+        ("sys_execute_script", {"script": _RIGID_EDIT_SETUP, "read_only": False},
+         lambda p: p.get("paths") == ["RgA:1", "RgB:1", "RgC:1"], None),
+        ("assembly_rigid_group", {"occurrences": ["RgA:1", "RgB:1"]}, _rigid_grouped(2),
+         ("rg_edit", _recall("rg_edit", lambda p: p["assembly_rigid_group"]))),
+        ("sketch_create", {"plane": "xy", "name": "RgLater"}, "ok", None),
+        ("sys_execute_script", {"script": _RIGID_EDIT_STATE, "read_only": True},
+         lambda p: p.get("members") == ["RgA:1", "RgB:1"] and p.get("marker") == p.get("count"),
+         ("rg_edit_count", _recall("rg_edit_count", lambda p: p["count"]))),
+        ("design_edit_timeline", lambda c: {"action": "roll", "feature": group(c), "to": "before"},
+         lambda p: p.get("rolled") is True,
+         ("rg_edit_parked", _recall("rg_edit_parked", lambda p: p["marker_position"]))),
+        ("assembly_edit_relations", edit, _refused("set_occurrences starts with it at the end",
+                  "design_edit_timeline(action='roll', to='end')"), None),
+        ("sys_execute_script", {"script": """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    tl = adsk.fusion.Design.cast(app.activeProduct).timeline
+    print(json.dumps({'marker': tl.markerPosition, 'count': tl.count}))
+""", "read_only": True},
+         lambda p: _measured("refusal preserves parked marker", p,
+                             isinstance(p.get("marker"), int) and p["marker"] < p["count"]
+                             and p["marker"] == _RECALL.get("rg_edit_parked")), None),
+        ("design_edit_timeline", {"action": "roll", "to": "end"},
+         lambda p: p.get("marker_position") == p.get("timeline_count"), None),
+        ("sys_execute_script", {"script": _RIGID_EDIT_STATE, "read_only": True},
+         state(["RgA:1", "RgB:1"]), None),
+        ("assembly_edit_relations", edit,
+         lambda p: _measured("member replacement reports its verified effect", p,
+            p.get("changed") is True and p.get("members") == ["RgA:1", "RgC:1"]
+            and p.get("members_before") == ["RgA:1", "RgB:1"] and p.get("member_count") == 2
+            and p.get("is_suppressed") is False and p.get("health") == "healthy"
+            and p.get("marker_position") == p.get("timeline_count") == _RECALL.get("rg_edit_count")), None),
+        ("sys_execute_script", {"script": _RIGID_EDIT_STATE, "read_only": True},
+         lambda p: state(["RgA:1", "RgC:1"])(p) and _measured("requested member identities read back", p,
+                                                                            p.get("tokens") == p.get("wanted_tokens")), None),
+        ("assembly_edit_relations", edit,
+         lambda p: p.get("changed") is False and p.get("members") == ["RgA:1", "RgC:1"], None),
+        ("sys_execute_script", {"script": _RIGID_EDIT_STATE, "read_only": True},
+         state(["RgA:1", "RgC:1"]), None),
+    ])
+
+
 # ASSEMBLY-WRITE-1: a nested placement's native token raises, so the selected owner is matched by
 # its unique path. The group fixture recipe: ReusedParent placed twice holding a 4 mm Leaf cube,
 # and a free 4 x 4 x 10 mm Anchor at x 80 mm.
+_PATTERN_POSE_SETUP = _PART_RECIPE + """
+def run(context):
+    root = _root()
+    assert root.occurrences.count == 0 and root.bRepBodies.count == 0
+    _part(root, 'RingSeed', 40, 0)
+    _part(root, 'AxisSeed', 0, 0)
+    _part(root, 'PathSeed', 0, 120)
+    sk = root.sketches.add(root.xYConstructionPlane)
+    sk.name = 'PosePath'
+    sk.sketchCurves.sketchLines.addByTwoPoints(adsk.core.Point3D.create(0,12,0), adsk.core.Point3D.create(6,12,0))
+    print(json.dumps({'paths': sorted(o.fullPathName for o in root.occurrences)}))
+"""
+
+_PATTERN_POSE_STATE = """import adsk.core, adsk.fusion, json, math
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    root = design.rootComponent
+    coll = getattr(root.features, COLLECTION)
+    feature = coll.itemByName(FEATURE)
+    assert feature is not None
+    poses = []
+    for i in range(feature.patternElements.count):
+        occurrences = list(feature.patternElements.item(i).occurrences)
+        assert len(occurrences) == 1
+        matrix = occurrences[0].transform2.asArray()
+        assert len(matrix) == 16 and all(math.isfinite(v) for v in matrix)
+        poses.append([round(v, 6) for v in matrix])
+    print(json.dumps({'name': feature.name, 'bodies': feature.bodies.count,
+        'elements': feature.patternElements.count, 'poses': poses,
+        'origins': [[m[3] * 10, m[7] * 10, m[11] * 10] for m in poses],
+        'health': int(feature.healthState), 'suppressed': feature.isSuppressed,
+        'marker': design.timeline.markerPosition, 'count': design.timeline.count}))
+"""
+
+
+def _pattern_pose_rows():
+    """Confirm root, on-axis and path occurrence placement through independent native poses."""
+    rows = [("sys_execute_script", {"script": _PATTERN_POSE_SETUP, "read_only": False},
+             lambda p: p.get("paths") == ["AxisSeed:1", "PathSeed:1", "RingSeed:1"], None)]
+    for seed, quantity, collection, tool, args in (
+        ("RingSeed", 5, "circularPatternFeatures", "model_pattern_circular",
+         {"occurrences": ["RingSeed:1"], "axis": "z", "quantity": 5}),
+        ("AxisSeed", 4, "circularPatternFeatures", "model_pattern_circular",
+         {"occurrences": ["AxisSeed:1"], "axis": "z", "quantity": 4}),
+        ("PathSeed", 3, "pathPatternFeatures", "model_pattern_path",
+         {"occurrences": ["PathSeed:1"], "path": "sketch:PosePath", "quantity": 3,
+          "distance": 10, "distance_type": "spacing", "units": "mm"}),
+    ):
+        key = "pattern_pose_" + seed
+        rows.append((tool, args, lambda p, n=quantity: _measured("occurrence placement confirmed", p,
+            p.get("elements_placed") == n and "pattern_elements_confirmed" not in p),
+            (key, _recall(key, lambda p: p["feature"]))))
+        def native(p, n=quantity, name=seed):
+            poses, origins = p.get("poses"), p.get("origins")
+            valid = (p.get("bodies") == 0 and p.get("elements") == n
+                     and isinstance(poses, list) and len(poses) == n
+                     and all(len(m) == 16 and all(_num(v) for v in m) for m in poses)
+                     and len({tuple(m) for m in poses}) == n
+                     and p.get("health") == 0 and p.get("suppressed") is False
+                     and p.get("marker") == p.get("count"))
+            if valid and name == "AxisSeed":
+                valid = origins == [[0, 0, 0]] * n
+            elif valid and name == "PathSeed":
+                valid = (len(origins) == n and all(_near(o[1], 120, .001) and _near(o[2], 0, .001)
+                          for o in origins) and sorted(round(o[0], 3) for o in origins) == [0, 10, 20])
+            elif valid:
+                valid = all(_near(math.hypot(o[0], o[1]), 40, .001) for o in origins)
+            return _measured("independent " + name + " occurrence poses", p, valid)
+        rows.append(("sys_execute_script", lambda c, k=key, col=collection: {
+            "script": _PATTERN_POSE_STATE.replace("COLLECTION", repr(col)).replace(
+                "FEATURE", repr(_ctx_get(c, k, "pattern feature"))), "read_only": True}, native, None))
+    return _scratch("pattern_pose", rows)
+
+
 _NESTED_OWNER_SETUP = _PART_RECIPE + """
 def run(context):
     root = _root()
@@ -1207,13 +1369,20 @@ def run(context):
         for k in range(c.rigidGroups.count):
             g = c.rigidGroups.item(k)
             groups.append({'walk': c.name, 'parent': g.parentComponent.name, 'name': g.name,
-                           'suppressed': g.isSuppressed})
+                           'suppressed': g.isSuppressed,
+                           'members': sorted(o.name for o in g.occurrences),
+                           'health': int(g.timelineObject.healthState)})
         cps = c.features.circularPatternFeatures
         for k in range(cps.count):
             p = cps.item(k)
             patterns.append({'walk': c.name, 'parent': p.parentComponent.name, 'name': p.name,
-                             'axis_component': p.axis.component.name})
-    print(json.dumps({'root': design.rootComponent.name, 'groups': groups, 'patterns': patterns}))
+                             'axis_component': p.axis.component.name,
+                             'element_count': p.patternElements.count,
+                             'origins': [o.transform2.translation.asArray()
+                                         for j in range(p.patternElements.count)
+                                         for o in list(p.patternElements.item(j).occurrences)]})
+    print(json.dumps({'root': design.rootComponent.name, 'groups': groups, 'patterns': patterns,
+                      'marker': design.timeline.markerPosition, 'count': design.timeline.count}))
 """
 
 # A second rigid group, in NrRet, carrying the first group's name.
@@ -1265,6 +1434,7 @@ def _nested_relation_rows():
         axis, note = p.get("axis_component"), p.get("note", "")
         return _measured("nested pattern owner and its axis owner", p,
                          p.get("patterned") is True and p.get("quantity") == 5
+                         and p.get("elements_placed") == 5 and "pattern_elements_confirmed" not in p
                          and p.get("component") == "NrEye" and axis == _RECALL.get("nr_root")
                          and "The pattern is owned by component 'NrEye'." in note
                          and f"Its axis belongs to component '{axis}'." in note)
@@ -1279,7 +1449,9 @@ def _nested_relation_rows():
                              groups == want and len(pats) == 1
                              and pats[0]["parent"] == pats[0]["walk"] == "NrEye"
                              and pats[0]["axis_component"] == p.get("root") == _RECALL.get("nr_root")
-                             and pats[0]["name"] == _RECALL.get("nr_pattern"))
+                             and pats[0]["name"] == _RECALL.get("nr_pattern")
+                             and pats[0].get("element_count") == 5
+                             and len({tuple(o) for o in pats[0].get("origins", [])}) == 5)
         return check
 
     shared = lambda c: _ctx_get(c, "nr_group", "the shared group name")
@@ -1291,6 +1463,23 @@ def _nested_relation_rows():
         ("assembly_rigid_group", {"occurrences": [bezel, cowl]}, grouped,
          ("nr_group", _recall("nr_group", lambda p: p["assembly_rigid_group"]))),
         ("design_get", timeline, _timeline_owner("nr_group", "NrEye"), None),
+        ("assembly_edit_relations", lambda c: {"kind": "rigid_group", "name": shared(c),
+                 "action": "set_occurrences", "occurrences": [bezel, "NrEye:1+NrRivet:1"]},
+         lambda p: p.get("changed") is True and p.get("component") == "NrEye"
+                   and p.get("member_count") == 2, None),
+        ("sys_execute_script", {"script": _NESTED_RELATION_STATE, "read_only": True},
+         lambda p: _measured("nested replacement membership and marker read independently", p,
+             len(p.get("groups") or []) == 1
+             and p["groups"][0].get("members") == ["NrBezel:1", "NrRivet:1"]
+             and p["groups"][0].get("health") == 0 and p.get("marker") == p.get("count")), None),
+        ("assembly_edit_relations", lambda c: {"kind": "rigid_group", "name": shared(c),
+                 "action": "set_occurrences", "occurrences": [bezel, cowl]},
+         lambda p: p.get("changed") is True and p.get("component") == "NrEye", None),
+        ("sys_execute_script", {"script": _NESTED_RELATION_STATE, "read_only": True},
+         lambda p: _measured("nested group restores its original members", p,
+             len(p.get("groups") or []) == 1
+             and p["groups"][0].get("members") == ["NrBezel:1", "NrCowl:1"]
+             and p["groups"][0].get("health") == 0 and p.get("marker") == p.get("count")), None),
         ("model_pattern_circular", {"occurrences": ["NrEye:1+NrRivet:1"], "quantity": 5,
                                     "total_angle_deg": 360, "axis": "y"}, patterned,
          ("nr_pattern", _recall("nr_pattern", lambda p: p["feature"]))),
@@ -1304,8 +1493,8 @@ def _nested_relation_rows():
          and p.get("owners") == ["NrEye", "NrRet"], None),
         ("assembly_edit_relations",
          lambda c: {"kind": "rigid_group", "action": "suppress", "name": shared(c)},
-         _refused("names 2 rigid groups - refusing to guess which one. Pass one as listed: 'NrEye/",
-                  "', 'NrRet/"), None),
+         _refused("names 2 rigid groups - refusing to guess which one. Pass one as listed:",
+                  "'NrEye/Rigid Group 1'", "'NrRet/Rigid Group 1'"), None),
         ("sys_execute_script", {"script": _NESTED_RELATION_STATE, "read_only": True}, native(False), None),
         ("assembly_edit_relations",
          lambda c: {"kind": "rigid_group", "action": "suppress", "name": "NrRet/" + shared(c)},
@@ -2003,11 +2192,9 @@ _MOTION = (
     # back to the 2:1 the bench link was built at, read back the same way the re-value above was.
     ("assembly_edit_relations", lambda c: {"kind": "motion_link", "name": _ctx_get(c, "bench_link", "the bench's motion link"), "action": "set_values", "ratio": 2},
      lambda p: p.get("ratio") == 2.0 and "was_reversed" in p, None),
-    # the measured set_occurrences refusal, asserted in the WORDS that make it a fact: the build it
-    # was measured on and the platform sentence it would raise. Nothing is written, so the group
-    # still holds the two members assembly_rigid_group gave it - read back on the next row.
+    # One member is not a rigid group; the independent following read checks its members stayed.
     ("assembly_edit_relations", lambda c: {"kind": "rigid_group", "name": _ctx_get(c, "bench_group", "the bench's rigid group"), "action": "set_occurrences", "occurrences": ["GrpA:1"]},
-     _refused("2705.0.87", "Cannot be edited before rolling back"), None),
+     _refused("at least two occurrences", "Nothing was changed"), None),
     # the group the refusal named, found BY NAME in the design's own relation list, still counts the
     # two occurrences assembly_rigid_group built it from - the refusal wrote nothing.
     ("assembly_get", {"include": ["relations"]},
@@ -2418,6 +2605,8 @@ _MOTION += _asbuilt_axis_rows()
 _MOTION += _drive_own_body_rows()
 _MOTION += _nested_owner_rows()
 _MOTION += _nested_relation_rows()
+_MOTION += _rigid_edit_rows()
+_MOTION += _pattern_pose_rows()
 _MOTION += _crossindex_rows()
 _MOTION += _reused_origin_rows()
 _MOTION += _origin_consumer_rows()
