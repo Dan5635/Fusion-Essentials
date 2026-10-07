@@ -101,6 +101,232 @@ def _pattern_count_rows():
     return rows
 
 
+def _pattern_timeline_healthy(p):
+    timeline = p.get("timeline") or {}
+    summary = timeline.get("summary") or {}
+    rows = timeline.get("timeline") or []
+    return (timeline.get("truncated", False) is False and timeline.get("returned") == timeline.get("count")
+            and set(summary.get("states") or {}) == {"healthy"}
+            and isinstance(summary.get("exceptions"), list) and not summary.get("exceptions")
+            and all(r.get("health", "healthy") == "healthy"
+                    and r.get("is_rolled_back", False) is False for r in rows))
+
+
+def _capture_pattern_count(feature_key, component, role, expression, recall_key):
+    def check(p):
+        feature = _RECALL.get(feature_key)
+        rows = [r for r in (p.get("timeline") or {}).get("timeline", [])
+                if r.get("name") == feature and r.get("component") == component]
+        params = (rows[0].get("params") or []) if len(rows) == 1 else []
+        matches = [r for r in params if r.get("role") == role]
+        name = matches[0].get("name") if len(matches) == 1 else None
+        if name:
+            _RECALL[recall_key] = name
+        got = matches[0] if len(matches) == 1 else {}
+        return _measured("one scoped pattern count parameter", {"feature": feature,
+                         "component": component, "parameter": got},
+                         len(rows) == 1 and len(matches) == 1 and bool(name)
+                         and got.get("expression") == expression and _pattern_timeline_healthy(p))
+    return check
+
+
+def _pattern_count_read(feature_key, component, role, expression, value):
+    def check(p):
+        feature = _RECALL.get(feature_key)
+        rows = [r for r in (p.get("timeline") or {}).get("timeline", [])
+                if r.get("name") == feature and r.get("component") == component]
+        params = (rows[0].get("params") or []) if len(rows) == 1 else []
+        matches = [r for r in params if r.get("name") == _RECALL.get(feature_key + "_" + role)]
+        got = matches[0] if len(matches) == 1 else {}
+        return _measured("pattern count expression and value", got,
+                         len(matches) == 1 and got.get("role") == role
+                         and got.get("expression") == expression and _near(got.get("value"), value, 1e-6)
+                         and _pattern_timeline_healthy(p))
+    return check
+
+
+def _pattern_body_count(target, count, body_volume=1000, bounds=None):
+    def check(p):
+        mass = p.get("mass") or {}
+        bodies = mass.get("per_body") or []
+        volumes = [r.get("volume") for r in bodies]
+        names = [r.get("body") for r in bodies]
+        envelope = all(_near(p.get(axis), want, .05) for axis, want in (bounds or {}).items())
+        return _measured("native patterned body count", {"count": mass.get("per_body_count"),
+                         "volumes": volumes, "bodies": names,
+                         "envelope_mm": {axis: p.get(axis) for axis in "xyz"}},
+                         mass.get("per_body_count") == count
+                         and len(bodies) == count
+                         and len(set(names)) == count
+                         and envelope
+                         and all(_near(v, body_volume, .02) for v in volumes))
+    return check
+
+
+def _pattern_occurrence_count(expected, other_occurrences=0):
+    def check(p):
+        rows = [r for r in p.get("occurrences") or [] if r.get("component") == "OccPatternSeed"]
+        return _measured("native occurrence pattern count", {
+            "occurrence_count": p.get("occurrence_count"), "seed_instances": [r.get("name") for r in rows]},
+            p.get("occurrences_truncated") is False and len(rows) == expected
+            and p.get("occurrence_count") == expected + other_occurrences)
+    return check
+
+
+def _pattern_parameter_rows():
+    rows = [("doc_get", {}, _home_document, ("pattern_param_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "pattern_param_home", "home")},
+             _new_document, ("pattern_param_doc", lambda p: p["document_handle"]))]
+
+    doc_key = "pattern_param_doc"
+
+    def write(tool, args, check="ok", save=None):
+        key = doc_key
+        if tool in {"design_get", "model_inspect", "assembly_get"}:
+            rows.append((tool, args, check, save))
+        else:
+            rows.append((tool, lambda c, args=args, key=key: _combine_pin(
+                c, key, args(c) if callable(args) else args), check, save))
+
+    def body_seed(component, sketch, x, path=False):
+        write("model_create_component", {"name": component, "activate": True}, _made_component)
+        write("sketch_create", {"plane": "xy", "name": sketch})
+        write("sketch_add_geometry", {"sketch_name": sketch, "geometry": [
+            {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + 10, "y2": 10}]})
+        write("model_extrude", {"sketch_name": sketch, "profile_index": 0, "distance": 10}, _extruded)
+        if path:
+            path_sketch = sketch + "Path"
+            write("sketch_create", {"plane": "xy", "name": path_sketch})
+            write("sketch_add_geometry", {"sketch_name": path_sketch, "geometry": [
+                {"kind": "line", "x1": x, "y1": 30, "x2": x + 100, "y2": 30}]})
+
+    def count_steps(feature_key, component, role, baseline, up, down, count_after_up,
+                    count_after_down, count_v=None, baseline_bounds=None):
+        write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+              _capture_pattern_count(feature_key, component, role, str(baseline),
+                                     feature_key + "_" + role))
+        name = lambda: _RECALL.get(feature_key + "_" + role)
+        write("model_inspect", {"target": component + ":1", "include": ["default", "mass"],
+                                "per_body": True, "units": "mm", "accuracy": "very_high"},
+              _pattern_body_count(component, baseline, bounds=baseline_bounds))
+        if count_v is not None:
+            vkey = feature_key + "_CountV"
+            write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+                  _capture_pattern_count(feature_key, component, "CountV", "1", vkey))
+            write("param_set", lambda c: {"name": _RECALL.get(vkey), "expression": "2"})
+            write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+                  _pattern_count_read(feature_key, component, "CountV", "2", 2))
+            write("model_inspect", {"target": component + ":1", "include": ["default", "mass"],
+                                    "per_body": True, "units": "mm", "accuracy": "very_high"},
+                  _pattern_body_count(component, 6, bounds={"x": 70, "y": 40, "z": 10}))
+            write("param_set", lambda c: {"name": name(), "expression": str(up)})
+            write("model_inspect", {"target": component + ":1", "include": ["default", "mass"],
+                                    "per_body": True, "units": "mm", "accuracy": "very_high"},
+                  _pattern_body_count(component, count_after_up, bounds={"x": 130, "y": 40, "z": 10}))
+            write("param_set", lambda c: {"name": name(), "expression": str(down)})
+            write("param_set", lambda c: {"name": _RECALL.get(vkey), "expression": "1"})
+            write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+                  _pattern_count_read(feature_key, component, "CountV", "1", 1))
+            write("model_inspect", {"target": component + ":1", "include": ["default", "mass"],
+                                    "per_body": True, "units": "mm", "accuracy": "very_high"},
+                  _pattern_body_count(component, count_after_down, bounds={"x": 40, "y": 10, "z": 10}))
+        else:
+            write("param_set", lambda c: {"name": name(), "expression": str(up)})
+            write("model_inspect", {"target": component + ":1", "include": ["default", "mass"],
+                                    "per_body": True, "units": "mm", "accuracy": "very_high"},
+                  _pattern_body_count(component, count_after_up))
+            write("param_set", lambda c: {"name": name(), "expression": str(down)})
+            write("model_inspect", {"target": component + ":1", "include": ["default", "mass"],
+                                    "per_body": True, "units": "mm", "accuracy": "very_high"},
+                  _pattern_body_count(component, count_after_down))
+        write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+              _pattern_count_read(feature_key, component, role, str(down), down))
+
+    body_seed("PBRect", "PBRectS", 500)
+    write("model_pattern_rectangular", {"bodies": ["PBRect"], "quantity_one": 3,
+          "spacing_one": 30, "direction_one": "x", "quantity_two": 1, "spacing_two": 30,
+          "direction_two": "y"}, _patterned("total_instances", 3),
+          ("param_rect_feature", _recall("param_rect_feature", lambda p: p["feature"])))
+    count_steps("param_rect_feature", "PBRect", "countU", 3, 5, 2, 10, 2, count_v=True,
+                baseline_bounds={"x": 70, "y": 10, "z": 10})
+    write("param_add", {"name": "PatternRows", "expression": "4", "unit": ""},
+          lambda p: p.get("added") is True and (p.get("parameter") or {}).get("name") == "PatternRows")
+    write("param_set", lambda c: {"name": _RECALL.get("param_rect_feature_countU"),
+                                  "expression": "PatternRows"})
+    write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+          _pattern_count_read("param_rect_feature", "PBRect", "countU", "PatternRows", 4))
+    write("model_inspect", {"target": "PBRect:1", "include": ["default", "mass"],
+                            "per_body": True, "units": "mm", "accuracy": "very_high"},
+          _pattern_body_count("PBRect", 4, bounds={"x": 100, "y": 10, "z": 10}))
+    write("param_set", {"name": "PatternRows", "expression": "3"})
+    write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+          _pattern_count_read("param_rect_feature", "PBRect", "countU", "PatternRows", 3))
+    write("model_inspect", {"target": "PBRect:1", "include": ["default", "mass"],
+                            "per_body": True, "units": "mm", "accuracy": "very_high"},
+          _pattern_body_count("PBRect", 3, bounds={"x": 70, "y": 10, "z": 10}))
+
+    body_seed("PBCir", "PBCirS", 700)
+    write("model_pattern_circular", {"bodies": ["PBCir"], "quantity": 4,
+          "total_angle_deg": 360, "axis": "z"}, lambda p: p.get("patterned") is True,
+          ("param_cir_feature", _recall("param_cir_feature", lambda p: p["feature"])))
+    count_steps("param_cir_feature", "PBCir", "countU", 4, 6, 3, 6, 3)
+
+    body_seed("PBPath", "PBPathS", 900, path=True)
+    write("model_pattern_path", {"bodies": ["PBPath"], "path": "sketch:PBPathSPath",
+          "quantity": 3, "distance": 10, "distance_type": "spacing"},
+          lambda p: p.get("patterned") is True,
+          ("param_path_feature", _recall("param_path_feature", lambda p: p["feature"])))
+    count_steps("param_path_feature", "PBPath", "countU", 3, 5, 2, 5, 2)
+
+    rows.extend([("doc_activate", lambda c: {"name": _ctx_get(c, "pattern_param_home", "home"),
+         "expect_document": _ctx_get(c, "pattern_param_doc", "scratch")}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "pattern_param_doc", "scratch"),
+         "save_changes": False, "expect_document": _ctx_get(c, "pattern_param_home", "home")},
+         _document_closed, None),
+        ("doc_new", lambda c: {"expect_document": _ctx_get(c, "pattern_param_home", "home")},
+         _new_document, ("occ_pattern_doc", lambda p: p["document_handle"]))])
+    doc_key = "occ_pattern_doc"
+    body_seed("OccPatternSeed", "OccPatternSeedS", 1100)
+    write("design_activate_component", {"occurrence": "root"})
+    write("sketch_create", {"plane": "xy", "name": "OccPatternPathS"})
+    write("sketch_add_geometry", {"sketch_name": "OccPatternPathS", "geometry": [
+        {"kind": "line", "x1": 1100, "y1": 30, "x2": 1200, "y2": 30}]})
+    write("model_pattern_rectangular", {"occurrences": ["OccPatternSeed:1"], "quantity_one": 3,
+          "spacing_one": 30, "direction_one": "x", "quantity_two": 1, "spacing_two": 30,
+          "direction_two": "y"}, lambda p: p.get("patterned") is True,
+          ("param_orect_feature", _recall("param_orect_feature", lambda p: p["feature"])))
+    write("model_pattern_circular", {"occurrences": ["OccPatternSeed:1"], "quantity": 4,
+          "total_angle_deg": 360, "axis": "z"}, lambda p: p.get("patterned") is True,
+          ("param_ocir_feature", _recall("param_ocir_feature", lambda p: p["feature"])))
+    write("model_pattern_path", {"occurrences": ["OccPatternSeed:1"],
+          "path": "sketch:OccPatternPathS", "quantity": 3, "distance": 10,
+          "distance_type": "spacing"}, lambda p: p.get("patterned") is True,
+          ("param_opath_feature", _recall("param_opath_feature", lambda p: p["feature"])))
+    write("assembly_get", {"max_occurrences": 100}, _pattern_occurrence_count(8))
+    for key, role, up, down in (("param_orect_feature", "countU", 4, 2),
+                                ("param_ocir_feature", "countU", 6, 3),
+                                ("param_opath_feature", "countU", 5, 2)):
+        write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+              _capture_pattern_count(key, None, role,
+                                     str({"param_orect_feature": 3, "param_ocir_feature": 4,
+                                          "param_opath_feature": 3}[key]), key + "_" + role))
+        expected_counts = {"param_orect_feature": (9, 7),
+                           "param_ocir_feature": (9, 6), "param_opath_feature": (8, 5)}[key]
+        for number, expected in zip((up, down), expected_counts):
+            write("param_set", lambda c, key=key, role=role, number=number: {
+                "name": _RECALL.get(key + "_" + role), "expression": str(number)})
+            write("assembly_get", {"max_occurrences": 100}, _pattern_occurrence_count(expected))
+        write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+              _pattern_count_read(key, None, role, str(down), down))
+
+    rows.extend([("doc_activate", lambda c: {"name": _ctx_get(c, "pattern_param_home", "home"),
+         "expect_document": _ctx_get(c, "occ_pattern_doc", "scratch")}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "occ_pattern_doc", "scratch"),
+         "save_changes": False, "expect_document": _ctx_get(c, "pattern_param_home", "home")},
+         _document_closed, None)])
+    return rows
+
+
 def _loft_curve_refusal_rows():
     """Refuse line handles with the exact sketch-curve form, then loft and retire that form."""
     rows = [("doc_get", {}, _home_document, ("lcr_home", _home_address)),
@@ -585,8 +811,15 @@ _SOLIDS = [
     ("design_set_metadata", {"target": "Bracket", "part_number": "FE-BRACKET-001",
                              "description": "Sweep bracket"},
      _metadata_set("Bracket", "FE-BRACKET-001", "Sweep bracket"), None),
-    ("design_get", {"include": ["metadata"], "name_filter": "Bracket"},
-     _component_metadata("Bracket", part_number="FE-BRACKET-001", description="Sweep bracket"),
+    ("design_get", {"include": ["metadata", "tree"], "name_filter": "Bracket"},
+     lambda p: _component_metadata("Bracket", part_number="FE-BRACKET-001",
+                                  description="Sweep bracket")(p)
+     and [r.get("name") for r in (p.get("metadata") or {}).get("components") or []] == ["Bracket"]
+     and _measured("tree filter selects only the Bracket placement",
+                   (p.get("tree") or {}).get("children"),
+                   (p.get("tree") or {}).get("matched") == 1
+                   and [(r.get("name"), r.get("component")) for r in
+                        (p.get("tree") or {}).get("children") or []] == [("Bracket:1", "Bracket")]),
      None),
     # PMI CONTENT writes need the Design or Manufacturing Extension (the platform raises
     # "Manufacturing or Design Extension is required" without one - measured on the lapsed install),
@@ -2002,3 +2235,4 @@ def _placed_extent_refusal_rows():
 
 
 _SOLIDS += _placed_extent_refusal_rows()
+_SOLIDS += _pattern_parameter_rows()

@@ -58,10 +58,55 @@ def run(context):
                 c = p.value
                 return {'name': a.name, 'id': a.id, 'rgb': [int(c.red), int(c.green), int(c.blue)]}
         return {'name': a.name, 'id': a.id, 'rgb': None}
+    def assignment(b):
+        row = {'body': b.name}
+        unavailable = {}
+        for field, read in (('material', lambda: b.material.name),
+                            ('appearance', lambda: b.appearance.name),
+                            ('appearance_source_type', lambda: int(b.appearanceSourceType)),
+                            ('opacity', lambda: b.opacity), ('visible_opacity', lambda: b.visibleOpacity)):
+            try: row[field] = read()
+            except Exception as exc:
+                row[field] = None
+                unavailable[field] = str(exc) or type(exc).__name__
+        value = row.get('appearance_source_type')
+        labels = [name for name in dir(adsk.core.AppearanceSourceTypes)
+                  if not name.startswith('_') and name != 'thisown'
+                  and isinstance(getattr(adsk.core.AppearanceSourceTypes, name), int)
+                  and getattr(adsk.core.AppearanceSourceTypes, name) == value]
+        row['appearance_source'] = labels[0] if len(labels) == 1 else None
+        if row['appearance_source'] is None: unavailable['appearance_source'] = 'enum label unread'
+        row['unavailable'] = unavailable
+        return row
     print(json.dumps({'opacity': occ.component.opacity, 'occurrence': color(occ.appearance),
         'body': color(body.appearance), 'proxy_body': color(occ.bRepBodies.item(0).appearance),
+        'assignment_body': assignment(body), 'assignment_proxy': assignment(occ.bRepBodies.item(0)),
         'document_asset': color(design.appearances.itemByName('ProbeGreen'))}))
 """
+
+
+def _small_edit_assignment(p, before_key):
+    """Check opt-in assignments against a separate native read of the same body placement."""
+    native = (_RECALL.get(before_key) or {}).get("assignment_proxy")
+    valid = isinstance(native, dict) and "mass" not in p and "x" not in p
+    observed = {}
+    for slice_name, fields in (("material", ("material",)),
+                               ("appearance", ("appearance", "appearance_source_type",
+                                               "appearance_source", "opacity", "visible_opacity"))):
+        scope = p.get(slice_name) or {}
+        rows = scope.get("bodies") or []
+        observed[slice_name] = scope
+        valid = (valid and scope.get("scope_complete") is True
+                 and scope.get("truncated") is False and not scope.get("unavailable_census")
+                 and not scope.get("unavailable_slots") and len(rows) == 1)
+        if len(rows) == 1 and isinstance(native, dict):
+            row = rows[0]
+            valid = (valid and row.get("body") == native.get("body")
+                     and row.get("occurrence") == "EditTarget:1"
+                     and all(field in row and field in native and row[field] == native[field]
+                             and bool((row.get("unavailable") or {}).get(field)) ==
+                             bool((native.get("unavailable") or {}).get(field)) for field in fields))
+    return _measured("actual body assignment and placed opacity without default slice", observed, valid)
 
 
 def _small_edit_native_after(p, before):
@@ -1413,6 +1458,12 @@ _SMALL_EDITS = [
                          and p.get("document_asset") is None
                          and (p.get("occurrence") or {}).get("name") != "ProbeGreen"),
      ("small_edit_native_before", _recall("small_edit_native_before", lambda p: p))),
+    ("model_inspect", {"target": "EditTarget:1:Body1", "include": ["material", "appearance"]},
+     lambda p: _small_edit_assignment(p, "small_edit_native_before"), None),
+    ("model_inspect", {"target": "EditTarget:1"},
+     lambda p: _measured("default inspect does not disclose assignments", p,
+                         "material" not in p and "appearance" not in p
+                         and isinstance(p.get("x"), (int, float))), None),
     ("appearance_set", {"target": "EditTarget:1", "color": "#00FF00",
                          "opacity": 35, "name": "ProbeGreen"},
      _refused("reached NONE", "ProbeRed",
@@ -1421,7 +1472,10 @@ _SMALL_EDITS = [
     ("design_get", {"include": ["appearances"], "name_filter": "ProbeGreen"},
      _small_edit_asset, None),
     ("sys_execute_script", {"script": _SMALL_EDIT_NATIVE, "read_only": True},
-     lambda p: _small_edit_native_after(p, _RECALL["small_edit_native_before"]), None),
+     lambda p: _small_edit_native_after(p, _RECALL["small_edit_native_before"]),
+     ("small_edit_native_after", _recall("small_edit_native_after", lambda p: p))),
+    ("model_inspect", {"target": "EditTarget:1", "include": ["material", "appearance"]},
+     lambda p: _small_edit_assignment(p, "small_edit_native_after"), None),
     ("param_delete", {"name": "LegalBatchA"}, _param_deleted("LegalBatchA"), None),
     ("param_delete", {"name": "LegalBatchB"}, _param_deleted("LegalBatchB"), None),
     ("param_delete", {"name": "NativePrefix"}, _param_deleted("NativePrefix"), None),
@@ -1439,7 +1493,12 @@ _OVERTURE = [
      lambda p: ({"cam", "mesh", "model", "sketch", "surface", "view"}
                 <= {f["family"] for f in p["families"]}
                 and all(f["tool_count"] >= 1 and f["entry_tool"] for f in p["families"])
-                and p["tool_count"] >= 150), None),
+                and p["tool_count"] >= 150
+                and any(row.get("tool") == "sys_execute_script"
+                        and row.get("enable_path") == (
+                            "Fusion Essentials Settings command -> MCP Server tab -> "
+                            "'Allow AI scripts (unsafe)' checkbox")
+                        for row in p["gated"]["tools"])), None),
     # the map publishes the address the server's socket bound: it has to be the one this run is
     # talking to, on the add-in's default port.
     ("sys_capability_map", {},

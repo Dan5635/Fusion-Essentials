@@ -2,9 +2,10 @@
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
 """MCP building block: edit an EXISTING sketch curve in place - trim, extend, break, split, fillet,
-chamfer, offset - instead of deleting and redrawing it. Every action is positional: a pick point
+chamfer, offset - instead of deleting and redrawing it. Those actions are positional: a pick point
 chooses the segment, end, quadrant or side, and sketch curve methods take that point in SKETCH space
-(SketchPoint.geometry is sketch space; worldGeometry is the separate world read). WRITES.
+(SketchPoint.geometry is sketch space; worldGeometry is the separate world read). construction,
+centerline and break_link set a flag on the curve and take no point. WRITES.
 """
 
 import math
@@ -22,7 +23,13 @@ from . import _sketch_detail
 
 app = adsk.core.Application.get()
 
-_ACTIONS = ("trim", "extend", "break", "split", "fillet", "chamfer", "offset")
+_ACTIONS = ("trim", "extend", "break", "split", "fillet", "chamfer", "offset", "construction",
+            "centerline", "break_link")
+# The two actions that set a flag on entity_one from 'state' and take no pick point.
+_STATE_ACTIONS = ("construction", "centerline")
+_BREAK_LINK = "break_link"
+# Every action that only assigns a flag on entity_one: no curve is added, removed, moved or resized.
+_FLAG_ACTIONS = _STATE_ACTIONS + (_BREAK_LINK,)
 _ACTION = _inputs.Choice("action", list(_ACTIONS), required=True,
                          description="What the pick point selects - trim: the nearest segment. "
                                      "extend: the nearest end. break: the crossings either side. "
@@ -125,14 +132,134 @@ def _refuse_non_line(refs):
     return ""
 
 
+def _set_state(sketch, act, ref, curve, state):
+    """Assign entity_one's construction or centerline flag and publish the flag as re-read."""
+    name = safe(lambda: sketch.name)
+    center = act == "centerline"
+    if center and _ref_kind(ref) != "line":
+        return error(f"centerline applies to a straight LINE; 'entity_one' = '{ref}' is a "
+                     f"{_ref_kind(ref)}.")
+    flag = (lambda: curve.isCenterLine) if center else (lambda: curve.isConstruction)
+    before = _common.read_flag(flag)
+    profiles_before = _common.counted(lambda: sketch.profiles.count)
+    out = {"action": act, "sketch": name, "entity_one": ref, "requested": state,
+           "state_before": before, "profile_count_before": profiles_before}
+    if before is state:
+        out.update(changed=False, state_after=before, profile_count_after=profiles_before,
+                   note=f"'{ref}' already reads {act}={state}; nothing was written.")
+        return ok(out)
+    try:
+        if center:
+            curve.isCenterLine = state
+        else:
+            curve.isConstruction = state
+    except Exception as e:
+        return error(f"Could not set {act}={state} on '{ref}' in sketch '{name}': {e}")
+    after = _common.read_flag(flag)
+    if after is None:
+        return error(f"{act}={state} was assigned to '{ref}' in sketch '{name}' but the flag did "
+                     "not read back, so the change is unverified. Read it with "
+                     "sketch_get(include_entities=true).")
+    if after is not state:
+        return error(f"{act} did not take - '{ref}' in sketch '{name}' still reads {after} after "
+                     f"{state} was assigned.")
+    out.update(changed=True, state_after=after,
+               profile_count_after=_common.counted(lambda: sketch.profiles.count),
+               note=f"'{ref}' {act} {before} -> {after}.")
+    return ok(out)
+
+
+def _curve_geometry(curve):
+    """(length in cm, position fingerprint) of one curve, either None where it did not read."""
+    return _common.measured(lambda: curve.length, 1.0, 7), _assert.entity_position(curve)
+
+
+def _break_link(sketch, ref, curve, f, unit):
+    """Assign entity_one's isReference False and publish the link flags as re-read."""
+    name = safe(lambda: sketch.name)
+    reference = _common.read_flag(lambda: curve.isReference)
+    linked = _common.read_flag(lambda: curve.isLinked)
+    if reference is None:
+        return error(f"'{ref}' in sketch '{name}' did not read its reference flag, so break_link "
+                     "wrote nothing. Read it with sketch_get(include_entities=true).")
+    geometry = _curve_geometry(curve)
+    constrained = _common.read_flag(lambda: sketch.isFullyConstrained)
+    profiles = _common.counted(lambda: sketch.profiles.count)
+    out = {"action": _BREAK_LINK, "sketch": name, "entity_one": ref,
+           "reference_before": reference, "linked_before": linked,
+           "fully_constrained_before": constrained, "profile_count_before": profiles}
+    if reference is False:
+        out.update(changed=False, reference_after=reference, linked_after=linked,
+                   fully_constrained_after=constrained, profile_count_after=profiles,
+                   note=f"'{ref}' is not a reference curve (reference=False), so there is no "
+                        "link to break; nothing was written.")
+        return ok(out)
+    # isReference takes False only: assigning True afterwards raises, so the write is one-way.
+    try:
+        curve.isReference = False
+    except Exception as e:
+        after = _common.read_flag(lambda: curve.isReference)
+        if after is False:
+            return error(f"Breaking the link of '{ref}' in sketch '{name}' raised: {e}. The link "
+                         f"IS broken - '{ref}' re-reads reference=False - and this tool cannot "
+                         "restore it.")
+        if after is None:
+            return error(f"Breaking the link of '{ref}' in sketch '{name}' raised: {e}. Its "
+                         "reference flag did not read back, so whether the link broke is not "
+                         "known. Read it with sketch_get(include_entities=true).")
+        return error(f"Could not break the link of '{ref}' in sketch '{name}': {e}. '{ref}' "
+                     "still links to its source (it re-reads reference=True).")
+    after = _common.read_flag(lambda: curve.isReference)
+    if after is None:
+        return error(f"reference=False was assigned to '{ref}' in sketch '{name}' but the flag did "
+                     "not read back, so the break is unverified. Read it with "
+                     "sketch_get(include_entities=true).")
+    if after is not False:
+        return error(f"break_link did not take - '{ref}' in sketch '{name}' still reads "
+                     "reference=True after False was assigned.")
+    linked_after = _common.read_flag(lambda: curve.isLinked)
+    geometry_after = _curve_geometry(curve)
+    length_after = _common.measured(lambda: curve.length, f, 4)
+    unread = None in geometry or None in geometry_after
+    if not unread and geometry != geometry_after:
+        length = round(geometry[0] * f, 4)
+        moved = "changed" if geometry[1] != geometry_after[1] else "unchanged"
+        return error(f"The link of '{ref}' in sketch '{name}' broke (reference True -> False) AND "
+                     f"the curve's geometry changed: length {length} -> {length_after} {unit}, "
+                     f"position {moved}. This tool cannot restore the link; read the curve with "
+                     "sketch_get(include_entities=true).")
+    note = f"'{ref}' reference True -> False. This tool cannot restore the link"
+    note += (", and the curve no longer follows its source." if linked_after is False else
+             f". 'linked' reads {linked_after} after the write, so whether the curve still "
+             "follows its source was not read.")
+    if unread:
+        note += (" geometry_unchanged is null: the curve's length or position did not read on "
+                 "both sides of the write.")
+    out.update(changed=True, reference_after=after, linked_after=linked_after,
+               geometry_unchanged=None if unread else True, length=length_after, units=unit,
+               fully_constrained_after=_common.read_flag(lambda: sketch.isFullyConstrained),
+               profile_count_after=_common.counted(lambda: sketch.profiles.count),
+               reversible=False, note=note)
+    return ok(out)
+
+
 def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entity_two: str = "",
             units: str = "mm", x1: float = None, y1: float = None, x2: float = None,
             y2: float = None, radius: float = None, distance: float = None,
-            distance_two: float = None, angle_deg: float = None, component: str = "") -> dict:
+            distance_two: float = None, angle_deg: float = None, component: str = "",
+            state=None) -> dict:
     """See TOOL_DESCRIPTION."""
     act, aerr = _ACTION.resolve(action)
     if aerr:
         return error(aerr)
+    if act in _STATE_ACTIONS and not isinstance(state, bool):
+        return error(f"'{act}' needs 'state' (true or false); got {state!r}.")
+    if act == _BREAK_LINK and state is not None and state is not False:
+        return error("break_link only breaks a link - this tool cannot re-establish one, so "
+                     f"'state' must be false or omitted (got {state!r}).")
+    if act not in _FLAG_ACTIONS and state is not None:
+        return error(f"'state' applies to construction/centerline only; '{act}' takes none "
+                     f"(got {state!r}).")
 
     unit = (units or "mm").strip().lower()
     k = _common.scale(unit)
@@ -157,6 +284,10 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
     e1, rerr = _resolve_curve(sketch, entity_one, "entity_one")
     if rerr:
         return error(rerr)
+    if act in _STATE_ACTIONS:
+        return _set_state(sketch, act, entity_one, e1, state)
+    if act == _BREAK_LINK:
+        return _break_link(sketch, entity_one, e1, f, unit)
     if x1 is None or y1 is None:
         return error(f"'{act}' needs the pick point x1,y1 (in 'units') - it chooses which segment, "
                      "end, quadrant or side of the curve the edit applies to.")
@@ -330,11 +461,22 @@ tool = (
     .add_input_property("angle_deg", {"type": "number",
             "description": "Chamfer angle from entity_one."})
     .add_input_property(*_inputs.UNITS.as_property())
+    .add_input_property("state", {"type": "boolean"})
     .strict_schema()
 )
 
+
+class _CurvesChangedUnlessFlag(_assert.SketchCurvesChanged):
+    """SketchCurvesChanged, not run for the flag actions: their handler re-reads the flag."""
+
+    def verify(self, kwargs, payload, before):
+        if payload.get("action") in _FLAG_ACTIONS:
+            return "", {}
+        return super().verify(kwargs, payload, before)
+
+
 item = Item.create_tool_item(tool=tool, write="write", handler=handler, run_on_main_thread=True,
-                             postconditions=[_assert.SketchCurvesChanged(
+                             postconditions=[_CurvesChangedUnlessFlag(
                                  scope_keys=("component",))])
 
 

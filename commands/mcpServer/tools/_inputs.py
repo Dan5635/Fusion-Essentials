@@ -18,8 +18,8 @@ from . import _joints   # the JointOrigin walk (all_joint_origins / find_joint_o
 from ._export import find_component as _find_component   # the one design-wide by-name component resolve
 
 MAP_BLURB = (
-    "the typed kinds (table above); resolve_inputs/apply_to_tool (wire an input spec), "
-    "length_value_input/expression_report (length or expression), "
+    "typed kinds; resolve_inputs/apply_to_tool; length_value_input/expression_report; "
+    "FeatureEditOperands (feature refs); "
     "world_construction_axis/axis_line_of (axis entity; world line), "
     "single_placement/entity_component/operand_in (assembly-context lift), "
     "operand_meta/placed_point_cm/placed_handle (world frame, handle), "
@@ -28,7 +28,7 @@ MAP_BLURB = (
 app = adsk.core.Application.get()
 
 
-# ── base ────────────────────────────────────────────────────────────────────
+# â”€â”€ base â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def schema_default(value) -> bool:
     """Whether `value` is a default worth carrying on the wire: a bool, a non-zero number or a
@@ -95,7 +95,7 @@ class InputKind:
         return raw, None
 
 
-# ── geometry handle (the ROOT-CAUSE-1 kind) ─────────────────────────────────
+# â”€â”€ geometry handle (the ROOT-CAUSE-1 kind) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # require -> (human label, predicate(entity) -> bool)
 _GEOMETRY_REQUIREMENTS = {
@@ -205,7 +205,7 @@ class GeometryHandleList(GeometryHandle):
         return ents, None
 
 
-# ── edge-loop / boundary reference (a SET of edge/curve handles treated as a boundary) ──────────
+# â”€â”€ edge-loop / boundary reference (a SET of edge/curve handles treated as a boundary) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _in_loop_order(ends):
     """Do the (start, end) vertex pairs, as listed, run end to end and close, either way round?"""
@@ -372,7 +372,7 @@ class EdgeLoopRef(GeometryHandleList):
                        "boundary_kind": "profile" if profile else "sketch_lines"}), None, True
 
 
-# ── body reference (name OR handle - bodies have auto-names, so a handle is the precise path) ───
+# â”€â”€ body reference (name OR handle - bodies have auto-names, so a handle is the precise path) â”€â”€â”€
 
 def _resolve_token_entity(des, s):
     """The entity `s` resolves to as an entityToken handle when it names exactly ONE, else None -
@@ -450,7 +450,7 @@ def _handle_refusal_suffix():
             "fresh handle.")
 
 
-# ── composite, self-healing geometry handle ──────────────────────────────────
+# â”€â”€ composite, self-healing geometry handle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # A handle find_geometry mints is '<entityToken>|@<kind>:<x>,<y>,<z>' (positions in cm, the API
 # unit); the token is the fast path and the '@' locator the stale-token fallback. A bare token still
@@ -769,7 +769,7 @@ def _refind_by_locator(des, locator):
     return best
 
 
-# ── placed operands: sketch entities and construction points, located in WORLD cm ───────────────
+# â”€â”€ placed operands: sketch entities and construction points, located in WORLD cm â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # The locator kinds read through a sketch transform and a placement: 'sketch_<type>' for every
 # sketch entity ref kind, and the construction point.
@@ -1401,7 +1401,7 @@ def _component_bodies(scope):
     return out
 
 
-# ── the component SCOPE a body NAME is narrowed by ──────────────────────────────────────────────
+# â”€â”€ the component SCOPE a body NAME is narrowed by â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # Fusion names every component's first body 'Body1', so a design-wide body name is shared BY
 # CONSTRUCTION. A consuming tool that declares a component-scope input hands its value here.
@@ -1675,7 +1675,7 @@ def MeshBodyRef(name, **kw):
     return BodyRef(name, kind="mesh", **kw)
 
 
-# ── feature reference (a TIMELINE object by name - the non-unique name space) ────────────────────
+# â”€â”€ feature reference (a TIMELINE object by name - the non-unique name space) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _timeline_objects(timeline):
     """Every timeline object the timeline can hand back, an unreadable one SKIPPED rather than
@@ -1868,8 +1868,12 @@ class FeatureRef(InputKind):
     MAP_HINT = ("a timeline feature by name, '<component>/<name>', or timeline index (refuses an "
                "ambiguous bare name)")
 
+    def __init__(self, name, description="", required=False, default=None, allow_group=False):
+        super().__init__(name, description=description, required=required, default=default)
+        self.allow_group = allow_group
+
     def contract_note(self) -> str:
-        return "A timeline feature: name, '<component>/<name>', or timeline index."
+        return "Feature name, '<component>/<name>', or timeline index."
 
     def _objects(self):
         """(timeline objects, error) for the active design."""
@@ -1897,6 +1901,10 @@ class FeatureRef(InputKind):
     def _entity_of(self, obj, want, label):
         """((entity, timeline name), error) for one resolved timeline object."""
         name = _common.safe(lambda: obj.name) or want
+        if self.allow_group and _common.safe(lambda: obj.isGroup):
+            return None, (f"{label}: '{name}' reads as a timeline group row, but the timeline's "
+                          f"group list holds no group matching '{want}'. Re-read "
+                          "design_get(include=['timeline']).")
         if _common.safe(lambda: obj.isGroup):
             return None, (f"{label}: '{name}' is a timeline GROUP, which has no feature entity. Name "
                           "the features inside it instead.")
@@ -1904,6 +1912,50 @@ class FeatureRef(InputKind):
         if entity is None:
             return None, f"{label}: '{name}' has no feature entity."
         return (entity, name), None
+
+    @staticmethod
+    def _groups_named(groups, want):
+        """Every timeline group `want` names: '<name>@<index>', a bare name, or a bare index."""
+        base, i = _parse_address(want)
+        low = want.strip().lower()
+        by_name = [g for g in groups if _name_key(g) == low]
+        if base is not None:
+            at = [g for g in groups if _index_of(g) == i and _name_key(g) == base.lower()]
+        else:
+            n = _ascii_int(want)
+            at = [g for g in groups if n is not None and _index_of(g) == n]
+        return at + [g for g in by_name if not any(g is h for h in at)]
+
+    def _group_of(self, walked, want, label):
+        """((group, name), error) for the collapsed group `want` names; (None, None) for none."""
+        objs, timeline = walked
+        groups = list(_common.iter_collection(_common.safe(lambda: timeline.timelineGroups)))
+        hits = self._groups_named(groups, want)
+        visible = _match_timeline_objects(objs, want)
+        if not hits:
+            _comp, plain = _split_qualified(_parse_address(want)[0] or want)
+            named = [g for g in groups if plain and _name_key(g) == plain.lower()]
+            if named and not visible:
+                return None, (f"{label}: '{want}' puts a component in front of the timeline group "
+                              f"'{plain}', and a group takes no component qualifier. Address it as "
+                              f"{_candidates_listed(named)} or by its timeline index.")
+            return None, None
+        feats = [o for o in visible if _common.safe(lambda o=o: o.isGroup) is not True]
+        if feats:
+            return None, (f"{label}: '{want}' names both a timeline group "
+                          f"({_candidates_listed(hits)}) and a feature "
+                          f"({_candidates_listed(feats)}) - name one exactly as listed.")
+        if len(hits) > 1:
+            return None, (f"{label}: '{want}' matches {len(hits)} timeline groups "
+                          f"({_candidates_listed(hits)}) - name one exactly as listed.")
+        name = _common.safe(lambda: hits[0].name) or want
+        collapsed = _common.safe(lambda: hits[0].isCollapsed)
+        if collapsed is not True:
+            reads = "does not read" if collapsed is None else f"reads {collapsed!r}"
+            return None, (f"{label}: the timeline group '{name}' must be collapsed for this "
+                          f"reference, and its collapsed flag {reads}. "
+                          "design_get(include=['timeline']) lists is_collapsed per group.")
+        return (hits[0], name), None
 
     def resolve(self, raw):
         s = (raw or "").strip() if isinstance(raw, str) else raw
@@ -1914,6 +1966,10 @@ class FeatureRef(InputKind):
         objs, err = self._objects()
         if err:
             return None, err
+        if self.allow_group:
+            found, gerr = self._group_of(objs, s, f"'{self.name}'")
+            if found or gerr:
+                return found, gerr
         obj, ferr = self._find_one(objs, s, f"'{self.name}'")
         if ferr:
             return None, ferr
@@ -1967,7 +2023,7 @@ class FeatureRefList(FeatureRef):
         return (ents, labels), None
 
 
-# ── section-analysis reference (generated name, outside the timeline) ───────────────────────────
+# â”€â”€ section-analysis reference (generated name, outside the timeline) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class SectionRef(InputKind):
     """A reference to one SectionAnalysis by its generated name from view_section cut/list."""
@@ -2028,7 +2084,7 @@ class SectionRef(InputKind):
         return (section, actual_name, names), None
 
 
-# ── ModeGuard: declare the design mode / base-feature scope an op needs ──────────────────────────
+# â”€â”€ ModeGuard: declare the design mode / base-feature scope an op needs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 MODE_PARAMETRIC = "parametric"
 MODE_DIRECT = "direct"
@@ -2087,7 +2143,7 @@ class ModeGuard:
         return f"Requires {self.requires} mode."
 
 
-# ── plane reference (MULTI-SOURCE: origin alias | construction name | face handle) ──────────────
+# â”€â”€ plane reference (MULTI-SOURCE: origin alias | construction name | face handle) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _ORIGIN_PLANES = {"xy": "xY", "xz": "xZ", "yz": "yZ", "top": "xY", "front": "xZ", "right": "yZ"}
 # 'xy plane' / 'XYPlane' name the same origin plane as the bare alias (whitespace is stripped before
@@ -2142,7 +2198,7 @@ class PlaneRef(InputKind):
     MAP_HINT = "a plane: xy/xz/yz alias, construction-plane name/handle, or planar-face handle"
 
     def contract_note(self) -> str:
-        return "xy/xz/yz/top/front/right; construction-plane name/handle or planar-face handle."
+        return "xy/xz/yz/top/front/right, plane name/handle, or planar-face handle."
 
     def resolve(self, raw, component=None):
         # `component` is the context the plane is resolved FOR - the active component unless the
@@ -2276,7 +2332,7 @@ class PlaneRef(InputKind):
                 f"{_common.named_with_remainder(cands)}.")
 
 
-# ── the 'surface' operand: a plane, or - where the API takes one - any face ─────────────────────
+# â”€â”€ the 'surface' operand: a plane, or - where the API takes one - any face â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _SURFACE_PLANE = PlaneRef("surface")
 _SURFACE_ANY_FACE = GeometryHandle("surface", require="face", required=False)
@@ -2325,7 +2381,7 @@ class SurfaceRef(InputKind):
         return resolve_surface(raw, operation in self.curved_ops)
 
 
-# ── axis reference (a world axis x/y/z OR an edge handle the axis runs along) ────────────────────
+# â”€â”€ axis reference (a world axis x/y/z OR an edge handle the axis runs along) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _AXIS_VECS = {"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}
 
@@ -2599,7 +2655,7 @@ class AxisRef(InputKind):
                       "line). Pass a world axis (x/y/z), a construction-axis name, or a handle at a "
                       "straight edge or sketch line.")
 
-    def resolve(self, raw):
+    def resolve(self, raw, component=None):
         s = (raw or "").strip() if isinstance(raw, str) else raw
         if not s:
             if self.required:
@@ -2618,7 +2674,7 @@ class AxisRef(InputKind):
             return None, "No active design to resolve the axis against."
         parsed = sketch_entity_ref(s)
         if parsed is not None:
-            return self._from_index(des, s, parsed)
+            return self._from_index(des, s, parsed, component)
         # Through _resolve_token_entity so a COMPOSITE handle resolves: it splits the '|@locator'
         # suffix off before findEntityByToken, which the whole string would never resolve.
         ent = _resolve_token_entity(des, s)
@@ -2630,7 +2686,7 @@ class AxisRef(InputKind):
                           "find_geometry for a fresh handle.")
         # Not a token: a construction axis by NAME, resolved by what resolves, so a long axis name
         # is never mistaken for a stale handle.
-        comp = _common.safe(lambda: _common.target_component(des))
+        comp = component if component is not None else _common.safe(lambda: _common.target_component(des))
         axis, aerr, names = _construction_by_name(self.name, comp, s)
         if aerr:
             return None, aerr
@@ -2651,18 +2707,30 @@ class AxisRef(InputKind):
         return None, (f"'{self.name}': '{s}' is not a world axis (x/y/z), a construction-axis name"
                       f"{where}, '<sketch>/line:<i>', or a resolvable {forms}{found}")
 
-    def _from_index(self, des, raw, parsed):
+    def _from_index(self, des, raw, parsed, component=None):
         """(tagged value, error) for a '<sketch>/line:<i>' ref - the line at that index NOW."""
         if not parsed[1].lower().startswith("line:"):
             return None, (f"'{self.name}': '{raw}' names a sketch {parsed[1].rpartition(':')[0]}; "
                           "an axis index ref is '<sketch>/line:<i>'.")
-        ent, err = resolve_sketch_entity(des, raw, "", None)
+        if component is not None and not isinstance(component, str):
+            name = parsed[0].strip().lower()
+            hits = [sketch for sketch in _common.iter_collection(
+                    _common.safe(lambda: component.sketches))
+                    if (_common.safe(lambda sk=sketch: sk.name) or "").strip().lower() == name]
+            if len(hits) != 1:
+                owner = _common.safe(lambda: component.name) or "the feature owner"
+                return None, (f"'{self.name}': sketch '{parsed[0]}' resolves to {len(hits)} exact "
+                              f"matches in '{owner}'; pass a fresh axis handle from find_geometry.")
+            ent = _common.resolve_entity_ref(hits[0], parsed[1])
+            err = None if ent is not None else f"sketch '{parsed[0]}' has no '{parsed[1]}'."
+        else:
+            ent, err = resolve_sketch_entity(des, raw, component or "", None)
         if err:
             return None, f"'{self.name}': {err}"
         return self._from_entity(ent)
 
 
-# ── distance / units (carries its own unit handling) ────────────────────────
+# â”€â”€ distance / units (carries its own unit handling) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class Distance(InputKind):
     """A length value in display 'units', resolved to Fusion's internal cm. The companion 'units'
@@ -2781,7 +2849,320 @@ class UnitField(InputKind):
         return f, None
 
 
-# ── enum / choice ───────────────────────────────────────────────────────────
+# â”€â”€ closed feature-edit reference operands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class FeatureEditOperands(InputKind):
+    """A references array resolved by the selected feature action's typed operand kind."""
+
+    json_type = "array"
+    MAP_HINT = "typed references for one closed feature edit action"
+
+    def schema(self, brief=False) -> dict:
+        return {"type": "array", "items": {"type": ["string", "object"]}, **self._desc(brief)}
+
+    def contract_note(self) -> str:
+        return "Typed forms from design_get definition."
+
+    def _feature_operand_in(self, label, entity, component, design):
+        """Apply placement safety, then use a native operand only for the feature's proven owner."""
+        placed, err = operand_in(label, entity, component, design)
+        if err or placed is None or _common.safe(lambda: placed.assemblyContext) is None:
+            return placed, err
+        native = _common._native_of(placed)
+        if native is placed:
+            return placed, None
+        owner = entity_component(native) or _common.safe(lambda: native.parentComponent)
+        if owner is None or _common.same_component(owner, component) is not True:
+            return placed, None
+        return native, None
+
+    def resolve_for(self, raw, feature, action, support):
+        """Resolve a nonempty role list through its existing typed input kind."""
+        feature_type = _common.safe(lambda: feature.objectType)
+        rows = support.get(feature_type, support)
+        row = rows.get(action)
+        if row is not None and isinstance(row.get("variants"), dict):
+            variants = []
+            for variant in row["variants"].values():
+                value = _common.safe(lambda variant=variant: getattr(feature, variant["when_member"]))
+                expected = _common.safe(lambda variant=variant: getattr(
+                    adsk.fusion.FilletFeatureTypes, variant["when_enum"]))
+                if value is not None and expected is not None and value == expected:
+                    variants.append(variant)
+            row = variants[0] if len(variants) == 1 else None
+        if row is None or row.get("reference") is None:
+            return None, f"action='{action}' does not take references for this feature."
+        if not isinstance(raw, list) or not raw:
+            return None, "'references' needs a nonempty JSON array for this action."
+        if len(raw) > 64:
+            return None, f"'references' has {len(raw)} items; the bounded reader and editor cap is 64."
+        kind = row["reference"]
+        if row["cardinality"] == "one" and len(raw) != 1:
+            return None, f"'references' needs exactly one item for action='{action}' (got {len(raw)})."
+        if kind == "source_body_names":
+            names = [value.strip() if isinstance(value, str) else "" for value in raw]
+            if not all(names):
+                return None, ("'references' must be non-empty source root body names (strings) "
+                              f"for action='{action}'.")
+            if len({name.lower() for name in names}) != len(names):
+                return None, "'references' names the same source body more than once."
+            return names, None
+        # A construction datum answers `component`; a feature and a joint origin `parentComponent`.
+        component = (_common.safe(lambda: feature.parentComponent)
+                     or _common.safe(lambda: feature.component))
+        design = _common.design()
+        if component is None or design is None:
+            return None, "The feature owner or active design is unreadable; reacquire the feature."
+        if kind == "axis":
+            resolver = AxisRef("references", entity_only=True)
+            values = []
+            for i, value in enumerate(raw):
+                resolved, err = resolver.resolve(value, component=component)
+                if err:
+                    return None, f"'references'[{i}]: {err}"
+                if not isinstance(resolved, (tuple, list)) or len(resolved) != 2:
+                    return None, f"'references'[{i}] must resolve to a linear axis entity."
+                if resolved[0] == "world":
+                    entity = world_construction_axis(component, value)
+                    if entity is None:
+                        return None, f"'references'[{i}] has no readable owner origin axis."
+                elif resolved[0] == "edge":
+                    entity = resolved[1]
+                else:
+                    return None, f"'references'[{i}] must resolve to a linear axis entity."
+                entity, err = operand_in(f"'references'[{i}]", entity, component, design)
+                if err:
+                    return None, err
+                values.append(entity)
+            return values[0], None
+        if kind == "plane":
+            resolved, err = PlaneRef("references", required=True).resolve(
+                raw[0], component=component)
+            if err:
+                return None, f"'references'[0]: {err}"
+            resolved, err = operand_in("'references'[0]", resolved, component, design)
+            return (resolved, None) if err is None else (None, err)
+        if kind == "plane_pair":
+            roles = ("first_plane", "second_plane")
+            if not isinstance(raw[0], dict) or set(raw[0]) != set(roles):
+                got = sorted(map(str, raw[0])) if isinstance(raw[0], dict) else type(raw[0]).__name__
+                return None, ("'references'[0] must be an object with exactly the keys first_plane "
+                              f"and second_plane (got {got}).")
+            planes = []
+            for role in roles:
+                resolved, err = PlaneRef(role, required=True).resolve(raw[0][role],
+                                                                      component=component)
+                if err is None:
+                    resolved, err = operand_in(f"'{role}'", resolved, component, design)
+                if err:
+                    return None, f"'references'[0]: {err}"
+                planes.append(resolved)
+            keys = [_common.native_identity(plane) for plane in planes]
+            if None in keys:
+                return None, "'references'[0] names a plane whose identity is unreadable."
+            if keys[0] == keys[1]:
+                return None, ("'references'[0]: first_plane and second_plane name the same plane; "
+                              "pass two different planes.")
+            return planes, None
+        if kind in ("point", "joint_geometry"):
+            if not isinstance(raw[0], str):
+                return None, ("'references'[0] must be a reference string, got "
+                              f"{type(raw[0]).__name__}.")
+            resolver = (PointRef("references", required=True) if kind == "point" else
+                        GeometryHandle("references", require="any", required=True))
+            resolved, err = resolver.resolve(raw[0])
+            if err:
+                return None, f"'references'[0]: {err}"
+            if kind == "joint_geometry" and not _is_point_entity(resolved) and not any(
+                    _isinstance(resolved, native) for native in (adsk.fusion.BRepFace,
+                                                                 adsk.fusion.BRepEdge)):
+                return None, (f"'references'[0] points at a {type(resolved).__name__}; a joint "
+                              "origin anchors on a face, edge, vertex or point handle.")
+            resolved, err = operand_in("'references'[0]", resolved, component, design)
+            return (resolved, None) if err is None else (None, err)
+        if kind == "faces":
+            resolver = GeometryHandleList("references", require="face", json_array=True, required=True)
+            resolved, err = resolver.resolve(raw)
+            if err:
+                return None, err
+            placed = []
+            place = (self._feature_operand_in if feature_type in (
+                "adsk::fusion::DraftFeature", "adsk::fusion::ShellFeature") else operand_in)
+            for i, value in enumerate(resolved):
+                entity, err = place(f"'references'[{i}]", value, component, design)
+                if err:
+                    return None, err
+                placed.append(entity)
+            keys = [_common.native_identity(value) for value in placed]
+            if any(key is None for key in keys):
+                return None, "'references' contains a face whose identity is unreadable."
+            if len(set(keys)) != len(keys):
+                return None, "'references' contains the same face more than once."
+            return placed, None
+        if kind == "profiles":
+            resolver = ProfileRefList("references", required=True)
+            resolved, err = resolver.resolve(raw)
+            if err:
+                return None, err
+            placed = []
+            for i, value in enumerate(resolved):
+                entity, err = operand_in(f"'references'[{i}]", value, component, design)
+                if err:
+                    return None, err
+                placed.append(entity)
+            keys = [_common.native_identity(value) for value in placed]
+            if any(key is None for key in keys):
+                return None, "'references' contains a profile whose identity is unreadable."
+            if len(set(keys)) != len(keys):
+                return None, "'references' contains the same profile more than once."
+            return placed, None
+        if kind == "path":
+            if all(isinstance(value, str) and sketch_entity_ref(value) for value in raw):
+                curves = []
+                for i, value in enumerate(raw):
+                    entity, err = resolve_sketch_entity(
+                        design, value, resolved_component=component)
+                    if err:
+                        return None, f"'references'[{i}]: {err}"
+                    if not _isinstance(entity, adsk.fusion.SketchCurve):
+                        return None, f"'references'[{i}] must resolve to a sketch curve."
+                    entity, err = operand_in(f"'references'[{i}]", entity, component, design)
+                    if err:
+                        return None, err
+                    curves.append(entity)
+                keys = [_common.native_identity(value) for value in curves]
+                if any(key is None for key in keys):
+                    return None, "'references' contains a sketch curve whose identity is unreadable."
+                if len(set(keys)) != len(keys):
+                    return None, "'references' contains the same sketch curve more than once."
+                collection = adsk.core.ObjectCollection.create()
+                for curve in curves:
+                    collection.add(curve)
+                resolved = _common.safe(lambda: component.features.createPath(collection, False))
+                count = _common.counted(lambda: resolved.count) if resolved is not None else None
+                got = ([_common.native_identity(_common.safe(lambda i=i: resolved.item(i).entity))
+                        for i in range(count)] if count is not None else [])
+                if count != len(curves) or got != keys:
+                    return None, "The exact sketch curve sequence did not build a matching path."
+                for i, curve in enumerate(curves):
+                    checked, err = operand_in(f"'references'[{i}]", curve, component, design)
+                    if err or _common.native_identity(checked) != keys[i]:
+                        return None, err or f"'references'[{i}] changed owner while building the path."
+                return resolved, None
+            path_raw = raw[0] if len(raw) == 1 and isinstance(raw[0], str) \
+                and raw[0].strip().lower().startswith("sketch:") else raw
+            resolved, _label, err = _common.build_path(component, path_raw)
+            if err:
+                return None, err
+            count = _common.counted(lambda: resolved.count)
+            if count is None or count < 1 or count > 64:
+                return None, "'references' path must contain between 1 and 64 readable members."
+            for i in range(count):
+                entity = _common.safe(lambda i=i: resolved.item(i).entity)
+                if entity is None:
+                    return None, f"'references' path member {i} is unreadable."
+                entity, err = operand_in(f"'references' path member {i}", entity, component, design)
+                if err:
+                    return None, err
+            return resolved, None
+        if kind == "edges":
+            resolver = GeometryHandleList("references", require="edge", json_array=True, required=True)
+            resolved, err = resolver.resolve(raw)
+            if err:
+                return None, err
+            placed = []
+            for i, value in enumerate(resolved):
+                entity, err = operand_in(f"'references'[{i}]", value, component, design)
+                if err:
+                    return None, err
+                placed.append(entity)
+            keys = [_common.native_identity(value) for value in placed]
+            if any(key is None for key in keys):
+                return None, "'references' contains an edge whose identity is unreadable."
+            if len(set(keys)) != len(keys):
+                return None, "'references' contains the same edge more than once."
+            return placed, None
+        if kind == "boundary_curve":
+            resolver = GeometryHandle("references", required=True)
+            entity, err = resolver.resolve(raw[0])
+            if err:
+                return None, f"'references'[0]: {err}"
+            object_type = _common.safe(lambda: entity.objectType)
+            if object_type != "adsk::fusion::SketchCircle":
+                return None, (f"'references'[0] must be a SketchCircle for action='{action}'; "
+                              "use find_geometry to reacquire the measured patch boundary.")
+            if _common.safe(lambda: entity.parentSketch) is None:
+                return None, "'references'[0] has no readable source sketch."
+            resolved, err = operand_in("'references'[0]", entity, component, design)
+            return (resolved, None) if err is None else (None, err)
+        if kind == "surface_bodies":
+            resolver = BodyRef("references", kind="surface", required=True)
+            placed = []
+            for i, value in enumerate(raw):
+                entity, err = resolver.resolve(value, scope=component)
+                if err:
+                    return None, f"'references'[{i}]: {err}"
+                entity, err = operand_in(f"'references'[{i}]", entity, component, design)
+                if err:
+                    return None, err
+                placed.append(entity)
+            keys = [_common.native_identity(value) for value in placed]
+            if any(key is None for key in keys):
+                return None, "'references' contains a surface body whose identity is unreadable."
+            if len(set(keys)) != len(keys):
+                return None, "'references' contains the same surface body more than once."
+            return placed, None
+        if kind == "bodies":
+            resolver = BodyRefList("references", kind="brep", required=True)
+            resolved, err = resolver.resolve(raw)
+            if err:
+                return None, err
+            placed = []
+            for i, value in enumerate(resolved):
+                entity, err = operand_in(f"'references'[{i}]", value, component, design)
+                if err:
+                    return None, err
+                placed.append(entity)
+            keys = [_common.native_identity(value) for value in placed]
+            if any(key is None for key in keys):
+                return None, "'references' contains a body whose identity is unreadable."
+            if len(set(keys)) != len(keys):
+                return None, "'references' contains the same body more than once."
+            return placed, None
+        if kind == "split_tool":
+            if len(raw) != 1 or not isinstance(raw[0], str):
+                return None, "'references'[0] must be one body, face, curve or construction plane handle."
+            value = raw[0]
+            resolvers = (PlaneRef("references"), BodyRef("references", kind="brep"),
+                         GeometryHandle("references", require="any", required=True))
+            resolved, failures = None, []
+            for resolver in resolvers:
+                candidate, err = resolver.resolve(value, component=component) if isinstance(resolver, PlaneRef) else resolver.resolve(value)
+                if err:
+                    failures.append(err)
+                    continue
+                resolved = candidate
+                break
+            if resolved is None:
+                return None, f"'references'[0] must resolve to one supported splitting tool: {failures[-1]}"
+            split_types = tuple(t for t in (
+                getattr(adsk.fusion, "BRepFace", None),
+                getattr(adsk.fusion, "SketchCurve", None),
+                getattr(adsk.fusion, "Path", None),
+                getattr(adsk.fusion, "ConstructionPlane", None),
+            ) if isinstance(t, type))
+            if not (_isinstance(resolved, adsk.fusion.BRepBody)
+                    or split_types and _isinstance(resolved, split_types)):
+                return None, ("'references'[0] must resolve to a BRep body, face, sketch curve, path, "
+                              "or construction plane.")
+            resolved, err = operand_in("'references'[0]", resolved, component, design)
+            if err:
+                return None, err
+            return resolved, None
+        return None, f"The typed reference kind '{kind}' is not supported here."
+
+
+# â”€â”€ enum / choice â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class Choice(InputKind):
     """One of a fixed set of string options. Emits a JSON-schema `enum` so the legal values are
@@ -2889,7 +3270,7 @@ class SheetMetalRuleRef(InputKind):
         return (hits[0], scope), None
 
 
-# ── occurrence reference (an assembly instance, by its entityToken handle or a path/name) ─────────
+# â”€â”€ occurrence reference (an assembly instance, by its entityToken handle or a path/name) â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # Neither an occurrence's name nor its fullPathName is unique, so the entityToken is the FIRST form
 # tried and every by-string form refuses an ambiguity instead of first-matching.
@@ -3105,7 +3486,7 @@ class OccurrenceRefList(InputKind):
         return out, None
 
 
-# ── joint-origin reference (a reusable WCS frame, by handle OR name; ambiguity refused) ───────────────
+# â”€â”€ joint-origin reference (a reusable WCS frame, by handle OR name; ambiguity refused) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # Composes the ONE JO walk in _joints (all_joint_origins / find_joint_origins_by_name /
 # jo_assembly_proxy) - it never re-rolls the traversal.
@@ -3145,7 +3526,7 @@ class JointOriginRef(InputKind):
             return "A Joint Origin 'handle' (assembly_get) or name; its owning component's frame."
         return "A Joint Origin 'handle' (assembly_get joint_origins) or name."
 
-    def resolve(self, raw):
+    def resolve(self, raw, component=None):
         s = (raw or "").strip() if isinstance(raw, str) else raw
         if not s:
             if self.required:
@@ -3165,13 +3546,57 @@ class JointOriginRef(InputKind):
                     # MEASURED: an assembly_get JO handle round-trips to the PROXY, not the native
                     # - one handle per occurrence, each with its own world origin - so the native
                     # selector steps back to nativeObject, which reads None on a native already.
-                    return _common.safe(lambda: ent.nativeObject) or ent, None
+                    native = _common.safe(lambda: ent.nativeObject) or ent
+                    if component is not None:
+                        owners = [owner for candidate, owner in _joints.all_joint_origins(des)
+                                  if candidate == native]
+                        if len(owners) != 1:
+                            return None, (f"'{self.name}': that Joint Origin handle's owning "
+                                          "component could not be identified uniquely.")
+                        same = _common.same_component(owners[0], component)
+                        if same is None:
+                            return None, (f"'{self.name}': that Joint Origin handle's owning "
+                                          "component could not be compared with the requested component.")
+                        if not same:
+                            return None, (f"'{self.name}': that Joint Origin handle does not identify "
+                                          "a readable Joint Origin on the requested component.")
+                    return native, None
+                if component is not None:
+                    return None, (f"'{self.name}': component scoping requires native=True.")
                 return ent, None
             return None, (f"'{self.name}': that handle points at a {type(ent).__name__}, not a Joint "
                           "Origin. Use assembly_get(include=['joint_origins']) for a JO handle.")
+        if component is not None and not self.native:
+            return None, f"'{self.name}': component scoping requires native=True."
+        if component is not None and ":" not in s:
+            matches = _joints.find_joint_origins_by_name(des, s)
+            scoped, unreadable = [], False
+            for jo, owner in matches:
+                same = _common.same_component(owner, component)
+                if same is None:
+                    unreadable = True
+                elif same:
+                    scoped.append(jo)
+            if unreadable:
+                return None, (f"'{self.name}': a matching Joint Origin's owning component could not "
+                              "be identified.")
+            if len(scoped) == 1:
+                return scoped[0], None
+            if len(scoped) > 1:
+                return None, (f"'{self.name}': '{s}' names {len(scoped)} Joint Origins on the "
+                              "requested component; rename them or pass a handle.")
+            return None, (f"'{self.name}': no Joint Origin named '{s}' belongs to the requested "
+                          "component.")
         # 2) a qualified '<occurrence>:<JO name>' (the disambiguating form)
         jo, qerr = self._resolve_qualified(des, s)
         if jo is not None:
+            if component is not None:
+                head = s.rpartition(":")[0].strip()
+                occ, _ = _resolve_occurrence(self.name, head)
+                owner = _common.safe(lambda: occ.component) if occ is not None else None
+                same = _common.same_component(owner, component)
+                if same is not True:
+                    return None, f"'{self.name}': the Joint Origin is not on the requested component."
             return jo, None
         if qerr:
             return None, qerr
@@ -3270,7 +3695,7 @@ class JointOriginRef(InputKind):
                       "Use assembly_get(include=['joint_origins']) to list them.")
 
 
-# ── target reference (MULTI-SOURCE: a thing to MEASURE/COLOUR - body/face/mesh/occurrence/component/design) ──
+# â”€â”€ target reference (MULTI-SOURCE: a thing to MEASURE/COLOUR - body/face/mesh/occurrence/component/design) â”€â”€
 
 # Composes the existing resolvers (_resolve_token_entity / _resolve_occurrence / _resolve_any_body /
 # _export.find_component) rather than re-implementing them.
@@ -3470,7 +3895,7 @@ class TargetRefList(InputKind):
         return out, None
 
 
-# ── profile reference (a STABLE handle, or a {sketch, profile_index} legacy selector) ────────────
+# â”€â”€ profile reference (a STABLE handle, or a {sketch, profile_index} legacy selector) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _profile_sketch(name, sketch_name, component="", scope_input=None):
     """(sketch, error) for the sketch a profile selector addresses - a NAME resolving DESIGN-WIDE
@@ -3554,7 +3979,7 @@ def _resolve_profile_legacy(name, sketch_name, profile_index, allow_text=False, 
     return profiles.item(idx), None
 
 
-# ── sketch TEXT as a profile input ───────────────────────────────────────────────────────────────
+# â”€â”€ sketch TEXT as a profile input â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # A SketchText carries no Profile of its own, and needs none: EmbossFeatures.createInput and
 # ExtrudeFeatures.createInput each document the SketchText itself as an accepted profile argument,
@@ -3704,7 +4129,7 @@ class ProfileRef(InputKind):
         return {"type": ["string", "object"], **self._desc(brief)}
 
     def contract_note(self) -> str:
-        return "A profile 'handle' or {sketch, profile_index}." + self._text_note()
+        return "Profile handle or {sketch, profile_index}." + self._text_note()
 
     def resolve(self, raw, component=""):
         if raw in (None, "", []):
@@ -3747,7 +4172,7 @@ class ProfileRefList(ProfileRef):
         return out, None
 
 
-# ── loft sections and loft end conditions ───────────────────────────────────
+# â”€â”€ loft sections and loft end conditions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def sketch_entity_ref(raw):
     """('<sketch>', '<type>:<index>') for a '<sketch>/<type>:<index>' sketch-entity ref, else None."""
@@ -3774,11 +4199,20 @@ def _index_range(sketch, ref):
     return f"its {kind} ids run {kind}:0 to {kind}:{n - 1}" if n else f"it holds no {kind}"
 
 
-def resolve_sketch_entity(design, raw, component="", scope_input="component"):
+def resolve_sketch_entity(design, raw, component="", scope_input="component", resolved_component=None):
     """(entity, error) for a '<sketch>/<type>:<index>' ref in `component`, else design-wide."""
     from . import _sketch_detail          # it imports this module
     name, ref = sketch_entity_ref(raw)
-    if scope_input:
+    if resolved_component is not None:
+        sketch, ambiguous = _common.find_sketch_in(
+            design, name, resolved_component, _common.safe(lambda: resolved_component.name) or "",
+            input_name=scope_input)
+        if sketch is None:
+            return None, (f"'{raw}' does not identify one sketch in the feature's own component. "
+                          "The path must belong to that component; use references with its "
+                          "'<sketch>/line:<index>' from sketch_get(include_entities=true), "
+                          "or a geometry handle from find_geometry.")
+    elif scope_input:
         sketch, ambiguous = _sketch_detail.scoped_sketch(design, name, component,
                                                          input_name=scope_input)
     else:
@@ -3825,7 +4259,7 @@ class SketchLineRef(InputKind):
         return ent, None
 
 
-# ── point reference (a vertex, sketch point or construction point) ──────────────────────────────
+# â”€â”€ point reference (a vertex, sketch point or construction point) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # The accepted row of the operand matrix, as every PointRef refusal ends.
 _POINT_FORMS = ("a vertex, sketch point or construction point 'handle', '<sketch>/point:<i>', "
@@ -3867,7 +4301,7 @@ class PointRef(InputKind):
         return ("A point 'handle', '<sketch>/point:<i>' or '<sketch>/circle|arc:<i>:center' (index "
                 "read at call time), or a construction point name.")
 
-    def resolve(self, raw, component=""):
+    def resolve(self, raw, component="", owner_component=None):
         s = raw.strip() if isinstance(raw, str) else raw
         if not s:
             if self.required:
@@ -3880,10 +4314,22 @@ class PointRef(InputKind):
             return None, "No active design to resolve the point against."
         parts = _point_index_parts(s)
         if parts is not None:
+            if owner_component is not None:
+                return None, (f"'{self.name}': owner_component applies only to a construction point "
+                              "name, not a sketch index reference.")
             return self._from_index(des, s, parts, component)
         ent = _resolve_token_entity(des, s)
         if ent is not None:
             if _is_point_entity(ent):
+                if owner_component is not None:
+                    owner = entity_component(ent)
+                    same = _common.same_component(owner, owner_component)
+                    if same is None:
+                        return None, (f"'{self.name}': the point handle's owning component could not "
+                                      "be compared with the requested component.")
+                    if not same:
+                        return None, (f"'{self.name}': the point handle does not belong to the "
+                                      "requested component.")
                 return ent, None
             return None, (f"'{self.name}': that handle names a {type(ent).__name__}, not a point - "
                           f"pass {_POINT_FORMS}.")
@@ -3891,7 +4337,7 @@ class PointRef(InputKind):
             why = _LAST_REFIND_REFUSAL or "no entity answers its token or its locator"
             return None, (f"'{self.name}': that handle did not resolve - {why}. Re-run "
                           "find_geometry for a fresh handle.")
-        return self._by_name(des, s)
+        return self._by_name(des, s, owner_component)
 
     def _from_index(self, des, raw, parts, component):
         """(point, error) for a sketch index ref: a point, or a circle's or arc's centre point."""
@@ -3911,9 +4357,10 @@ class PointRef(InputKind):
                       + (f" with anchor '{anchor}'" if anchor else "")
                       + f", not a point - pass {_POINT_FORMS}.")
 
-    def _by_name(self, des, s):
-        """(construction point, error) for a NAME in the active component."""
-        comp = _common.safe(lambda: _common.target_component(des))
+    def _by_name(self, des, s, owner_component=None):
+        """(construction point, error) for a NAME in the active or explicitly selected component."""
+        comp = (owner_component if owner_component is not None else
+                _common.safe(lambda: _common.target_component(des)))
         point, perr, names = _construction_by_name(self.name, comp, s, "constructionPoints",
                                                    "point", "construction points")
         if perr:
@@ -4115,7 +4562,7 @@ class LoftEndCondition(Choice):
                 f"{LOFT_SECTION_KINDS[kind]}{tail}")
 
 
-# ── sketch reference (a SKETCH by name, design-wide - the non-unique name space) ─────────────────
+# â”€â”€ sketch reference (a SKETCH by name, design-wide - the non-unique name space) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # A COUNT cap, not a cut of the joined string: a duplicated name comes back owner-qualified
 # ('Plate (Alpha)'), so a character cut lands inside a name and prints an unpassable fragment.
@@ -4181,7 +4628,7 @@ class SketchRefList(InputKind):
         return out, None
 
 
-# ── drawing view-curve point (a curve index and one of its points) ──────────
+# â”€â”€ drawing view-curve point (a curve index and one of its points) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class CurvePointRef(InputKind):
     """A point of a drawing view curve as '<curve_index>:<start|end|mid|center>'."""
@@ -4222,7 +4669,7 @@ class CurvePointRef(InputKind):
                       f"has no {key} point; it has {', '.join(has) or 'none'}.")
 
 
-# ── the resolver: resolve all declared inputs at once ───────────────────────
+# â”€â”€ the resolver: resolve all declared inputs at once â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def resolve_inputs(spec, raw_args):
     """(values_dict, error) for a list of InputKinds against the raw MCP args - a UnitField is
@@ -4274,7 +4721,7 @@ def contract_block(spec, header="INPUTS") -> str:
     return "\n".join(lines)
 
 
-# ── shared input singletons (the recurring enums, defined ONCE) ──────────────────────────────────
+# â”€â”€ shared input singletons (the recurring enums, defined ONCE) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # A tool wires one with `.add_input_property(*_inputs.UNITS.as_property())`; the factories below let
 # it tweak the default or description while still sharing the option set.
@@ -4309,3 +4756,59 @@ def joint_motion(name="joint_type", options=JOINT_MOTIONS, default="rigid",
                  description="The joint motion type."):
     """A Choice for a joint motion type. Pass `options=` to restrict to a tool's supported subset."""
     return Choice(name, list(options), default=default, description=description)
+
+
+class SketchDimensionRef(InputKind):
+    """An existing sketch dimension by its parameter name, among ONE sketch's own dimensions."""
+
+    MAP_HINT = "an existing sketch dimension by its parameter name from sketch_get, within one sketch"
+
+    def resolve(self, raw, sketch):
+        """(dimension, error): the one dimension of `sketch` whose parameter is named `raw`."""
+        value = raw.strip() if isinstance(raw, str) else ""
+        sname = _common.safe(lambda: sketch.name)
+        pointer = (f"sketch_get(sketch_name='{sname}', include_entities=true) lists this sketch's "
+                   "dimension names.")
+        if not value:
+            return None, f"'{self.name}' needs an existing dimension's parameter name. {pointer}"
+        hits, unread = [], 0
+        for dim in _common.iter_collection(_common.safe(lambda: sketch.sketchDimensions)):
+            pname = _common.safe(lambda dim=dim: dim.parameter.name)
+            if not isinstance(pname, str):
+                unread += 1
+            elif pname == value:
+                hits.append(dim)
+        if len(hits) == 1:
+            return hits[0], None
+        if hits:
+            return None, (f"'{self.name}' = '{value}' is ambiguous: {len(hits)} dimensions of "
+                          f"sketch '{sname}' have a parameter of that name. {pointer}")
+        blind = (f" {unread} dimension(s) of this sketch have a parameter that did not read."
+                 if unread else "")
+        return None, (f"'{self.name}' = '{value}' names no dimension of sketch '{sname}': "
+                      f"{self._elsewhere(value)}.{blind} {pointer}")
+
+    @staticmethod
+    def _elsewhere(value):
+        """Where the design holds a parameter named `value`, as one clause read off the design."""
+        design = _common.design()
+        user = _common.safe(lambda: design.userParameters.itemByName(value))
+        if user is not None and _common.safe(lambda: user.name) == value:
+            return "it is a user parameter, not a sketch dimension"
+        listed = _common.safe(lambda: design.allParameters)
+        if _common.counted(lambda: listed.count) is None:
+            return "the design's parameters did not read, so where that name lives is unknown"
+        for p in _common.iter_collection(listed):
+            if _common.safe(lambda p=p: p.name) != value:
+                continue
+            owner = _common.safe(lambda p=p: p.createdBy)
+            if owner is None:
+                return "a parameter of that name exists but its maker did not read"
+            oname = _common.safe(lambda: owner.name)
+            if type(owner).__name__ != "Sketch":
+                return (f"that parameter was created by {type(owner).__name__} '{oname}', not by "
+                        "a sketch")
+            comp = _common.safe(lambda: owner.parentComponent.name)
+            return (f"that parameter was created by sketch '{oname}' (component '{comp}') - "
+                    f"address it with sketch_name='{oname}'")
+        return "the design lists no parameter of that name"

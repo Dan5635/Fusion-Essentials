@@ -4,7 +4,7 @@ _Auto-generated from the live registry by `tests/gen_posture.py`. Do not edit by
 
 Every tool declares a write= kind (read / write / destructive); the MCP readOnlyHint / destructiveHint annotations derive from it. That machine-checked fact decides which tools are safe to auto-run under Claude Code. This file maps every tool to a posture bucket and emits ready-to-paste `settings.json` presets. Rules target the MCP wire name `mcp__fusion-essentials__<tool>`.
 
-**Tools:** 213  |  read: 35  |  write: 157  |  destructive: 20  |  script-hatch: 1
+**Tools:** 215  |  read: 35  |  write: 159  |  destructive: 20  |  script-hatch: 1
 
 ## Posture buckets
 
@@ -75,7 +75,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__view_screenshot_multi`
 - `mcp__fusion-essentials__workspace_orient`
 
-### write - ask (157)
+### write - ask (159)
 
 - `mcp__fusion-essentials__appearance_set`
 - `mcp__fusion-essentials__assembly_capture_position`
@@ -164,6 +164,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__model_draft`
 - `mcp__fusion-essentials__model_edit_body`
 - `mcp__fusion-essentials__model_edit_extrude`
+- `mcp__fusion-essentials__model_edit_feature`
 - `mcp__fusion-essentials__model_edit_loft`
 - `mcp__fusion-essentials__model_edit_sweep`
 - `mcp__fusion-essentials__model_emboss`
@@ -211,6 +212,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__sketch_copy`
 - `mcp__fusion-essentials__sketch_create`
 - `mcp__fusion-essentials__sketch_dimension`
+- `mcp__fusion-essentials__sketch_edit`
 - `mcp__fusion-essentials__sketch_edit_curve`
 - `mcp__fusion-essentials__sketch_insert_svg`
 - `mcp__fusion-essentials__sketch_move`
@@ -394,6 +396,7 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__model_draft",
       "mcp__fusion-essentials__model_edit_body",
       "mcp__fusion-essentials__model_edit_extrude",
+      "mcp__fusion-essentials__model_edit_feature",
       "mcp__fusion-essentials__model_edit_loft",
       "mcp__fusion-essentials__model_edit_sweep",
       "mcp__fusion-essentials__model_emboss",
@@ -441,6 +444,7 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__sketch_copy",
       "mcp__fusion-essentials__sketch_create",
       "mcp__fusion-essentials__sketch_dimension",
+      "mcp__fusion-essentials__sketch_edit",
       "mcp__fusion-essentials__sketch_edit_curve",
       "mcp__fusion-essentials__sketch_insert_svg",
       "mcp__fusion-essentials__sketch_move",
@@ -596,6 +600,7 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__model_draft",
       "mcp__fusion-essentials__model_edit_body",
       "mcp__fusion-essentials__model_edit_extrude",
+      "mcp__fusion-essentials__model_edit_feature",
       "mcp__fusion-essentials__model_edit_loft",
       "mcp__fusion-essentials__model_edit_sweep",
       "mcp__fusion-essentials__model_emboss",
@@ -643,6 +648,7 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__sketch_copy",
       "mcp__fusion-essentials__sketch_create",
       "mcp__fusion-essentials__sketch_dimension",
+      "mcp__fusion-essentials__sketch_edit",
       "mcp__fusion-essentials__sketch_edit_curve",
       "mcp__fusion-essentials__sketch_insert_svg",
       "mcp__fusion-essentials__sketch_move",

@@ -252,6 +252,8 @@ tool = (
     .strict_schema()
 )
 
+# Images has no count/item getter for an inserted-image read-back.
+# Export the sheet to check; a retry can insert a duplicate.
 item = Item.create_tool_item(
     tool=tool, write="write", handler=handler, run_on_main_thread=True,
     verification=Verification(kind="gap", defect_id="DRAW-2"))

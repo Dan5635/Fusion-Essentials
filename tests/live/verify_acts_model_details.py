@@ -5,9 +5,12 @@
 
 
 from verify_core import (
-    EXPORT_DIR, _RECALL, _axis_aligned_face_at, _box, _chamfered, _ctx_get, _cut_a_chain, _cut_exactly, _marker_parked_after, _datum_plane, _extent_measured, _extruded, _fg, _fgn, _filleted, _full_rounded, _holes_recognized, _holes_windowed, _made_component, _made_component_inactive, _matched, _measured, _mirrored, _moved, _near, _needs, _offset_faces, _param_added, _param_deleted, _param_set_to, _path_count, _piped, _pocket_boss, _pockets_recognized, _prof, _recall, _recognized_cbore_walls, _recognized_pocket_floor, _refused, _shelled, _split_bodies, _unless, _watch)
+    EXPORT_DIR, _RECALL, _activated, _axis_aligned_face_at, _box, _chamfered, _ctx_get, _cut_a_chain, _cut_exactly, _document_closed, _home_address, _home_document, _marker_parked_after, _datum_plane, _extent_measured, _extruded, _fg, _fgn, _filleted, _full_rounded, _holes_recognized, _holes_windowed, _made_component, _made_component_inactive, _matched, _measured, _mirrored, _moved, _near, _needs, _new_document, _num, _offset_faces, _param_added, _param_deleted, _param_set_to, _path_count, _piped, _pocket_boss, _pockets_recognized, _prof, _recall, _recognized_cbore_walls, _recognized_pocket_floor, _refused, _shelled, _split_bodies, _unless, _watch)
 from verify_acts_cam import (
     MACHINING_EXTENSION)
+from verify_core import _face_up_at
+from verify_core import _jointed
+from verify_core import _captured
 from verify_layout import (
     _px, _py)
 
@@ -23,6 +26,13 @@ from verify_acts_model_definition_operand import (
 from verify_acts_model_precision import (
     _section_camera, _section_camera_unchanged, _section_census, _section_created, _section_named_clear)
 from verify_acts_model_sweep import _retire_reads, _retire_material_state
+from verify_acts_model_combine_revolve import _combine_pin
+from verify_acts_datum_edit import _DATUM_EDITS
+from verify_acts_feature_edit import feature_edit_rows
+from verify_acts_feature_finishing import feature_finishing_rows
+from verify_acts_feature_advanced import advanced_feature_edit_rows
+from verify_acts_surface_boundaries import surface_boundary_edit_rows
+from verify_acts_surface_edit import surface_feature_edit_rows
 
 
 def _pipe_path_visibility(p):
@@ -32,6 +42,49 @@ def _pipe_path_visibility(p):
                      p.get("sketch_count") == len(p.get("sketches", []))
                      and p.get("truncated") is not True and len(rows) == 1
                      and rows[0].get("is_visible") is True and rows[0].get("line_count") == 1)
+
+
+def _capture_scale_factor(p):
+    feature = _RECALL.get("scale_expression_feature")
+    rows = [r for r in (p.get("timeline") or {}).get("timeline", [])
+            if r.get("name") == feature and r.get("component") == "ScaleExpressionWitness"]
+    params = (rows[0].get("params") or []) if len(rows) == 1 else []
+    matches = [r for r in params if r.get("role") == "ScaleFactor"]
+    name = matches[0].get("name") if len(matches) == 1 else None
+    if name:
+        _RECALL["scale_expression_parameter"] = name
+    return _measured("one scoped scale factor parameter", {"feature": feature, "rows": len(rows),
+                     "matches": matches}, len(rows) == 1 and len(matches) == 1 and bool(name)
+                     and matches[0].get("expression") == "1.5"
+                     and _near(matches[0].get("value"), 1.5, 1e-6)
+                     and _parameter_timeline_healthy(p))
+
+
+def _scale_expression_state(volume, bounds):
+    def check(p):
+        mass = p.get("mass") or {}
+        got_bounds = {f"{point}_{axis}": (p.get(point + "_point") or {}).get(axis)
+                      for point in ("min", "max") for axis in "xyz"}
+        good_bounds = all(_near(got_bounds.get(key), want, .05)
+                          for key, want in bounds.items())
+        return _measured("scale expression geometry read", {
+            "volume_mm3": mass.get("volume"), "bounds_mm": got_bounds,
+            "parameter": _RECALL.get("scale_expression_parameter")},
+            _near(mass.get("volume"), volume, .02) and good_bounds)
+    return check
+
+
+def _capture_exact_user_parameters(p, expected=("ScaleWitnessK", "Wd")):
+    rows = p.get("user_parameters") or []
+    names = sorted(r.get("name") for r in rows if r.get("name"))
+    return _measured("independent authored parameter list", {
+        "count": p.get("user_parameter_count"), "returned": p.get("returned"), "names": names},
+        names == sorted(expected) and p.get("user_parameter_count") == len(expected)
+        and p.get("returned") == len(rows))
+
+
+def _parameter_refusal_text(name):
+    return _refused("Could not add '" + name + "'", "param name is not valid")
 
 
 def _bodyref_scale_state(p):
@@ -91,6 +144,189 @@ def _absolute_datum_health(p):
                      and all(row.get("health", "healthy") == "healthy" for row in timeline.get("timeline") or []
                              if row.get("name") in names)
                      and not any(r.get("name") in names for r in exceptions))
+
+
+def _face_point_timeline_snapshot(p):
+    timeline = p.get("timeline") or {}
+    rows = timeline.get("timeline") or []
+    complete = (timeline.get("count") == timeline.get("returned")
+                and timeline.get("truncated") is not True)
+    return {
+        "count": timeline.get("count"),
+        "marker": timeline.get("marker_position"),
+        "health_exceptions": (timeline.get("summary") or {}).get("exceptions"),
+        "returned": timeline.get("returned"),
+        "truncated": timeline.get("truncated") is True,
+        "rows": [(r.get("index"), r.get("name"), r.get("type")) for r in rows],
+        "complete": complete,
+    }
+
+
+def _capture_face_point_timeline(p):
+    snap = _face_point_timeline_snapshot(p)
+    _RECALL["face_point_timeline_before"] = snap
+    return _measured("complete timeline before face-point refusal", snap,
+                     snap["complete"] and snap["count"] == len(snap["rows"])
+                     and snap["marker"] == snap["count"] and snap["health_exceptions"] == []
+                     and not snap["truncated"])
+
+
+def _same_face_point_timeline(p):
+    snap = _face_point_timeline_snapshot(p)
+    return _measured("timeline unchanged after face-point operation",
+                     {"before": _RECALL.get("face_point_timeline_before"), "after": snap},
+                     snap["complete"] and snap == _RECALL.get("face_point_timeline_before"))
+
+
+def _face_point_mass(target, before_key=None, delta=None, restore_key=None):
+    def check(p):
+        mass = p.get("mass") or {}
+        rows = mass.get("per_body") or []
+        volume = mass.get("volume")
+        body_volumes = [r.get("volume") for r in rows if r.get("is_solid") is True]
+        readable = (len(body_volumes) == 1 and _num(volume) and _num(body_volumes[0])
+                    and mass.get("per_body_count") == len(rows)
+                    and mass.get("per_body_truncated") is False)
+        if before_key:
+            if readable:
+                _RECALL[before_key] = volume
+            passed = readable
+        elif delta is not None:
+            baseline = _RECALL.get(restore_key)
+            passed = (readable and _num(baseline)
+                      and abs((volume - baseline) - delta) < 2.0)
+        else:
+            baseline = _RECALL.get(restore_key)
+            passed = readable and _num(baseline) and abs(volume - baseline) < 1e-4
+        return _measured("independent single-body mass read", {
+            "target": target, "volume_mm3": volume, "body_volumes_mm3": body_volumes,
+            "baseline_mm3": _RECALL.get(restore_key) if restore_key else None,
+            "expected_delta_mm3": delta}, passed)
+    return check
+
+
+def _face_point_cylinder(center, axis, span_axis, span, tol=0.5):
+    def check(p):
+        rows = p.get("matches") or []
+        row = rows[0] if rows else {}
+        got_axis, pos = row.get("axis"), row.get("position")
+        direction_ok = (isinstance(got_axis, list) and len(got_axis) == 3
+                        and all(_num(v) for v in got_axis)
+                        and abs(got_axis[axis]) > 0.999
+                        and all(abs(got_axis[i]) < 0.01 for i in range(3) if i != axis))
+        center_ok = (isinstance(pos, list) and len(pos) == 3
+                     and all(_num(v) for v in pos)
+                     and all(abs(pos[i] - center[i]) < tol for i in range(3) if i != span_axis)
+                     and span[0] - tol <= pos[span_axis] <= span[1] + tol)
+        return _measured("independent world cylinder axis and center read", {
+            "count": len(rows), "kind": row.get("kind"), "radius_mm": row.get("radius"),
+            "position_world_mm": pos, "axis_world": got_axis},
+            len(rows) == 1 and row.get("kind") == "cylinder_face"
+            and _near(row.get("radius"), 2.0, 0.02) and direction_ok and center_ok)
+    return check
+
+
+def _face_point_witness_rows():
+    rows = _box("HolePointFlat", ox=560, oy=80)
+    rows += _box("HolePointTurn", ox=0, oy=0)
+    rows += [
+        ("assembly_move", {"occurrence": "HolePointTurn:1", "rotate_y": 90, "dx": 80},
+         lambda p: p.get("moved") is True and p.get("position", {}).get("x") == 80.0, None),
+        ("assembly_capture_position", {"action": "capture"}, _captured, None),
+        ("design_activate_component", {"occurrence": "HolePointFlat:1"}, "ok", None),
+        ("find_geometry", {"target": "HolePointFlat:1", "kind": "planar_face",
+                            "nearest_to": [570, 90, 10], "max_results": 1},
+         _face_up_at(570, 90, 10), _fg("face_point_flat_face")),
+        ("model_inspect", {"target": "HolePointFlat:1", "include": ["mass"],
+                            "per_body": True, "units": "mm"},
+         _face_point_mass("HolePointFlat:1", before_key="face_point_flat_volume"), None),
+        ("design_get", {"include": ["timeline"], "max_results": 2000},
+         _capture_face_point_timeline, None),
+        ("model_hole", lambda c: {"diameter": "4 mm", "extent": "through",
+                                   "placement": "face_point", "face": _ctx_get(
+                                       c, "face_point_flat_face", "flat top face"),
+                                   "point": [570, 90, 10]},
+         lambda p: (p.get("holes_verified") is True and p.get("holes") == 1
+                    and p.get("point_space") == "face-owner"
+                    and p.get("point") == [570, 90, 10] and p.get("units") == "mm"
+                    and p.get("host_component") == "HolePointFlat"
+                    and p.get("host_verified") is True and bool(p.get("feature"))),
+         ("face_point_flat_feature", _recall("face_point_flat_feature", lambda p:
+             p["host_component"] + "/" + p["feature"]))),
+        ("find_geometry", {"target": "HolePointFlat:1", "kind": "cylinder_face",
+                            "radius": 2, "nearest_to": [570, 90, 5], "max_results": 1},
+         _face_point_cylinder([570, 90, 5], 2, 2, (0, 10)), None),
+        ("model_inspect", {"target": "HolePointFlat:1", "include": ["mass"],
+                            "per_body": True, "units": "mm"},
+         _face_point_mass("HolePointFlat:1", delta=-125.663706, restore_key="face_point_flat_volume"), None),
+        ("design_delete_feature", lambda c: {"feature": _ctx_get(
+            c, "face_point_flat_feature", "created face-point hole")},
+         lambda p: p.get("deleted") is True, None),
+        ("model_inspect", {"target": "HolePointFlat:1", "include": ["mass"],
+                            "per_body": True, "units": "mm"},
+         _face_point_mass("HolePointFlat:1", restore_key="face_point_flat_volume"), None),
+        ("design_get", {"include": ["timeline"], "max_results": 2000},
+         _same_face_point_timeline, None),
+        ("find_geometry", {"target": "HolePointFlat:1", "kind": "planar_face",
+                            "nearest_to": [570, 90, 10], "max_results": 1},
+         _face_up_at(570, 90, 10), _fg("face_point_flat_face")),
+        ("model_inspect", {"target": "HolePointFlat:1", "include": ["mass"],
+                            "per_body": True, "units": "mm"},
+         _face_point_mass("HolePointFlat:1", before_key="face_point_flat_volume_after_delete"), None),
+        ("model_hole", lambda c: {"diameter": "4 mm", "extent": "through",
+                                   "placement": "face_point", "face": _ctx_get(
+                                       c, "face_point_flat_face", "flat top face"),
+                                   "point": [570, 90, 13]},
+         _refused("3 mm off", "selected face"), None),
+        ("model_hole", lambda c: {"diameter": "4 mm", "extent": "through",
+                                   "placement": "face_point", "face": _ctx_get(
+                                       c, "face_point_flat_face", "flat top face"),
+                                   "point": [600, 90, 10]},
+         _refused("outside", "No hole was created"), None),
+        ("model_inspect", {"target": "HolePointFlat:1", "include": ["mass"],
+                            "per_body": True, "units": "mm"},
+         _face_point_mass("HolePointFlat:1", restore_key="face_point_flat_volume_after_delete"), None),
+        ("design_get", {"include": ["timeline"], "max_results": 2000},
+         _same_face_point_timeline, None),
+        ("design_activate_component", {"occurrence": "HolePointTurn:1"}, "ok", None),
+        ("find_geometry", {"target": "HolePointTurn:1", "kind": "planar_face",
+                            "nearest_to": [90, 10, -10], "max_results": 1},
+         lambda p: _measured("turned placed face in world", {
+             "count": len(p.get("matches") or []),
+             "position": (p.get("matches") or [{}])[0].get("position"),
+             "normal": (p.get("matches") or [{}])[0].get("normal")},
+             len(p.get("matches") or []) == 1
+             and isinstance(p["matches"][0].get("normal"), list)
+             and len(p["matches"][0]["normal"]) == 3
+             and all(_num(v) for v in p["matches"][0]["normal"])
+             and isinstance(p["matches"][0].get("position"), list)
+             and len(p["matches"][0]["position"]) == 3
+             and all(_num(v) for v in p["matches"][0]["position"])
+             and (p["matches"][0].get("normal") or [0, 0, 0])[0] > 0.999
+             and all(abs(v - w) < 0.5 for v, w in zip(
+                 p["matches"][0].get("position") or [], [90, 10, -10]))),
+         _fg("face_point_turn_face")),
+        ("model_inspect", {"target": "HolePointTurn:1", "include": ["mass"],
+                            "per_body": True, "units": "mm"},
+         _face_point_mass("HolePointTurn:1", before_key="face_point_turn_volume"), None),
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+        ("model_hole", lambda c: {"diameter": "4 mm", "extent": "through",
+                                   "placement": "face_point", "face": _ctx_get(
+                                       c, "face_point_turn_face", "turned placed face"),
+                                   "point": [10, 10, 10]},
+         lambda p: (p.get("holes_verified") is True and p.get("holes") == 1
+                    and p.get("point_space") == "face-owner"
+                    and p.get("point") == [10, 10, 10] and p.get("units") == "mm"
+                    and p.get("host_component") == "HolePointTurn"
+                    and p.get("host_verified") is True), None),
+        ("find_geometry", {"target": "HolePointTurn:1", "kind": "cylinder_face",
+                            "radius": 2, "nearest_to": [85, 10, -10], "max_results": 1},
+         _face_point_cylinder([85, 10, -10], 0, 0, (80, 90)), None),
+        ("model_inspect", {"target": "HolePointTurn:1", "include": ["mass"],
+                            "per_body": True, "units": "mm"},
+         _face_point_mass("HolePointTurn:1", delta=-125.663706, restore_key="face_point_turn_volume"), None),
+    ]
+    return rows
 
 
 _DETAILS = [
@@ -1250,4 +1486,482 @@ _DETAILS = [
         "constraint": "line_on_surface", "entity_one": "line:0",
         "surface": _ctx_get(c, "post_wall", "thread post wall")}],
         "sketch_name": "W3Pt"}, "refused", None),
+    *_face_point_witness_rows(),
 ]
+
+
+def _parameter_witness_rows():
+    rows = [("doc_get", {}, _home_document, ("parameter_witness_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "parameter_witness_home", "home")},
+             _new_document, ("parameter_witness_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        if tool in {"design_get", "model_inspect", "param_get"}:
+            rows.append((tool, args, check, save))
+        else:
+            rows.append((tool, lambda c, args=args: _combine_pin(
+                c, "parameter_witness_doc", args(c) if callable(args) else args), check, save))
+
+    write("model_create_component", {"name": "ScaleExpressionWitness", "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "ScaleExpressionWitnessS"})
+    write("sketch_add_geometry", {"sketch_name": "ScaleExpressionWitnessS", "geometry": [
+        {"kind": "rectangle", "x1": 2000, "y1": 0, "x2": 2010, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "ScaleExpressionWitnessS", "profile_index": 0,
+                           "distance": 5}, _extruded)
+    write("param_add", {"name": "ScaleWitnessK", "expression": "1.5", "unit": ""},
+          lambda p: p.get("added") is True and (p.get("parameter") or {}).get("name") == "ScaleWitnessK")
+    write("model_inspect", {"target": "ScaleExpressionWitness:1", "include": ["default", "mass"],
+                            "units": "mm", "accuracy": "very_high"},
+          _scale_expression_state(1000, {"min_x": 2000, "max_x": 2010,
+              "min_y": 0, "max_y": 20, "min_z": 0, "max_z": 5}))
+    write("model_scale", {"bodies": ["ScaleExpressionWitness"], "factor": "ScaleWitnessK"},
+          lambda p: p.get("scaled") is True and p.get("resolved_factor") == 1.5,
+          ("scale_expression_feature", _recall("scale_expression_feature", lambda p: p["feature"])))
+    write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+          _capture_scale_factor)
+    write("param_set", lambda c: {"name": _RECALL.get("scale_expression_parameter"),
+                                  "expression": "ScaleWitnessK"})
+    write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+          _scale_expression_parameter_read("ScaleWitnessK", 1.5))
+    write("model_inspect", {"target": "ScaleExpressionWitness:1", "include": ["default", "mass"],
+                            "units": "mm", "accuracy": "very_high"},
+          _scale_expression_state(3375, {"min_x": 3000, "max_x": 3015,
+              "min_y": 0, "max_y": 30, "min_z": 0, "max_z": 7.5}))
+    write("param_set", {"name": "ScaleWitnessK", "expression": "2"})
+    write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+          _scale_expression_parameter_read("ScaleWitnessK", 2.0))
+    write("model_inspect", {"target": "ScaleExpressionWitness:1", "include": ["default", "mass"],
+                            "units": "mm", "accuracy": "very_high"},
+          _scale_expression_state(8000, {"min_x": 4000, "max_x": 4020,
+              "min_y": 0, "max_y": 40, "min_z": 0, "max_z": 10}))
+
+    write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+          _capture_parameter_timeline)
+    for name in ("W", "mm", "N", "s", "kg", "1Len", "Len A", "Len-A"):
+        write("param_add", {"name": name, "expression": "1 mm", "unit": "mm"},
+              _parameter_refusal_text(name))
+        if name == "W":
+            write("param_set", {"name": "W", "expression": "1 mm", "create": True, "unit": "mm"},
+                  _refused("Could not create user parameter 'W'", "param name is not valid"))
+    write("param_add", {"name": "Wd", "expression": "1 mm", "unit": "mm"},
+          lambda p: p.get("added") is True and (p.get("parameter") or {}).get("name") == "Wd")
+    write("param_get", {}, _capture_exact_user_parameters, None)
+    write("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+          _verify_parameter_timeline)
+    rows.extend([("doc_activate", lambda c: {"name": _ctx_get(
+        c, "parameter_witness_home", "home"), "expect_document": _ctx_get(
+        c, "parameter_witness_doc", "scratch")}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(
+            c, "parameter_witness_doc", "scratch"), "save_changes": False,
+            "expect_document": _ctx_get(c, "parameter_witness_home", "home")},
+         _document_closed, None)])
+    return rows
+
+
+def _scale_expression_parameter_read(expression, value):
+    def check(p):
+        rows = [r for r in (p.get("timeline") or {}).get("timeline", [])
+                if r.get("name") == _RECALL.get("scale_expression_feature")
+                and r.get("component") == "ScaleExpressionWitness"]
+        params = (rows[0].get("params") or []) if len(rows) == 1 else []
+        matches = [r for r in params if r.get("name") == _RECALL.get("scale_expression_parameter")]
+        got = matches[0] if len(matches) == 1 else {}
+        return _measured("scale factor expression and value", got,
+                         len(matches) == 1 and got.get("role") == "ScaleFactor"
+                         and got.get("expression") == expression and _near(got.get("value"), value, 1e-6)
+                         and _parameter_timeline_healthy(p))
+    return check
+
+
+def _parameter_timeline_healthy(p):
+    timeline = p.get("timeline") or {}
+    summary = timeline.get("summary") or {}
+    rows = timeline.get("timeline") or []
+    return (timeline.get("truncated", False) is False and timeline.get("returned") == timeline.get("count")
+            and set(summary.get("states") or {}) == {"healthy"}
+            and isinstance(summary.get("exceptions"), list) and not summary.get("exceptions")
+            and all(r.get("health", "healthy") == "healthy"
+                    and r.get("is_rolled_back", False) is False for r in rows))
+
+
+def _capture_parameter_timeline(p):
+    timeline = p.get("timeline") or {}
+    rows = timeline.get("timeline") or []
+    _RECALL["parameter_witness_timeline"] = [
+        (r.get("name"), r.get("type"), r.get("health", "healthy")) for r in rows]
+    return _measured("parameter refusal timeline baseline", _RECALL["parameter_witness_timeline"],
+                     bool(rows) and _parameter_timeline_healthy(p))
+
+
+def _verify_parameter_timeline(p):
+    timeline = p.get("timeline") or {}
+    rows = timeline.get("timeline") or []
+    state = [(r.get("name"), r.get("type"), r.get("health", "healthy")) for r in rows]
+    return _measured("name refusals leave the healthy timeline unchanged", state,
+                     state == _RECALL.get("parameter_witness_timeline")
+                     and _parameter_timeline_healthy(p))
+
+
+_DETAILS += _parameter_witness_rows()
+
+
+_RN = {"a": "RenameWitnessA", "b": "RenameWitnessB", "plane": "RenameSharedPlane",
+       "axis": "RenameSharedAxis", "point": "RenameSharedPoint",
+       "origin": "RenameSharedOrigin", "joint": "RenameWitnessJoint"}
+_RN_NEW = {"feature": "RenameFeatureMoved", "joint": "RenameJointMoved",
+           "joint_origin": "RenameOriginMoved", "plane": "RenamePlaneMoved",
+           "axis": "RenameAxisMoved", "point": "RenamePointMoved"}
+
+
+def _rn_extrude(p, owner, key):
+    feature, body = p.get("feature"), (p.get("result_bodies") or [None])[0]
+    good = p.get("extruded") is True and p.get("component") == owner and feature and body and feature != body
+    if good:
+        _RECALL[key] = {"feature": feature, "body": body}
+    return _measured("public extrusion fixture route assumption", {
+        "component": p.get("component"), "feature": feature, "body": body}, good)
+
+
+def _rn_design(stage):
+    def check(p):
+        history, tree, datums = p.get("timeline") or {}, p.get("tree") or {}, p.get("datums") or {}
+        rows, children, datum_rows = history.get("timeline") or [], tree.get("children") or [], datums.get("datums") or []
+        a, b = _RN["a"], _RN["b"]
+        f = (_RECALL.get("rn_feature_a") or {}).get("feature")
+        if stage == "baseline":
+            specs = [("feature", f, "ExtrudeFeature", a), ("joint", _RN["joint"], "Joint", None),
+                     ("joint_origin", _RN["origin"], "JointOrigin", a),
+                     ("plane", _RN["plane"], "ConstructionPlane", a),
+                     ("axis", _RN["axis"], "ConstructionAxis", a),
+                     ("point", _RN["point"], "ConstructionPoint", a)]
+            selected = {}
+            for key, name, typ, comp in specs:
+                hits = [r for r in rows if r.get("name") == name and r.get("type") == typ
+                        and (comp is None or r.get("component") == comp)]
+                if len(hits) == 1:
+                    selected[key] = (hits[0].get("index"), name, typ, hits[0].get("component"))
+            na = [n for n in children if n.get("component") == a]
+            nb = [n for n in children if n.get("component") == b]
+            ba = (na[0].get("bodies") or []) if len(na) == 1 else []
+            bb = (nb[0].get("bodies") or []) if len(nb) == 1 else []
+            good = (len(selected) == len(specs) and len(na) == len(nb) == 1
+                    and tree.get("truncated") is False and tree.get("children_truncated") is False
+                    and len(ba) == len(bb) == 1 and ba[0].get("name") == f
+                    and bb[0].get("name") == (_RECALL.get("rn_feature_b") or {}).get("body")
+                    and sum(r.get("component") == a and r.get("kind") == "construction_plane"
+                            and r.get("name") == _RN["plane"] for r in datum_rows) == 1
+                    and sum(r.get("component") == b and r.get("kind") == "construction_plane"
+                            and r.get("name") == _RN["plane"] for r in datum_rows) == 1)
+            if good:
+                _RECALL["rn_timeline"] = [(r.get("index"), r.get("name"), r.get("type"),
+                                            r.get("component"), r.get("health", "healthy")) for r in rows]
+                _RECALL["rn_indexes"] = {k: v[0] for k, v in selected.items()}
+                _RECALL["rn_count"] = history.get("count")
+                _RECALL["rn_marker"] = history.get("marker_position")
+                _RECALL["rn_summary"] = history.get("summary")
+                _RECALL["rn_body_names"] = (ba[0].get("name"), bb[0].get("name"))
+            return _measured("rename fixture exposes two owners, repeated datum names, and a body/feature name collision",
+                             {"selected_timeline": selected, "bodies": [ba, bb],
+                              "duplicate_planes": [(r.get("component"), r.get("name"))
+                                                   for r in datum_rows if r.get("kind") == "construction_plane"
+                                                   and r.get("name") == _RN["plane"]]}, good)
+        baseline = _RECALL.get("rn_timeline") or []
+        indexes = _RECALL.get("rn_indexes") or {}
+        changes = ({indexes["feature"]: _RN_NEW["feature"], indexes["joint"]: _RN_NEW["joint"],
+                    indexes["joint_origin"]: _RN_NEW["joint_origin"], indexes["plane"]: _RN_NEW["plane"],
+                    indexes["axis"]: _RN_NEW["axis"], indexes["point"]: _RN_NEW["point"]}
+                   if stage == "renamed" else {})
+        current = [(r.get("index"), r.get("name"), r.get("type"), r.get("component"),
+                    r.get("health", "healthy")) for r in rows]
+        expected = [(i, changes.get(i, name), typ, comp, health)
+                    for i, name, typ, comp, health in baseline]
+        body_rows = []
+        for owner in (a, b):
+            nodes = [n for n in children if n.get("component") == owner]
+            body_rows.append((nodes[0].get("bodies") or []) if len(nodes) == 1 else [])
+        expected_bodies = _RECALL.get("rn_body_names") or ()
+        datum_checks = [(a, "construction_plane", _RN_NEW["plane"] if stage == "renamed" else _RN["plane"]),
+                        (b, "construction_plane", _RN["plane"]),
+                        (a, "construction_axis", _RN_NEW["axis"] if stage == "renamed" else _RN["axis"]),
+                        (b, "construction_axis", _RN["axis"]),
+                        (a, "construction_point", _RN_NEW["point"] if stage == "renamed" else _RN["point"]),
+                        (b, "construction_point", _RN["point"])]
+        datums_ok = all(sum(r.get("component") == owner and r.get("kind") == kind
+                            and r.get("name") == name for r in datum_rows) == 1
+                        for owner, kind, name in datum_checks)
+        good = (current == expected and history.get("count") == _RECALL.get("rn_count")
+                and type(history.get("count")) is int
+                and type(history.get("returned")) is int
+                and history.get("count") == history.get("returned") == len(rows)
+                and history.get("marker_position") == _RECALL.get("rn_marker")
+                and history.get("summary") == _RECALL.get("rn_summary")
+                and len(body_rows) == 2
+                and all(len(x) == 1 for x in body_rows)
+                and tuple(x[0].get("name") for x in body_rows) == expected_bodies
+                and (tree.get("truncated") is False) and datums_ok)
+        return _measured(f"{stage} exact timeline index, duplicate datum owner, and body control",
+                         {"timeline_count": history.get("count"), "timeline": current,
+                          "body_names": [x[0].get("name") for x in body_rows if len(x) == 1],
+                          "datums": [(r.get("component"), r.get("kind"), r.get("name"))
+                                     for r in datum_rows if r.get("component") in (a, b)]}, good)
+    return check
+
+
+def _rn_vector(value, unit=False):
+    """Require a finite three-vector, optionally normalized."""
+    valid = isinstance(value, (list, tuple)) and len(value) == 3 and all(
+        _near(v, 0, float("inf")) for v in value)
+    return valid and (not unit or _near(sum(v * v for v in value), 1.0, 0.02))
+
+
+def _rn_frame(value, position_key, axis_keys):
+    """Require finite position and all three finite unit frame axes."""
+    return isinstance(value, dict) and (not position_key or _rn_vector(value.get(position_key))) and all(
+        _rn_vector(value.get(key), unit=True) for key in axis_keys)
+
+
+def _rn_geometry(owner, kind, name, stage):
+    def check(p):
+        rows = p.get("matches") or []
+        row = rows[0] if len(rows) == 1 else {}
+        key = f"rn_geom_{owner}_{kind}"
+        frame = {k: row.get(k) for k in ("position", "normal", "direction") if row.get(k) is not None}
+        shape_ok = _rn_vector(frame.get("position")) and (
+            _rn_vector(frame.get("normal"), unit=True) if kind == "construction_plane" else
+            _rn_vector(frame.get("direction"), unit=True) if kind == "construction_axis" else True)
+        if stage == "baseline" and rows and shape_ok:
+            _RECALL[key] = frame
+            frame_ok = True
+        else:
+            before = _RECALL.get(key) or {}
+            frame_ok = shape_ok and set(frame) == set(before) and all(
+                len(frame[k]) == len(before[k]) and all(_near(x, y, 0.001)
+                    for x, y in zip(frame[k], before[k])) for k in frame)
+        return _measured(f"{stage} {owner} {kind} name, owner and frame", {"match_count": p.get("match_count"),
+            "matches": rows}, p.get("incomplete") is not True and p.get("match_count") == 1
+            and p.get("returned") == 1 and row.get("name") == name
+            and row.get("occurrence") == owner + ":1" and frame_ok)
+    return check
+
+
+def _rn_assembly(stage):
+    def check(p):
+        origins = p.get("joint_origins") or []
+        joints = p.get("joints") or []
+        first_name = _RN_NEW["joint_origin"] if stage == "renamed" else _RN["origin"]
+        joint_name = _RN_NEW["joint"] if stage == "renamed" else _RN["joint"]
+        a, b = _RN["a"], _RN["b"]
+        first = [r for r in origins if r.get("component") == a and r.get("name") == first_name]
+        second = [r for r in origins if r.get("component") == b and r.get("name") == _RN["origin"]]
+        joint = [r for r in joints if r.get("name") == joint_name]
+        first_state = (first[0].get("world_position"), first[0].get("frame")) if len(first) == 1 else (None, None)
+        second_state = (second[0].get("world_position"), second[0].get("frame")) if len(second) == 1 else (None, None)
+        joint_state = ({k: joint[0].get(k) for k in
+                        ("healthy", "occurrence_one_path", "occurrence_two_path", "frame")}
+                       if len(joint) == 1 else {})
+        axes = ("x_axis", "y_axis", "z_axis")
+        jo_frames_ok = (_rn_vector(first_state[0]) and _rn_frame(first_state[1], "", axes)
+                        and _rn_vector(second_state[0]) and _rn_frame(second_state[1], "", axes))
+        joint_frame = joint_state.get("frame") or {}
+        joint_frame_ok = _rn_vector(joint_frame.get("origin")) and all(
+            _rn_vector(joint_frame.get(axis), unit=True) for axis in axes)
+        if stage == "baseline" and len(first) == len(second) == len(joint) == 1 and jo_frames_ok and joint_frame_ok:
+            _RECALL["rn_frames"] = {"a": first_state, "b": second_state, "joint": joint_state}
+        before = _RECALL.get("rn_frames") or {}
+        good = (jo_frames_ok and joint_frame_ok and p.get("is_healthy") is True and p.get("joint_origins_truncated") is False
+                and p.get("joints_truncated") is False and len(first) == len(second) == len(joint) == 1
+                and first[0].get("qualified_name") == a + ":1:" + first_name
+                and second[0].get("qualified_name") == b + ":1:" + _RN["origin"]
+                and (first[0].get("world_position"), first[0].get("frame")) == before.get("a")
+                and (second[0].get("world_position"), second[0].get("frame")) == before.get("b")
+                and {k: joint[0].get(k) for k in before.get("joint", {})} == before.get("joint")
+                and joint[0].get("healthy") is True)
+        return _measured(f"{stage} joint and Joint Origin public frame census",
+                         {"joint": joint, "first_origin": first, "second_origin": second}, good)
+    return check
+
+
+def _rn_body(p, owner, stage):
+    state = _bodyref_scale_state(p)
+    if state is None:
+        return _measured(f"{stage} {owner} body read", p, False)
+    key = "rn_body_" + owner
+    if stage == "baseline":
+        _RECALL[key] = state
+        return _measured(f"baseline {owner} body geometry", state, True)
+    before = _RECALL.get(key) or {}
+    same = (len(state["values"]) == len(before.get("values", []))
+            and all(_near(x, y, 0.02) for x, y in zip(state["values"], before["values"]))
+            and all(_near(state[part][axis], before[part][axis], 0.02)
+                    for part in ("min", "max") for axis in "xyz"))
+    return _measured(f"{stage} {owner} body bounds and mass unchanged", state, same)
+
+
+def _rn_final_design(p):
+    history, tree = p.get("timeline") or {}, p.get("tree") or {}
+    rows = history.get("timeline") or []
+    expected = _RECALL.get("rn_timeline") or []
+    current = [(r.get("index"), r.get("name"), r.get("type"), r.get("component"),
+                r.get("health", "healthy")) for r in rows]
+    children = tree.get("children") or []
+    node = [n for n in children if n.get("component") == _RN["a"]]
+    bodies = (node[0].get("bodies") or []) if len(node) == 1 else []
+    original_body = (_RECALL.get("rn_feature_a") or {}).get("body")
+    good = (current == expected and history.get("count") == _RECALL.get("rn_count")
+            and history.get("marker_position") == _RECALL.get("rn_marker")
+            and history.get("summary") == _RECALL.get("rn_summary")
+            and tree.get("truncated") is False and len(bodies) == 1
+            and bodies[0].get("name") == original_body)
+    return _measured("final original body name and restored feature history", {
+        "timeline": current, "body": bodies}, good)
+
+
+def _namespace_rename_witness_rows():
+    rows = []
+    def add(tool, args, check="ok", save=None):
+        rows.append((tool, args, check, save))
+    a, b = _RN["a"], _RN["b"]
+    add("design_activate_component", {"occurrence": "root"})
+    add("model_create_component", {"name": a, "x": 5000, "units": "mm", "activate": True}, _made_component)
+    add("sketch_create", {"plane": "xy", "name": a + "Sketch"})
+    add("sketch_add_geometry", {"sketch_name": a + "Sketch", "units": "mm",
+        "geometry": [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}]})
+    add("model_extrude", {"sketch_name": a + "Sketch", "distance": 10, "units": "mm"},
+        lambda p: _rn_extrude(p, a, "rn_feature_a"))
+    add("find_geometry", {"target": a + ":1", "kind": "planar_face", "nearest_to": [5010, 10, 10],
+        "units": "mm", "max_results": 1}, "ok", _fg("rn_body_face"))
+    add("design_set_name", lambda c: {"target": _ctx_get(c, "rn_body_face", "first body face"),
+        "new_name": (_RECALL.get("rn_feature_a") or {}).get("feature"), "kind": "target"},
+        lambda p: p.get("changed") is True and p.get("kind") == "body"
+        and p.get("name") == (_RECALL.get("rn_feature_a") or {}).get("feature"))
+    add("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy", "offset": 2,
+        "units": "mm", "name": _RN["plane"]},
+        lambda p: p.get("created") is True and p.get("component") == a and p.get("name") == _RN["plane"])
+    add("model_construction", {"kind": "axis", "mode": "two_planes", "plane": "xy", "plane2": "xz",
+        "name": _RN["axis"]},
+        lambda p: p.get("created") is True and p.get("component") == a and p.get("name") == _RN["axis"])
+    add("sketch_create", {"plane": "xy", "name": a + "PointSketch"})
+    add("sketch_add_geometry", {"sketch_name": a + "PointSketch", "units": "mm",
+        "geometry": [{"kind": "point", "cx": 10, "cy": 10}]})
+    add("model_construction", {"kind": "point", "mode": "at_point", "name": _RN["point"],
+        "points": [a + "PointSketch/point:1"]},
+        lambda p: p.get("created") is True and p.get("component") == a and p.get("name") == _RN["point"])
+    add("joint_create_origin", {"anchor": "coordinates", "target": "origin", "component": a + ":1",
+        "name": _RN["origin"], "units": "mm"},
+        lambda p: p.get("created") is True and p.get("component") == a
+        and p.get("joint_origin_name") == _RN["origin"])
+    add("design_activate_component", {"occurrence": "root"})
+    add("model_create_component", {"name": b, "x": 5050, "units": "mm", "activate": True}, _made_component)
+    add("sketch_create", {"plane": "xy", "name": b + "Sketch"})
+    add("sketch_add_geometry", {"sketch_name": b + "Sketch", "units": "mm",
+        "geometry": [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}]})
+    add("model_extrude", {"sketch_name": b + "Sketch", "distance": 10, "units": "mm"},
+        lambda p: _rn_extrude(p, b, "rn_feature_b"))
+    add("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy", "offset": 2,
+        "units": "mm", "name": _RN["plane"]},
+        lambda p: p.get("created") is True and p.get("component") == b and p.get("name") == _RN["plane"])
+    add("model_construction", {"kind": "axis", "mode": "two_planes", "plane": "xy", "plane2": "xz",
+        "name": _RN["axis"]},
+        lambda p: p.get("created") is True and p.get("component") == b and p.get("name") == _RN["axis"])
+    add("sketch_create", {"plane": "xy", "name": b + "PointSketch"})
+    add("sketch_add_geometry", {"sketch_name": b + "PointSketch", "units": "mm",
+        "geometry": [{"kind": "point", "cx": 10, "cy": 10}]})
+    add("model_construction", {"kind": "point", "mode": "at_point", "name": _RN["point"],
+        "points": [b + "PointSketch/point:1"]},
+        lambda p: p.get("created") is True and p.get("component") == b and p.get("name") == _RN["point"])
+    add("joint_create_origin", {"anchor": "coordinates", "target": "origin", "component": b + ":1",
+        "name": _RN["origin"], "units": "mm"},
+        lambda p: p.get("created") is True and p.get("component") == b
+        and p.get("joint_origin_name") == _RN["origin"])
+    add("design_activate_component", {"occurrence": "root"})
+    add("joint_create", {"occurrence_one": a + ":1:" + _RN["origin"],
+        "occurrence_two": b + ":1:" + _RN["origin"], "joint_type": "rigid", "name": _RN["joint"]},
+        _jointed(_RN["joint"]))
+    add("design_get", {"include": ["tree", "timeline", "datums"], "tree_bodies": True,
+        "tree_handles": True, "max_results": 2000}, _rn_design("baseline"))
+    for owner in (a, b):
+        for kind, name in (("construction_plane", _RN["plane"]), ("construction_axis", _RN["axis"]),
+                           ("construction_point", _RN["point"])):
+            add("find_geometry", {"target": owner + ":1", "kind": kind, "name": name,
+                "units": "mm", "max_results": 1}, _rn_geometry(owner, kind, name, "baseline"))
+    add("assembly_get", {"include": ["poses", "joint_origins"], "units": "mm",
+        "max_joint_origins": 100, "max_joints": 100}, _rn_assembly("baseline"))
+    for owner, key in ((a, "rn_feature_a"), (b, "rn_feature_b")):
+        add("model_inspect", lambda c, owner=owner, key=key: {"target": owner + ":1:" +
+            ((_RECALL.get(key) or {}).get("feature" if owner == a else "body", "")), "include": ["default", "mass"],
+            "units": "mm", "accuracy": "very_high"}, lambda p, owner=owner:
+            p.get("mass") is not None and _rn_body(p, owner, "baseline"))
+
+    def rename(kind, target, new_name, address):
+        requested_name = lambda: new_name() if callable(new_name) else new_name
+        add("design_set_name", lambda c, kind=kind, target=target, new_name=new_name:
+            {"kind": kind, "target": target(), "new_name": requested_name()},
+            lambda p, kind=kind, new_name=new_name, address=address: p.get("renamed") is True
+            and p.get("changed") is True and p.get("kind") == kind and p.get("name") == requested_name()
+            and p.get("addressed") == address())
+    feature = lambda: (_RECALL.get("rn_feature_a") or {}).get("feature", "")
+    index = lambda: str((_RECALL.get("rn_indexes") or {}).get("feature", ""))
+    rename("feature", lambda: a + "/" + feature(), _RN_NEW["feature"], lambda: "feature '" + index() + "'")
+    rename("joint", lambda: "root:" + _RN["joint"], _RN_NEW["joint"], lambda: "joint 'root:" + _RN_NEW["joint"] + "'")
+    rename("joint_origin", lambda: a + "/" + _RN["origin"], _RN_NEW["joint_origin"],
+           lambda: "joint_origin '" + a + "/" + _RN_NEW["joint_origin"] + "'")
+    rename("plane", lambda: a + "/" + _RN["plane"], _RN_NEW["plane"], lambda: "plane '" + a + "/" + _RN_NEW["plane"] + "'")
+    rename("axis", lambda: a + "/" + _RN["axis"], _RN_NEW["axis"], lambda: "axis '" + a + "/" + _RN_NEW["axis"] + "'")
+    rename("point", lambda: a + "/" + _RN["point"], _RN_NEW["point"], lambda: "point '" + a + "/" + _RN_NEW["point"] + "'")
+    add("design_get", {"include": ["tree", "timeline", "datums"], "tree_bodies": True,
+        "tree_handles": True, "max_results": 2000}, _rn_design("renamed"))
+    add("assembly_get", {"include": ["poses", "joint_origins"], "units": "mm",
+        "max_joint_origins": 100, "max_joints": 100}, _rn_assembly("renamed"))
+    for owner in (a, b):
+        for kind, old, moved in (("construction_plane", _RN["plane"], _RN_NEW["plane"]),
+                                 ("construction_axis", _RN["axis"], _RN_NEW["axis"]),
+                                 ("construction_point", _RN["point"], _RN_NEW["point"])):
+            name = moved if owner == a else old
+            add("find_geometry", {"target": owner + ":1", "kind": kind, "name": name,
+                "units": "mm", "max_results": 1}, _rn_geometry(owner, kind, name, "renamed"))
+    for owner, key in ((a, "rn_feature_a"), (b, "rn_feature_b")):
+        add("model_inspect", lambda c, owner=owner, key=key: {"target": owner + ":1:" +
+            ((_RECALL.get(key) or {}).get("feature" if owner == a else "body", "")), "include": ["default", "mass"],
+            "units": "mm", "accuracy": "very_high"}, lambda p, owner=owner:
+            p.get("mass") is not None and _rn_body(p, owner, "renamed"))
+
+    rename("feature", index, feature, lambda: "feature '" + index() + "'")
+    rename("joint", lambda: "root:" + _RN_NEW["joint"], _RN["joint"], lambda: "joint 'root:" + _RN["joint"] + "'")
+    rename("joint_origin", lambda: a + "/" + _RN_NEW["joint_origin"], _RN["origin"],
+           lambda: "joint_origin '" + a + "/" + _RN["origin"] + "'")
+    rename("plane", lambda: a + "/" + _RN_NEW["plane"], _RN["plane"], lambda: "plane '" + a + "/" + _RN["plane"] + "'")
+    rename("axis", lambda: a + "/" + _RN_NEW["axis"], _RN["axis"], lambda: "axis '" + a + "/" + _RN["axis"] + "'")
+    rename("point", lambda: a + "/" + _RN_NEW["point"], _RN["point"], lambda: "point '" + a + "/" + _RN["point"] + "'")
+    add("design_get", {"include": ["tree", "timeline", "datums"], "tree_bodies": True,
+        "tree_handles": True, "max_results": 2000}, _rn_design("restored"))
+    add("assembly_get", {"include": ["poses", "joint_origins"], "units": "mm",
+        "max_joint_origins": 100, "max_joints": 100}, _rn_assembly("restored"))
+    for owner in (a, b):
+        for kind, name in (("construction_plane", _RN["plane"]), ("construction_axis", _RN["axis"]),
+                           ("construction_point", _RN["point"])):
+            add("find_geometry", {"target": owner + ":1", "kind": kind, "name": name,
+                "units": "mm", "max_results": 1}, _rn_geometry(owner, kind, name, "restored"))
+    for owner, key in ((a, "rn_feature_a"), (b, "rn_feature_b")):
+        add("model_inspect", lambda c, owner=owner, key=key: {"target": owner + ":1:" +
+            ((_RECALL.get(key) or {}).get("feature" if owner == a else "body", "")), "include": ["default", "mass"],
+            "units": "mm", "accuracy": "very_high"}, lambda p, owner=owner:
+            p.get("mass") is not None and _rn_body(p, owner, "restored"))
+    add("design_set_name", lambda c: {"target": _ctx_get(c, "rn_body_face", "first body face"),
+        "new_name": (_RECALL.get("rn_feature_a") or {}).get("body"), "kind": "target"},
+        lambda p: p.get("changed") is True and p.get("kind") == "body"
+        and p.get("name") == (_RECALL.get("rn_feature_a") or {}).get("body"))
+    add("model_inspect", lambda c: {"target": a + ":1:" +
+        (_RECALL.get("rn_feature_a") or {}).get("body", ""), "include": ["default", "mass"],
+        "units": "mm", "accuracy": "very_high"}, lambda p: _rn_body(p, a, "restored"))
+    add("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+        "tree_handles": True, "max_results": 2000}, _rn_final_design)
+    return rows
+
+
+_DETAILS += _namespace_rename_witness_rows()
+_DETAILS += feature_edit_rows()
+_DETAILS += feature_finishing_rows()
+_DETAILS += advanced_feature_edit_rows()
+_DETAILS += surface_boundary_edit_rows()
+_DETAILS += surface_feature_edit_rows()
+_DETAILS += _DATUM_EDITS

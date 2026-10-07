@@ -33,7 +33,7 @@ GATEABLE_FAMILIES = ("appearance", "cam", "data", "drawing", "form", "mesh", "sa
 # map (cross-checked against the LIVE registry via has_tool) so an agent that gets a bare "tool not
 # found" for one of these has a discoverable next step instead of a dead end.
 GATED_TOOLS = {
-    "sys_execute_script": "Allow AI to execute arbitrary Fusion API scripts (advanced; security risk)",
+    "sys_execute_script": "Allow AI scripts (unsafe)",
 }
 
 

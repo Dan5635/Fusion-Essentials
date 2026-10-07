@@ -447,7 +447,11 @@ def _sweep_mode_edit(case, action, surface=False):
                          and p.get("geometry_changed") is True
                          and p.get("participant_scope_preserved") is True
                          and p.get("participants_replayed") is (not surface)
-                         and p.get("retained_participants") == ([] if surface else ["SelectedStock"])
+                         and (all(key in p and p[key] is None for key in (
+                             "retained_participants", "participants_before", "participants_after"))
+                             and p.get("participant_scope_reason") ==
+                             "The original NewBody sweep has no Boolean participant scope."
+                              if surface else p.get("retained_participants") == ["SelectedStock"])
                          and p.get("marker_restored") is True
                          and p.get("outside_body_changes") == []
                          and p.get("new_timeline_errors") == []
@@ -658,6 +662,491 @@ def _sweep_edit_modes_rows():
 
 
 _SWEEP_EDIT_MODES = _sweep_edit_modes_rows()
+
+
+def _sweep_scope_mass(expected, key, result_name_key=None):
+    """Require the named solid-body volumes in an independent complete mass read."""
+    def check(p):
+        mass = p.get("mass") or {}
+        want = dict(expected)
+        if result_name_key:
+            result_name = _RECALL.get(result_name_key)
+            if not isinstance(result_name, str) or not result_name:
+                return _measured("independent complete sweep body volumes",
+                                 {"expected_mm3": want, "result_name": result_name}, False)
+            want[result_name] = want.pop("$result")
+        rows = mass.get("per_body")
+        volumes = ({row.get("body"): row.get("volume") for row in rows
+                    if isinstance(row, dict) and row.get("body")}
+                   if isinstance(rows, list) else {})
+        valid = (p.get("kind") == "design" and p.get("units") == "mm"
+                 and mass.get("accuracy_used") == "very_high"
+                 and isinstance(rows, list) and mass.get("per_body_count") == len(rows)
+                 and mass.get("per_body_truncated") is False
+                 and len(volumes) == len(rows) and set(volumes) == set(want)
+                 and all(_near(volumes.get(name), value, 0.002)
+                         for name, value in want.items()))
+        if valid:
+            _RECALL[key] = dict(volumes)
+        return _measured("independent complete sweep body volumes", {
+            "expected_mm3": want, "actual_mm3": volumes,
+            "count": mass.get("per_body_count"),
+            "truncated": mass.get("per_body_truncated")}, valid)
+    return check
+
+
+def _sweep_scope_end_health():
+    """Check the independent end-position timeline health census."""
+    def check(p):
+        timeline = p.get("timeline") or {}
+        rows = timeline.get("timeline") or []
+        valid = (timeline.get("count") == timeline.get("returned") == len(rows)
+                 and timeline.get("truncated") is not True
+                 and timeline.get("marker_position") == timeline.get("count")
+                 and [row.get("index") for row in rows] == list(range(len(rows)))
+                 and (timeline.get("summary") or {}).get("states") == {"healthy": len(rows)}
+                 and (timeline.get("summary") or {}).get("exceptions") == []
+                 and all(row.get("is_rolled_back", False) is False
+                         and row.get("health", "healthy") == "healthy" for row in rows))
+        return _measured("independent healthy end-position timeline", timeline, valid)
+    return check
+
+
+def _sweep_scope_definition(feature_ref, operation, participants=None, previous=False):
+    """Check the independent typed feature definition, identity, and healthy timeline."""
+    def check(p):
+        feature_name = _RECALL.get(feature_ref, feature_ref)
+        definition, timeline = p.get("definition") or {}, p.get("timeline") or {}
+        rows = timeline.get("timeline") or []
+        found = [row for row in rows if row.get("name") == feature_name
+                 and row.get("type") == "SweepFeature"]
+        identity = {key: definition.get(key) for key in
+                    ("feature", "component", "type", "timeline_index")}
+        identity_key = "sweep_scope_identity_" + feature_name
+        old = _RECALL.get(identity_key) if previous else None
+        got_participants = definition.get("participants")
+        orientation_ok = definition.get("orientation_name") == "perpendicular"
+        if feature_name == "R7Sweep":
+            orientation_ok = (definition.get("orientation") is None
+                              and definition.get("orientation_name") is None
+                              and definition.get("unavailable")
+                              == {"orientation": "2 : InternalValidationError : false"})
+        valid = (definition.get("feature") == feature_name
+                 and definition.get("type") == "SweepFeature"
+                 and definition.get("operation") == operation
+                 and definition.get("is_solid") is True
+                 and orientation_ok
+                 and definition.get("path_count") == 1
+                 and definition.get("path_truncated") is False
+                 and isinstance(definition.get("timeline_index"), int)
+                 and timeline.get("count") == timeline.get("returned") == len(rows)
+                 and timeline.get("truncated") is not True
+                 and timeline.get("marker_position") == definition.get("timeline_index")
+                 and [row.get("index") for row in rows] == list(range(len(rows)))
+                 and len(found) == 1 and found[0].get("index") == definition.get("timeline_index")
+                 and all(row.get("is_rolled_back", False) is False
+                         and row.get("health", "healthy") == "healthy"
+                         for row in rows if isinstance(row.get("index"), int)
+                         and row["index"] < definition.get("timeline_index"))
+                 and all(row.get("is_rolled_back") is True
+                         for row in rows if isinstance(row.get("index"), int)
+                         and row["index"] >= definition.get("timeline_index"))
+                 and (participants is None or isinstance(got_participants, list)
+                      and definition.get("participants_truncated") is False
+                      and set(got_participants) == set(participants))
+                 and (not previous or old is not None and identity == old))
+        if valid and not previous:
+            _RECALL[identity_key] = identity
+        return _measured("independent Sweep definition and healthy timeline", {
+            "definition": definition, "timeline_count": timeline.get("count"),
+            "timeline_feature": found, "previous_identity": old}, valid)
+    return check
+
+
+def _sweep_scope_marker(stage, feature_ref):
+    """Require a measured feature-row roll before the public definition read and end afterward."""
+    def check(p):
+        feature_name = _RECALL.get(feature_ref, feature_ref)
+        if stage == "before":
+            valid = (p.get("rolled") is True and p.get("to") == "before"
+                     and p.get("feature") == feature_name
+                     and _num(p.get("marker_position"))
+                     and _num(p.get("timeline_count"))
+                     and p["marker_position"] < p["timeline_count"]
+                     and p.get("rolled_back") == p["timeline_count"] - p["marker_position"])
+        else:
+            valid = (p.get("rolled") is True and p.get("to") == "end"
+                     and p.get("marker_position") == p.get("timeline_count")
+                     and p.get("rolled_back") == 0)
+        return _measured("Sweep public definition marker " + stage, p, valid)
+    return check
+
+
+def _sweep_scope_edit(action, stage, feature_ref, participant_names=None):
+    """Check an edit's actual operand, participant scope, and result-body read-back."""
+    def check(p):
+        feature_name = _RECALL.get(feature_ref, feature_ref)
+        before, after = p.get("definition_before") or {}, p.get("definition_after") or {}
+        identity = _RECALL.get("sweep_scope_identity_" + feature_name)
+        requested = p.get("requested_participants")
+        prior = p.get("participants_before")
+        actual = p.get("participants_after")
+        requested_names = ({row.get("name") for row in requested or []}
+                           if isinstance(requested, list) else set())
+        actual_names = ({row.get("name") for row in actual or []}
+                        if isinstance(actual, list) else set())
+        before_names = ({row.get("name") for row in prior or []}
+                        if isinstance(prior, list) else set())
+        requested_tokens = ({row.get("token") for row in requested or []}
+                            if isinstance(requested, list) else set())
+        actual_tokens = ({row.get("token") for row in actual or []}
+                         if isinstance(actual, list) else set())
+        if action == "guide_path":
+            old_sig, new_sig = before.get("guide_path_signature"), after.get("guide_path_signature")
+            if stage == "replace" and old_sig:
+                _RECALL["sweep_scope_guide_original"] = old_sig
+            expected_sig = (_RECALL.get("sweep_scope_guide_original") if stage == "restore" else None)
+            specific = (before.get("guide_path_curves") == after.get("guide_path_curves") == 1
+                        and isinstance(old_sig, str) and isinstance(new_sig, str)
+                        and p.get("participant_scope_preserved") is True
+                        and (old_sig != new_sig if stage == "replace" else new_sig == expected_sig))
+        else:
+            specific = (p.get("participant_scope_matches_request") is True
+                        and p.get("participant_scope_preserved") is None
+                        and isinstance(requested, list) and isinstance(actual, list)
+                        and requested_names == set(participant_names or ())
+                        and actual_names == requested_names
+                        and len(requested_tokens) == len(requested)
+                        and actual_tokens == requested_tokens
+                        and all(isinstance(row.get("token"), str) and row.get("token")
+                                and row.get("component") for row in requested + actual)
+                        and (action != "participants"
+                             or isinstance(prior, list) and before_names
+                             and before_names != actual_names))
+            if action == "operation":
+                before_results = p.get("result_bodies_before")
+                after_results = p.get("result_bodies_after")
+                before_tokens = ({row.get("token") for row in before_results}
+                                 if isinstance(before_results, list) else set())
+                after_identity = ({(row.get("name"), row.get("token"), row.get("component"))
+                                   for row in after_results}
+                                  if isinstance(after_results, list) else set())
+                participant_identity = ({(row.get("name"), row.get("token"), row.get("component"))
+                                         for row in actual}
+                                        if isinstance(actual, list) else set())
+                result_rows = ((before_results if isinstance(before_results, list) else [])
+                               + (after_results if isinstance(after_results, list) else []))
+                specific = (specific and prior is None
+                            and isinstance(before_results, list) and len(before_results) == 1
+                            and isinstance(after_results, list) and isinstance(actual, list)
+                            and len(after_results) == len(actual)
+                            and all(isinstance(row.get("name"), str) and row.get("name")
+                                    and isinstance(row.get("token"), str) and row.get("token")
+                                    and row.get("component") for row in result_rows)
+                            and after_identity == participant_identity
+                            and before_tokens.isdisjoint({row[1] for row in after_identity}))
+            elif action == "participants":
+                before_results = p.get("result_bodies_before")
+                after_results = p.get("result_bodies_after")
+                rows = ((before_results if isinstance(before_results, list) else [])
+                        + (after_results if isinstance(after_results, list) else []))
+                specific = (specific and isinstance(before_results, list)
+                            and isinstance(after_results, list)
+                            and all(isinstance(row.get("name"), str) and row.get("name")
+                                    and isinstance(row.get("token"), str) and row.get("token")
+                                    and row.get("component") for row in rows))
+        return _measured("public Sweep edit read-back and named scope", p,
+                         p.get("edited") is True and p.get("action") == action
+                         and p.get("same_feature") is True
+                         and p.get("definition_matches") is True
+                         and p.get("geometry_changed") is True
+                         and p.get("marker_restored") is True
+                         and p.get("new_timeline_errors") == []
+                         and p.get("new_timeline_warnings") == []
+                         and p.get("outside_body_changes") == []
+                         and specific and identity is not None)
+    return check
+
+
+_SWEEP_GUIDE_CENSUS = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    root = design.rootComponent
+    feature = adsk.fusion.SweepFeature.cast(root.features.itemByName('R7Sweep'))
+    if feature is None:
+        raise RuntimeError('R7Sweep is unreadable')
+    marker = design.timeline.markerPosition
+    try:
+        if feature.timelineObject.rollTo(True) is not True:
+            raise RuntimeError('R7Sweep could not be rolled for guide read-back')
+        rail = feature.guideRail
+        count = 0 if rail is None else rail.count
+        guide = [] if rail is None else [
+            {'type': rail.item(i).entity.objectType,
+             'sketch': rail.item(i).entity.parentSketch.name} for i in range(count)]
+    finally:
+        design.timeline.markerPosition = marker
+    print(json.dumps({'feature': feature.name, 'index': feature.timelineObject.index,
+        'count': design.timeline.count, 'marker_before': marker,
+        'marker_after': design.timeline.markerPosition, 'guide': guide,
+        'health': int(feature.healthState)}))
+"""
+
+
+def _sweep_scope_guide_census(expected_sketch):
+    """Check the native guide source independently and require the timeline marker restored."""
+    def check(p):
+        rows = p.get("guide") or []
+        return _measured("independent native guide-rail source and restored marker", p,
+                         p.get("feature") == "R7Sweep" and p.get("index") == 4
+                         and p.get("count") == 7 and p.get("marker_before") == 7
+                         and p.get("marker_after") == 7 and p.get("health") == 0
+                         and len(rows) == 1 and rows[0].get("type") == "adsk::fusion::SketchLine"
+                         and rows[0].get("sketch") == expected_sketch)
+    return check
+
+
+_SWEEP_GUIDE_FIXTURE = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    if app.activeDocument.dataFile is not None:
+        raise RuntimeError('R7 requires the owned unsaved scratch')
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    if (design is None or design.designType != adsk.fusion.DesignTypes.ParametricDesignType
+            or design.activeComponent != design.rootComponent
+            or design.timeline.markerPosition != design.timeline.count):
+        raise RuntimeError('R7 requires root active and the marker at the end')
+    root = design.rootComponent
+    section = root.sketches.add(root.xYConstructionPlane)
+    section.name = 'R7Section'
+    section.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(0.4, 0.2, 0))
+    if section.profiles.count != 1:
+        raise RuntimeError('R7 section must have one profile')
+    main_sketch = root.sketches.add(root.yZConstructionPlane)
+    main_sketch.name = 'R7MainPath'
+    main_line = main_sketch.sketchCurves.sketchLines.addByTwoPoints(
+        main_sketch.modelToSketchSpace(adsk.core.Point3D.create(0, 0, 0)),
+        main_sketch.modelToSketchSpace(adsk.core.Point3D.create(0, 0, 3)))
+    main_path = root.features.createPath(main_line, False)
+    if main_line is None or main_path is None or main_path.count != 1:
+        raise RuntimeError('R7 main path must have one curve')
+    def rail(name, start_x, end_x):
+        sketch = root.sketches.add(root.xZConstructionPlane)
+        sketch.name = name
+        line = sketch.sketchCurves.sketchLines.addByTwoPoints(
+            sketch.modelToSketchSpace(adsk.core.Point3D.create(start_x, 0, 0)),
+            sketch.modelToSketchSpace(adsk.core.Point3D.create(end_x, 0, 3)))
+        return root.features.createPath(line, False)
+    original = rail('R7RailOriginal', 0.4, 0.4)
+    replacement = rail('R7RailReplacement', 0.4, 0.8)
+    if original is None or replacement is None or original.count != 1 or replacement.count != 1:
+        raise RuntimeError('R7 replacement rails must each have one curve')
+    inp = root.features.sweepFeatures.createInput(
+        section.profiles.item(0), main_path, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    inp.guideRail = original
+    feature = root.features.sweepFeatures.add(inp)
+    if feature is None or feature.bodies.count != 1:
+        raise RuntimeError('R7 guided sweep must create one result body')
+    feature.name = 'R7Sweep'
+    body = feature.bodies.item(0)
+    body.name = 'R7SweepBody'
+    sk = root.sketches.add(root.xYConstructionPlane)
+    sk.name = 'R7ControlSketch'
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(10, 0, 0), adsk.core.Point3D.create(11, 1, 0))
+    ex_in = root.features.extrudeFeatures.createInput(
+        sk.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    if ex_in.setDistanceExtent(False, adsk.core.ValueInput.createByString('10 mm')) is not True:
+        raise RuntimeError('R7 control extrusion extent was refused')
+    ex = root.features.extrudeFeatures.add(ex_in)
+    if ex is None or ex.bodies.count != 1:
+        raise RuntimeError('R7 control must create one body')
+    control = ex.bodies.item(0)
+    control.name = 'R7Control'
+    print(json.dumps({'feature': feature.name, 'body': body.name,
+        'control': control.name, 'original_count': original.count,
+        'replacement_count': replacement.count, 'marker': design.timeline.markerPosition,
+        'count': design.timeline.count}))
+"""
+
+
+def _sweep_scope_edit_rows():
+    """Exercise measured guided-rail, New-to-Cut, and Cut participant edits with public reads."""
+    rows = []
+
+    def session(tag, title):
+        rows.extend([("doc_get", {}, _home_document, (tag + "_home", _home_address)),
+                     ("doc_new", lambda c, tag=tag: {"expect_document": _ctx_get(
+                         c, tag + "_home", "home document")}, _new_document,
+                      (tag + "_doc", lambda p: p["document_handle"]))])
+
+    def write(tag, name, args, check="ok", save=None):
+        rows.append((name, lambda c, tag=tag, args=args: _combine_pin(
+            c, tag + "_doc", args(c) if callable(args) else args), check, save))
+
+    def read(name, args, check, save=None):
+        rows.append((name, args, check, save))
+
+    def definition_read(tag, feature_arg, feature_ref, operation, participants=None, previous=False):
+        args = feature_arg if callable(feature_arg) else lambda _c, value=feature_arg: value
+        write(tag, "design_edit_timeline", lambda c, a=args: {
+            "action": "roll", "feature": a(c), "to": "before"},
+            _sweep_scope_marker("before", feature_ref))
+        read("design_get", lambda c, a=args: {"include": ["definition", "timeline"],
+             "feature": a(c), "units": "mm", "max_results": 200},
+             _sweep_scope_definition(feature_ref, operation, participants, previous))
+        write(tag, "design_edit_timeline", {"action": "roll", "to": "end"},
+              _sweep_scope_marker("end", feature_ref))
+        read("design_get", {"include": ["timeline"], "max_results": 200},
+             _sweep_scope_end_health())
+
+    def body_box(tag, name, x1, y1, x2, y2, thickness, symmetric=False):
+        sketch = name + "Sketch"
+        write(tag, "sketch_create", {"plane": "xy", "name": sketch})
+        write(tag, "sketch_add_geometry", {"sketch_name": sketch, "units": "mm",
+              "geometry": [{"kind": "rectangle", "x1": x1, "y1": y1,
+                            "x2": x2, "y2": y2}]})
+        key = tag + "_body_name_" + name
+        write(tag, "model_extrude", {"sketch_name": sketch, "distance": thickness,
+              "symmetric": symmetric, "units": "mm"}, _extruded,
+              (key, _recall(key, lambda p: p["result_bodies"][0])))
+        write(tag, "design_set_name", lambda c, name=name, key=key: {
+              "target": _ctx_get(c, key, name + " extrusion body"), "new_name": name},
+              lambda p, name=name: p.get("renamed") is True and p.get("name") == name)
+
+    def remember_sweep(feature_key, result_key=None):
+        def save(p):
+            name = p.get("feature")
+            result_bodies = p.get("result_bodies") or []
+            if isinstance(name, str) and name:
+                _RECALL[feature_key] = name
+            if result_key and len(result_bodies) == 1 and isinstance(result_bodies[0], str):
+                _RECALL[result_key] = result_bodies[0]
+            return name
+        return save
+
+    def sketch_sweep_setup(tag, feature_key, section_half, path_start, path_end,
+                           operation, targets=None, result_key=None):
+        write(tag, "model_construction", {"kind": "plane", "mode": "offset", "plane": "yz",
+              "offset": -5, "units": "mm", "name": tag + "SectionPlane"}, _datum_plane("yz"))
+        write(tag, "sketch_create", {"plane": tag + "SectionPlane", "name": tag + "Section"})
+        write(tag, "sketch_add_geometry", {"sketch_name": tag + "Section", "units": "mm",
+              "geometry": [{"kind": "rectangle", "x1": -section_half, "y1": -section_half,
+                            "x2": section_half, "y2": section_half}]})
+        write(tag, "sketch_create", {"plane": "xy", "name": tag + "Path"})
+        write(tag, "sketch_add_geometry", {"sketch_name": tag + "Path", "units": "mm",
+              "geometry": [{"kind": "line", "x1": path_start, "y1": 0,
+                            "x2": path_end, "y2": 0}]})
+        args = {"profile": {"sketch": tag + "Section", "profile_index": 0},
+                "path": "sketch:" + tag + "Path", "operation": operation}
+        if targets:
+            args["target_bodies"] = targets
+        write(tag, "model_sweep", args,
+              lambda p, tag=tag, operation=operation, targets=targets: _measured(
+                  "public model_sweep fixture creation", p,
+                  p.get("swept") is True and p.get("operation") == operation
+                  and p.get("component") and p.get("is_solid") is True
+                  and (targets is None or p.get("scoped_to_bodies") == targets)
+                  and isinstance(p.get("feature"), str) and bool(p.get("feature"))
+                  and bool(p.get("result_bodies"))),
+              (feature_key, remember_sweep(feature_key, result_key)))
+
+    def read_mass(tag, expected, suffix):
+        read("model_inspect", {"target": "", "include": ["default", "mass"],
+             "per_body": True, "accuracy": "very_high", "units": "mm"},
+             _sweep_scope_mass(expected, tag + "_" + suffix))
+
+    def finish(tag, title):
+        rows.extend([("doc_activate", lambda c, tag=tag: {
+                     "name": _ctx_get(c, tag + "_home", "home document"),
+                     "expect_document": _ctx_get(c, tag + "_doc", title)}, "ok", None),
+                     ("doc_close", lambda c, tag=tag: {
+                     "name": _ctx_get(c, tag + "_doc", title), "save_changes": False,
+                     "expect_document": _ctx_get(c, tag + "_home", "home document")},
+                      _document_closed, None)])
+
+    # model_sweep has no guideRail creation input, so this one measured fixture uses native setup;
+    # every edit and independent material/definition check is still through the registered tools.
+    tag = "scope_r7"
+    session(tag, "R7 guided scratch")
+    write(tag, "sys_execute_script", {"script": _SWEEP_GUIDE_FIXTURE, "read_only": False},
+          lambda p: _measured("measured R7 one-curve guided fixture", p,
+                              p.get("feature") == "R7Sweep" and p.get("body") == "R7SweepBody"
+                              and p.get("control") == "R7Control"
+                              and p.get("original_count") == p.get("replacement_count") == 1
+                              and p.get("marker") == p.get("count")))
+    read_mass(tag, {"R7SweepBody": 240, "R7Control": 1000}, "before")
+    definition_read(tag, "R7Sweep", "R7Sweep", "new")
+    write(tag, "sys_execute_script", {"script": _SWEEP_GUIDE_CENSUS, "read_only": False},
+          _sweep_scope_guide_census("R7RailOriginal"))
+    write(tag, "model_edit_sweep", {"feature": "R7Sweep", "action": "guide_path",
+          "path": "sketch:R7RailReplacement"}, _sweep_scope_edit("guide_path", "replace", "R7Sweep"))
+    read_mass(tag, {"R7SweepBody": 560, "R7Control": 1000}, "replacement")
+    definition_read(tag, "R7Sweep", "R7Sweep", "new", previous=True)
+    write(tag, "sys_execute_script", {"script": _SWEEP_GUIDE_CENSUS, "read_only": False},
+          _sweep_scope_guide_census("R7RailReplacement"))
+    write(tag, "model_edit_sweep", {"feature": "R7Sweep", "action": "guide_path",
+          "path": "sketch:R7RailOriginal"}, _sweep_scope_edit("guide_path", "restore", "R7Sweep"))
+    read_mass(tag, {"R7SweepBody": 240, "R7Control": 1000}, "restore")
+    definition_read(tag, "R7Sweep", "R7Sweep", "new", previous=True)
+    write(tag, "sys_execute_script", {"script": _SWEEP_GUIDE_CENSUS, "read_only": False},
+          _sweep_scope_guide_census("R7RailOriginal"))
+    finish(tag, "R7 guided scratch")
+
+    tag = "scope_r8"
+    session(tag, "R8 operation scratch")
+    body_box(tag, "R8Box", 0, -10, 40, 10, 5, symmetric=True)
+    body_box(tag, "R8Control", 100, 0, 110, 10, 10)
+    sweep_key = tag + "_feature"
+    result_key = tag + "_result_body"
+    sketch_sweep_setup(tag, sweep_key, 2, -5, 45, "new", result_key=result_key)
+    read("model_inspect", {"target": "", "include": ["default", "mass"],
+         "per_body": True, "accuracy": "very_high", "units": "mm"},
+         _sweep_scope_mass({"R8Box": 8000, "R8Control": 1000, "$result": 800},
+                           tag + "_before", result_key))
+    definition_read(tag, lambda c, key=sweep_key: _ctx_get(c, key, "Sweep feature"),
+                    sweep_key, "new")
+    write(tag, "model_edit_sweep", lambda c, key=sweep_key: {"feature": _ctx_get(c, key, "Sweep"),
+          "action": "operation", "operation": "cut", "target_bodies": ["R8Box"]},
+          _sweep_scope_edit("operation", "cut", sweep_key, ("R8Box",)))
+    read_mass(tag, {"R8Box": 7360, "R8Control": 1000}, "cut")
+    definition_read(tag, lambda c, key=sweep_key: _ctx_get(c, key, "Sweep feature"), sweep_key,
+                    "cut", ("R8Box",), previous=True)
+    # Cut-to-New is not admitted; discard this scratch instead of asserting output identity or reversing it.
+    finish(tag, "R8 operation scratch")
+
+    tag = "scope_r9"
+    session(tag, "R9 participant scratch")
+    body_box(tag, "R9A", 0, -5, 10, 5, 5, symmetric=True)
+    body_box(tag, "R9B", 20, -5, 30, 5, 5, symmetric=True)
+    body_box(tag, "R9Control", 100, -5, 110, 5, 5, symmetric=True)
+    sweep_key = tag + "_feature"
+    sketch_sweep_setup(tag, sweep_key, 1, -5, 35, "cut", ["R9A"])
+    read_mass(tag, {"R9A": 960, "R9B": 1000, "R9Control": 1000}, "before")
+    definition_read(tag, lambda c, key=sweep_key: _ctx_get(c, key, "Sweep feature"),
+                    sweep_key,
+                    "cut", ("R9A",))
+    write(tag, "model_edit_sweep", lambda c, key=sweep_key: {"feature": _ctx_get(c, key, "Sweep"),
+          "action": "participants", "target_bodies": ["R9B"]},
+          _sweep_scope_edit("participants", "retarget", sweep_key, ("R9B",)))
+    read_mass(tag, {"R9A": 1000, "R9B": 960, "R9Control": 1000}, "retarget")
+    definition_read(tag, lambda c, key=sweep_key: _ctx_get(c, key, "Sweep feature"),
+                    sweep_key,
+                    "cut", ("R9B",), previous=True)
+    write(tag, "model_edit_sweep", lambda c, key=sweep_key: {"feature": _ctx_get(c, key, "Sweep"),
+          "action": "participants", "target_bodies": ["R9A"]},
+          _sweep_scope_edit("participants", "restore", sweep_key, ("R9A",)))
+    read_mass(tag, {"R9A": 960, "R9B": 1000, "R9Control": 1000}, "restore")
+    definition_read(tag, lambda c, key=sweep_key: _ctx_get(c, key, "Sweep feature"),
+                    sweep_key,
+                    "cut", ("R9A",), previous=True)
+    finish(tag, "R9 participant scratch")
+    return rows
+
+
+_SWEEP_EDIT_MODES += _sweep_scope_edit_rows()
 
 
 class _FilletRadiusRefusal(_Refusal):
@@ -2607,7 +3096,7 @@ def _guided_sweep_rows():
     ])
     write("model_edit_sweep", {"feature": "GuidedSweep", "action": "profile",
                                "profile": {"sketch": "LaterProfile", "profile_index": 0}},
-          _refused("Sweep guide or solid-tool definition is not absent/readable",
+          _refused("This action supports only a Sweep without a guide or solid-tool definition",
                    "Nothing was edited"))
     rows.extend([
         ("sys_execute_script", {"script": _GUIDED_SWEEP_NATIVE, "read_only": False},

@@ -12,7 +12,7 @@ The HoleFeatureInput fake RECORDS the calls so we can assert the exact builder p
 import pytest
 from types import SimpleNamespace
 
-from conftest import (load_tool, FakeFeatures, FakePoint, FakeSketchPoint, FakeVector3D, BRepBody, BRepEdge,
+from conftest import (load_tool, FakeFeatures, FakePoint, FakeSketchPoint, FakeVector3D, BRepBody, BRepEdge, BRepFace, Plane,
                       Circle3D, Cylinder, Line3D, FakeMatrix3D, MakeComp, Sketch,
                       _NamedCollection, _make_object_collection, install, make_design,
                       make_occurrence, FakeUnitsManager, payload as _payload)
@@ -135,6 +135,11 @@ class FakeHoleInput:
         if answer is False:
             return False
         self.placed = ("points", list(coll)); return answer
+    def setPositionByPoint(self, face, point):
+        answer = self._answer("setPositionByPoint")
+        if answer is True:
+            self.placed = ("face_point", point)
+        return answer
     def setPositionAtCenter(self, planar_entity, center_edge):
         assert planar_entity == "FACE"
         assert isinstance(center_edge, BRepEdge)
@@ -236,6 +241,8 @@ class FakeHoleFeature:
             pts = inp.placed[1]
         elif kind == "point":
             pts = [inp.placed[1]]
+        elif kind == "face_point":
+            pts = [_SketchPoint(inp.placed[1])]
         else:
             # center / on_edge / plane_offsets - ONE synthetic hole (these modes place exactly one;
             # the handler verifies the drilled-axis COUNT, not per-point coordinates, for them).
@@ -738,6 +745,123 @@ def _install_verified(monkeypatch):
     monkeypatch.setattr(adsk.core.Point3D, "create",
                         staticmethod(lambda x, y, z: FakePoint(x, y, z)))
     return d
+
+
+class TestFacePoint:
+    @pytest.fixture
+    def scene(self, monkeypatch):
+        import adsk.core
+        design = install(mh, make_design(comp=_Root()))
+        face = BRepFace(Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 1)),
+                        body=BRepBody(parent_component=design.rootComponent))
+        face.isPointOnFace = lambda p: 0 <= p.x <= 2 and 0 <= p.y <= 2 and p.z == 1
+        monkeypatch.setattr(mh, "_resolve_face", lambda d, h: (face, None))
+        monkeypatch.setattr(mh, "_value", lambda value: ("V", value))
+        monkeypatch.setattr(adsk.core.Point3D, "create", staticmethod(FakePoint))
+        return design, face
+
+    def test_exact_owner_point_reaches_input_without_a_placement_sketch(self, scene):
+        design, _face = scene
+        data = _payload(mh.handler(diameter="4 mm", face="h", placement="face_point",
+                                  point=[5, 10, 10], depth="5 mm"))
+        assert data["point_space"] == "face-owner" and data["holes_verified"] is True
+        assert "points_space" not in data
+        assert data["drill_axes_owner_cm"] == [[.5, 1, 1, 0, 0, 1]]
+        assert design.rootComponent.sketches.created_on == []
+
+    @pytest.mark.parametrize("answer, message", [(False, "outside"), (None, "not verified"),
+                                                (1, "not verified")])
+    def test_unproved_face_containment_never_adds_a_hole(self, scene, monkeypatch, answer, message):
+        design, face = scene
+        monkeypatch.setattr(face, "isPointOnFace", lambda p: answer)
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and message in result["message"]
+        assert "[5, 10, 10]" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_same_plane_outside_point_refuses_without_geometry(self, scene):
+        design, _face = scene
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[30, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "outside" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_unread_owner_plane_refuses_before_add(self, scene, monkeypatch):
+        design, _face = scene
+        monkeypatch.setattr(mh._geom, "_face_plane", lambda face: (None, None))
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "plane" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_native_owner_mismatch_refuses_before_add(self, scene, monkeypatch):
+        design, face = scene
+        native = BRepFace(face.geometry, body=BRepBody(parent_component=_bracket("Other")))
+        monkeypatch.setattr(face, "nativeObject", native, raising=False)
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "native owner" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_placed_proxy_uses_native_plane_and_face_owner_with_root_active(self, scene, monkeypatch):
+        design, _face = scene
+        owner = _bracket("Turn")
+        native = BRepFace(Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 1)),
+                          body=BRepBody(parent_component=owner))
+        native.isPointOnFace = lambda p: (p.x, p.y, p.z) == (.5, 1, 1)
+        occurrence = make_occurrence("Turn:1", owner)
+        proxy = BRepFace(Plane(FakeVector3D(1, 0, 0), FakePoint(9, 0, 0)),
+                         body=BRepBody(parent_component=owner))
+        proxy.nativeObject = native
+        proxy.assemblyContext = occurrence
+        monkeypatch.setattr(mh, "_resolve_face", lambda d, h: (proxy, None))
+        data = _payload(mh.handler(diameter="4 mm", face="h", placement="face_point",
+                                  point=[5, 10, 10], depth="5 mm"))
+        assert data["host_component"] == "Turn" and data["host_verified"] is True
+        assert data["face_normal_owner"] == [0, 0, 1]
+        assert owner.features.holeFeatures.add_calls == 1
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_off_plane_point_refuses_before_any_geometry_is_added(self, scene):
+        design, _face = scene
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 13], depth="5 mm")
+        assert result["isError"] is True and "3 mm off" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+        assert design.rootComponent.sketches.created_on == []
+
+    def test_unread_position_answer_never_reaches_add(self, scene):
+        design, _face = scene
+        design.rootComponent.features.holeFeatures.refusals["setPositionByPoint"] = None
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "returned None" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_wrong_axis_is_reported_as_a_landed_unverified_hole(self, scene, monkeypatch):
+        _design, _face = scene
+        monkeypatch.setattr(mh, "_drill_axes", lambda feature: ([(9, 9, 1, 0, 0, 1)], True))
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "landed" in result["message"]
+        assert "design_delete_feature" in result["message"]
+        assert result["details"]["feature"] == "Hole1"
+
+    def test_correct_point_but_nonparallel_drill_axis_is_not_success(self, scene, monkeypatch):
+        _design, _face = scene
+        monkeypatch.setattr(mh, "_drill_axes", lambda feature: ([(.5, 1, 1, 1, 0, 0)], True))
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "landed" in result["message"]
+
+    @pytest.mark.parametrize("point", [[True, 10, 10], [5, float("nan"), 10], [5, 10]])
+    def test_non_point_input_refuses_before_feature_add(self, scene, point):
+        design, _face = scene
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=point, depth="5 mm")
+        assert result["isError"] is True and "finite [x,y,z]" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
 
 
 class TestPerPointVerification:

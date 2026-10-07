@@ -426,5 +426,5 @@ def wrap(handler):
 # The input property advertised on every write tool (so an agent knows it can target a document).
 EXPECT_DOCUMENT_PROP = ("expect_document", {
     "type": "string",
-    "description": "This doc must be active.",
+    "description": "Doc must be active.",
 })

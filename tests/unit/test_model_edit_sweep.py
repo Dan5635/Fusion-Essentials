@@ -1,6 +1,8 @@
 """Checks sweep operand replacement and its failure evidence."""
 
 from types import SimpleNamespace
+import os
+import sys
 
 import adsk.fusion
 import pytest
@@ -10,6 +12,10 @@ from conftest import (FakeTimeline, FakeTimelineObject, Profile, Sketch, SketchC
 
 
 mod = load_tool("model_edit_sweep")
+TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(TESTS_DIR, "live"))
+import verify_acts_model_sweep as _sweep_witness  # noqa: E402
+
 _real_health = mod._health
 _real_target_error = mod._target_error
 _real_definition = mod._definition
@@ -29,6 +35,35 @@ def test_closed_profile_identity_reports_one_member():
                                        "profile_members"] == 1
 
 
+def test_new_body_participants_are_unavailable_not_an_empty_read():
+    assert mod._participants(SimpleNamespace(participantBodies=[]),
+                             adsk.fusion.FeatureOperations.NewBodyFeatureOperation) is None
+
+
+def test_surface_sweep_witness_requires_explicit_unavailable_participants():
+    reply = {
+        "edited": True, "action": "profile", "same_feature": True,
+        "definition_matches": True, "definition_before": {"profile_members": 1},
+        "definition_after": {"profile_members": 1}, "geometry_changed": True,
+        "participant_scope_preserved": True, "participants_replayed": False,
+        "retained_participants": None, "participants_before": None, "participants_after": None,
+        "participant_scope_reason": "The original NewBody sweep has no Boolean participant scope.",
+        "marker_restored": True, "outside_body_changes": [], "new_timeline_errors": [],
+        "new_timeline_warnings": [], "target_after": [{"solid": False, "volume_cm3": None}],
+    }
+    check = _sweep_witness._sweep_mode_edit("open", "profile", surface=True)
+    assert check(reply) is True
+    for key in ("retained_participants", "participants_before", "participants_after"):
+        with pytest.raises(AssertionError, match="sweep definition and participants"):
+            check({**reply, key: []})
+        with pytest.raises(AssertionError, match="sweep definition and participants"):
+            check({name: value for name, value in reply.items() if name != key})
+    with pytest.raises(AssertionError, match="sweep definition and participants"):
+        check({**reply, "geometry_changed": False})
+    with pytest.raises(AssertionError, match="sweep definition and participants"):
+        check({name: value for name, value in reply.items() if name != "participant_scope_reason"})
+
+
 class Sweep:
     """One editable sweep with a configurable profile setter."""
 
@@ -39,6 +74,7 @@ class Sweep:
         self.guideRail = None
         self.guideSurfaces = []
         self.solidBody = None
+        self.profileScaling = 0
         self.linkedFeatures = SimpleNamespace(count=0, item=lambda _i: None)
         self._profile = "old"
         self._path = ("line",)
@@ -105,7 +141,8 @@ def rig(monkeypatch):
     sweep = Sweep(timeline)
     design = SimpleNamespace(timeline=timeline)
     monkeypatch.setattr(mod._inputs, "resolve_inputs", lambda _spec, _raw: (
-        {"feature": (sweep, "Sweep1"), "action": _raw["action"]}, None))
+        {"feature": (sweep, "Sweep1"), "action": _raw["action"],
+         "operation": _raw.get("operation"), "target_bodies": _raw.get("target_bodies")}, None))
     monkeypatch.setattr(mod, "_target_error", lambda *_args: None)
     monkeypatch.setattr(mod._common, "design", lambda: design)
     monkeypatch.setattr(mod._common, "same_component", lambda *_args: True)
@@ -132,6 +169,195 @@ def rig(monkeypatch):
         ("witness", None): {"component": "Host", "body": "Witness",
                             "shape": {"volume_cm3": 1}}})
     return sweep, timeline
+
+
+def test_new_body_edit_discloses_unavailable_participant_scope(rig):
+    reply = payload(mod.handler(feature="Sweep1", action="profile", profile={"sketch": "Other"}))
+    assert reply["edited"] is True
+    assert all(reply[key] is None for key in (
+        "retained_participants", "participants_before", "participants_after"))
+    assert reply["participant_scope_reason"] == (
+        "The original NewBody sweep has no Boolean participant scope.")
+
+
+def test_new_body_to_cut_requires_and_reads_explicit_participants(rig, monkeypatch):
+    sweep, _timeline = rig
+    target = SimpleNamespace(entityToken="target-body", isSolid=True,
+                             parentComponent=sweep.parentComponent, assemblyContext=None,
+                             name="Target")
+    result_key, target_key = ("sweep-result", None), ("target-body", None)
+    control_key, third_key = ("control-body", None), ("third-body", None)
+
+    def definition(entity):
+        operation = getattr(entity, "operation",
+                            adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        selected = (None if operation == adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+                    else tuple(mod._common.native_identity(body)
+                               for body in entity.participantBodies))
+        return {"profile": entity.profile, "path": entity.path, "guide_path": None,
+                "operation": operation, "participants": selected,
+                "orientation": adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType,
+                "is_solid": True}
+
+    monkeypatch.setattr(mod, "_definition", definition)
+    monkeypatch.setattr(mod._common, "native_identity", lambda body: (body.entityToken, None))
+    monkeypatch.setattr(mod, "body_creator", lambda *_args: ("Extrude1", 0))
+    monkeypatch.setattr(mod, "_result_body_rows", lambda _feature: [
+        {"name": "SweepResult", "token": "sweep-result"}])
+    monkeypatch.setattr(mod, "_feature_body_keys", lambda _feature: (
+        {result_key} if getattr(sweep, "operation",
+                                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        == adsk.fusion.FeatureOperations.NewBodyFeatureOperation else {target_key}))
+
+    observed = []
+
+    observed = []
+
+    def shapes(_design):
+        is_cut = getattr(sweep, "operation",
+                         adsk.fusion.FeatureOperations.NewBodyFeatureOperation) == \
+            adsk.fusion.FeatureOperations.CutFeatureOperation
+        rows = {target_key: ("Target", 0.5 if is_cut else 1),
+                control_key: ("Control", 1), third_key: ("Third", 1)}
+        if not is_cut:
+            rows[result_key] = ("SweepResult", 1)
+        return {key: {"component": "Host", "body": name, "shape": {"volume_cm3": volume}}
+                for key, (name, volume) in rows.items()}
+
+    monkeypatch.setattr(mod, "_all_shapes", shapes)
+
+    result = mod.handler(feature="Sweep1", action="operation", operation="cut",
+                         target_bodies=[target])
+
+    assert result["isError"] is False
+    details = payload(result)
+    assert sweep.operation == adsk.fusion.FeatureOperations.CutFeatureOperation
+    assert sweep.participantBodies == [target]
+    assert details["definition_matches"] is True
+    assert details["participant_scope_preserved"] is None
+    assert details["participant_scope_matches_request"] is True
+    assert details["geometry_changed"] is True
+    assert details["outside_body_changes"] == []
+    assert details["requested_participants"] == [
+        {"name": "Target", "token": "target-body", "component": "Host"}]
+    assert details["participants_after"] == details["requested_participants"]
+    assert details["result_bodies_before"] and details["result_bodies_after"] is not None
+
+
+@pytest.mark.parametrize("unexpected_third_change", [False, True])
+def test_cut_participant_retarget_accounts_for_old_and_new_targets_and_control(
+        rig, monkeypatch, unexpected_third_change):
+    sweep, _timeline = rig
+    target_a = SimpleNamespace(entityToken="body-a", isSolid=True,
+                               parentComponent=sweep.parentComponent, assemblyContext=None, name="BodyA")
+    target_b = SimpleNamespace(entityToken="body-b", isSolid=True,
+                               parentComponent=sweep.parentComponent, assemblyContext=None, name="BodyB")
+    a_key, b_key = ("body-a", None), ("body-b", None)
+    control_key, third_key = ("control-body", None), ("third-body", None)
+    sweep.operation = adsk.fusion.FeatureOperations.CutFeatureOperation
+    sweep._participants = [target_a]
+
+    def definition(entity):
+        return {"profile": entity.profile, "path": entity.path, "guide_path": None,
+                "operation": entity.operation,
+                "participants": tuple(mod._common.native_identity(body)
+                                      for body in entity.participantBodies),
+                "orientation": adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType,
+                "is_solid": True}
+
+    monkeypatch.setattr(mod, "_definition", definition)
+    monkeypatch.setattr(mod._common, "native_identity", lambda body: (body.entityToken, None))
+    monkeypatch.setattr(mod, "body_creator", lambda *_args: ("Extrude1", 0))
+    monkeypatch.setattr(mod, "_result_body_rows", lambda _feature: [
+        {"name": body.name, "token": body.entityToken, "component": "Host"}
+        for body in sweep.participantBodies])
+    monkeypatch.setattr(mod, "_feature_body_keys", lambda _feature: {
+        mod._common.native_identity(sweep.participantBodies[0])})
+
+    observed = []
+
+    def shapes(_design):
+        selected = {body.entityToken for body in sweep.participantBodies}
+        volumes = {"body-a": 0.96 if "body-a" in selected else 1,
+                   "body-b": 0.96 if "body-b" in selected else 1,
+                   "control-body": 1,
+                   "third-body": 0.8 if unexpected_third_change and "body-b" in selected else 1}
+        observed.append(volumes.copy())
+        names = {"body-a": "BodyA", "body-b": "BodyB",
+                 "control-body": "Control", "third-body": "Third"}
+        return {(key, None): {"component": "Host", "body": names[key],
+                              "shape": {"volume_cm3": volume}}
+                for key, volume in volumes.items()}
+
+    monkeypatch.setattr(mod, "_all_shapes", shapes)
+
+    result = mod.handler(feature="Sweep1", action="participants", target_bodies=[target_b])
+
+    details = result["details"] if result["isError"] else payload(result)
+    if unexpected_third_change:
+        assert result["isError"] is True
+        assert details["outside_body_changes"] == ["Third"]
+        assert details["rollback"]["verified"] is True
+        assert sweep.participantBodies == [target_a]
+        assert observed[1]["third-body"] == 0.8
+        assert observed[-1] == observed[0]
+    else:
+        assert result["isError"] is False
+        assert sweep.participantBodies == [target_b]
+        assert details["geometry_changed"] is True
+        assert details["outside_body_changes"] == []
+        assert details["participants_before"] == [
+            {"name": "BodyA", "token": "body-a", "component": "Host"}]
+        assert details["requested_participants"] == [
+            {"name": "BodyB", "token": "body-b", "component": "Host"}]
+        assert details["participants_after"] == details["requested_participants"]
+        assert details["participant_scope_matches_request"] is True
+        assert details["result_bodies_before"] != details["result_bodies_after"]
+        assert observed[0] == {"body-a": 0.96, "body-b": 1, "control-body": 1, "third-body": 1}
+        assert observed[1] == {"body-a": 1, "body-b": 0.96, "control-body": 1, "third-body": 1}
+        assert mod._common.native_identity(target_a) == a_key
+        assert mod._common.native_identity(target_b) == b_key
+
+
+def test_new_body_to_cut_refuses_an_empty_target_list_before_mutation(rig):
+    sweep, timeline = rig
+    result = mod.handler(feature="Sweep1", action="operation", operation="cut",
+                         target_bodies=[])
+
+    assert result["isError"] is True
+    assert "nonempty explicit 'target_bodies'" in error_message(result)
+    assert not hasattr(sweep, "operation")
+    assert sweep.assignments == 0
+    assert timeline.markerPosition == 3
+
+
+def test_guide_path_uses_the_existing_path_input_and_reads_the_guide_rail(rig, monkeypatch):
+    sweep, _timeline = rig
+    sweep.guideRail = ("old-guide",)
+    sweep.guideSurfaces = type("BRepFaceVector", (), {"__len__": lambda _self: 0})()
+
+    def definition(entity):
+        guide = entity.guideRail
+        return {"profile": entity.profile, "path": entity.path,
+                "guide_path": tuple(guide) if guide is not None else None,
+                "operation": adsk.fusion.FeatureOperations.NewBodyFeatureOperation,
+                "orientation": adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType,
+                "is_solid": True}
+
+    monkeypatch.setattr(mod, "_definition", definition)
+    monkeypatch.setattr(mod, "_path_members", lambda operand: tuple(operand))
+    monkeypatch.setattr(mod, "_all_shapes", lambda _design: {
+        ("target", None): {"component": "Host", "body": "Target",
+                           "shape": {"volume_cm3": 2 if sweep.guideRail == ("arc",) else 1}},
+        ("witness", None): {"component": "Host", "body": "Witness",
+                            "shape": {"volume_cm3": 1}}})
+
+    result = mod.handler(feature="Sweep1", action="guide_path", path="new-guide")
+
+    assert result["isError"] is False
+    assert sweep.guideRail == ("arc",)
+    assert payload(result)["definition_matches"] is True
+    assert payload(result)["geometry_changed"] is True
 
 
 def test_ignored_setter_is_an_error(rig):
@@ -842,6 +1068,94 @@ def test_strict_definition_rejects_partial_path_read(rig, monkeypatch):
     assert _real_definition(sweep) is None
 
 
+def test_guide_rail_definition_uses_profile_scaling_when_orientation_is_inapplicable(rig, monkeypatch):
+    sweep, _ = rig
+    sweep.operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+    sweep.isSolid = True
+    sweep.profileScaling = 0
+    sweep.guideRail = ("rail-curve",)
+    sweep.guideSurfaces = type("BRepFaceVector", (), {"__len__": lambda _self: 0})()
+    sweep.solidBody = None
+
+    def unread_orientation(_self):
+        raise RuntimeError("orientation is ignored with a guide rail")
+
+    monkeypatch.setattr(Sweep, "orientation", property(unread_orientation), raising=False)
+    baseline = _real_definition(sweep)
+    assert baseline is not None
+    assert baseline["orientation"] is None
+    assert baseline["orientation_applicable"] is False
+    assert baseline["profile_scaling"] == 0
+    report = mod._definition_report(baseline)
+    assert report["orientation_applicable"] is False
+    assert report["profile_scaling"] == 0
+
+    sweep.profileScaling = 1
+    changed = _real_definition(sweep)
+    assert changed is not None
+    assert changed["profile_scaling"] != baseline["profile_scaling"]
+    assert changed != baseline
+
+
+def test_sweep_definition_refuses_unread_scaling_unread_unrailed_orientation_and_unsupported_tools(
+        rig, monkeypatch):
+    sweep, _ = rig
+    sweep.operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+    sweep.isSolid = True
+    sweep.profileScaling = 0
+    sweep.guideRail = ("rail-curve",)
+    sweep.guideSurfaces = type("BRepFaceVector", (), {"__len__": lambda _self: 0})()
+    sweep.solidBody = None
+
+    def unread_scaling(_self):
+        raise RuntimeError("profile scaling unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Sweep, "profileScaling", property(unread_scaling), raising=False)
+        assert _real_definition(sweep) is None
+
+    sweep.profileScaling = True
+    assert _real_definition(sweep) is None
+    sweep.profileScaling = 0
+    sweep.guideSurfaces = type("BRepFaceVector", (), {
+        "__len__": lambda _self: 1, "__getitem__": lambda _self, _index: object()})()
+    assert _real_definition(sweep) is None
+
+    sweep.guideSurfaces = type("BRepFaceVector", (), {"__len__": lambda _self: 0})()
+    sweep.solidBody = object()
+    assert _real_definition(sweep) is None
+
+    sweep.solidBody = None
+    sweep.guideRail = None
+
+    def unread_orientation(_self):
+        raise RuntimeError("orientation is required without a guide rail")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Sweep, "orientation", property(unread_orientation), raising=False)
+        assert _real_definition(sweep) is None
+
+
+def test_no_guide_sweep_does_not_read_inapplicable_profile_scaling(rig, monkeypatch):
+    sweep, _ = rig
+    sweep.operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+    sweep.isSolid = True
+    sweep.guideRail = None
+    sweep.guideSurfaces = type("BRepFaceVector", (), {"__len__": lambda _self: 0})()
+    sweep.solidBody = None
+    sweep.orientation = adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType
+
+    def unread_scaling(_self):
+        raise RuntimeError("profile scaling is inapplicable without a guide rail")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Sweep, "profileScaling", property(unread_scaling), raising=False)
+        definition = _real_definition(sweep)
+    assert definition is not None
+    assert definition["orientation_applicable"] is True
+    assert definition["profile_scaling"] is None
+
+
 def test_partial_path_edit_discloses_omitted_curve_ids_without_changing_operand(rig, monkeypatch):
     sweep, timeline = rig
     def build(owner, raw, left=None):
@@ -855,3 +1169,60 @@ def test_partial_path_edit_discloses_omitted_curve_ids_without_changing_operand(
     assert "Not in the path: line:1" in result["note"]
     assert (result["path_curves"], result["path_sketch_curves"]) == (1, 2)
     assert timeline.markerPosition == 3
+
+
+def test_scope_sweep_witness_binds_r8_definition_and_result_to_r8(monkeypatch):
+    monkeypatch.setattr(_sweep_witness, "_RECALL", {})
+    rows = _sweep_witness._sweep_scope_edit_rows()
+    context = {
+        "scope_r7_doc": "doc-r7", "scope_r7_home": "home-r7",
+        "scope_r8_doc": "doc-r8", "scope_r8_home": "home-r8",
+        "scope_r9_doc": "doc-r9", "scope_r9_home": "home-r9",
+        "scope_r8_feature": "R8Sweep", "scope_r9_feature": "R9Sweep",
+    }
+    definition_reads = [args(context) for name, args, _check, _save in rows
+                        if name == "design_get" and callable(args)]
+    assert [row["feature"] for row in definition_reads] == (
+        ["R7Sweep"] * 3 + ["R8Sweep"] * 2 + ["R9Sweep"] * 3)
+    edit_calls = [args(context) for name, args, _check, _save in rows
+                  if name == "model_edit_sweep"]
+    assert [(row["action"], row["feature"]) for row in edit_calls] == [
+        ("guide_path", "R7Sweep"),
+        ("guide_path", "R7Sweep"),
+        ("operation", "R8Sweep"),
+        ("participants", "R9Sweep"),
+        ("participants", "R9Sweep"),
+    ]
+    feature_row = next(row for row in rows if row[0] == "model_sweep"
+                       and isinstance(row[3], tuple) and row[3][0] == "scope_r8_feature")
+    feature_key, save = feature_row[3]
+    assert save({"feature": "R8Sweep", "result_bodies": ["R8ResultToken"]}) == "R8Sweep"
+    assert _sweep_witness._RECALL[feature_key] == "R8Sweep"
+    assert _sweep_witness._RECALL["scope_r8_result_body"] == "R8ResultToken"
+
+
+def test_sweep_operation_witness_requires_participant_result_body_identity(monkeypatch):
+    monkeypatch.setattr(_sweep_witness, "_RECALL", {
+        "scope_r8_feature": "R8Sweep", "sweep_scope_identity_R8Sweep": "native-feature"})
+    participant = {"name": "R8Box", "token": "participant-token", "component": "(Unsaved)"}
+    payload = {
+        "feature": "R8Sweep", "action": "operation", "edited": True,
+        "same_feature": True, "definition_matches": True, "geometry_changed": True,
+        "marker_restored": True, "new_timeline_errors": [], "new_timeline_warnings": [],
+        "outside_body_changes": [], "participant_scope_matches_request": True,
+        "participant_scope_preserved": None, "requested_participants": [participant],
+        "participants_before": None, "participants_after": [participant],
+        "result_bodies_before": [{"name": "Body3", "token": "new-body-token",
+                                   "component": "(Unsaved)"}],
+        "result_bodies_after": [participant],
+    }
+    check = _sweep_witness._sweep_scope_edit("operation", "cut", "scope_r8_feature", ("R8Box",))
+    assert check(payload) is True
+
+    payload["result_bodies_after"] = []
+    with pytest.raises(AssertionError, match="public Sweep edit read-back"):
+        check(payload)
+
+    payload["result_bodies_after"] = [{**participant, "token": "unrelated-body-token"}]
+    with pytest.raises(AssertionError, match="public Sweep edit read-back"):
+        check(payload)

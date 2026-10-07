@@ -5,7 +5,7 @@ from these values, so the mocks carry measured data, not hand-typed claims. Each
 owned by the measurement row of the same name in tests/live/VERIFIED_API_FACTS.md."""
 
 FUSION_VERSION = "2706.0.116"
-VERIFIED_ON = "2026-10-06"
+VERIFIED_ON = "2026-10-07"
 
 # '<adsk namespace>.<Class>' -> {member: int} - seeded onto the mock adsk modules.
 ENUMS = {
@@ -107,6 +107,13 @@ ENUMS = {
         "AlwaysInsideSideType": 1,
         "StartOutsideSideType": 2,
         "StartInsideSideType": 3,
+    },
+    "core.AppearanceSourceTypes": {
+        "MaterialAppearanceSource": 0,
+        "BodyAppearanceSource": 1,
+        "OccurrenceAppearanceSource": 2,
+        "FaceAppearanceSource": 3,
+        "OverrideAppearanceSource": 4,
     },
     "core.CameraTypes": {
         "OrthographicCameraType": 0,
@@ -432,6 +439,11 @@ ENUMS = {
         "NewBodyFeatureOperation": 3,
         "NewComponentFeatureOperation": 4,
     },
+    "fusion.FilletFeatureTypes": {
+        "FilletFeatureType": 0,
+        "RuleFilletFeatureType": 1,
+        "FullRoundFilletFeatureType": 2,
+    },
     "fusion.FlangeHeightDatumTypes": {
         "InnerFacesFlangeHeightDatumType": 0,
         "OuterFacesFlangeHeightDatumType": 1,
@@ -714,6 +726,10 @@ ENUMS = {
 NOT_ENUMS = [
     "cam.NCProgramPostProcessOptions",
     "core.SaveImageFileOptions",
+    "fusion.BRepFace",
+    "fusion.ConstructionPlane",
+    "fusion.Path",
+    "fusion.SketchCurve",
 ]
 
 # Behavior flags the shared fakes consume.

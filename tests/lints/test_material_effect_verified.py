@@ -28,6 +28,10 @@ _CALLED_NAME = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 # Audited shape/evidence exceptions: alternative mutations or material readings the scanner
 # cannot represent, and operations whose cut/intersect choice removes no material.
 _MATERIAL_EXEMPT = {
+    'model_edit_sweep': 'evidence: in-place Sweep setters have no features.add call; the handler '
+                        'compares target-body shapes and all outside-body shapes, returning error '
+                        'for a failed check except an ok explicitly reporting identical geometry '
+                        'when the changed definition re-reads',
     'model_edit_extrude': 'evidence: in-place property/extent setters have no features.add call; '
                          'the handler compares pre/post _geometry volume, area, bounds and center '
                          'of mass and returns error when unchanged, except an ok naming the '

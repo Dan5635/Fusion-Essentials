@@ -437,7 +437,8 @@ def _entities(sketch, f):
         ln = lines.item(i)
         con = bool(safe(lambda ln=ln: ln.isConstruction, False))
         construction += 1 if con else 0
-        rec = {"id": f"line:{i}", "type": "line", "construction": con, **_curve_state(ln)}
+        rec = {"id": f"line:{i}", "type": "line", "construction": con,
+               "centerline": _common.read_flag(lambda ln=ln: ln.isCenterLine), **_curve_state(ln)}
         rec.update(_line_geo(ln, f))
         out.append(rec)
 
@@ -671,6 +672,9 @@ def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_
         raw_value = safe(lambda: par.value) if par else None
         # An ANGULAR dimension's value is radians, not a length, so it takes its own conversion.
         is_angle = type(d).__name__ == "SketchAngularDimension"
+        driving, driving_unread = _common.read_optional(lambda d=d: d.isDriving)
+        if driving is not None and type(driving) is not bool:
+            driving, driving_unread = None, "isDriving did not read a boolean"
         dimensions.append({
             "name": safe(lambda: par.name) if par else None,
             "value": _dimension_value(raw_value, is_angle, f),
@@ -678,11 +682,14 @@ def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_
             "value_units": "deg" if is_angle else unit,
             "expression": safe(lambda: par.expression) if par else None,
             # driving = constrains geometry; a driven/reference dim just MEASURES (doesn't lock).
-            "driving": bool(safe(lambda d=d: d.isDriving, True)),
+            "driving": driving,
             "type": type(d).__name__.replace("SketchDimension", "").replace("Dimension", "").lower(),
             "entities": dimension_entities(sketch, d, token_ids) if i < _XRAY_CAP else None,
         })
-    driving_dims = sum(1 for d in dimensions if d.get("driving"))
+        if driving_unread:
+            dimensions[-1]["driving_unread"] = driving_unread
+    driving_dims = (None if any(d["driving"] is None for d in dimensions)
+                    else sum(1 for d in dimensions if d["driving"]))
 
     end = entity_offset + entity_limit
     entities_out = [row for row in entities
@@ -783,12 +790,12 @@ def scope_remedy(input_name="component"):
 # The vocabulary half of the scope's description: what it accepts. Shared by every spelling of the
 # input, so a second scope on one tool cannot drift from the first. WHY it exists, and the
 # design_get pointer that mints an occurrence path, are in scope_component's refusals.
-_SCOPE_VOCABULARY = "a name, occurrence path or 'handle'."
+_SCOPE_VOCABULARY = "name, occurrence path or handle."
 
 # The ONE wire declaration of that input: tool.add_input_property(*_sketch_detail.COMPONENT_SCOPE),
 # resolved through scoped_sketch / scoped_or_recent_sketch below.
 COMPONENT_SCOPE = ("component", {"type": "string", "description":
-                   "The sketch's component: " + _SCOPE_VOCABULARY})
+                   "Sketch component: " + _SCOPE_VOCABULARY})
 
 
 def component_scope(input_name, narrows=""):
@@ -796,7 +803,7 @@ def component_scope(input_name, narrows=""):
     'component' already names something else, or that scopes a SECOND sketch reference.
     ``narrows`` names the sketch input this scope applies to."""
     lead = (f"The component of '{narrows}': " if narrows
-            else "The sketch's component: ")
+            else "Sketch component: ")
     return input_name, {"type": "string", "description": lead + _SCOPE_VOCABULARY}
 
 
@@ -1230,4 +1237,6 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
         "truncated": truncated,
         "note": note,
     })
+    if driving_dims is None:
+        out["driving_dimension_count_unread"] = "One or more driving flags did not read; the dimensions list may be capped."
     return ok(out)

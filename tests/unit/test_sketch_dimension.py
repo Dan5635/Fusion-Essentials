@@ -17,8 +17,10 @@ from types import SimpleNamespace
 import adsk.core
 import adsk.fusion
 import pytest
-from conftest import (BRepFace, Cylinder, FakeSketchPoint as _SharedSketchPoint, MakeComp, Sketch,
-                      SketchCurves, _NamedCollection, install, load_tool, make_design)
+from conftest import (BRepFace, Cylinder, FakeFeature, FakeModelParameter,
+                      FakeSketchPoint as _SharedSketchPoint, FakeTimeline, FakeTimelineObject,
+                      FakeUserParameter, FakeUserParameters, MakeComp, Sketch, SketchCurves,
+                      _NamedCollection, install, load_tool, make_design)
 
 sd = load_tool("sketch_dimension")
 
@@ -1558,3 +1560,214 @@ class TestEntrySchemaDefaults:
         for field, prop in sd._ENTRY_SCHEMA["properties"].items():
             if "default" in prop:
                 assert prop["default"] in (applied.get(field), kinds.get(field)), field
+
+
+# -- an existing dimension's driving flag, addressed by its parameter name --------------------
+
+class _StateDim:
+    """A dimension whose isDriving assignments are recorded; `takes` False leaves the flag as it was,
+    `raises` makes the assignment throw, `renames` is the parameter name it holds afterwards."""
+    def __init__(self, name, driving=True, takes=True, raises=None, renames=None):
+        self.parameter = SimpleNamespace(name=name, expression="10 mm")
+        self._driving, self._takes, self._raises, self._renames = driving, takes, raises, renames
+        self.writes = []
+        self.on_write = lambda: None
+
+    @property
+    def isDriving(self):
+        return self._driving
+
+    @isDriving.setter
+    def isDriving(self, value):
+        self.writes.append(value)
+        if self._raises:
+            raise RuntimeError(self._raises)
+        if self._takes:
+            self._driving = value
+            self.on_write()
+        if self._renames:
+            self.parameter.name = self._renames
+
+
+def _state_sketch(name, dims, fully=True):
+    sketch = Sketch(name=name)
+    sketch.sketchDimensions = _NamedCollection(dims)
+    sketch.isFullyConstrained = fully
+    return sketch
+
+
+def _install_state(sketches, user=(), model=(), timeline=None):
+    """Install `sketches` (the LAST is the most recent) with the design's two parameter lists."""
+    comp = MakeComp(name="Root", sketches=list(sketches), origin_planes=_origin_planes())
+    for s in sketches:
+        s.parentComponent = comp
+    listed = [d.parameter for s in sketches for d in s.sketchDimensions._items] + list(model)
+    return install(sd, make_design(comp=comp, timeline=timeline,
+                                   user_parameters=FakeUserParameters(list(user)),
+                                   all_parameters=_NamedCollection(listed + list(user))))
+
+
+def _error_payload(res):
+    assert res["isError"] is True, res
+    data = json.loads(res["content"][0]["text"])
+    assert data["note"] == res["message"]
+    return data
+
+
+class TestExistingDimensionState:
+    def test_nonboolean_after_read_is_unknown_even_when_equal_to_false(self):
+        class NumericFlag(_StateDim):
+            @property
+            def isDriving(self):
+                return 0 if self.writes else True
+
+            @isDriving.setter
+            def isDriving(self, value):
+                self.writes.append(value)
+
+        dim = NumericFlag("d15")
+        _install_state([_state_sketch("S", [dim])])
+        out = _error_payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert out["is_driving"] is None and out["changed"] is None
+        assert "boolean" in out["unread"]["is_driving"]
+
+    def test_the_dimension_is_resolved_by_parameter_name_and_its_flag_re_read(self):
+        other, target = _StateDim("d14"), _StateDim("d15")
+        sketch = _state_sketch("S", [other, target])
+        target.on_write = lambda: setattr(sketch, "isFullyConstrained", False)
+        _install_state([sketch])
+        out = _payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert (target.writes, other.writes) == ([False], [])
+        assert (out["is_driving_before"], out["is_driving"], out["changed"]) == (True, False, True)
+        assert (out["parameter_before"], out["parameter"]) == ("d15", "d15")
+        assert (out["fully_constrained_before"], out["fully_constrained"]) == (True, False)
+        assert out["new_timeline_errors"] == [] and "unread" not in out
+        assert out["note"] == "Dimension 'd15' is_driving True -> False."
+
+    def test_a_dimension_of_another_sketch_is_refused_naming_that_sketch(self):
+        elsewhere = _StateDim("d20")
+        other = _state_sketch("Other", [elsewhere])
+        elsewhere.parameter.createdBy = other
+        _install_state([other, _state_sketch("S", [_StateDim("d15")])])
+        res = sd.handler(sketch_name="S", dimension="d20", is_driving=False)
+        assert res["isError"] is True and elsewhere.writes == []
+        assert "'dimension' = 'd20' names no dimension of sketch 'S'" in res["message"]
+        assert "created by sketch 'Other'" in res["message"]
+        assert "sketch_name='Other'" in res["message"]
+
+    @pytest.mark.parametrize("name,says", [
+        ("Width", "it is a user parameter, not a sketch dimension"),
+        ("d31", "created by FakeFeature 'Extrude1', not by a sketch"),
+        ("Ghost", "the design lists no parameter of that name")])
+    def test_a_name_that_is_no_dimension_is_refused_with_what_it_is(self, name, says):
+        dim = _StateDim("d15")
+        _install_state([_state_sketch("S", [dim])], user=[FakeUserParameter(name="Width")],
+                       model=[FakeModelParameter(name="d31", owner=FakeFeature("Extrude1"))])
+        res = sd.handler(sketch_name="S", dimension=name, is_driving=False)
+        assert res["isError"] is True and says in res["message"] and dim.writes == []
+        assert "sketch_get(sketch_name='S', include_entities=true)" in res["message"]
+
+    def test_unreadable_design_parameters_are_not_called_absent(self):
+        design = _install_state([_state_sketch("S", [_StateDim("d15")])])
+        design.allParameters = _NamedCollection([], raises="3 : parameters unavailable")
+        res = sd.handler(sketch_name="S", dimension="Ghost", is_driving=False)
+        assert "did not read, so where that name lives is unknown" in res["message"]
+
+    def test_two_dimensions_answering_to_one_name_are_refused(self):
+        dims = [_StateDim("d15"), _StateDim("d15")]
+        _install_state([_state_sketch("S", dims)])
+        res = sd.handler(sketch_name="S", dimension="d15", is_driving=False)
+        assert res["isError"] is True and "ambiguous: 2 dimensions" in res["message"]
+        assert [d.writes for d in dims] == [[], []]
+
+    def test_a_dimension_whose_parameter_does_not_read_is_counted_in_the_refusal(self):
+        blind = _StateDim("d15")
+        blind.parameter = None
+        _install_state([_state_sketch("S", [blind])])
+        res = sd.handler(sketch_name="S", dimension="d15", is_driving=False)
+        assert res["isError"] is True and blind.writes == []
+        assert "1 dimension(s) of this sketch have a parameter that did not read" in res["message"]
+
+    @pytest.mark.parametrize("kwargs,says", [
+        ({"dimensions": [{"dim_type": "radius", "entity_one": "circle:0"}], "dimension": "d1",
+          "is_driving": False}, "take no 'dimensions' batch"),
+        ({"dimensions": [{"dim_type": "radius", "entity_one": "circle:0"}], "is_driving": False},
+         "take no 'dimensions' batch"),
+        ({"is_driving": False}, "is_driving=False needs 'dimension'"),
+        ({"dimension": "d1"}, "needs 'is_driving' true or false; got None"),
+        ({"dimension": "d1", "is_driving": "no"}, "got 'no'")])
+    def test_a_mixed_or_half_given_edit_is_refused_before_any_write(self, monkeypatch, kwargs,
+                                                                   says):
+        s = _install(monkeypatch)
+        res = sd.handler(**kwargs)
+        assert res["isError"] is True and says in res["message"]
+        assert s.sketchDimensions.calls == []
+
+    def test_an_empty_batch_beside_the_edit_is_no_mix(self):
+        dim = _StateDim("d15")
+        _install_state([_state_sketch("S", [dim])])
+        out = _payload(sd.handler(dimensions=[], sketch_name="S", dimension="d15",
+                                  is_driving=False))
+        assert out["changed"] is True
+
+    def test_a_flag_that_does_not_take_is_an_error_with_the_state_as_read(self):
+        dim = _StateDim("d15", takes=False)
+        _install_state([_state_sketch("S", [dim])])
+        out = _error_payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert "is_driving did not take" in out["note"] and dim.writes == [False]
+        assert (out["is_driving"], out["changed"]) == (True, False)
+
+    def test_a_raising_assignment_passes_the_text_and_the_flag_as_re_read(self):
+        dim = _StateDim("d15", raises="3 : OVER_CONSTRAINT")
+        _install_state([_state_sketch("S", [dim], fully=False)])
+        out = _error_payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert "3 : OVER_CONSTRAINT. It reads is_driving=True now." in out["note"]
+        assert (out["is_driving"], out["fully_constrained"]) == (True, False)
+
+    def test_a_flag_already_as_requested_writes_nothing(self):
+        dim = _StateDim("d15", driving=False)
+        _install_state([_state_sketch("S", [dim])])
+        out = _payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert (out["changed"], out["is_driving"], dim.writes) == (False, False, [])
+        assert "nothing was written" in out["note"]
+
+    def test_a_parameter_name_that_changes_across_the_write_is_reported(self):
+        dim = _StateDim("d15", renames="d40")
+        _install_state([_state_sketch("S", [dim])])
+        out = _payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert (out["parameter_before"], out["parameter"]) == ("d15", "d40")
+        assert "now named 'd40' (was 'd15')" in out["note"]
+
+    def test_a_flag_that_does_not_read_back_is_unverified(self):
+        class _Blind(_StateDim):
+            @property
+            def isDriving(self):
+                if self.writes:
+                    raise RuntimeError("3 : flag unavailable")
+                return self._driving
+
+            @isDriving.setter
+            def isDriving(self, value):
+                self.writes.append(value)
+
+        _install_state([_state_sketch("S", [_Blind("d15")])])
+        out = _error_payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert "did not read back, so the change is unverified" in out["note"]
+        assert (out["is_driving"], out["changed"]) == (None, None)
+        assert out["unread"] == {"is_driving": "3 : flag unavailable"}
+
+    def test_only_a_problem_the_write_raised_is_called_new(self):
+        old = FakeTimelineObject(name="Old1", index=0, health=2)
+        fresh = FakeTimelineObject(name="Extrude1", index=1)
+        dim = _StateDim("d15")
+        dim.on_write = lambda: setattr(fresh, "healthState", 1)
+        _install_state([_state_sketch("S", [dim])], timeline=FakeTimeline([old, fresh]))
+        out = _payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert (out["new_timeline_errors"], out["new_timeline_warnings"]) == ([], ["Extrude1"])
+        assert "Extrude1" in out["note"] and "Old1" not in out["note"]
+
+    def test_the_resolver_lifts_as_a_typed_kind(self):
+        assert isinstance(sd._DIMENSION, sd._inputs.InputKind)
+        assert sd._DIMENSION.as_property() == (
+            "dimension", {"type": "string",
+                          "description": "Existing dimension parameter from sketch_get."})

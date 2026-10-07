@@ -3,7 +3,8 @@
 
 """MCP building block: add a dimensional constraint (distance/radius/diameter/angle) to a sketch and
 drive its value - the sizing half of parametric sketching (sketch_constrain is the geometric half).
-Entity references are '<type>:<index>', the same scheme as sketch_constrain. WRITES.
+Entity references are '<type>:<index>', the same scheme as sketch_constrain. Also sets an existing
+dimension's driving flag, addressed by its parameter name. WRITES.
 """
 
 import adsk.core
@@ -12,8 +13,9 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, safe
+from ._common import error, ok, safe
 from . import _common
+from . import _form_common
 from . import _inputs
 from . import _sketch_batch
 from . import _sketch_detail
@@ -301,11 +303,107 @@ def _numeric_entity_refs(entry):
     return refs
 
 
-def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict:
+_DIMENSION = _inputs.SketchDimensionRef("dimension",
+                                description="Existing dimension parameter from sketch_get.")
+
+
+def _edit_refusal(dimensions, dimension, is_driving):
+    """Why a dimension/is_driving call cannot run as sent, or None."""
+    if dimensions:
+        return ("'dimension'/'is_driving' edit one existing dimension and take no 'dimensions' "
+                "batch; this call carries both. Send the batch in its own call.")
+    if not isinstance(dimension, str) or not dimension.strip():
+        return (f"is_driving={is_driving!r} needs 'dimension' - the parameter name of an existing "
+                "dimension, from sketch_get(include_entities=true).")
+    if not isinstance(is_driving, bool):
+        return f"dimension '{dimension}' needs 'is_driving' true or false; got {is_driving!r}."
+    return None
+
+
+
+
+def _set_driving(design, sketch, name, want):
+    """Assign one existing dimension's isDriving and publish the state as re-read."""
+    dim, derr = _DIMENSION.resolve(name, sketch)
+    if derr:
+        return error(derr)
+    sname = safe(lambda: sketch.name)
+    unread = {}
+
+    def state(suffix):
+        reads = {"is_driving": lambda: dim.isDriving, "parameter": lambda: dim.parameter.name,
+                 "fully_constrained": lambda: sketch.isFullyConstrained}
+        row = {}
+        for key, getter in reads.items():
+            row[key + suffix], why = _common.read_optional(getter)
+            if key in ("is_driving", "fully_constrained") and type(row[key + suffix]) is not bool:
+                row[key + suffix], why = None, why or "the flag did not read a boolean"
+            if why:
+                unread[key + suffix] = why
+        return row
+
+    out = {"sketch": sname, "dimension": name, "requested": want, **state("_before")}
+    before = out["is_driving_before"]
+    if before is want:
+        out.update(changed=False, is_driving=before,
+                   note=f"Dimension '{name}' already reads is_driving={want}; nothing was written.")
+        if unread:
+            out["unread"] = dict(unread)
+        return ok(out)
+    errors_before, warnings_before, _total = _common.timeline_health(design)
+    raised = None
+    try:
+        dim.isDriving = want
+    except Exception as e:
+        raised = e
+    out.update(state(""))
+    after = out["is_driving"]
+    errors_after, warnings_after, _total = _common.timeline_health(design)
+    out.update(changed=None if None in (before, after) else before != after,
+               sketch_health=_form_common.health_label(sketch),
+               new_timeline_errors=[n for n in errors_after if n not in errors_before],
+               new_timeline_warnings=[n for n in warnings_after if n not in warnings_before])
+    if unread:
+        out["unread"] = unread
+    where = f"dimension '{name}' in sketch '{sname}'"
+    if raised is not None:
+        text = (f"Could not set is_driving={want} on {where}: {raised}. It reads "
+                f"is_driving={after} now.")
+    elif after is None:
+        text = (f"is_driving={want} was assigned to {where} but the flag did not read back, so "
+                "the change is unverified. Read it with sketch_get(include_entities=true).")
+    elif after is not want:
+        text = (f"is_driving did not take - {where} still reads {after} after {want} was "
+                "assigned, and no error was raised.")
+    else:
+        text = None
+    if text:
+        out["note"] = text
+        return error(text, out)
+    note = f"Dimension '{name}' is_driving {before} -> {after}."
+    was, now = out["parameter_before"], out["parameter"]
+    if was is not None and now is not None and was != now:
+        note += f" Its parameter is now named '{now}' (was '{was}'); address it by that name."
+    problems = out["new_timeline_errors"] + out["new_timeline_warnings"]
+    if problems:
+        note += (f" The timeline reads {len(problems)} new error(s)/warning(s) after it: "
+                 f"{', '.join(problems)}. Nothing was rolled back.")
+    out["note"] = note
+    return ok(out)
+
+
+def handler(dimensions=None, sketch_name: str = "", component: str = "", dimension: str = "",
+            is_driving=None) -> dict:
     """See TOOL_DESCRIPTION."""
-    entries, eerr = _sketch_batch.entries_or_error(dimensions, "dimensions", _ENTRY_FIELDS)
-    if eerr:
-        return error(eerr)
+    editing = dimension not in ("", None) or is_driving is not None
+    if editing:
+        refusal = _edit_refusal(dimensions, dimension, is_driving)
+        if refusal:
+            return error(refusal)
+    else:
+        entries, eerr = _sketch_batch.entries_or_error(dimensions, "dimensions", _ENTRY_FIELDS)
+        if eerr:
+            return error(eerr)
     design = _common.design()
     if not design:
         return error("No active design. Create or open a document first (see doc_new).")
@@ -319,6 +417,8 @@ def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict
                         + (", ".join(n for n in _common.all_sketch_names(design) if n)
                            or "(none)") + ". Use sketch_get.")
         return error("No sketch to dimension. Create one first with sketch_create.")
+    if editing:
+        return _set_driving(design, sketch, dimension.strip(), is_driving)
     ellipse_shift = None
 
     def one(i, entry):
@@ -586,7 +686,7 @@ def _one(sketch, entry):
 
 
 TOOL_DESCRIPTION = (
-"Add dimensional constraints to one sketch, each optionally driven to a value."
+"Add dimensions, or edit dimension/is_driving; sketch_get reads state."
 )
 
 # One 'dimensions' entry on the wire: the same fields the entry guard admits (_ENTRY_FIELDS).
@@ -610,9 +710,10 @@ tool = (
     Tool.create_simple(name="sketch_dimension", description=TOOL_DESCRIPTION)
     .add_input_property("dimensions", {"type": "array", "items": _ENTRY_SCHEMA,
             "description": "Run in order; the first failure stops the run."})
-    .add_required_input("dimensions")
     .add_input_property("sketch_name", {"type": "string"})
     .add_input_property(*_sketch_detail.COMPONENT_SCOPE)
+    .add_input_property(*_DIMENSION.as_property())
+    .add_input_property("is_driving", {"type": "boolean"})
     .strict_schema()
 )
 

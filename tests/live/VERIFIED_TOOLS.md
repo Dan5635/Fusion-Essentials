@@ -29,10 +29,10 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 098aff5e3edc63c5a2587e1ae614afbb7ecadc608bbdb54e9fb53f7e0422f85a | Fusion 2706.0.116 | verified 2026-10-06
-Loaded: implementation b7d7de56fb127bf23d2aedb753138b9e226a4a3979bbc84e78010334cf8bd7f8 | schema cea3579ecd3ee5367c680ab9c9a13f0ce7dcabb7d2ddfbc85c1ac0e4f805546f | load f9370af949de4931830e77a6156febd7 | session 365c6763290b493d94d9f99eb053a8c0
+Stamp: source 216b5e2327068b30d68a4d9681433b4373d70d062fe2bd24dcf6f1e367ed73de | Fusion 2706.0.116 | verified 2026-10-07
+Loaded: implementation 70728d0b8e76996d9faf8f531467073129a03bc324f7ba48dcfc235f07cf2b8c | schema 9682f29f6d8c80068e1d5ab45841fe992999c05dc531c3d1b6a5f9f30675f0f3 | load 88ccbd07328d4754bf48640e62a6dce9 | session c6363a7e337e47969278eafebcb6b654
 
-209 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending
+211 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending
 
 | act | mode |
 |---|---|
@@ -83,6 +83,7 @@ Loaded: implementation b7d7de56fb127bf23d2aedb753138b9e226a4a3979bbc84e78010334c
 | ACT 11c - CLOUD: THE DRAWING | narrative |
 | ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE | narrative |
 | ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS | narrative |
+| ACT 11f - CLOUD: DERIVE EDITS | narrative |
 | ACT 12 - SHEET METAL COUPON | narrative |
 | ACT 12b - SHEET METAL LASER OUTPUT | narrative |
 | ACT 12b1 - SHEET METAL SOURCE UPDATE | narrative |
@@ -219,6 +220,7 @@ Loaded: implementation b7d7de56fb127bf23d2aedb753138b9e226a4a3979bbc84e78010334c
 | model_draft | covered | draft a cameo face |
 | model_edit_body | covered |  |
 | model_edit_extrude | covered |  |
+| model_edit_feature | covered |  |
 | model_edit_loft | covered |  |
 | model_edit_sweep | covered |  |
 | model_emboss | covered | raise then engrave a circular profile on a scratch block's top face, each checked against the volume direction; a zero depth refused |
@@ -276,6 +278,7 @@ Loaded: implementation b7d7de56fb127bf23d2aedb753138b9e226a4a3979bbc84e78010334c
 | sketch_create | covered | draw each part's sketch on its plane; then the hub's five - its turned outline and its keyway on the axis plane, the bolt circle and the flange pocket on XY, and the inclined flat on a datum swung 30 deg off XZ |
 | sketch_delete_entity | covered | delete a helper constraint; count drops - then a sketch text by its index, the deleted string reported back, and the empty index refused |
 | sketch_dimension | covered | drive the part's length, width and boss diameter by parameter expression; the wedge angle facing the sketch origin; offset against a non-parallel line (rotated, and the note says so) with linear_diameter refusing the same shape; line and point measured to a model face; then the dimension bench - a slanted line's horizontal span, a diameter, the gap between two circles on one centre, a line to a circle's near tangent, and an ellipse's two radii - each read back as a measured number, not a call that returned ok |
+| sketch_edit | covered |  |
 | sketch_edit_curve | covered | trim, extend, split, fillet, chamfer and offset on one scratch sketch per action, with length read-backs; split's two halves must carry distinct ids; constrain both halves separately and compare sketch_get's labels with endpoint-selected identities, preserving endpoints, control line and history; a chamfer across an offset pair refused |
 | sketch_get | covered | read the skeleton and the part's own profiles back; then the hub's three PROOFS, each taken before a feature consumes the sketch - is_fully_constrained true with the constraint and dimension counts that closed it, which is the sketch recipes' own bar; and the keyway slot's own census, where WHICH of its three lines is the construction spine is read off the sketch rather than counted on (a solid side line is vertical too and spans the same length, so a dimension addressed at one lands the slot half a width off); a dimension row names the points the sketch_dimension call was given |
 | sketch_insert_svg | covered | import the logo art into a fresh sketch, its landed width measured against the 1/96-inch-per-user-unit convention, then a 96-user-unit square at scale 1 whose measured extent pins BOTH halves of that landing - one inch square, and Y-DOWN from the sketch origin (min y -25.4 mm); the missing file refused |

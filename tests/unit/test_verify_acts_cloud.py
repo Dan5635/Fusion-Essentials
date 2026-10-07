@@ -27,6 +27,69 @@ import verify_acts_sheet as sheet  # noqa: E402
 import verify_acts_census as census  # noqa: E402
 
 
+@pytest.mark.parametrize("fault", [None, "old_cell", "new_value", "missing_cell", "row_identity"])
+def test_configuration_column_witness_checks_growth_and_retained_cells(monkeypatch, fault):
+    rows = [{"name": "Configuration 1", "id": "first", "index": 1, "is_active": False},
+            {"name": "B", "id": "second", "index": 2, "is_active": True}]
+    old = {"table_id": "table", "active_configuration": "B", "configuration_count": 2,
+           "configurations": rows,
+           "columns": [{"title": "Part Number", "id": "old", "type": "ConfigurationPropertyColumn"}],
+           "cell_count": 2, "cells": [
+               {"row_id": r["id"], "column_id": "old", "kind": "ConfigurationPropertyCell",
+                "value_unread": "no value field of this cell kind is read here"} for r in rows]}
+    now = deepcopy(old)
+    now["columns"].append({"title": "ProbeW", "id": "new", "type": "ConfigurationParameterColumn"})
+    now["cells"].extend({"row_id": r["id"], "column_id": "new", "kind": "ConfigurationParameterCell",
+                         "expression": "13 mm" if r["name"] == "B" else "10 mm"} for r in rows)
+    now["cell_count"] = 4
+    if fault == "old_cell":
+        now["cells"][0]["value_unread"] = "changed"
+    elif fault == "new_value":
+        now["cells"][-1]["expression"] = "10 mm"
+    elif fault == "missing_cell":
+        now["cells"].pop()
+        now["cell_count"] = 3
+    elif fault == "row_identity":
+        now["configurations"][0]["id"] = "other"
+    monkeypatch.setitem(acts._RECALL, "configure_table", old)
+    monkeypatch.setitem(acts._RECALL, "configure_legal_column", "new")
+    check = next(s[2] for s in acts._configure_column_rows() if getattr(s[2], "__name__", "") == "legal_table")
+    if fault:
+        with pytest.raises(AssertionError):
+            check({"configurations": now})
+    else:
+        assert check({"configurations": now}) is True
+
+
+@pytest.mark.parametrize("fault", [None, "initial_identity", "polled_identity", "incomplete"])
+def test_saved_derive_source_waits_for_its_exact_cloud_record(monkeypatch, fault):
+    pending = {"file": {"name": "OwnedSource", "id": "urn:owned"},
+               "location": {"parent_folder": {"path": acts.FOLDER}},
+               "state": {"is_complete": False}}
+    ready = deepcopy(pending)
+    ready["state"]["is_complete"] = fault != "incomplete"
+    if fault == "initial_identity":
+        pending["file"]["id"] = "urn:other"
+    elif fault == "polled_identity":
+        ready["file"]["name"] = "OtherSource"
+    monkeypatch.setitem(acts._RECALL, "source_ready", "urn:owned")
+    monkeypatch.setattr(acts.time, "sleep", lambda _seconds: None)
+    calls = []
+
+    def call(tool, arguments):
+        calls.append((tool, arguments))
+        return False, ready
+
+    monkeypatch.setattr(acts, "facade", lambda _name: call)
+    check = acts._file_settled(acts.FOLDER, polls=2, file_key="source_ready", file_name="OwnedSource")
+    if fault:
+        with pytest.raises(AssertionError):
+            check(pending)
+    else:
+        assert check(pending) is True
+    assert calls == ([] if fault == "initial_identity" else [("data_get", {"file": "urn:owned"})])
+
+
 @pytest.fixture
 def owned_cleanup(monkeypatch):
     name = "SweepFitRefusal." + acts._STAMP

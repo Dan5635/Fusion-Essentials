@@ -346,6 +346,15 @@ def _rich_sketch():
 # ── entity ids + construction flag ──────────────────────────────────────────
 
 class TestEntities:
+    @pytest.mark.parametrize("state", [True, False, None])
+    def test_centerline_is_read_independently_and_missing_is_unknown(self, state):
+        line = FakeLine("cl", 0, 0, 10, 0)
+        if state is not None:
+            line.isCenterLine = state
+        _install(FakeSketch("S4", lines=[line]))
+        out = _payload(sd.handler(sketch_name="S4", include_entities=True))
+        assert out["entities"][0]["centerline"] is state
+
     def test_lines_indexed_with_construction_flag(self):
         _install(_rich_sketch())
         out = _payload(sd.handler(sketch_name="S4", include_entities=True))
@@ -744,6 +753,31 @@ class TestArcAndPoint:
 # ── driving-dimension tally + missing parameter ─────────────────────────────
 
 class TestDimensionTally:
+    @pytest.mark.parametrize("driving", [0, 1, "yes"])
+    def test_non_boolean_driving_flag_is_unknown(self, driving):
+        dim = SimpleNamespace(parameter=SimpleNamespace(name="d1", value=1, expression="1 cm"),
+                              isDriving=driving)
+        _install(FakeSketch("D", dimensions=[dim]))
+        out = _payload(sd.handler(sketch_name="D", include_entities=True))
+        assert out["dimensions"][0]["driving"] is None
+        assert out["dimensions"][0]["driving_unread"] == "isDriving did not read a boolean"
+        assert out["driving_dimension_count"] is None
+
+    def test_unread_driving_flag_does_not_become_true_or_a_complete_count(self):
+        class UnreadDimension:
+            parameter = SimpleNamespace(name="d1", value=1, expression="1 cm")
+
+            @property
+            def isDriving(self):
+                raise RuntimeError("dimension flag unavailable")
+
+        _install(FakeSketch("D", dimensions=[UnreadDimension()]))
+        out = _payload(sd.handler(sketch_name="D", include_entities=True))
+        assert out["dimensions"][0]["driving"] is None
+        assert out["dimensions"][0]["driving_unread"] == "dimension flag unavailable"
+        assert out["driving_dimension_count"] is None
+        assert "driving_dimension_count_unread" in out
+
     def test_driving_dimension_count(self):
         s = FakeSketch("D", dimensions=[
             FakeDim("d1", 1.0, "1 mm", driving=True),

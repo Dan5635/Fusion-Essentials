@@ -17,6 +17,7 @@ user and nothing else is bound (see _configured_port / _report_listener).
 """
 
 import importlib
+import os
 import pkgutil
 import threading
 
@@ -49,6 +50,8 @@ HOST = endpoint.HOST
 # that gates the whole module). Gives the MCP server its own Settings tab where the
 # high-risk execute_api_script tool can be toggled independently.
 SETTINGS_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_MCP'
+# The Settings tab's icon folder; the dialog draws the copy of this path the settings file holds.
+ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', '')
 _ALLOW_EXECUTE_KEY = 'allow_execute_api_script'
 
 # Tool modules that are NOT auto-registered by the pkgutil sweep in _collect_items(): each is
@@ -61,7 +64,7 @@ DEFAULT_SETTINGS = {
     _ALLOW_EXECUTE_KEY: {
         "type": "checkbox",
         # High-risk: lets a connected AI run arbitrary Python in the live session.
-        # The "security risk" label IS the consent signal (no separate dialog). Sourced from
+        # The label's risk wording IS the consent signal (no separate dialog). Sourced from
         # GATED_TOOLS so sys_capability_map's gated-tool report can never quote a stale label.
         "label": GATED_TOOLS["sys_execute_script"],
         "default": False,
@@ -119,7 +122,36 @@ DEFAULT_SETTINGS = {
 }
 
 # Register this module's settings group so it appears as a Settings tab.
-shared_state.load_settings_init(SETTINGS_ID, 'MCP Server', DEFAULT_SETTINGS, None)
+shared_state.load_settings_init(SETTINGS_ID, 'MCP Server', DEFAULT_SETTINGS, ICON_FOLDER)
+
+
+def _refresh_stored_presentation():
+    """Bring this group's stored row labels and tab icon path up to the shipped ones."""
+    # load_settings_init keeps an existing group's labels and img_path, and the Settings dialog
+    # draws those stored copies. Only "label" and "img_path" are assigned; no "default" is.
+    try:
+        groups = shared_state.get_all_module_settings()
+        group = groups.get(SETTINGS_ID) if isinstance(groups, dict) else None
+        if not isinstance(group, dict):
+            return
+        changed = False
+        rows = group.get("settings")
+        for key, shipped in DEFAULT_SETTINGS.items():
+            row = rows.get(key) if isinstance(rows, dict) else None
+            if isinstance(row, dict) and row.get("label") != shipped["label"]:
+                row["label"] = shipped["label"]
+                changed = True
+        if group.get("img_path") != ICON_FOLDER:
+            group["img_path"] = ICON_FOLDER
+            changed = True
+        if changed:
+            shared_state._write_settings(groups)
+    except Exception as e:
+        futil.log(f'{CMD_NAME}: stored Settings labels and icon not refreshed '
+                  f'({type(e).__name__}: {e})')
+
+
+_refresh_stored_presentation()
 
 
 def _execute_api_script_allowed() -> bool:

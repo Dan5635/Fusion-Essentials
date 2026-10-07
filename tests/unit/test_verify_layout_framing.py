@@ -18,9 +18,11 @@ import pytest
 TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(TESTS_DIR, "live"))
 import tool_verify  # noqa: E402
+import verify_core  # noqa: E402
 import verify_layout  # noqa: E402
 import verify_program  # noqa: E402
 import verify_acts_model_solids  # noqa: E402
+import verify_acts_model_details  # noqa: E402
 import verify_acts_model_sweep  # noqa: E402
 import verify_acts_model_extrude_organization as organization  # noqa: E402
 from verify_families import fixture_steps  # noqa: E402
@@ -31,6 +33,147 @@ import verify_acts_sketch  # noqa: E402
 import verify_acts_cloud  # noqa: E402
 import verify_acts_mesh  # noqa: E402
 import verify_acts_sheet  # noqa: E402
+import verify_acts_surface_boundaries as surface_boundaries  # noqa: E402
+import verify_acts_surface_edit  # noqa: E402
+
+
+@pytest.mark.parametrize("invalid", [None, True, float("inf"), float("nan")])
+def test_joint_identity_control_pose_rejects_unreadable_coordinates(invalid):
+    paths = ["IdParent:1", "IdParent:2", "IdParent:1+IdArm:1", "IdParent:1+IdTip:1",
+             "IdParent:2+IdArm:1", "IdParent:2+IdTip:1", "IdBase:1"]
+    rows = []
+    for path in paths:
+        bodies = 0 if path in paths[:2] else 1
+        row = {"full_path": path, "body_count": bodies, "origin": [0, 0, 0],
+               "x_axis": [1, 0, 0], "y_axis": [0, 1, 0], "z_axis": [0, 0, 1]}
+        if bodies:
+            row.update(bbox_center=[0, 0, 0], bbox_size=[1, 1, 1])
+        rows.append(row)
+    payload = {"units": "mm", "is_healthy": True, "occurrence_count": 3,
+               "all_occurrence_count": 7, "all_occurrences": rows,
+               "all_occurrences_truncated": False, "occurrences_truncated": False,
+               "joints_truncated": False, "joint_count": 2,
+               "joints": [{"name": "IdPivot"}, {"name": "IdLock"}],
+               "broken_joints": [], "broken_relations": [], "unresolved_references": []}
+    assert verify_acts_motion._joint_identity_pose_snapshot(payload) is not None
+    rows[-1]["origin"][0] = invalid
+    assert verify_acts_motion._joint_identity_pose_snapshot(payload) is None
+
+
+def test_face_point_cleanup_uses_the_verified_owner_and_adopted_feature_name(monkeypatch):
+    details = verify_acts_model_details
+    monkeypatch.setattr(details, "_RECALL", {})
+    rows = details._face_point_witness_rows()
+    create = next(row for row in rows if row[0] == "model_hole" and isinstance(row[3], tuple))
+    reply = {"holes_verified": True, "holes": 1, "point_space": "face-owner",
+             "point": [570, 90, 10], "units": "mm", "host_component": "HolePointFlat",
+             "host_verified": True, "feature": "Hole7"}
+    assert create[2](reply) is True
+    assert not create[2]({**reply, "host_component": "Bracket"})
+    key, save = create[3]
+    assert save(reply) == "HolePointFlat/Hole7"
+    cleanup = next(row for row in rows if row[0] == "design_delete_feature")
+    assert cleanup[1]({key: save(reply)})["feature"] == "HolePointFlat/Hole7"
+
+
+def test_core_feature_scratch_builds_stay_inside_their_documents_after_family_compilation():
+    authored = verify_acts_model_details.feature_edit_rows()
+    compiled = next(rows for name, _pre, rows, _fallback in verify_program.ACTS
+                    if name == "ACT 5 - DETAILS")
+    cases = [save[0] for tool, _args, _check, save in authored
+             if tool == "doc_new" and save]
+    build_tools = {"model_create_component", "sketch_create", "sketch_add_geometry"}
+    for key in cases:
+        def build_requests(rows):
+            start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == key)
+            end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+            return [(tool, args({}) if callable(args) else args)
+                    for tool, args, _check, _save in rows[start:end] if tool in build_tools]
+        actual = build_requests(compiled)
+        assert actual == build_requests(authored), key
+        assert sum(tool == "model_create_component" for tool, _args in actual) == 1
+
+
+def test_feature_rename_restore_uses_the_name_read_after_factory_creation(monkeypatch):
+    details = verify_acts_model_details
+    monkeypatch.setitem(details._RECALL, "rn_feature_a", {})
+    rows = details._namespace_rename_witness_rows()
+    monkeypatch.setitem(details._RECALL, "rn_feature_a", {"feature": "OriginalExtrude"})
+    monkeypatch.setitem(details._RECALL, "rn_indexes", {"feature": 17})
+    calls = [args({"rn_body_face": "face"}) for tool, args, *_ in rows
+             if tool == "design_set_name" and callable(args)]
+    restore = [call for call in calls if call.get("kind") == "feature" and call.get("target") == "17"]
+    assert restore == [{"kind": "feature", "target": "17", "new_name": "OriginalExtrude"}]
+
+
+def test_rename_design_census_accepts_omitted_truncated_when_counts_are_exact(monkeypatch):
+    details = verify_acts_model_details
+    monkeypatch.setattr(details, "_RECALL", {})
+    a, b = details._RN["a"], details._RN["b"]
+    initial = [
+        ("OriginalExtrude", "ExtrudeFeature", a),
+        (details._RN["joint"], "Joint", "Root"),
+        (details._RN["origin"], "JointOrigin", a),
+        (details._RN["plane"], "ConstructionPlane", a),
+        (details._RN["axis"], "ConstructionAxis", a),
+        (details._RN["point"], "ConstructionPoint", a),
+    ]
+    datum_rows = [
+        {"component": owner, "kind": kind, "name": name}
+        for owner, kind, name in (
+            (a, "construction_plane", details._RN["plane"]),
+            (b, "construction_plane", details._RN["plane"]),
+            (a, "construction_axis", details._RN["axis"]),
+            (b, "construction_axis", details._RN["axis"]),
+            (a, "construction_point", details._RN["point"]),
+            (b, "construction_point", details._RN["point"]),
+        )
+    ]
+
+    def payload(names):
+        timeline_rows = [{"index": i, "name": name, "type": kind,
+                          "component": owner, "health": "healthy"}
+                         for i, (name, kind, owner) in enumerate(names)]
+        return {
+            "timeline": {"count": len(timeline_rows), "returned": len(timeline_rows),
+                         "marker_position": len(timeline_rows), "summary": {"healthy": 6},
+                         "timeline": timeline_rows},
+            "tree": {"truncated": False, "children_truncated": False, "children": [
+                {"component": a, "bodies": [{"name": "OriginalExtrude"}]},
+                {"component": b, "bodies": [{"name": "PartnerBody"}]},
+            ]},
+            "datums": {"datums": [dict(row) for row in datum_rows]},
+        }
+
+    monkeypatch.setitem(details._RECALL, "rn_feature_a", {"feature": "OriginalExtrude"})
+    monkeypatch.setitem(details._RECALL, "rn_feature_b", {"body": "PartnerBody"})
+    assert details._rn_design("baseline")(payload(initial)) is True
+    names = [
+        (details._RN_NEW["feature"], "ExtrudeFeature", a),
+        (details._RN_NEW["joint"], "Joint", "Root"),
+        (details._RN_NEW["joint_origin"], "JointOrigin", a),
+        (details._RN_NEW["plane"], "ConstructionPlane", a),
+        (details._RN_NEW["axis"], "ConstructionAxis", a),
+        (details._RN_NEW["point"], "ConstructionPoint", a),
+    ]
+    renamed = payload(names)
+    renamed["datums"]["datums"] = [
+        {**row, "name": (details._RN_NEW["plane"] if row["kind"] == "construction_plane"
+                          else details._RN_NEW["axis"] if row["kind"] == "construction_axis"
+                          else details._RN_NEW["point"] if row["component"] == a else row["name"])}
+        if row["component"] == a else row
+        for row in renamed["datums"]["datums"]
+    ]
+
+    assert details._rn_design("renamed")(renamed) is True
+    incomplete = {**renamed, "timeline": {**renamed["timeline"], "returned": 5,
+                                        "timeline": renamed["timeline"]["timeline"][:-1]}}
+    with pytest.raises(AssertionError):
+        details._rn_design("renamed")(incomplete)
+    missing_count = {**renamed, "timeline": dict(renamed["timeline"])}
+    missing_count["timeline"].pop("returned")
+    with pytest.raises(AssertionError):
+        details._rn_design("renamed")(missing_count)
 
 
 def test_nested_group_ambiguity_lists_both_addresses_in_either_order():
@@ -1063,3 +1206,623 @@ def test_serial_sheet_history_rejects_missing_or_failed_summary(monkeypatch):
         current['timeline']['summary']['states'] = states
         with pytest.raises(AssertionError):
             check(current)
+
+
+
+def test_sweep_scope_edit_reads_the_actual_tool_payload(monkeypatch):
+    monkeypatch.setitem(verify_acts_model_sweep._RECALL, "sweep_scope_identity_Guide", "identity")
+    monkeypatch.setitem(verify_acts_model_sweep._RECALL, "sweep_scope_guide_original", "old-rail")
+    check = verify_acts_model_sweep._sweep_scope_edit("guide_path", "replace", "Guide")
+    payload = {
+        "edited": True, "action": "guide_path", "same_feature": True,
+        "definition_matches": True, "geometry_changed": True, "marker_restored": True,
+        "new_timeline_errors": [], "new_timeline_warnings": [], "outside_body_changes": [],
+        "participant_scope_preserved": True,
+        "definition_before": {"guide_path_curves": 1, "guide_path_signature": "old-rail"},
+        "definition_after": {"guide_path_curves": 1, "guide_path_signature": "new-rail"},
+    }
+    assert check(payload) is not None
+    payload["edited"] = False
+    with pytest.raises(AssertionError):
+        check(payload)
+
+
+def test_sweep_scope_definition_qualifies_rolled_timeline_without_summary_claim(monkeypatch):
+    monkeypatch.setitem(verify_acts_model_sweep._RECALL, "sweep_scope_identity_Guide", None)
+    rows = [
+        {"index": 0, "name": "Seed", "type": "ExtrudeFeature"},
+        {"index": 1, "name": "Control", "type": "ExtrudeFeature"},
+        {"index": 2, "name": "Guide", "type": "SweepFeature", "is_rolled_back": True},
+        {"index": 3, "is_rolled_back": True},
+    ]
+    payload = {
+        "definition": {"feature": "Guide", "component": "Root", "type": "SweepFeature",
+                       "timeline_index": 2, "operation": "new", "is_solid": True,
+                       "orientation_name": "perpendicular", "path_count": 1,
+                       "path_truncated": False},
+        "timeline": {"marker_position": 2, "count": 4, "returned": 4,
+                     "timeline": rows},
+    }
+    assert verify_acts_model_sweep._sweep_scope_definition("Guide", "new")(payload) is not None
+    unavailable = dict(payload, definition=dict(payload["definition"], orientation=None,
+        orientation_name=None, unavailable={"orientation": "2 : InternalValidationError : false"}))
+    with pytest.raises(AssertionError):
+        verify_acts_model_sweep._sweep_scope_definition("Guide", "new")(unavailable)
+    guided = dict(unavailable, definition=dict(unavailable["definition"], feature="R7Sweep"),
+        timeline=dict(payload["timeline"], timeline=[dict(row, name="R7Sweep")
+            if row.get("name") == "Guide" else row for row in rows]))
+    assert verify_acts_model_sweep._sweep_scope_definition("R7Sweep", "new")(guided)
+    unknown = dict(guided, definition=dict(guided["definition"], unavailable={}))
+    with pytest.raises(AssertionError):
+        verify_acts_model_sweep._sweep_scope_definition("R7Sweep", "new")(unknown)
+    for broken in (dict(rows[0], is_rolled_back=None),
+                   dict(rows[2], is_rolled_back=False)):
+        changed = dict(payload)
+        changed["timeline"] = dict(payload["timeline"], timeline=list(rows))
+        changed["timeline"]["timeline"][broken["index"]] = broken
+        with pytest.raises(AssertionError):
+            verify_acts_model_sweep._sweep_scope_definition("Guide", "new")(changed)
+
+
+def test_sweep_scope_end_health_reads_every_row():
+    rows = [{"index": 0, "name": "Seed", "type": "ExtrudeFeature"},
+            {"index": 1, "name": "Sweep", "type": "SweepFeature"}]
+    check = verify_acts_model_sweep._sweep_scope_end_health()
+    assert check({"timeline": {"marker_position": 2, "count": 2, "returned": 2,
+                               "summary": {"states": {"healthy": 2}, "exceptions": []},
+                               "timeline": rows}}) is not None
+    with pytest.raises(AssertionError):
+        check({"timeline": {"marker_position": 2, "count": 2, "returned": 2,
+                             "summary": {"states": {"healthy": 2}, "exceptions": []},
+                             "timeline": [rows[0], dict(rows[1], is_rolled_back=True)]}})
+    with pytest.raises(AssertionError):
+        check({"timeline": {"marker_position": 2, "count": 2, "returned": 2,
+                             "summary": {"states": {"healthy": 1, "rolled_back": 1},
+                                         "exceptions": []},
+                             "timeline": rows}})
+
+import verify_acts_feature_edit as feature_edit  # noqa: E402
+
+
+def test_feature_edit_end_marker_requires_complete_explicit_health_summary():
+    rows = [{"index": 0, "name": "Seed", "type": "ExtrudeFeature"},
+            {"index": 1, "name": "Revolve", "type": "RevolveFeature"}]
+    complete = {"count": 2, "returned": 2, "marker_position": 2, "timeline": rows,
+                "summary": {"states": {"healthy": 2}, "exceptions": []}}
+    assert feature_edit._marker_end({"timeline": complete}) is True
+
+    bad_timelines = [
+        {k: v for k, v in complete.items() if k != "summary"},
+        {**complete, "summary": {"states": {"healthy": 2}}},
+        {**complete, "summary": {"states": {"healthy": 1}, "exceptions": []}},
+        {**complete, "summary": {"states": {"healthy": 1, "warning": 1}, "exceptions": []}},
+        {**complete, "summary": {"states": {"healthy": 2}, "exceptions": [{"name": "Revolve"}]}},
+        {**complete, "truncated": True},
+        {**complete, "returned": 1},
+    ]
+    for timeline in bad_timelines:
+        with pytest.raises(AssertionError):
+            feature_edit._marker_end({"timeline": timeline})
+
+
+def test_feature_edit_reference_change_preserves_real_control_geometry(monkeypatch):
+    key = "mirror_reference_test"
+    before = {
+        "feature": "Mirror1", "component": "FeatureEditBench", "type": "MirrorFeature",
+        "timeline_index": 4, "feature_address": "FeatureEditBench/Mirror1",
+        "mirror_plane": {"handle": "plane-a", "kind": "construction_plane", "name": "PlaneA",
+                         "owner": {"component": "FeatureEditBench", "occurrence": None},
+                         "geometry": {"frame": "world", "origin_cm": [0.5, 0.0, 0.0],
+                                      "normal": [1.0, 0.0, 0.0]}},
+        "input_entities": [{"handle": "body-a", "kind": "body", "name": "SeedBody",
+                            "owner": {"component": "FeatureEditBench", "occurrence": None},
+                            "geometry": {"world_cm": None, "area": 12.0, "volume": 1.0,
+                                         "center_cm": [2.0, 0.5, 0.5]}}],
+        "supported_edits": [], "unavailable": {},
+    }
+    monkeypatch.setitem(feature_edit._RECALL, key, before)
+    changed = {
+        **before,
+        "mirror_plane": {"handle": "plane-b", "kind": "construction_plane", "name": "PlaneB",
+                         "owner": {"component": "FeatureEditBench", "occurrence": None},
+                         "geometry": {"frame": "world", "origin_cm": [0.0, 0.0, 0.0],
+                                      "normal": [1.0, 0.0, 0.0]}},
+    }
+    assert feature_edit._definition_after(key, "mirror_plane")({"definition": changed}) is True
+
+    changed_control = {**changed, "input_entities": [{**before["input_entities"][0],
+        "geometry": {**before["input_entities"][0]["geometry"], "center_cm": [3.0, 0.5, 0.5]}}]}
+    with pytest.raises(AssertionError):
+        feature_edit._definition_after(key, "mirror_plane")({"definition": changed_control})
+
+
+def test_surface_fixture_and_manual_refusal_use_run_steps_payload_contract(monkeypatch):
+    features = [
+        {"name": "EditStitch", "type": "StitchFeature"},
+        {"name": "EditUnstitch", "type": "UnstitchFeature"},
+        {"name": "UntrimInternal", "type": "UntrimFeature"},
+        {"name": "UntrimExternal", "type": "UntrimFeature"},
+        {"name": "UntrimManual", "type": "UntrimFeature"},
+        {"name": "EditDeleteHeal", "type": "DeleteFaceFeature"},
+        {"name": "EditDeleteSurface", "type": "SurfaceDeleteFaceFeature"},
+    ]
+    assert surface_boundaries._fixture({
+        "fixture": "surface-boundary-edit-v1", "control": "SurfaceBoundaryControl",
+        "features": features,
+    }) is True
+    with pytest.raises(AssertionError):
+        surface_boundaries._fixture({
+            "isError": False, "content": [{"text": '{"fixture":"surface-boundary-edit-v1"}'}]
+        })
+
+    refusal = next(expect for tool, _args, expect, _save in surface_boundaries.surface_boundary_edit_rows()
+                   if tool == "model_edit_feature" and isinstance(expect, verify_core._Refusal))
+    assert refusal.missing("Feature edit refused: the existing manual Untrim loop selection "
+                           "cannot be read for exact restoration.") == []
+    key = "manual_untrim_payload"
+    monkeypatch.setitem(surface_boundaries._RECALL, key + "_rolled_index", 4)
+    monkeypatch.setitem(surface_boundaries._RECALL, key + "_baseline", None)
+    manual = {"definition": {"type": "UntrimFeature", "component": "(Unsaved)",
+        "feature_address": "UntrimManual", "timeline_index": 4, "loop_type": "manual",
+        "faces_to_untrim": [{"handle": "manual-face", "kind": "face"}], "unavailable": {}}}
+    assert surface_boundaries._baseline(key, "UntrimFeature", "faces_to_untrim")(manual) is True
+
+def test_surface_body_inspect_shape_and_all_writes_are_document_pinned(monkeypatch):
+    body = {
+        "target": "DeleteSurfaceBody", "kind": "body", "units": "mm",
+        "min_point": {"x": 0.0, "y": 1400.0, "z": 0.0},
+        "max_point": {"x": 20.0, "y": 1420.0, "z": 10.0},
+        "lump_count": 1,
+        "mass": {"target": "DeleteSurfaceBody", "units": "mm", "accuracy_used": "very_high",
+                 "area": 200.0, "volume": 0.0, "center_of_mass": [10.0, 1410.0, 5.0],
+                 "per_body": [], "per_body_count": 0, "per_body_truncated": False},
+    }
+    state = surface_boundaries._metric(body)
+    assert state is not None and state["kind"] == "body" and state["area"] == 200.0
+    assert state["lump_count"] == 1
+    body["mass"].pop("center_of_mass")
+    assert surface_boundaries._metric(body) is None
+    monkeypatch.setitem(surface_boundaries._RECALL, "candidate_fixture_expected", None)
+    monkeypatch.setitem(surface_boundaries._RECALL, "stitch_candidate_expected", None)
+    monkeypatch.setitem(surface_boundaries._RECALL, "candidate_fixture_baseline", {"component": "(Unsaved)"})
+    candidate = surface_boundaries._candidate("planar_face", [1.0, 2.0, 3.0],
+                                               "candidate_fixture", "candidate_fixture_baseline")
+    assert candidate({"returned": 1, "match_count": 1, "matches": [
+        {"handle": "face-handle", "kind": "planar_face", "area": 2.0,
+         "normal": [0, 0, 1], "position": [1.1, 2.0, 3.0]}]}) is True
+    with pytest.raises(AssertionError):
+        candidate({"returned": 1, "match_count": 1, "matches": [
+            {"handle": "edge-handle", "kind": "edge", "area": 2.0,
+             "position": [1.0, 2.0, 3.0]}]})
+    tree_payload = {"tree": {"root": "(Unsaved)", "truncated": False,
+        "children_truncated": False, "root_bodies": [
+            {"name": "StitchC", "handle": "body-token", "is_solid": False, "visible": True}]}}
+    assert surface_boundaries._surface_body_candidate("StitchC", "stitch_candidate")(tree_payload) is True
+    for field, wrong in (("root_bodies_truncated", True), ("truncated", True),
+                         ("children_truncated", True)):
+        tree_payload["tree"][field] = wrong
+        with pytest.raises(AssertionError):
+            surface_boundaries._surface_body_candidate("StitchC", "stitch_candidate")(tree_payload)
+        tree_payload["tree"][field] = False
+    tree_payload["tree"]["root_bodies"][0]["is_solid"] = True
+    with pytest.raises(AssertionError):
+        surface_boundaries._surface_body_candidate("StitchC", "stitch_candidate")(tree_payload)
+
+    rows = surface_boundaries.surface_boundary_edit_rows()
+    context = {"surface_home": "session:home", "surface_doc": "session:scratch"}
+    for _tool, _args, _expect, saved in rows:
+        if saved and saved[0] not in context:
+            context[saved[0]] = "session:fixture"
+    writes = {"doc_new", "sys_execute_script", "design_edit_timeline", "model_edit_feature",
+              "doc_activate", "doc_close"}
+    authored = [(tool, args(context) if callable(args) else args)
+                for tool, args, _expect, _saved in rows if tool in writes]
+    assert authored and all(args.get("expect_document") ==
+                            ("session:home" if tool in ("doc_new", "doc_close") else "session:scratch")
+                            for tool, args in authored)
+    assert next(args for tool, args in authored if tool == "doc_new")["expect_document"] == "session:home"
+    assert not any(tool == "find_geometry" and not callable(args) and args.get("kind") == "body"
+                   for tool, args, _expect, _save in rows)
+    stitch_body_read = next(args for tool, args, _expect, _save in rows
+                            if tool == "design_get" and not callable(args) and args.get("tree_bodies"))
+    assert stitch_body_read["tree_handles"] is True and stitch_body_read["include"] == ["tree"]
+
+
+def test_surface_handle_checks_total_candidates_and_exact_returned_row(monkeypatch):
+    monkeypatch.setitem(verify_acts_surface_edit._RECALL,
+                        "surface_edit_root_component", "RootComponent")
+    check = verify_acts_surface_edit._face_handle("surface_face_test", [10, 300, 5])
+    row = {"kind": "planar_face", "handle": "face-handle", "position": [10, 300, 5],
+           "area": 20, "normal": [0, 0, 1], "occurrence": None}
+    unrelated = {"kind": "planar_face", "handle": "other-face", "position": [0, 0, 0],
+                 "area": 50, "normal": [0, 1, 0], "occurrence": None}
+    payload = {"units": "mm", "target": "whole design", "match_count": 2,
+               "returned": 2, "matches": [unrelated, row]}
+    assert check(payload) is not None
+    key, save = verify_acts_surface_edit._geometry_save(
+        "surface_face_test", "planar_face", [10, 300, 5])
+    assert key == "surface_face_test" and save(payload) == "face-handle"
+    with pytest.raises(AssertionError):
+        check({**payload, "match_count": 3})
+    edge_check = verify_acts_surface_edit._edge_handle("edge_test", [20, 610, 0])
+    edge_row = {"kind": "line_edge", "handle": "target-edge", "position": [20, 610, 0],
+                "length": 2, "direction": [0, 1, 0]}
+    edge_payload = {"units": "mm", "target": "whole design", "match_count": 2,
+                    "returned": 2, "matches": [unrelated, edge_row]}
+    assert edge_check(edge_payload) is not None
+    _key, edge_save = verify_acts_surface_edit._geometry_save(
+        "edge_test", "line_edge", [20, 610, 0])
+    assert edge_save(edge_payload) == "target-edge"
+
+
+def test_surface_publication_saves_run_against_their_actual_payload_shapes():
+    rows = verify_acts_surface_edit.surface_feature_edit_rows()
+    source_scans = [args for tool, args, _check, _save in rows
+                    if tool == "find_geometry" and isinstance(args, dict)
+                    and args.get("kind") in {"planar_face", "line_edge"}
+                    and args.get("target") == ""]
+    assert len(source_scans) == 12
+    assert all(args.get("max_results") == 100 for args in source_scans)
+    bodies = [{"name": "SFE_ReverseA", "handle": "body:a"},
+              {"name": "SFE_ReverseB", "handle": "body:b"}]
+    payloads = {
+        "doc_get": {"active": {"document_handle": "session:home"},
+                    "open_documents": [{"is_active": True,
+                                        "document_handle": "session:home"}]},
+        "doc_new": {"document_handle": "session:scratch"},
+        "sys_execute_script": {"timeline_count": 17},
+        "design_get": {"tree": {"root": "RootComponent", "truncated": False,
+                                  "child_count": 0, "children_truncated": False,
+                                  "root_bodies_truncated": False,
+                                  "root_bodies": bodies}},
+    }
+    saved = {}
+    for tool, _args, _check, save in rows:
+        if save is not None:
+            key, extract = save
+            if tool == "find_geometry":
+                _key, args = key, _args
+                kind, position = args["kind"], args["nearest_to"]
+                row = {"kind": kind, "handle": key + "-handle", "position": position}
+                if kind == "planar_face":
+                    row.update(area=20, normal=[0, 0, 1], occurrence=None)
+                payload = {"target": "whole design", "units": "mm", "match_count": 1,
+                           "returned": 1, "matches": [row]}
+                if kind == "sketch_circle":
+                    payload = {"matches": [{"handle": key + "-handle"}]}
+            else:
+                assert tool in payloads
+                payload = payloads[tool]
+            saved[key] = extract(payload)
+    assert saved["surface_edit_home"] == "session:home"
+    assert saved["surface_edit_doc"] == "session:scratch"
+    assert saved["surface_edit_timeline_count"] == 17
+    assert saved["surface_edit_root_component"] == "RootComponent"
+    assert verify_acts_surface_edit._root_component(payloads["design_get"]) is not None
+    assert saved["surface_edit_reverse_a"] == "body:a"
+    assert saved["surface_edit_reverse_b"] == "body:b"
+
+
+def test_surface_sketch_circle_acquisition_requires_exact_circle_id():
+    check = verify_acts_surface_edit._sketch_circle_handle(
+        "circle-test", "SFE_Patch_Sk", "circle:1", [40, 200, 0], 15)
+    row = {"kind": "sketch_circle", "sketch": "SFE_Patch_Sk", "id": "circle:1",
+           "radius": 15, "center": [40, 200, 0], "position": [40, 200, 0],
+           "handle": "circle-handle"}
+    payload = {"units": "mm", "match_count": 1, "returned": 1, "matches": [row]}
+    assert check(payload) is not None
+    with pytest.raises(AssertionError):
+        check({**payload, "matches": [{**row, "id": "circle:0"}]})
+
+
+@pytest.mark.parametrize(("feature", "field", "prefix", "feature_type", "point_a", "point_b"), [
+    ("SFE_Offset", "entities", "surface_edit_offset", "OffsetFeature",
+     [10, 300, 5], [20, 310, 5]),
+    ("SFE_Thicken", "input_faces", "surface_edit_thicken", "ThickenFeature",
+     [10, 900, 5], [20, 910, 5]),
+])
+def test_surface_face_lists_pin_acquired_area_normal_owner_and_original(
+        monkeypatch, feature, field, prefix, feature_type, point_a, point_b):
+    details = verify_acts_surface_edit
+    monkeypatch.setitem(details._RECALL, "surface_edit_root_component", "RootComponent")
+    for suffix, point, normal in (("face_a", point_a, [0, 0, 1]),
+                                  ("face_b", point_b, [1, 0, 0])):
+        key = prefix + "_" + suffix
+        check = details._face_handle(key, point)
+        row = {"kind": "planar_face", "handle": key + "-token", "position": point,
+               "area": 20, "normal": normal, "occurrence": None}
+        assert check({"target": "whole design", "units": "mm", "match_count": 1, "returned": 1,
+                      "matches": [row]}) is not None
+    first = {"handle": "original-token", "kind": "face", "name": "Face",
+             "owner": {"component": "RootComponent", "occurrence": None},
+             "geometry": {"area": .2, "normal": [0, 0, 1],
+                          "point_cm": [8, 90, 5], "frame": "entity_context"}}
+    second = {"handle": "alternate-token", "kind": "face", "name": "Face",
+              "owner": {"component": "RootComponent", "occurrence": None},
+              "geometry": {"area": .2, "normal": [1, 0, 0],
+                           "point_cm": [2, 91, 5], "frame": "entity_context"}}
+    timeline = [{"index": 0, "name": feature, "type": feature_type}]
+    def payload(selected):
+        return {"definition": {"type": feature_type, "feature_address": feature,
+                                "timeline_index": 0, field: selected, "unavailable": {}},
+                "timeline": {"marker_position": 0, "count": 1, "returned": 1,
+                             "timeline": timeline}}
+    assert details._definition(feature, field, "before", 1)(payload([first]))
+    check_after = details._definition(feature, field, "after", 2,
+                                      (prefix + "_face_a", prefix + "_face_b"))
+    assert check_after(payload([first, second]))
+    wrong_normal = {**second, "geometry": {**second["geometry"], "normal": [0, 0, 1]}}
+    with pytest.raises(AssertionError):
+        check_after(payload([first, wrong_normal]))
+    with pytest.raises(AssertionError):
+        check_after(payload(None))
+
+
+def test_surface_thicken_volume_rejects_wrong_depth_even_when_area_is_equal(monkeypatch):
+    monkeypatch.setitem(verify_acts_surface_edit._RECALL,
+                        "surface_edit_mass_thicken-volume", {
+                            "area": 1000, "volume": 500, "center": (10, 90, 5),
+                            "center_of_mass": (10, 90, 5), "min_point": (0, 90, 0),
+                            "max_point": (20, 92, 10), "body_count": 1,
+                            "per_body_count": 1})
+    check = verify_acts_surface_edit._mass_state("thicken-volume", "changed", True,
+                                                 {"volume": 840})
+    def payload(volume):
+        return {"mass": {"area": 1000, "volume": volume, "per_body_count": 1,
+                          "per_body_truncated": False, "center_of_mass": [10, 90, 5]},
+                "center": [10, 90, 5], "min_point": [0, 90, 0], "max_point": [20, 92, 10]}
+    assert check(payload(840))
+    with pytest.raises(AssertionError):
+        check(payload(1290))
+
+
+def test_surface_tree_handle_accepts_serializer_omission_of_false_truncation():
+    check = verify_acts_surface_edit._body_handle("ReverseA", "surface_body_test")
+    payload = {"tree": {"truncated": False,
+                        "root_bodies": [{"name": "ReverseA", "handle": "body-handle"}]}}
+    assert check(payload) is not None
+    payload["tree"]["root_bodies_truncated"] = True
+    with pytest.raises(AssertionError):
+        check(payload)
+
+
+def test_surface_offset_checks_new_output_body_and_preserves_its_source(monkeypatch):
+    details = verify_acts_surface_edit
+    assert "offset_before = {root.bRepBodies.item(i).entityToken" in details._SURFACE_EDIT_SETUP
+    assert "if len(offset_created) != 1:" in details._SURFACE_EDIT_SETUP
+    assert "offset_created[0].name = 'SFE_OffsetBody'" in details._SURFACE_EDIT_SETUP
+    assert "f.bodies.item(0).name = 'SFE_OffsetBody'" not in details._SURFACE_EDIT_SETUP
+
+    monkeypatch.setitem(details._RECALL, "surface_edit_mass_SFE_Offset", {
+        "area": 200, "volume": 0, "center": (10, 297, 5),
+        "center_of_mass": (0, 0, 0), "min_point": (0, 297, 0),
+        "max_point": (20, 297, 10), "body_count": 1, "per_body_count": 0})
+    changed = details._mass_state("SFE_Offset", "changed", True, {
+        "area": 460, "volume": 0, "center": [11.5, 308.5, 5],
+        "min_point": [0, 297, 0], "max_point": [23, 320, 10]})
+    result = {"mass": {"area": 460, "volume": 0,
+                       "center_of_mass": [0, 0, 0], "per_body_truncated": False},
+              "center": [11.5, 308.5, 5], "min_point": [0, 297, 0],
+              "max_point": [23, 320, 10]}
+    assert changed(result)
+    wrong_named_source = {**result, "mass": {**result["mass"], "area": 400},
+                          "center": [10, 310, 5], "min_point": [0, 300, 0],
+                          "max_point": [20, 320, 10]}
+    with pytest.raises(AssertionError):
+        changed(wrong_named_source)
+
+    monkeypatch.setitem(details._RECALL, "surface_edit_mass_offset_source", {
+        "area": 400, "volume": 0, "center": (10, 310, 5),
+        "center_of_mass": (0, 0, 0), "min_point": (0, 300, 0),
+        "max_point": (20, 320, 10), "body_count": None, "per_body_count": None})
+    unchanged = details._mass_state("offset_source", "unchanged", False)
+    source_result = {**wrong_named_source, "mass": {**wrong_named_source["mass"], "area": 400}}
+    assert unchanged(source_result)
+    source_result["mass"]["area"] = 410
+    with pytest.raises(AssertionError):
+        unchanged(source_result)
+
+
+def test_surface_changed_shape_requires_measured_expected_center_and_bounds(monkeypatch):
+    monkeypatch.setitem(verify_acts_surface_edit._RECALL, "surface_edit_mass_expected-surface",
+                        {"area": 400, "volume": 0, "center_of_mass": (10, 610, 0),
+                         "min_point": (0, 600, 0), "max_point": (20, 620, 0),
+                         "body_count": None, "per_body_count": 1})
+    check = verify_acts_surface_edit._mass_state("expected-surface", "changed", True, {
+        "area": 560, "volume": 0, "center": [6, 610, 0],
+        "min_point": [-8, 600, 0], "max_point": [20, 620, 0],
+    })
+    payload = {"mass": {"area": 560, "volume": 0, "per_body_truncated": False,
+                        "center_of_mass": [5, 609, 0], "per_body_count": 1},
+               "center": {"x": 6, "y": 610, "z": 0},
+               "min_point": {"x": -8, "y": 600, "z": 0},
+               "max_point": {"x": 20, "y": 620, "z": 0}}
+    assert check(payload) is not None
+    payload["center"] = {"x": 10, "y": 610, "z": 0}
+    with pytest.raises(AssertionError):
+        check(payload)
+
+
+def _driving_sketch(width, height):
+    """A sketch_get X-ray of DrSk carrying these (expression, value, driving) dimension rows."""
+    rows = [{"name": name, "value": value, "value_units": "mm", "expression": expression,
+             "driving": driving, "type": "sketchlinear", "entities": entities}
+            for name, entities, (expression, value, driving) in (
+                ("d1", ["point:1", "point:2"], width), ("d2", ["point:2", "point:3"], height))]
+    return {"truncated": False, "entities": [], "profiles": [], "profile_count": 1,
+            "counts": {"lines": 4}, "constraints": [], "frame": {"space": "world"},
+            "dimensions": rows, "driving_dimension_count": sum(r["driving"] for r in rows)}
+
+
+@pytest.mark.parametrize("base_height, width, height, accepted", [
+    ("10 mm", ("30 mm", 30.0, True), ("10.00 mm", 10.0, False), True),
+    ("10 mm", ("30 mm", 30.0, True), ("12 mm", 12.0, False), False),
+    ("10 mm", ("30.00 mm", 30.0, True), ("10 mm", 10.0, False), False),
+    ("d9 / 3", ("30 mm", 30.0, True), ("d9/3", 10.0, False), False),
+    ("10 mm", ("30 mm", 30.0, True), ("10.00 mm", 10.0, True), False),
+], ids=["toggled-restated", "toggled-other-value", "untoggled-restated", "toggled-formula",
+        "driving-flag-wrong"])
+def test_driving_read_accepts_a_restated_expression_on_toggled_dimensions_only(
+        monkeypatch, base_height, width, height, accepted):
+    """Pins that only a toggled dimension may restate a plain expression of the same value."""
+    sketch = verify_acts_sketch
+    first = _driving_sketch(("30 mm", 30.0, True), (base_height, 10.0, True))
+    for key, value in (("dr_sketch", sketch._sketch_facts(first)), ("dr_w", "d1"), ("dr_h", "d2")):
+        monkeypatch.setitem(sketch._RECALL, key, value)
+    check = sketch._driving_read(("dr_h",), dr_h=False)
+    if accepted:
+        assert check(_driving_sketch(width, height)) is True
+    else:
+        with pytest.raises(AssertionError, match="driving flag per dimension name"):
+            check(_driving_sketch(width, height))
+
+
+def test_finishing_census_reads_published_rows_and_rejects_a_malformed_census():
+    """Pins that the finishing story reads the reply's body rows and never passes a broken census."""
+    import verify_acts_feature_finishing as finishing
+    row = {"identity": ["tokA", None], "component": "(Unsaved)", "body": "Body1",
+           "shape": {"volume_cm3": 5.0, "area_cm2": 19.0, "face_count": 6}}
+    twin = {**row, "identity": ["tokB", None], "body": "Body2"}
+    rows = finishing._shapes({"bodies": [row, twin]})
+    assert rows[0] == {"identity": ("tokA", None), "body": "Body1", "volume": 5.0,
+                       "area": 19.0, "faces": 6} and len(rows) == 2
+    assert finishing._shapes({"bodies": {"tokA": row}}) == []
+    assert finishing._shapes({"bodies": [row, {**twin, "identity": ["tokA", None]}]}) == []
+    assert finishing._shapes({"bodies": [{**row, "identity": None}]}) == []
+    assert finishing._shapes(None) == []
+
+
+def test_surface_candidate_requires_complete_census_owner_and_exact_operand_count(monkeypatch):
+    key = "surface_candidate_kill"
+    expected = {"definition_kind": "face", "owner": "Root", "area_cm2": 0.02,
+                "normal": [0.0, 0.0, 1.0]}
+    old = {"handle": "old-handle", "kind": "face", "name": "BRepFace",
+           "owner": {"component": "Root", "occurrence": None},
+           "geometry": {"area": 0.04, "normal": [0.0, 0.0, 1.0]}}
+    candidate = {"handle": "opaque-candidate", "kind": "face", "name": "BRepFace",
+                 "owner": {"component": "Root", "occurrence": None},
+                 "geometry": {"area": 0.02, "normal": [0.0, 0.0, 1.0]}}
+    before = {"feature": "Surface1", "component": "Root", "type": "UntrimFeature",
+              "timeline_index": 4, "feature_address": "Surface1", "unavailable": {},
+              "faces_to_untrim": [old], "loop_type": "internal"}
+    monkeypatch.setitem(surface_boundaries._RECALL, key, before)
+    monkeypatch.setitem(surface_boundaries._RECALL, key + "_candidate_expected", expected)
+    after = {"definition": {**before, "faces_to_untrim": [old, candidate]}}
+    assert surface_boundaries._changed(key, "faces_to_untrim", candidate_key=key + "_candidate")(after)
+
+    for wrong_rows in ([old], [old, candidate, candidate],
+                       [old, {**candidate, "owner": {"component": "Other", "occurrence": None}}],
+                       [old, {**candidate, "geometry": {"area": 0.03, "normal": [0, 0, 1]}}]):
+        with pytest.raises(AssertionError):
+            surface_boundaries._changed(key, "faces_to_untrim",
+                candidate_key=key + "_candidate")({"definition": {**before, "faces_to_untrim": wrong_rows}})
+
+    incomplete = {"returned": 1, "match_count": 6, "matches": [
+        {"handle": "face", "kind": "planar_face", "area": 2.0,
+         "position": [1.0, 2.0, 3.0], "normal": [0, 0, 1]}]}
+    with pytest.raises(AssertionError):
+        surface_boundaries._candidate("planar_face", [1, 2, 3], key + "_candidate", key)(incomplete)
+
+
+def test_surface_restore_and_setter_require_banked_baseline_and_published_owner_flags(monkeypatch):
+    key = "surface_restore_kill"
+    definition = {"feature": "Stitch1", "component": "Root", "type": "StitchFeature",
+        "timeline_index": 8, "feature_address": "Stitch1", "unavailable": {},
+        "stitch_surfaces": [{"handle": "opaque", "kind": "entity"}]}
+    monkeypatch.setitem(surface_boundaries._RECALL, key, None)
+    with pytest.raises(AssertionError):
+        surface_boundaries._restored(key, "stitch_surfaces")({"definition": definition})
+    monkeypatch.setitem(surface_boundaries._RECALL, key, definition)
+    assert surface_boundaries._restored(key, "stitch_surfaces")({"definition": definition})
+
+    monkeypatch.setitem(surface_boundaries._RECALL, "Stitch1_baseline", definition)
+    good = {"edited": True, "definition_matches": True, "same_feature": True,
+            "owner_matches": True, "marker_restored": True, "feature_health": {},
+            "new_timeline_errors": [], "new_timeline_warnings": [], "geometry_changed": True}
+    assert surface_boundaries._setter_result("Stitch1")(good)
+    bad = {**good, "owner_matches": False}
+    with pytest.raises(AssertionError):
+        surface_boundaries._setter_result("Stitch1")(bad)
+    monkeypatch.setitem(surface_boundaries._RECALL, "Stitch1_baseline", None)
+    with pytest.raises(AssertionError):
+        surface_boundaries._setter_result("Stitch1")(good)
+
+
+def test_surface_delete_face_replaces_candidate_and_keeps_body_for_readback(monkeypatch):
+    rows = surface_boundaries.surface_boundary_edit_rows()
+    edit = next(args for tool, args, _check, _save in rows if tool == "model_edit_feature"
+                and callable(args) and args.__defaults__ and args.__defaults__[0] == "EditDeleteSurface")
+    monkeypatch.setitem(surface_boundaries._RECALL, "EditDeleteSurface_baseline",
+        {"feature_address": "EditDeleteSurface", "deleted_faces": [{"handle": "old-face"}]})
+    context = {"surface_doc": "scratch", "EditDeleteSurface_candidate": "new-face"}
+    args = edit(context)
+    assert args["references"] == ["new-face"]
+    assert any(tool == "model_inspect" and args.get("target") == "DeleteSurfaceBody"
+               for tool, args, _check, _save in rows)
+    assert "opened_candidates" in surface_boundaries._FIXTURE
+    assert "key=lambda b: abs(b.boundingBox.minPoint.y-y)" not in surface_boundaries._FIXTURE
+
+
+def test_surface_candidate_reads_owner_after_baseline_and_uses_feature_body_handle_key(monkeypatch):
+    rows = surface_boundaries.surface_boundary_edit_rows()
+    query = next(args for tool, args, _check, _save in rows
+                 if tool == "find_geometry" and callable(args))
+    check = next(check for tool, _args, check, _save in rows
+                 if tool == "find_geometry" and callable(_args))
+    feature = query.__defaults__[3]
+    body = query.__defaults__[0]
+    monkeypatch.setitem(surface_boundaries._RECALL, feature + "_baseline", {"component": "(Unsaved)"})
+    ctx = {feature + "_body_handle": "body-handle-for-feature"}
+    assert query(ctx)["target"] == "body-handle-for-feature"
+    payload = {"returned": 1, "match_count": 1, "matches": [
+        {"handle": "face", "kind": "planar_face", "area": 1.0,
+         "position": [30.0, 810.0, 2.0], "normal": [0.0, 0.0, 1.0]}]}
+    assert check(payload) is True
+    assert surface_boundaries._RECALL[feature + "_candidate_expected"]["owner"] == "(Unsaved)"
+    with pytest.raises(KeyError):
+        query({body + "_body_handle": "wrong-key"})
+
+
+def test_surface_owned_body_candidate_accepts_solid_delete_heal_box():
+    payload = {"tree": {"root": "(Unsaved)", "truncated": False,
+        "children_truncated": False, "root_bodies": [{"name": "DeleteHealBox",
+        "handle": "heal-body", "is_solid": True, "visible": True}]}}
+    assert surface_boundaries._owned_body_candidate(
+        "DeleteHealBox", "delete_heal", expected_solid=True)(payload) is True
+    with pytest.raises(AssertionError):
+        surface_boundaries._owned_body_candidate(
+            "DeleteHealBox", "delete_heal_wrong", expected_solid=False)(payload)
+
+def test_combine_body_restore_read_follows_public_restore_edit(monkeypatch):
+    import verify_acts_feature_edit as feature_edit
+
+    case = "CombineFeature"
+    before_key = case + "_tools_before"
+    target_key = case + "_target"
+    monkeypatch.setitem(feature_edit._RECALL, before_key, {
+        "feature_address": "Combine1", "tool_bodies": [{"handle": "original-tool"}]})
+    monkeypatch.setitem(feature_edit._RECALL, target_key, "TargetBody")
+    monkeypatch.setitem(feature_edit._RECALL, target_key + "_state", {
+        "name": "TargetBody", "volume": 1.0, "min": [0.0, 0.0, 0.0],
+        "max": [1.0, 1.0, 1.0], "center": [0.5, 0.5, 0.5]})
+    rows = []
+    feature_edit._transition(rows, case, "feature", "tools", "tool_bodies",
+        candidate_key=case + "_tool2", body_target_key=target_key)
+    ctx = {case + "_doc": "doc", case + "_component": "component",
+           case + "_control": "control", case + "_tool2": "replacement-tool",
+           target_key: "TargetBody", "feature": "feature-handle"}
+    restore_edit = next(i for i, (tool, args, _check, _save) in enumerate(rows)
+        if tool == "model_edit_feature" and callable(args)
+        and args(ctx).get("references") == ["original-tool"])
+    restored_check = next((i, args, check) for i, (tool, args, check, _save) in enumerate(rows)
+        if tool == "model_inspect" and callable(args) and callable(check)
+        and args(ctx).get("target") == "TargetBody"
+        and any(value == "CombineFeature restored" for value in
+                (cell.cell_contents for cell in (check.__closure__ or ()))))
+    assert restored_check[0] > restore_edit
+    assert restored_check[1](ctx)["target"] == "TargetBody"
+    payload = {"kind": "body", "units": "mm", "target": "body 'TargetBody'",
+        "mass": {"accuracy_used": "very_high", "volume": 1.0, "center_of_mass": [0.5, 0.5, 0.5]},
+        "min_point": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "max_point": {"x": 1.0, "y": 1.0, "z": 1.0}}
+    assert restored_check[2](payload)

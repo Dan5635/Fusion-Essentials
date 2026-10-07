@@ -14,7 +14,7 @@ from verify_core import (
     EXPORT_DIR, SVG96_PATH, SVG_PATH, _ctx_get, _datum_plane, _dim_measures, _extruded,
     _made_component, _param_added, _param_favorited, _params_listed, _refused, _svg96_extent,
     _watch_all, _measured, _RECALL, _recall, _home_document, _home_address,
-    _new_document, _document_closed, _activated, _near, _Refusal)
+    _new_document, _document_closed, _activated, _near, _num, _Refusal)
 from verify_layout import _px, _py
 from verify_acts_model_combine_revolve import _combine_pin
 from verify_acts_model_sweep import _FilletRadiusRefusal, _retire_compare, _retire_sketch_state, _timeline_names
@@ -2741,3 +2741,1088 @@ def _placed_profile_handle_rows():
 
 
 _SKETCHWORK += _placed_profile_handle_rows()
+
+
+# --- sketch_edit, the curve state flags and a dimension's driving flag, each on owned geometry ---
+
+class _NamedRefusal(_Refusal):
+    """A refusal that must also carry fragments built from recalled values."""
+    def __init__(self, *fragments, recalled):
+        super().__init__(fragments)
+        self.recalled = recalled
+
+    def missing(self, text):
+        try:
+            extra = list(self.recalled(_RECALL))
+        except Exception as exc:
+            return [f"recalled fragments: {exc}"]
+        return [f for f in (*self.fragments, *extra) if f not in text]
+
+
+_HISTORY = {"include": ["timeline"], "max_results": 200}
+
+
+def _xray(sketch_name, **scope):
+    """sketch_get arguments for one sketch's full X-ray in mm."""
+    return {"sketch_name": sketch_name, "include_entities": True, "max_results": 200,
+            "units": "mm", **scope}
+
+
+def _inspect(target):
+    """model_inspect arguments for a body's box and physical properties in mm."""
+    return {"target": target, "include": ["default", "mass"], "units": "mm",
+            "accuracy": "very_high"}
+
+
+def _solid(key):
+    """model_inspect arguments for the body whose name an earlier step saved under `key`."""
+    return lambda c: _inspect(_ctx_get(c, key, "the extruded body's name"))
+
+
+def _alike(a, b, tol):
+    """Whether two JSON values match, numbers within `tol`."""
+    if _num(a) and _num(b):
+        return abs(a - b) <= tol
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_alike(a[k], b[k], tol) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_alike(x, y, tol) for x, y in zip(a, b))
+    return a == b
+
+
+def _unchanged(key, pick, tol=0.0):
+    """A read whose picked facts match the ones recalled under `key`."""
+    def check(p):
+        now, before = pick(p), _RECALL.get(key)
+        return _measured(f"{key} unchanged", {"before": before, "now": now},
+                         now is not None and before is not None and _alike(now, before, tol))
+    return check
+
+
+def _keep(read, tool, args, key, pick, also=None):
+    """Append a first read recalling `pick` under `key`, judged by `also` as well when given."""
+    def check(p):
+        return _measured(f"{key} first read", pick(p),
+                         pick(p) is not None and (also is None or bool(also(p))))
+    read(tool, args, check, (key, _recall(key, pick)))
+
+
+def _sketch_facts(p):
+    """One sketch's X-ray without its name or handle text, or None when the read is partial."""
+    if (p.get("truncated") is not False or p.get("profiles_stale")
+            or p.get("timeline_marker_unrestored") or not isinstance(p.get("entities"), list)
+            or not isinstance(p.get("profiles"), list) or not isinstance(p.get("frame"), dict)):
+        return None
+    facts = {k: p.get(k) for k in ("component", "plane", "counts", "constraints", "dimensions",
+                                   "frame", "profile_count", "construction_count",
+                                   "driving_dimension_count")}
+    facts["entities"] = [{k: v for k, v in e.items() if k != "handle"} for e in p["entities"]]
+    facts["profiles"] = [{k: v for k, v in r.items() if k != "handle"} for r in p["profiles"]]
+    return facts
+
+
+def _sketch_list(p):
+    """sketch_get list: every row by sketch name, or None when the list is cut or names repeat."""
+    rows = p.get("sketches")
+    if not isinstance(rows, list) or p.get("truncated") or p.get("sketch_count") != len(rows):
+        return None
+    by_name = {r.get("name"): r for r in rows}
+    return by_name if len(by_name) == len(rows) else None
+
+
+def _body_facts(p):
+    """A body's world box, volume and centre of mass in mm, or None when one did not read."""
+    mass = p.get("mass") or {}
+    lo, hi, com = p.get("min_point"), p.get("max_point"), mass.get("center_of_mass")
+    if (p.get("units") != "mm" or not isinstance(lo, dict) or not isinstance(hi, dict)
+            or not _vec3(com) or not _num(mass.get("volume"))
+            or not all(_num(d.get(a)) for d in (lo, hi) for a in "xyz")):
+        return None
+    return {"min": [lo[a] for a in "xyz"], "max": [hi[a] for a in "xyz"],
+            "volume": mass["volume"], "center_of_mass": com}
+
+
+def _box_reads(dx, dy, dz):
+    """model_inspect: a box of these extents in mm, its volume their product."""
+    def check(p):
+        return (_near(p.get("x"), dx, 1e-3) and _near(p.get("y"), dy, 1e-3)
+                and _near(p.get("z"), dz, 1e-3)
+                and _near((p.get("mass") or {}).get("volume"), dx * dy * dz, 0.5))
+    return check
+
+
+def _boxed(write, name, rect, height, key):
+    """Rows extruding rectangle `rect` drawn on root XY sketch `name`; the body name saves as `key`."""
+    write("sketch_create", {"plane": "xy", "name": name})
+    write("sketch_add_geometry", {"sketch_name": name, "geometry": [
+        {"kind": "rectangle", "x1": rect[0], "y1": rect[1], "x2": rect[2], "y2": rect[3]}]})
+    write("model_extrude", {"sketch_name": name, "profile_index": 0, "distance": height,
+                            "operation": "new"},
+          _extruded, (key, _recall(key, lambda p: p["result_bodies"][0])))
+
+
+def _vec3(v):
+    return isinstance(v, list) and len(v) == 3 and all(_num(c) for c in v)
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _frame_on(frame, point, normal):
+    """Whether a world sketch frame has its origin on, and its normal parallel to, the plane."""
+    if not isinstance(frame, dict) or frame.get("space") != "world":
+        return False
+    o, n, x, y = (frame.get(k) for k in ("origin_mm", "normal", "x_world", "y_world"))
+    point, normal = list(point), list(normal)
+    if not all(_vec3(v) for v in (o, n, x, y, point, normal)):
+        return False
+    return (abs(abs(_dot(n, normal)) - 1) < 1e-5
+            and abs(_dot([a - b for a, b in zip(o, point)], normal)) < 1e-3
+            and all(abs(_dot(a, b)) < 1e-5 for a, b in ((x, n), (y, n), (x, y))))
+
+
+def _support(p):
+    """sketch_get: where a sketch sits - its frame and the plane it names - or None if unread."""
+    frame = p.get("frame")
+    return {"frame": frame, "plane": p.get("plane")} if isinstance(frame, dict) else None
+
+
+# --- sketch_edit(new_name) ---------------------------------------------------------------------
+
+def _renamed(previous, wanted, exact=False):
+    """sketch_edit(new_name): the adopted name read back, and an address naming that sketch."""
+    def check(p):
+        name, address = p.get("name"), p.get("address")
+        good = (p.get("action") == "new_name" and p.get("previous_name") == previous
+                and p.get("requested_name") == wanted and isinstance(name, str) and bool(name)
+                and p.get("adopted_differs") is (name != wanted)
+                and p.get("old_name_resolves") is False and "unread" not in p
+                and isinstance(address, dict) and address.get("sketch_name") == name
+                and set(address) <= {"sketch_name", "component"}
+                and (name != wanted or exact or bool(address.get("component"))))
+        if exact:
+            good = good and name == wanted and address == {"sketch_name": wanted}
+        return _measured(f"'{previous}' renamed for '{wanted}'",
+                         {k: p.get(k) for k in ("previous_name", "requested_name", "name",
+                                                "adopted_differs", "old_name_resolves",
+                                                "address", "unread")}, good)
+    return check
+
+
+def _sketch_reads(key, name=None, address_key=None):
+    """sketch_get: the facts recalled under `key`, answering to the expected sketch name."""
+    def check(p):
+        want = name if name is not None else (_RECALL.get(address_key) or {}).get("sketch_name")
+        return (_unchanged(key, _sketch_facts)(p)
+                and _measured("sketch name", {"sketch": p.get("sketch"), "want": want},
+                              bool(want) and p.get("sketch") == want))
+    return check
+
+
+def _history_with(key, was, now):
+    """design_get: the recalled timeline, healthy, with one row answering to its new name."""
+    def check(p):
+        new = now() if callable(now) else now
+        want = [new if n == was else n for n in _RECALL.get(key) or []]
+        return _measured(f"timeline row '{was}' now reads '{new}'",
+                         {"rows": _timeline_names(p), "want": want},
+                         bool(new) and was in (_RECALL.get(key) or [])
+                         and _timeline_names(p) == want)
+    return check
+
+
+def _sketch_rename_rows():
+    """Rename a sketch, read it by both names, then rename onto a name another component holds."""
+    rows, write, read, close = _scratch_rows("ren_doc")
+    _boxed(write, "RenSrc", (0, 0, 20, 10), 5, "ren_body")
+    write("sketch_create", {"plane": "xy", "name": "RenCtl"})
+    write("sketch_add_geometry", {"sketch_name": "RenCtl", "geometry": [
+        {"kind": "line", "x1": 40, "y1": 0, "x2": 60, "y2": 0}]})
+    write("model_create_component", {"name": "RenOther", "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "RenTaken"})
+    write("sketch_add_geometry", {"sketch_name": "RenTaken", "geometry": [
+        {"kind": "line", "x1": 0, "y1": 40, "x2": 20, "y2": 40}]})
+    write("design_activate_component", {"occurrence": "root"})
+    other = _xray("RenTaken", component="RenOther:1")
+    _keep(read, "sketch_get", _xray("RenSrc"), "ren_src", _sketch_facts,
+          lambda p: p["counts"]["lines"] == 4 and p["profile_count"] == 1)
+    _keep(read, "sketch_get", _xray("RenCtl"), "ren_ctl", _sketch_facts)
+    _keep(read, "sketch_get", other, "ren_other", _sketch_facts,
+          lambda p: p["component"] == "RenOther" and p["counts"]["lines"] == 1)
+    _keep(read, "model_inspect", _solid("ren_body"), "ren_solid", _body_facts, _box_reads(20, 10, 5))
+    _keep(read, "design_get", _HISTORY, "ren_history", _timeline_names,
+          lambda p: "RenSrc" in _timeline_names(p))
+
+    # The first name is free: it is adopted as asked and the former one stops resolving.
+    write("sketch_edit", {"sketch_name": "RenSrc", "new_name": "RenNew"},
+          _renamed("RenSrc", "RenNew", exact=True))
+    read("sketch_get", _xray("RenNew"), _sketch_reads("ren_src", "RenNew"))
+    read("sketch_get", {"sketch_name": "RenSrc"}, _refused("No sketch named 'RenSrc'", "RenNew"))
+    read("design_get", _HISTORY, _history_with("ren_history", "RenSrc", "RenNew"))
+    read("model_inspect", _solid("ren_body"), _unchanged("ren_solid", _body_facts, 1e-3))
+    read("sketch_get", _xray("RenCtl"), _unchanged("ren_ctl", _sketch_facts))
+
+    # 'RenTaken' is held by a sketch of RenOther; the reply's address is what the next read uses.
+    def adopted():
+        return (_RECALL.get("ren_addr") or {}).get("sketch_name")
+
+    def addressed(c):
+        return _xray(**_ctx_get(c, "ren_addr", "the renamed sketch's address"))
+
+    write("sketch_edit", {"sketch_name": "RenNew", "new_name": "RenTaken"},
+          _renamed("RenNew", "RenTaken"), ("ren_addr", _recall("ren_addr", lambda p: p["address"])))
+    read("sketch_get", addressed, _sketch_reads("ren_src", address_key="ren_addr"))
+    read("sketch_get", other, _unchanged("ren_other", _sketch_facts))
+    read("design_get", _HISTORY, _history_with("ren_history", "RenSrc", adopted))
+    read("model_inspect", _solid("ren_body"), _unchanged("ren_solid", _body_facts, 1e-3))
+
+    def same_name(c):
+        address = _ctx_get(c, "ren_addr", "the renamed sketch's address")
+        return {**address, "new_name": address["sketch_name"]}
+
+    write("sketch_edit", same_name,
+          _NamedRefusal("already has that name", "nothing was changed",
+                        recalled=lambda r: [f"Sketch '{r['ren_addr']['sketch_name']}'"]))
+    read("sketch_get", addressed, _sketch_reads("ren_src", address_key="ren_addr"))
+    read("sketch_get", _xray("RenCtl"), _unchanged("ren_ctl", _sketch_facts))
+    close()
+    return rows
+
+
+_SKETCHWORK += _sketch_rename_rows()
+
+
+# --- sketch_edit(visible) ----------------------------------------------------------------------
+
+def _bulb_set(sketch, want, before):
+    """sketch_edit(visible): the bulb and the effective visibility either side of the write."""
+    def check(p):
+        changed = before is not want
+        return _measured(f"'{sketch}' bulb {before} -> {want}",
+                         {k: p.get(k) for k in ("requested", "bulb_before", "bulb_after",
+                                                "effective_visible_before",
+                                                "effective_visible_after", "changed", "unread")},
+                         p.get("action") == "visible" and p.get("sketch") == sketch
+                         and p.get("requested") is want and p.get("bulb_before") is before
+                         and p.get("bulb_after") is want and p.get("changed") is changed
+                         and p.get("effective_visible_before") is before
+                         and p.get("effective_visible_after") is want and "unread" not in p
+                         and ("nothing was written" in (p.get("note") or "")) is (not changed))
+    return check
+
+
+def _listed(key, name, visible):
+    """sketch_get list: every row as first read, except `name`'s effective visibility."""
+    def check(p):
+        base, now = _RECALL.get(key) or {}, _sketch_list(p)
+        want = {n: (dict(r, is_visible=visible) if n == name else r) for n, r in base.items()}
+        return _measured(f"sketch rows with '{name}' visible {visible}",
+                         {"now": now, "want": want}, name in base and now == want)
+    return check
+
+
+def _sketch_visible_rows():
+    """Turn a sketch's bulb off and on; the sketch list reads its visibility beside a control."""
+    rows, write, read, close = _scratch_rows("bulb_doc")
+    for name, y in (("BulbSk", 0), ("BulbCtl", 30)):
+        write("sketch_create", {"plane": "xy", "name": name})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [
+            {"kind": "line", "x1": 0, "y1": y, "x2": 20, "y2": y}]})
+    _keep(read, "sketch_get", {}, "bulb_list", _sketch_list,
+          lambda p: all(_sketch_list(p)[n]["is_visible"] is True for n in ("BulbSk", "BulbCtl")))
+    _keep(read, "sketch_get", _xray("BulbSk"), "bulb_sketch", _sketch_facts)
+    write("sketch_edit", {"sketch_name": "BulbSk", "visible": False},
+          _bulb_set("BulbSk", False, True))
+    read("sketch_get", {}, _listed("bulb_list", "BulbSk", False))
+    write("sketch_edit", {"sketch_name": "BulbSk", "visible": False},
+          _bulb_set("BulbSk", False, False))
+    read("sketch_get", {}, _listed("bulb_list", "BulbSk", False))
+    write("sketch_edit", {"sketch_name": "BulbSk", "visible": True},
+          _bulb_set("BulbSk", True, False))
+    read("sketch_get", {}, _listed("bulb_list", "BulbSk", True))
+    read("sketch_get", _xray("BulbSk"), _unchanged("bulb_sketch", _sketch_facts))
+    close()
+    return rows
+
+
+_SKETCHWORK += _sketch_visible_rows()
+
+
+# --- sketch_edit(plane) ------------------------------------------------------------------------
+
+def _plane_moved(tag, sketch, label, plane_after=None, later=None):
+    """sketch_edit(plane): redefine took, the frame is on the target and no later row broke."""
+    def check(p):
+        was = _RECALL.get(tag + "_at") or {}
+        target = label() if callable(label) else label
+        rows, unread = p.get("later_features"), p.get("unread") or {}
+        named = (p.get("plane_after") == plane_after and "plane_after" not in unread
+                 if plane_after else
+                 p.get("plane_after") is None and "BRefFace" in str(unread.get("plane_after")))
+        return _measured(
+            f"'{sketch}' redefined onto {target}",
+            {k: p.get(k) for k in (
+                "requested_plane", "redefine_returned", "plane_before", "plane_after",
+                "on_target_plane", "normal_vs_target", "origin_off_plane_mm", "frame_before",
+                "frame_after", "frame_changed", "sketch_health", "later_features",
+                "new_timeline_errors", "new_timeline_warnings", "marker_before", "marker_after",
+                "unread")},
+            p.get("action") == "plane" and p.get("sketch") == sketch
+            and p.get("requested_plane") == target and p.get("redefine_returned") is True
+            and p.get("on_target_plane") is True
+            and p.get("normal_vs_target") in ("same", "opposed")
+            and _num(p.get("origin_off_plane_mm")) and abs(p["origin_off_plane_mm"]) < 1e-3
+            and isinstance(was.get("frame"), dict) and p.get("frame_before") == was["frame"]
+            and p.get("plane_before") == was.get("plane") and p.get("frame_changed") is True
+            and isinstance(p.get("frame_after"), dict) and named
+            and p.get("sketch_health") == "healthy" and isinstance(rows, list)
+            and all(r.get("health") == "healthy" for r in rows)
+            and (later is None or [r.get("name") for r in rows] == later())
+            and p.get("later_features_truncated") is False
+            and p.get("new_timeline_errors") == [] and p.get("new_timeline_warnings") == []
+            and _num(p.get("marker_before")) and p.get("marker_before") == p.get("marker_after"))
+    return check
+
+
+def _sketch_on(tag, sketch, plane, plane_name=None, face_body=None, origin=None):
+    """sketch_get: the frame is on `plane`, equals the edit's frame_after and names its support."""
+    def check(p):
+        point, normal = plane() if callable(plane) else plane
+        frame, face = p.get("frame"), p.get("on_face") or {}
+        support = (p.get("plane") == plane_name and "on_face" not in p if face_body is None
+                   else p.get("plane") is None and bool(face.get("handle"))
+                   and face.get("body") == _RECALL.get(face_body))
+        return _measured(f"'{sketch}' frame on its target plane",
+                         {"frame": frame, "plane": p.get("plane"), "on_face": p.get("on_face"),
+                          "target": [list(point), list(normal)]},
+                         p.get("sketch") == sketch and _frame_on(frame, point, normal)
+                         and frame == _RECALL.get(tag + "_reply") and support
+                         and (origin is None or _alike(frame["origin_mm"], list(origin), 1e-3))
+                         and p.get("profile_count") == 1
+                         and not p.get("timeline_marker_unrestored"))
+    return check
+
+
+def _body_on_frame(tag, centre, height, volume, rect=None):
+    """model_inspect: the extrude sits where the sketch frame read under `tag` puts its profile."""
+    def check(p):
+        frame = (_RECALL.get(tag + "_at") or {}).get("frame") or {}
+        o, n, x, y = (frame.get(k) for k in ("origin_mm", "normal", "x_world", "y_world"))
+        mass = p.get("mass") or {}
+        com = mass.get("center_of_mass")
+        good = all(_vec3(v) for v in (o, n, x, y, com)) and _near(mass.get("volume"), volume, 0.5)
+        if good:
+            rel = [c - q for c, q in zip(com, o)]
+            # The side of the plane the extrude grows to is read, not asserted.
+            good = (abs(_dot(rel, x) - centre[0]) < 0.01 and abs(_dot(rel, y) - centre[1]) < 0.01
+                    and abs(abs(_dot(rel, n)) - height / 2) < 0.01)
+        if good and rect is not None:
+            lo, hi = p.get("min_point") or {}, p.get("max_point") or {}
+
+            def box(side):
+                corners = [[o[i] + u * x[i] + v * y[i] + w * side * n[i] for i in range(3)]
+                           for u in rect[0::2] for v in rect[1::2] for w in (0, height)]
+                return [(min(c[i] for c in corners), max(c[i] for c in corners)) for i in range(3)]
+            good = any(all(_near(lo.get(a), span[i][0], 0.01) and _near(hi.get(a), span[i][1], 0.01)
+                           for i, a in enumerate("xyz")) for span in (box(1), box(-1)))
+        return _measured("extrude follows the sketch frame",
+                         {"frame": frame, "center_of_mass": com, "volume": mass.get("volume"),
+                          "min_point": p.get("min_point"), "max_point": p.get("max_point")}, good)
+    return check
+
+
+def _x_axis_edges(p):
+    """find_geometry: the 20 mm line edges lying on the world X axis."""
+    return [m for m in p.get("matches") or []
+            if m.get("kind") == "line_edge" and _near(m.get("length"), 20, 1e-3)
+            and _vec3(m.get("position")) and abs(m["position"][1]) < 1e-6
+            and abs(m["position"][2]) < 1e-6 and m.get("handle")]
+
+
+def _face_at(position, normal):
+    """A save slot's extractor: the handle of the one planar face at this centroid and normal."""
+    def pick(p):
+        hits = [m for m in p.get("matches") or []
+                if m.get("kind") == "planar_face" and _alike(m.get("position"), position, 1e-4)
+                and _alike(m.get("normal"), normal, 1e-4) and m.get("handle")]
+        if len(hits) != 1:
+            raise AssertionError(f"no single planar face at {position} facing {normal}: "
+                                 f"{[(m.get('position'), m.get('normal')) for m in p.get('matches') or []]}")
+        return hits[0]["handle"]
+    return pick
+
+
+def _turned_plane(p):
+    """model_construction(at_angle): a plane through the world X axis, 30 deg off XY."""
+    geometry = p.get("geometry") or {}
+    o, n = geometry.get("origin") or {}, geometry.get("normal")
+    return _measured("plane turned 30 deg about the world X axis",
+                     {"name": p.get("name"), "angle_deg": p.get("angle_deg"), "geometry": geometry},
+                     p.get("name") == "PlTurn" and _near(p.get("angle_deg"), 30, 1e-6)
+                     and _vec3(n) and abs(n[0]) < 1e-5 and _near(abs(n[1]), 0.5, 1e-5)
+                     and _near(abs(n[2]), 0.866025, 1e-5)
+                     and all(_num(o.get(a)) for a in "xyz")
+                     and abs(o["y"] * n[1] + o["z"] * n[2]) < 1e-4)
+
+
+_PLANE_RECT = (10, 5, 30, 15)       # PlMove's profile in sketch mm; extruded 6 mm it holds 1200 mm3
+
+
+def _sketch_plane_rows():
+    """Move a root sketch to an offset plane, a turned plane and an earlier face; refuse a later one."""
+    rows, write, read, close = _scratch_rows("pl_doc")
+    _boxed(write, "PlBase", (40, 0, 60, 30), 10, "pl_base")
+    read("find_geometry", lambda c: {"target": _ctx_get(c, "pl_base", "the base body"),
+                                     "kind": "line_edge", "units": "mm", "max_results": 50},
+         lambda p: p.get("match_count") == 12 and len(_x_axis_edges(p)) == 1,
+         ("pl_edge", lambda p: _x_axis_edges(p)[0]["handle"]))
+    write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy", "offset": 7,
+                                 "name": "PlOff"},
+          lambda p: _datum_plane("xy")(p) and p.get("name") == "PlOff"
+          and _near((p["geometry"].get("origin") or {}).get("z"), 7, 1e-6))
+    write("model_construction", lambda c: {
+        "kind": "plane", "mode": "at_angle", "plane": "xy", "angle": 30, "name": "PlTurn",
+        "edges": [_ctx_get(c, "pl_edge", "the base edge on the X axis")]},
+        _turned_plane, ("pl_turn", _recall("pl_turn", lambda p: [
+            [p["geometry"]["origin"][a] for a in "xyz"], p["geometry"]["normal"]])))
+    _boxed(write, "PlMove", _PLANE_RECT, 6, "pl_dep")
+    _boxed(write, "PlLate", (40, -40, 60, -20), 10, "pl_late")
+    _boxed(write, "PlCtl", (-40, -40, -20, -20), 4, "pl_ctl")
+    for body, key, position, normal in (("pl_base", "pl_base_face", [60, 15, 5], [1, 0, 0]),
+                                        ("pl_late", "pl_late_face", [50, -30, 10], [0, 0, 1])):
+        read("find_geometry", lambda c, body=body: {
+            "target": _ctx_get(c, body, "the body's name"), "kind": "planar_face", "units": "mm",
+            "max_results": 20},
+            lambda p: p.get("match_count") == 6, (key, _face_at(position, normal)))
+
+    def follows(rect=None):
+        return _body_on_frame("pl", (20, 10), 6, 1200, rect)
+
+    def later():
+        names = _RECALL.get("pl_history") or []
+        return names[names.index("PlMove") + 1:] if "PlMove" in names else None
+
+    _keep(read, "sketch_get", _xray("PlMove"), "pl_at", _support,
+          lambda p: _frame_on(p["frame"], (0, 0, 0), (0, 0, 1))
+          and _alike(p["frame"]["origin_mm"], [0, 0, 0], 1e-3) and bool(p.get("plane")))
+    read("model_inspect", _solid("pl_dep"), follows(_PLANE_RECT),
+         ("pl_dep_solid", _recall("pl_dep_solid", _body_facts)))
+    _keep(read, "design_get", _HISTORY, "pl_history", _timeline_names,
+          lambda p: "PlMove" in _timeline_names(p)[:-1])
+    _keep(read, "sketch_get", _xray("PlCtl"), "pl_ctl_sketch", _sketch_facts)
+    _keep(read, "model_inspect", _solid("pl_ctl"), "pl_ctl_solid", _body_facts, _box_reads(20, 20, 4))
+
+    def unmoved():
+        read("design_get", _HISTORY, _unchanged("pl_history", _timeline_names))
+        read("sketch_get", _xray("PlCtl"), _unchanged("pl_ctl_sketch", _sketch_facts))
+        read("model_inspect", _solid("pl_ctl"), _unchanged("pl_ctl_solid", _body_facts, 1e-3))
+
+    def move(args, label, plane, plane_name=None, face_body=None, rect=None):
+        write("sketch_edit", args, _plane_moved("pl", "PlMove", label, plane_name, later),
+              ("pl_reply", _recall("pl_reply", lambda p: p["frame_after"])))
+        read("sketch_get", _xray("PlMove"),
+             _sketch_on("pl", "PlMove", plane, plane_name, face_body),
+             ("pl_at", _recall("pl_at", _support)))
+        read("model_inspect", _solid("pl_dep"), follows(rect),
+             ("pl_dep_solid", _recall("pl_dep_solid", _body_facts)))
+        unmoved()
+
+    # The target planes in world mm: z = 7, the turned plane as it was built, and the base's x = 60.
+    move({"sketch_name": "PlMove", "plane": "PlOff"}, "plane 'PlOff'",
+         ((0, 0, 7), (0, 0, 1)), plane_name="PlOff", rect=_PLANE_RECT)
+    move({"sketch_name": "PlMove", "plane": "PlTurn"}, "plane 'PlTurn'",
+         lambda: _RECALL["pl_turn"], plane_name="PlTurn")
+    move(lambda c: {"sketch_name": "PlMove",
+                    "plane": _ctx_get(c, "pl_base_face", "the base body's x = 60 face")},
+         lambda: f"a face of body '{_RECALL.get('pl_base')}'",
+         ((60, 0, 0), (1, 0, 0)), face_body="pl_base", rect=_PLANE_RECT)
+
+    # PlLate's body is built after PlMove, so its face cannot carry it.
+    write("sketch_edit", lambda c: {"sketch_name": "PlMove",
+                                    "plane": _ctx_get(c, "pl_late_face", "the later body's top face")},
+          _refused("Sketch.redefine raised on sketch 'PlMove'", "CIRCULAR_DEPENDENCY",
+                   "The sketch was not moved: its frame reads as before"))
+    read("sketch_get", _xray("PlMove"), _unchanged("pl_at", _support))
+    read("model_inspect", _solid("pl_dep"), _unchanged("pl_dep_solid", _body_facts, 1e-3))
+    unmoved()
+    close()
+    return rows
+
+
+_SKETCHWORK += _sketch_plane_rows()
+
+
+# A sketch on the XY plane of a component turned 90 deg about world Y and set at x = 50 mm.
+_PLACED_XY_FRAME = {"origin_mm": [50, 0, 0], "normal": [1, 0, 0], "space": "world",
+                    "x_world": [0, 0, -1], "y_world": [0, 1, 0]}
+
+
+def _sketch_plane_placed_rows():
+    """Move a sketch of a turned, translated component from that component's XY plane to its XZ."""
+    rows, write, read, close = _scratch_rows("pc_doc")
+    write("sketch_create", {"plane": "xy", "name": "PcCtl"})
+    write("sketch_add_geometry", {"sketch_name": "PcCtl", "geometry": [
+        {"kind": "line", "x1": 0, "y1": 30, "x2": 20, "y2": 30}]})
+    write("model_create_component", {"name": "PcChild", "activate": True, "x": 50,
+                                     "rotate_deg": 90, "rotate_axis": "y"}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "PcSketch"})
+    write("sketch_add_geometry", {"sketch_name": "PcSketch", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]})
+    write("design_activate_component", {"occurrence": "root"})
+    placed = _xray("PcSketch", component="PcChild:1")
+    _keep(read, "sketch_get", placed, "pc_at", _support,
+          lambda p: p.get("plane") == "XY" and _alike(p["frame"], _PLACED_XY_FRAME, 1e-6))
+    _keep(read, "sketch_get", _xray("PcCtl"), "pc_ctl", _sketch_facts)
+    _keep(read, "design_get", _HISTORY, "pc_history", _timeline_names)
+    write("sketch_edit", {"sketch_name": "PcSketch", "component": "PcChild:1", "plane": "xz"},
+          _plane_moved("pc", "PcSketch", "plane 'XZ'", "XZ"),
+          ("pc_reply", _recall("pc_reply", lambda p: p["frame_after"])))
+    # The component's XZ plane, carried through its placement: world y = 0 through (50, 0, 0).
+    read("sketch_get", placed,
+         _sketch_on("pc", "PcSketch", ((50, 0, 0), (0, 1, 0)), "XZ", origin=(50, 0, 0)))
+    read("design_get", _HISTORY, _unchanged("pc_history", _timeline_names))
+    read("sketch_get", _xray("PcCtl"), _unchanged("pc_ctl", _sketch_facts))
+    close()
+    return rows
+
+
+_SKETCHWORK += _sketch_plane_placed_rows()
+
+
+def _sketch_edit_refusal_rows():
+    """Refuse no edit, two edits, another component's plane, and a plane move off the timeline end."""
+    rows, write, read, close = _scratch_rows("rf_doc")
+    write("sketch_create", {"plane": "xy", "name": "RfSk"})
+    write("sketch_add_geometry", {"sketch_name": "RfSk", "geometry": [
+        {"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0}]})
+    write("model_create_component", {"name": "RfOther", "activate": True}, _made_component)
+    write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy", "offset": 5,
+                                 "name": "RfForeign"},
+          lambda p: p.get("name") == "RfForeign" and p.get("component") == "RfOther")
+    write("design_activate_component", {"occurrence": "root"})
+    _keep(read, "sketch_get", _xray("RfSk"), "rf_sketch", _sketch_facts)
+    _keep(read, "sketch_get", {}, "rf_list", _sketch_list,
+          lambda p: list(_sketch_list(p)) == ["RfSk"])
+    _keep(read, "design_get", _HISTORY, "rf_history", _timeline_names)
+
+    def untouched():
+        read("sketch_get", _xray("RfSk"), _unchanged("rf_sketch", _sketch_facts))
+
+    write("sketch_edit", {"sketch_name": "RfSk"},
+          _refused("Pass exactly one of new_name, visible, plane", "got none",
+                   "Nothing was changed"))
+    write("sketch_edit", {"sketch_name": "RfSk", "new_name": "RfTwo", "visible": False},
+          _refused("Pass exactly one of new_name, visible, plane", "got new_name, visible",
+                   "Nothing was changed"))
+    untouched()
+    read("sketch_get", {}, _unchanged("rf_list", _sketch_list))
+    write("sketch_edit", {"sketch_name": "RfSk", "plane": "RfForeign"},
+          _refused("'plane' resolved to plane 'RfForeign'",
+                   "not read as belonging to the sketch's own component",
+                   "sketch 'RfSk' was not changed"))
+    untouched()
+    # One step back leaves RfSk computed and the marker short of the end.
+    write("design_edit_timeline", {"action": "roll", "to": "previous"},
+          lambda p: p.get("rolled") is True and _num(p.get("timeline_count"))
+          and p.get("marker_position") == p["timeline_count"] - 1,
+          ("rf_marker", _recall("rf_marker", lambda p: [p["marker_position"],
+                                                        p["timeline_count"]])))
+    write("sketch_edit", {"sketch_name": "RfSk", "plane": "xz"},
+          _NamedRefusal("a plane change needs it at the end",
+                        "design_edit_timeline(action='roll', to='end')",
+                        recalled=lambda r: ["The timeline marker is at {0} of {1}".format(
+                            *r["rf_marker"])]))
+    untouched()
+    write("design_edit_timeline", {"action": "roll", "to": "end"},
+          lambda p: p.get("rolled") is True and p.get("rolled_back") == 0
+          and p.get("marker_position") == p.get("timeline_count") == _RECALL["rf_marker"][1])
+    read("design_get", _HISTORY, _unchanged("rf_history", _timeline_names))
+    untouched()
+    close()
+    return rows
+
+
+_SKETCHWORK += _sketch_edit_refusal_rows()
+
+
+# --- sketch_edit_curve(construction / centerline) ----------------------------------------------
+
+def _flag_set(action, ref, before, after, profiles=None):
+    """sketch_edit_curve(state): the flag either side of the write, and the profile counts."""
+    def check(p):
+        changed = before is not after
+        return _measured(f"{ref} {action} {before} -> {after}",
+                         {k: p.get(k) for k in ("requested", "state_before", "state_after",
+                                                "changed", "profile_count_before",
+                                                "profile_count_after")},
+                         p.get("action") == action and p.get("sketch") == "CsSk"
+                         and p.get("entity_one") == ref and p.get("requested") is after
+                         and p.get("state_before") is before and p.get("state_after") is after
+                         and p.get("changed") is changed
+                         and (profiles is None or (p.get("profile_count_before"),
+                                                   p.get("profile_count_after")) == profiles)
+                         and ("nothing was written" in (p.get("note") or "")) is (not changed))
+    return check
+
+
+def _curve_rows_read(ref=None, profile_count=None):
+    """sketch_get: CsSk's rows as first read, `ref` alone construction, at this profile count."""
+    def check(p):
+        base, now = _RECALL.get("cs_sketch") or {}, _sketch_facts(p) or {}
+        want = [dict(e, construction=True) if e.get("id") == ref else e
+                for e in base.get("entities") or []]
+        return _measured(f"construction flag on {ref} only",
+                         {"entities": now.get("entities"), "want": want,
+                          "profile_count": now.get("profile_count")},
+                         bool(want) and now.get("entities") == want
+                         and now.get("construction_count") == int(ref is not None)
+                         and (profile_count is None
+                              or (now.get("profile_count") == profile_count
+                                  and len(now.get("profiles") or []) == profile_count)))
+    return check
+
+
+def _line_centerlines(p):
+    """sketch_get: each line row's centerline flag by id, None where the key is absent."""
+    return {e.get("id"): e.get("centerline") for e in p.get("entities") or []
+            if e.get("type") == "line"}
+
+
+def _centerline_read(ref=None):
+    """sketch_get: CsSk's rows as first read, `ref` alone a centerline and no line construction."""
+    def check(p):
+        base, now = _RECALL.get("cs_sketch") or {}, _sketch_facts(p) or {}
+        want = [dict(e, centerline=True) if e.get("id") == ref else e
+                for e in base.get("entities") or []]
+        flags = _line_centerlines(p)
+        return _measured(f"centerline flag on {ref} only",
+                         {"centerline": flags, "entities": now.get("entities"), "want": want},
+                         len(flags) == 4 and (ref is None or ref in flags)
+                         and all(flag is (line == ref) for line, flag in flags.items())
+                         and bool(want) and now.get("entities") == want
+                         and now.get("construction_count") == 0)
+    return check
+
+
+def _curve_state_rows():
+    """Set a line's construction and centerline flags both ways; refuse the calls that fit neither."""
+    rows, write, read, close = _scratch_rows("cs_doc")
+    for name, geometry in (("CsSk", {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 10}),
+                           ("CsCircle", {"kind": "circle", "cx": 50, "cy": 5, "radius": 4}),
+                           ("CsCtl", {"kind": "line", "x1": 0, "y1": 30, "x2": 20, "y2": 30})):
+        write("sketch_create", {"plane": "xy", "name": name})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [geometry]})
+    _keep(read, "sketch_get", _xray("CsSk"), "cs_sketch", _sketch_facts,
+          lambda p: p["counts"]["lines"] == 4 and p["profile_count"] == 1
+          and p["construction_count"] == 0 and len(_line_centerlines(p)) == 4
+          and all(flag is False for flag in _line_centerlines(p).values()))
+    _keep(read, "sketch_get", _xray("CsCircle"), "cs_circle", _sketch_facts)
+    _keep(read, "sketch_get", _xray("CsCtl"), "cs_ctl", _sketch_facts)
+
+    def state(action, ref, value):
+        return {"sketch_name": "CsSk", "action": action, "entity_one": ref, "state": value}
+
+    # A profile edge made construction stops bounding the profile, and bounds it again when solid.
+    write("sketch_edit_curve", state("construction", "line:0", True),
+          _flag_set("construction", "line:0", False, True, (1, 0)))
+    read("sketch_get", _xray("CsSk"), _curve_rows_read("line:0", 0))
+    write("sketch_edit_curve", state("construction", "line:0", True),
+          _flag_set("construction", "line:0", True, True, (0, 0)))
+    write("sketch_edit_curve", state("construction", "line:0", False),
+          _flag_set("construction", "line:0", True, False, (0, 1)))
+    read("sketch_get", _xray("CsSk"), _unchanged("cs_sketch", _sketch_facts))
+    # Each line row carries its own centerline flag; the other three lines are the control.
+    write("sketch_edit_curve", state("centerline", "line:1", True),
+          _flag_set("centerline", "line:1", False, True))
+    read("sketch_get", _xray("CsSk"), _centerline_read("line:1"))
+    write("sketch_edit_curve", state("centerline", "line:1", False),
+          _flag_set("centerline", "line:1", True, False))
+    read("sketch_get", _xray("CsSk"), _centerline_read())
+    write("sketch_edit_curve", {"sketch_name": "CsCircle", "action": "centerline",
+                                "entity_one": "circle:0", "state": True},
+          _refused("centerline applies to a straight LINE", "'entity_one' = 'circle:0' is a circle"))
+    read("sketch_get", _xray("CsCircle"), _unchanged("cs_circle", _sketch_facts))
+    write("sketch_edit_curve", {"sketch_name": "CsSk", "action": "construction",
+                                "entity_one": "line:0"},
+          _refused("'construction' needs 'state' (true or false)", "got None"))
+    write("sketch_edit_curve", {"sketch_name": "CsSk", "action": "trim", "entity_one": "line:0",
+                                "x1": 5, "y1": 0, "state": True},
+          _refused("'state' applies to construction/centerline only", "'trim' takes none",
+                   "got True"))
+    read("sketch_get", _xray("CsSk"), _curve_rows_read())
+    read("sketch_get", _xray("CsCtl"), _unchanged("cs_ctl", _sketch_facts))
+    close()
+    return rows
+
+
+_SKETCHWORK += _curve_state_rows()
+
+
+# --- sketch_edit_curve(break_link) -------------------------------------------------------------
+
+_BL_KEEPS = "This tool cannot restore the link, and the curve no longer follows its source."
+
+
+def _bl_edges(p):
+    """find_geometry: the handles of the box's two 30 mm top edges along X, at y 0 and y 20 mm."""
+    out = {}
+    for key, y in (("a", 0), ("b", 20)):
+        hits = [m for m in p.get("matches") or []
+                if m.get("kind") == "line_edge" and _near(m.get("length"), 30, 1e-3)
+                and _vec3(m.get("position")) and abs(m["position"][1] - y) < 1e-3
+                and abs(m["position"][2] - 10) < 1e-3 and m.get("handle")]
+        if len(hits) != 1:
+            raise AssertionError(f"{len(hits)} 30 mm top edges read at y {y}: {p.get('matches')}")
+        out[key] = hits[0]["handle"]
+    return out
+
+
+def _bl_projected(p):
+    """sketch_project: one linked line landed; its '<type>:<index>' ref."""
+    lines = [r for r in p.get("entity_refs") or [] if r.startswith("line:")]
+    if p.get("projected") is not True or p.get("linked") is not True or len(lines) != 1:
+        raise AssertionError(f"no single linked projected line: {p}")
+    return lines[0]
+
+
+def _bl_state(p):
+    """sketch_get: BlProj's line rows by id beside its link counts, or None when the read is cut."""
+    rows = [e for e in p.get("entities") or [] if e.get("type") == "line"]
+    if p.get("truncated") is not False or len(rows) != (p.get("counts") or {}).get("lines"):
+        return None
+    return {"lines": {e.get("id"): {k: e.get(k) for k in ("reference", "linked", "start", "end",
+                                                          "handle")} for e in rows},
+            **{k: p.get(k) for k in ("reference_curve_count", "linked_curve_count",
+                                     "is_fully_constrained", "profile_count")}}
+
+
+def _bl_length(row):
+    """A line row's length in mm between its two ends, or None when an end did not read."""
+    ends = [(row or {}).get(k) for k in ("start", "end")]
+    if not all(isinstance(e, dict) and _num(e.get("x")) and _num(e.get("y")) for e in ends):
+        return None
+    return sum((ends[0].get(k, 0) - ends[1].get(k, 0)) ** 2 for k in "xyz") ** 0.5
+
+
+def _bl_pair(p):
+    """(state, line A's row, line B's row) off a BlProj read, the rows None where absent."""
+    state = _bl_state(p) or {}
+    lines = state.get("lines") or {}
+    return state, lines.get(_RECALL.get("bl_a")), lines.get(_RECALL.get("bl_b"))
+
+
+def _bl_reads(a_mm, b_mm, broken=False):
+    """sketch_get: lines A and B at these lengths, B linked, A linked unless `broken`."""
+    def check(p):
+        state, a, b = _bl_pair(p)
+        linked = 1 if broken else 2
+        return _measured(f"A {a_mm} mm {'broken' if broken else 'linked'}, B {b_mm} mm linked",
+                         state,
+                         a is not None and b is not None and len(state["lines"]) == 2
+                         and _near(_bl_length(a), a_mm, 1e-3) and _near(_bl_length(b), b_mm, 1e-3)
+                         and a["reference"] is (not broken) and a["linked"] is (not broken)
+                         and b["reference"] is True and b["linked"] is True
+                         and state["reference_curve_count"] == linked
+                         and state["linked_curve_count"] == linked
+                         and isinstance(a["handle"], str) and bool(a["handle"]))
+    return check
+
+
+def _bl_broke(p):
+    """sketch_edit_curve(break_link): both flags true -> false on line A, its geometry unchanged."""
+    before = _RECALL.get("bl_linked") or {}
+    return _measured("line A's link broken, one-way",
+                     {k: v for k, v in p.items() if k != "note"},
+                     p.get("action") == "break_link" and p.get("sketch") == "BlProj"
+                     and p.get("entity_one") == _RECALL.get("bl_a") and p.get("changed") is True
+                     and (p.get("reference_before"), p.get("reference_after")) == (True, False)
+                     and (p.get("linked_before"), p.get("linked_after")) == (True, False)
+                     and p.get("reversible") is False and p.get("geometry_unchanged") is True
+                     and _near(p.get("length"), 40, 1e-3) and p.get("units") == "mm"
+                     and "fully_constrained_after" in p and "profile_count_after" in p
+                     and p.get("fully_constrained_before") == before.get("is_fully_constrained")
+                     and p.get("profile_count_before") == before.get("profile_count")
+                     and _BL_KEEPS in (p.get("note") or ""))
+
+
+def _bl_after_break(p):
+    """sketch_get: A unlinked where it lay under its own handle, B as read before, per the reply."""
+    state, a, b = _bl_pair(p)
+    before, reply = _RECALL.get("bl_linked") or {}, _RECALL.get("bl_reply") or {}
+    was_a = (before.get("lines") or {}).get(_RECALL.get("bl_a")) or {}
+    was_b = (before.get("lines") or {}).get(_RECALL.get("bl_b"))
+    return (_bl_reads(40, 40, broken=True)(p)
+            and _measured("A's ends and handle kept, B untouched, the reply's sketch facts",
+                          {"now": state, "before": before, "reply": reply},
+                          _alike([a["start"], a["end"]], [was_a.get("start"), was_a.get("end")],
+                                 1e-6)
+                          and a["handle"] == was_a.get("handle") and b == was_b
+                          and state["is_fully_constrained"] is reply.get("fully_constrained_after")
+                          and state["profile_count"] == reply.get("profile_count_after")))
+
+
+def _bl_handle_is_a(p):
+    """model_construction(axis): the pre-break handle resolved to line A, read at its 40 mm ends."""
+    rows = p.get("operands") or []
+    row = rows[0] if len(rows) == 1 else {}
+    ends = row.get("world") or []
+    span = (sum((u - v) ** 2 for u, v in zip(*ends)) ** 0.5
+            if len(ends) == 2 and all(_vec3(e) for e in ends) else None)
+    return _measured("the handle read before the break names line A", rows,
+                     p.get("created") is True and p.get("kind") == "axis"
+                     and row.get("ref") == f"BlProj/{_RECALL.get('bl_a')}"
+                     and _near(span, 40, 1e-3))
+
+
+def _break_link_rows():
+    """Break one of two linked projections; the other keeps following the box it was taken from."""
+    rows, write, read, close = _scratch_rows("bl_doc")
+    write("sketch_create", {"plane": "xy", "name": "BlBox"})
+    write("sketch_add_geometry", {"sketch_name": "BlBox", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 30, "y2": 20}]})
+    # The box's width along X is this one driving dimension; its parameter name is read back.
+    write("sketch_dimension", {"sketch_name": "BlBox", "dimensions": [
+        {"dim_type": "horizontal_distance", "entity_one": "line:0:start",
+         "entity_two": "line:0:end", "value": "30 mm"},
+        {"dim_type": "vertical_distance", "entity_one": "line:1:start",
+         "entity_two": "line:1:end", "value": "20 mm"}]},
+        _dim_measures(30.0), ("bl_w", _recall("bl_w", lambda p: p["results"][0]["parameter"])))
+    write("model_extrude", {"sketch_name": "BlBox", "profile_index": 0, "distance": 10,
+                            "operation": "new"},
+          _extruded, ("bl_body", _recall("bl_body", lambda p: p["result_bodies"][0])))
+    read("model_inspect", _solid("bl_body"), _box_reads(30, 20, 10))
+    write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy", "offset": 25,
+                                 "name": "BlPlane"}, lambda p: p.get("name") == "BlPlane")
+    write("sketch_create", {"plane": "BlPlane", "name": "BlProj"})
+    read("find_geometry", lambda c: {"target": _ctx_get(c, "bl_body", "the box"),
+                                     "kind": "line_edge", "units": "mm", "max_results": 20},
+         lambda p: p.get("match_count") == p.get("returned") == 12, ("bl_edges", _bl_edges))
+    for key in ("a", "b"):
+        write("sketch_project", lambda c, key=key: {
+            "action": "into_sketch", "sketch_name": "BlProj", "link": True,
+            "entities": [_ctx_get(c, "bl_edges", "the box's top edges")[key]]},
+            "ok", ("bl_" + key, _recall("bl_" + key, _bl_projected)))
+
+    def width(mm):
+        write("param_set", lambda c: {"name": _ctx_get(c, "bl_w", "the width parameter"),
+                                      "expression": f"{mm} mm"}, lambda p: p.get("set") is True)
+
+    def line(key):
+        return lambda c: _ctx_get(c, key, "a projected line's ref")
+
+    read("sketch_get", _xray("BlProj"), _bl_reads(30, 30))
+    # Before the break both projections follow the box.
+    width(40)
+    _keep(read, "sketch_get", _xray("BlProj"), "bl_linked", _bl_state, _bl_reads(40, 40))
+    write("sketch_edit_curve", lambda c: {"sketch_name": "BlProj", "action": "break_link",
+                                          "entity_one": line("bl_a")(c)},
+          _bl_broke, ("bl_reply", _recall("bl_reply", lambda p: {
+              k: p[k] for k in ("fully_constrained_after", "profile_count_after")})))
+    read("sketch_get", _xray("BlProj"), _bl_after_break)
+    # An axis along line A takes the handle read before the break and names the line it resolved.
+    write("model_construction", lambda c: {
+        "kind": "axis", "mode": "edge", "name": "BlAxis",
+        "axis": _ctx_get(c, "bl_linked", "BlProj before the break")["lines"][
+            line("bl_a")(c)]["handle"]}, _bl_handle_is_a)
+    # After it only line B follows the box; line A keeps the length it was broken at.
+    width(50)
+    _keep(read, "sketch_get", _xray("BlProj"), "bl_after", _bl_state,
+          _bl_reads(40, 50, broken=True))
+    read("model_inspect", _solid("bl_body"), _box_reads(50, 20, 10))
+    write("sketch_edit_curve", lambda c: {"sketch_name": "BlProj", "action": "break_link",
+                                          "entity_one": line("bl_b")(c), "state": True},
+          _refused("break_link only breaks a link", "this tool cannot re-establish one",
+                   "got True"))
+    read("sketch_get", _xray("BlProj"), _unchanged("bl_after", _bl_state))
+    write("sketch_edit_curve", lambda c: {"sketch_name": "BlProj", "action": "break_link",
+                                          "entity_one": line("bl_a")(c)},
+          lambda p: _measured("a broken line is left as it is",
+                              {k: v for k, v in p.items() if k != "note"},
+                              p.get("changed") is False and p.get("reference_before") is False
+                              and p.get("reference_after") is False
+                              and "nothing was written" in (p.get("note") or "")))
+    read("sketch_get", _xray("BlProj"), _unchanged("bl_after", _bl_state))
+    close()
+    return rows
+
+
+_SKETCHWORK += _break_link_rows()
+
+
+# --- sketch_dimension(dimension, is_driving) ---------------------------------------------------
+
+def _driving_set(key, want, before):
+    """sketch_dimension(is_driving): the flag either side of the write, the parameter name kept."""
+    def check(p):
+        name, changed = _RECALL.get(key), before is not want
+        landed = (not changed or (p.get("parameter") == name and p.get("new_timeline_errors") == []
+                                  and p.get("new_timeline_warnings") == []
+                                  and p.get("sketch_health") == "healthy"))
+        return _measured(f"dimension '{name}' is_driving {before} -> {want}",
+                         {k: p.get(k) for k in ("dimension", "requested", "is_driving_before",
+                                                "is_driving", "changed", "parameter_before",
+                                                "parameter", "sketch_health", "unread")},
+                         bool(name) and p.get("sketch") == "DrSk" and p.get("dimension") == name
+                         and p.get("requested") is want and p.get("is_driving_before") is before
+                         and p.get("is_driving") is want and p.get("changed") is changed
+                         and p.get("parameter_before") == name and "unread" not in p and landed
+                         and ("nothing was written" in (p.get("note") or "")) is (not changed))
+    return check
+
+
+_DIMENSION_TOL = 1e-3      # mm; the band this story reads a dimension's value in
+
+
+def _plain_quantity(expression):
+    """('<number> <unit>' as (float, unit)), or None for a formula, a reference or anything else."""
+    parts = expression.split() if isinstance(expression, str) else []
+    if len(parts) != 2 or not parts[1].isalpha():
+        return None
+    try:
+        number = float(parts[0])
+    except ValueError:
+        return None
+    return (number, parts[1]) if isfinite(number) else None
+
+
+def _same_quantity(now, before):
+    """Whether two expressions name one number in one unit; exact text when either is not plain."""
+    a, b = _plain_quantity(now), _plain_quantity(before)
+    if a is None or b is None:
+        return now == before
+    return a[1] == b[1] and _near(a[0], b[0], _DIMENSION_TOL)
+
+
+def _dimension_rows_match(now, want, toggled):
+    """Dimension rows equal `want`; a row named in `toggled` may restate its plain expression."""
+    if not isinstance(now, list) or len(now) != len(want):
+        return False
+    for got, row in zip(now, want):
+        if not isinstance(got, dict) or got.get("name") not in toggled:
+            if got != row:
+                return False
+            continue
+        rest = [k for k in row if k not in ("expression", "value")]
+        if (got.keys() != row.keys() or any(got[k] != row[k] for k in rest)
+                or not _near(got.get("value"), row.get("value"), _DIMENSION_TOL)
+                or not _same_quantity(got.get("expression"), row.get("expression"))):
+            return False
+    return True
+
+
+def _driving_read(toggled=(), **driven):
+    """sketch_get: DrSk as first read, except the driving flag of the dimensions keyed here."""
+    def check(p):
+        base, now = _RECALL.get("dr_sketch") or {}, _sketch_facts(p) or {}
+        flags = {_RECALL.get(key): value for key, value in driven.items()}
+        want = [dict(d, driving=flags.get(d.get("name"), d.get("driving")))
+                for d in base.get("dimensions") or []]
+        restated = {_RECALL.get(key) for key in toggled}
+        return _measured("driving flag per dimension name",
+                         {"dimensions": now.get("dimensions"), "want": want,
+                          "toggled": sorted(str(n) for n in restated)},
+                         len(want) == 2 and None not in flags and None not in restated
+                         and _dimension_rows_match(now.get("dimensions"), want, restated)
+                         and now.get("driving_dimension_count") == sum(d["driving"] for d in want)
+                         and all(now.get(k) == base.get(k) for k in (
+                             "entities", "profiles", "profile_count", "counts", "frame",
+                             "constraints")))
+    return check
+
+
+def _param_row(p):
+    """param_get(name): the parameter's name, expression and value, or None when unread."""
+    row = p.get("parameter") or {}
+    if not row.get("name") or not _num(row.get("value")):
+        return None
+    return {k: row.get(k) for k in ("name", "expression", "value", "value_units")}
+
+
+def _dimension_driving_rows():
+    """Make a height and a width dimension driven and driving again under a dependent extrude."""
+    rows, write, read, close = _scratch_rows("dr_doc")
+    write("sketch_create", {"plane": "xy", "name": "DrSk"})
+    write("sketch_add_geometry", {"sketch_name": "DrSk", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 30, "y2": 10}]})
+    for key, kind, line, value in (("dr_w", "horizontal_distance", "line:0", 30),
+                                   ("dr_h", "vertical_distance", "line:1", 10)):
+        write("sketch_dimension", {"sketch_name": "DrSk", "dimensions": [
+            {"dim_type": kind, "entity_one": line + ":start", "entity_two": line + ":end",
+             "value": f"{value} mm"}]},
+            _dim_measures(float(value)),
+            (key, _recall(key, lambda p: p["results"][0]["parameter"])))
+    # The extrude's depth is an expression over the width dimension's own parameter.
+    write("model_extrude", lambda c: {
+        "sketch_name": "DrSk", "profile_index": 0, "operation": "new",
+        "distance": _ctx_get(c, "dr_w", "the width dimension's parameter") + " / 3"},
+        _extruded, ("dr_made", _recall("dr_made", lambda p: {
+            "body": p["result_bodies"][0], "depth": p["model_parameters"]["distance"]})))
+    write("sketch_create", {"plane": "xy", "name": "DrOther"})
+    write("sketch_add_geometry", {"sketch_name": "DrOther", "geometry": [
+        {"kind": "line", "x1": 60, "y1": 0, "x2": 80, "y2": 0}]})
+    write("sketch_dimension", {"sketch_name": "DrOther", "dimensions": [
+        {"dim_type": "distance", "entity_one": "line:0", "value": "20 mm"}]},
+        _dim_measures(20.0), ("dr_foreign", _recall("dr_foreign",
+                                                   lambda p: p["results"][0]["parameter"])))
+
+    def depth(c):
+        return {"name": _ctx_get(c, "dr_made", "the extrude's names")["depth"]}
+
+    def body(c):
+        return _inspect(_ctx_get(c, "dr_made", "the extrude's names")["body"])
+
+    def fresh(p):
+        dims = {d.get("name"): d for d in p.get("dimensions") or []}
+        wide, high = dims.get(_RECALL.get("dr_w")) or {}, dims.get(_RECALL.get("dr_h")) or {}
+        return (len(dims) == 2 and _near(wide.get("value"), 30, 1e-3)
+                and _near(high.get("value"), 10, 1e-3) and wide.get("driving") is True
+                and high.get("driving") is True and p.get("driving_dimension_count") == 2
+                and p.get("profile_count") == 1)
+
+    _keep(read, "sketch_get", _xray("DrSk"), "dr_sketch", _sketch_facts, fresh)
+    _keep(read, "param_get", depth, "dr_depth", _param_row,
+          lambda p: _near(p["parameter"]["value"], 10, 1e-6)
+          and p["parameter"].get("value_units") == "mm"
+          and _RECALL["dr_w"] in p["parameter"]["expression"])
+    _keep(read, "model_inspect", body, "dr_solid", _body_facts, _box_reads(30, 10, 10))
+    _keep(read, "sketch_get", _xray("DrOther"), "dr_other", _sketch_facts,
+          lambda p: [d.get("name") for d in p["dimensions"]] == [_RECALL["dr_foreign"]])
+
+    toggled = []
+
+    def drive(key, want, **driven):
+        write("sketch_dimension", lambda c: {
+            "sketch_name": "DrSk", "is_driving": want,
+            "dimension": _ctx_get(c, key, "the dimension's parameter name")},
+            _driving_set(key, want, not want))
+        # A dimension made driven restates its expression ("10 mm" reads "10.00 mm").
+        if key not in toggled:
+            toggled.append(key)
+        read("sketch_get", _xray("DrSk"), _driving_read(tuple(toggled), **driven))
+        read("param_get", depth, _unchanged("dr_depth", _param_row, 1e-6))
+        read("model_inspect", body, _unchanged("dr_solid", _body_facts, 1e-3))
+        read("sketch_get", _xray("DrOther"), _unchanged("dr_other", _sketch_facts))
+
+    drive("dr_h", False, dr_h=False)
+    drive("dr_h", True)
+    drive("dr_w", False, dr_w=False)
+    drive("dr_w", True)
+    write("sketch_dimension", lambda c: {
+        "sketch_name": "DrSk", "is_driving": True,
+        "dimension": _ctx_get(c, "dr_h", "the height dimension's parameter")},
+        _driving_set("dr_h", True, True))
+    # A parameter another sketch's dimension owns is refused naming that sketch.
+    write("sketch_dimension", lambda c: {
+        "sketch_name": "DrSk", "is_driving": False,
+        "dimension": _ctx_get(c, "dr_foreign", "DrOther's dimension parameter")},
+        _NamedRefusal("names no dimension of sketch 'DrSk'",
+                      "that parameter was created by sketch 'DrOther'", "sketch_name='DrOther'",
+                      recalled=lambda r: [f"'dimension' = '{r['dr_foreign']}'"]))
+    read("sketch_get", _xray("DrSk"), _driving_read(tuple(toggled)))
+    read("sketch_get", _xray("DrOther"), _unchanged("dr_other", _sketch_facts))
+    close()
+    return rows
+
+
+_SKETCHWORK += _dimension_driving_rows()

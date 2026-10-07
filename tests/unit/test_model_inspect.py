@@ -72,6 +72,205 @@ class TestDefaultAndDispatch:
         out = _payload(mi.handler(target="Body1", include=["mass"]))
         assert out["mass"]["mass_kg"] == 1.5
 
+    def test_default_does_not_read_assignment_properties(self, monkeypatch, stub_slices):
+        class Body:
+            name = "Body1"
+
+            @property
+            def material(self):
+                raise AssertionError("material read without opt-in")
+
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((Body(), "body"), None))
+        out = _payload(mi.handler(target="Body1"))
+        assert "material" not in out and "appearance" not in out
+
+    def test_material_slice_reads_the_resolved_body_assignment(self, monkeypatch, stub_slices):
+        body = BRepBody("Body1")
+        body.material = SimpleNamespace(name="Stainless Steel")
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
+        out = _payload(mi.handler(target="Body1", include=["material"]))
+        assert out["material"]["bodies"] == [{
+            "body": "Body1", "occurrence": None, "material": "Stainless Steel"}]
+        assert "x" not in out
+
+    def test_appearance_slice_keeps_native_rendered_opacity_unavailable(self, monkeypatch, stub_slices):
+        body = BRepBody("Body1", opacity=0.6)
+        body.appearanceSourceType = 1
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
+        out = _payload(mi.handler(target="Body1", include=["appearance"]))
+        row = out["appearance"]["bodies"][0]
+        assert row["appearance"] == "Appearance" and row["appearance_source_type"] == 1
+        assert row["opacity"] == 0.6 and row["visible_opacity"] is None
+        assert "visible_opacity" in row["unavailable"]
+
+    def test_missing_material_assignment_is_unknown_with_a_reason(self, monkeypatch, stub_slices):
+        body = BRepBody("Body1")
+        body.material = None
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
+        row = _payload(mi.handler(target="Body1", include=["material"]))["material"]["bodies"][0]
+        assert row["material"] is None
+        assert "answered nothing" in row["unavailable"]["material"]
+
+    @pytest.mark.parametrize("opacity", [float("nan"), float("inf"), True])
+    def test_nonfinite_or_boolean_opacity_is_unknown(self, opacity):
+        row = mi._assignment_record(BRepBody("Body1"), None, [("opacity", lambda: opacity)])
+        assert row["opacity"] is None and "finite number" in row["unavailable"]["opacity"]
+
+    def test_unlabelled_appearance_source_is_unknown_with_a_reason(self, monkeypatch):
+        monkeypatch.setattr(mi._prefs, "enum_member_name", lambda *_args: None)
+        row = mi._assignment_record(BRepBody("Body1"), None, [("appearance_source_type", lambda: -99)])
+        assert row["appearance_source_type"] == -99 and row["appearance_source"] is None
+        assert "enum label" in row["unavailable"]["appearance_source"]
+
+    def test_mesh_material_read_is_refused(self, monkeypatch, stub_slices):
+        _resolve_to(monkeypatch, "mesh")
+        result = mi.handler(target="Scan", include=["material"])
+        assert result["isError"] is True and "require a body, component, or occurrence" in error_message(result)
+
+    def test_occurrence_slice_reads_its_body_proxy_and_rendered_opacity(self, monkeypatch, stub_slices):
+        body = BRepBody("Body1", opacity=0.8, visible_opacity=0.55)
+        body.appearanceSourceType = 1
+        occurrence = SimpleNamespace(name="Comp:1", fullPathName="Comp:1")
+        proxy = body_proxy(body, occurrence)
+        occurrence.bRepBodies = _NamedCollection([proxy])
+        occurrence.childOccurrences = _NamedCollection([])
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((occurrence, "occurrence"), None))
+        row = _payload(mi.handler(target="Comp:1", include=["appearance"]))["appearance"]["bodies"][0]
+        assert row["body"] == "Body1" and row["occurrence"] == "Comp:1"
+        assert row["opacity"] == 0.8 and row["visible_opacity"] == 0.55
+
+    def test_body_target_keeps_its_placed_context_and_source_label(self, monkeypatch, stub_slices):
+        body = BRepBody("Body1")
+        body.appearanceSourceType = 1
+        occurrence = make_occurrence(path="Carrier:1+Plate:2")
+        proxy = body_proxy(body, occurrence)
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((proxy, "body"), None))
+        monkeypatch.setattr(mi._prefs, "enum_member_name", lambda family, value: "BodyAppearanceSource")
+        row = _payload(mi.handler(target="placed", include=["appearance"]))["appearance"]["bodies"][0]
+        assert row["occurrence"] == "Carrier:1+Plate:2"
+        assert row["appearance_source"] == "BodyAppearanceSource"
+
+    def test_unreadable_body_context_does_not_assert_a_native_placement(self, monkeypatch, stub_slices):
+        class BlindContext(BRepBody):
+            @property
+            def assemblyContext(self):
+                raise RuntimeError("body context unread")
+
+            @assemblyContext.setter
+            def assemblyContext(self, value):
+                pass
+
+        body = BlindContext("Body1")
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
+        out = _payload(mi.handler(target="body", include=["material"]))["material"]
+        assert out["scope_complete"] is False and out["bodies"][0]["occurrence"] is None
+        assert "body context unread" in out["unavailable_census"][0]["error"]
+
+    def test_an_unreadable_assignment_field_does_not_hide_other_fields(self, monkeypatch, stub_slices):
+        body = BRepBody("Body1", opacity=0.4)
+        body.appearanceSourceType = 1
+        del body.appearance
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
+        row = _payload(mi.handler(target="Body1", include=["appearance"]))["appearance"]["bodies"][0]
+        assert row["appearance"] is None and "appearance" in row["unavailable"]
+        assert row["appearance_source_type"] == 1 and row["opacity"] == 0.4
+
+    def test_assignment_cap_peeks_past_200_root_bodies_to_find_nested_body(self, monkeypatch, stub_slices):
+        nested_body = BRepBody("Nested")
+        child = MakeComp("Child", bodies=[nested_body])
+        occurrence = make_occurrence("Child:1", component=child, bodies=[nested_body])
+        component = MakeComp("Root", bodies=[BRepBody(f"Root{i}")
+                                               for i in range(mi._MAX_PER_BODY_ROWS)],
+                             occurrences=[occurrence], all_occurrences=[occurrence])
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
+        result = _payload(mi.handler(target="Root", include=["material"]))["material"]
+        assert len(result["bodies"]) == mi._MAX_PER_BODY_ROWS
+        assert result["truncated"] is True and result["scope_complete"] is False
+
+    def test_unreadable_body_census_is_not_reported_as_complete_empty(self, monkeypatch, stub_slices):
+        class UnreadableBodies:
+            @property
+            def count(self):
+                raise RuntimeError("body count unavailable")
+
+        component = SimpleNamespace(name="Root", bRepBodies=UnreadableBodies(),
+                                    allOccurrences=_NamedCollection([]))
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
+        result = _payload(mi.handler(target="Root", include=["material"]))["material"]
+        assert result["bodies"] == [] and result["scope_complete"] is False
+        assert result["truncated"] is None
+        assert any(row["collection"] == "bRepBodies" for row in result["unavailable_census"])
+
+    def test_unreadable_body_slot_is_reported_beside_readable_rows(self, monkeypatch, stub_slices):
+        class OneUnreadableSlot:
+            count = 2
+
+            def item(self, index):
+                if index == 1:
+                    raise RuntimeError("body slot unavailable")
+                return BRepBody("Readable")
+
+        component = MakeComp("Root", bodies=[])
+        component.bRepBodies = OneUnreadableSlot()
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
+        result = _payload(mi.handler(target="Root", include=["material"]))["material"]
+        assert [row["body"] for row in result["bodies"]] == ["Readable"]
+        assert result["scope_complete"] is False and result["truncated"] is False
+        assert result["unavailable_slots"][0]["index"] == 1
+
+    def test_incomplete_component_occurrence_walk_is_disclosed(self, monkeypatch, stub_slices):
+        component = MakeComp("Root", bodies=[BRepBody("RootBody")])
+        component.allOccurrences = None
+        component.occurrences = _NamedCollection(raises="occurrence count unavailable")
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
+        result = _payload(mi.handler(target="Root", include=["material"]))["material"]
+        assert len(result["bodies"]) == 1
+        assert result["scope_complete"] is None and result["truncated"] is None
+        assert any(row["scope"] == "occurrence tree" for row in result["unavailable_census"])
+
+    def test_occurrence_target_reports_broken_child_missing_from_child_occurrences(
+            self, monkeypatch, stub_slices):
+        broken = make_occurrence("Broken:1", raises_on={
+            "component": "referenced component unavailable",
+            "fullPathName": "path unavailable", "childOccurrences": "children unavailable"})
+        broken.isReferencedComponent = False
+        component = MakeComp("Child", bodies=[BRepBody("PlacedBody")], occurrences=[broken])
+        component.allOccurrences = None
+        occurrence = make_occurrence("Child:1", component=component,
+                                     bodies=[BRepBody("InstanceBody")], children=[])
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((occurrence, "occurrence"), None))
+        result = _payload(mi.handler(target="Child:1", include=["material"]))["material"]
+        assert [row["body"] for row in result["bodies"]] == ["InstanceBody"]
+        assert result["scope_complete"] is False
+        assert any(row.get("unreadable_occurrences") == 1
+                   for row in result["unavailable_census"])
+
+    def test_none_occurrence_slot_beyond_cap_is_still_disclosed(self, monkeypatch, stub_slices):
+        child_component = MakeComp("Child")
+        occurrences = [make_occurrence(f"Child:{i + 1}", component=child_component)
+                       for i in range(mi._MAX_PER_BODY_ROWS)] + [None]
+        component = MakeComp("Root", all_occurrences=occurrences)
+        monkeypatch.setattr(mi._common, "design", lambda: object())
+        monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
+        result = _payload(mi.handler(target="Root", include=["material"]))["material"]
+        assert result["scope_complete"] is False
+        assert result["unavailable_slots"] == [{
+            "scope": "occurrence tree", "count": 1,
+            "indices": [mi._MAX_PER_BODY_ROWS], "more": False}]
+
     def test_include_mass_omits_the_bounding_box(self, monkeypatch, stub_slices):
         # the deep read returns what was asked for: a mass read that also re-measures and re-sends
         # the box pays for both every call.

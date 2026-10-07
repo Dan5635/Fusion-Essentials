@@ -37,7 +37,7 @@ _THREAD_EXTENT = _inputs.Choice("thread_extent", ("full", "partial"))
 _THREAD_LENGTH = _inputs.Distance("thread_length", allow_negative=False)
 _THREAD_OFFSET = _inputs.Distance("thread_offset", allow_zero=True, allow_negative=False)
 
-_PLACEMENTS = ("sketch_points", "center", "on_edge", "plane_offsets")
+_PLACEMENTS = ("sketch_points", "center", "on_edge", "plane_offsets", "face_point")
 
 # Which frame 'points' are read in. The placement sketch this tool creates carries its OWN frame,
 # which differs from the face plane's in origin AND in axis sign and is not derivable from the face.
@@ -423,6 +423,13 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
         if edge_position not in _EDGE_POSITIONS:
             return error(f"placement='on_edge' needs 'edge_position' - one of: "
                          f"{', '.join(_EDGE_POSITIONS)}.")
+    elif placement == "face_point":
+        if (not isinstance(point, list) or len(point) != 3
+                or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                       or not math.isfinite(v) for v in point)):
+            return error(f"placement='face_point' needs a finite [x,y,z] 'point'; got {point!r}.")
+        if points or edge or edge_position or offset_edge_one or offset_one or offset_edge_two or offset_two:
+            return error("placement='face_point' uses only 'face' and 'point'; remove points, edge and offsets.")
     else:   # plane_offsets
         if not pt:
             return error("placement='plane_offsets' needs 'point' - an approximate [x, y, z] hole "
@@ -520,6 +527,25 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
     comp, host_from_face = _feature_host(face_ent, active)
     host_name = safe(lambda: comp.name)
     host_named = f" '{host_name}'" if host_name else ""
+
+    face_point = face_normal = None
+    position_face = face_ent
+    if placement == "face_point":
+        position_face = _common._native_of(face_ent)
+        if (safe(lambda: position_face.assemblyContext) is not None
+                or _common.same_component(_inputs.entity_component(position_face), comp) is not True):
+            return error("The native owner of 'face' did not read; reacquire it with find_geometry on the intended body.")
+        origin, face_normal = _geom._face_plane(position_face)
+        if origin is None:
+            return error("The owner-space plane of 'face' did not read; reacquire a planar face with find_geometry.")
+        face_point = [v * factor for v in point]
+        off = abs(_geom.dot([face_point[i] - origin[i] for i in range(3)], face_normal))
+        if off > _OFF_PLANE_TOL_CM:
+            return error(f"point={point!r} is {off / factor:g} {units} off the plane of 'face'; use a point on the selected face in its owner's frame.")
+        contained = safe(lambda: position_face.isPointOnFace(adsk.core.Point3D.create(*face_point)))
+        if contained is not True:
+            why = "outside the selected face boundary" if contained is False else "not verified on the selected face"
+            return error(f"point={point!r} is {why}; use an interior owner-frame point on 'face'. No hole was created.")
 
     edge_ent = None
     offset_edge_one_ent = None
@@ -700,6 +726,14 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(f"Fusion refused to place the hole at the '{edge_position}' of that edge, "
                          "so nothing was placed. Check that 'edge' borders 'face'.")
         n_expected = 1
+    elif placement == "face_point":
+        try:
+            placed = hin.setPositionByPoint(position_face, adsk.core.Point3D.create(*face_point))
+        except Exception as exc:
+            return error(f"Could not position the hole at point={point!r}: {exc}")
+        if placed is not True:
+            return error(f"setPositionByPoint returned {placed!r} for point={point!r}; no hole was added.")
+        n_expected = 1
     else:   # plane_offsets
         try:
             pt3d = adsk.core.Point3D.create(float(pt[0]) * factor, float(pt[1]) * factor,
@@ -846,6 +880,19 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
                 "For a bolt circle, pass every position in 'points' in ONE call - the pattern tools "
                 "take bodies/occurrences, not hole features.",
     }
+    if placement == "face_point":
+        result.pop("points_space")
+        result.update(point=point, point_space="face-owner", units=units,
+                      drill_axes_owner_cm=[list(axis) for axis in axes],
+                      face_normal_owner=list(face_normal))
+        if (not verified or len(axes) != 1 or not _point_on_axis(*face_point, axes[0])
+                or abs(_geom.dot(axes[0][3:], face_normal)) < 1 - 1e-6):
+            label = (result["feature"] or safe(lambda: _inputs.candidate_address(feature.timelineObject))
+                     or "(name unread)")
+            refusal = error(f"Hole {label!r} landed but its owner-space drill axis did not verify at point={point!r}; inspect design_get(include=['timeline']) and remove it with design_delete_feature.")
+            refusal["details"] = result
+            refusal["content"].extend(ok({"details": result})["content"])
+            return refusal
     if host_name:
         # withheld rather than published as a null - a name that did not read is not a component name
         result["host_component"] = host_name
@@ -982,7 +1029,7 @@ tool = (
     .add_input_property("edge_position", {"type": "string", "enum": list(_EDGE_POSITIONS),
             "description": "For placement=on_edge."})
     .add_input_property("point", {"type": "array", "items": {"type": "number"},
-            "description": "Approximate [x,y,z] in the frame of the component owning 'face'."})
+            "description": "Owner-frame [x,y,z] in 'units'; exact for face_point, hint for plane_offsets."})
     .add_input_property(*_OFFSET_EDGE_ONE.as_property())
     .add_input_property("offset_one", {"type": "string"})
     .add_input_property(*_OFFSET_EDGE_TWO.as_property(brief=True))

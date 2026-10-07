@@ -2596,6 +2596,157 @@ _MOTION += [
      _document_closed, None),
 ]
 
+def _joint_identity_pose_snapshot(p):
+    """Return the complete seven-placement public pose census in millimetres."""
+    rows = p.get("all_occurrences")
+    expected = {"IdParent:1", "IdParent:2", "IdParent:1+IdArm:1", "IdParent:1+IdTip:1",
+                "IdParent:2+IdArm:1", "IdParent:2+IdTip:1", "IdBase:1"}
+    valid = (p.get("units") == "mm" and p.get("is_healthy") is True
+             and p.get("occurrence_count") == 3 and p.get("all_occurrence_count") == 7
+             and p.get("all_occurrences_truncated") is False
+             and p.get("occurrences_truncated") is False and p.get("joints_truncated") is False
+             and p.get("joint_count") == 2 and isinstance(p.get("joints"), list)
+             and {joint.get("name") for joint in p["joints"]} == {"IdPivot", "IdLock"}
+             and p.get("broken_joints") == p.get("broken_relations") == p.get("unresolved_references") == []
+             and isinstance(rows, list) and len(rows) == 7)
+    state = {}
+    if valid:
+        for row in rows:
+            path = row.get("full_path")
+            if (path not in expected or path in state or row.get("unresolved")
+                    or row.get("body_count") != (0 if path.startswith("IdParent:") and "+" not in path else 1)
+                    or not isinstance(row.get("origin"), list) or len(row["origin"]) != 3
+                    or any(not isinstance(row.get(axis), list) or len(row[axis]) != 3
+                           for axis in ("x_axis", "y_axis", "z_axis"))):
+                valid = False
+                break
+            fields = ["body_count", "origin", "x_axis", "y_axis", "z_axis"]
+            if row["body_count"]:
+                if (not isinstance(row.get("bbox_center"), list) or len(row["bbox_center"]) != 3
+                        or not isinstance(row.get("bbox_size"), list) or len(row["bbox_size"]) != 3):
+                    valid = False
+                    break
+                fields += ["bbox_center", "bbox_size"]
+            if any(not _num(value) or not math.isfinite(value) for field in fields if field != "body_count"
+                   for value in row[field]):
+                valid = False
+                break
+            state[path] = {key: row.get(key) for key in fields}
+        valid = valid and set(state) == expected
+    return state if valid else None
+
+
+def _joint_identity_pose(stage):
+    """Independently read placed poses and prove the driven child, rigid tip and unchanged twin."""
+    def check(p):
+        state = _joint_identity_pose_snapshot(p)
+        before = _RECALL.get("joint_identity_before")
+        after = _RECALL.get("joint_identity_after")
+        valid = state is not None
+        if stage == "before":
+            valid = valid and before is None and after is None
+            if valid:
+                _RECALL["joint_identity_before"] = state
+        elif stage == "after":
+            valid = valid and before is not None and after is None
+            if valid:
+                arm_delta = math.dist(state["IdParent:1+IdArm:1"]["bbox_center"],
+                                      before["IdParent:1+IdArm:1"]["bbox_center"])
+                tip_delta = math.dist(state["IdParent:1+IdTip:1"]["bbox_center"],
+                                      before["IdParent:1+IdTip:1"]["bbox_center"])
+                static = ("IdParent:1", "IdParent:2", "IdParent:2+IdArm:1",
+                          "IdParent:2+IdTip:1", "IdBase:1")
+                valid = (_near(arm_delta, 20.7055, 0.03) and _near(tip_delta, 41.4110, 0.03)
+                         and all(state[path] == before[path] for path in static))
+                if valid:
+                    _RECALL["joint_identity_after"] = state
+        else:
+            valid = valid and before is not None and after is not None and state == before
+            if valid:
+                pivots = [row for row in p.get("joints") or [] if row.get("name") == "IdPivot"]
+                valid = (len(pivots) == 1 and pivots[0].get("healthy") is True
+                         and _near((pivots[0].get("value_now") or {}).get("angle_deg"), 0, 1e-4))
+        return _measured(f"complete public placed-pose census {stage} drive", state, valid)
+    return check
+
+
+def _joint_identity_drive(p):
+    """Check the bounded drive report names the rigidly carried tip and qualifies its scan."""
+    scope = p.get("motion_scope") or {}
+    rows = p.get("other_moved")
+    moved = p.get("moved") or {}
+    valid = (p.get("driven") is True and p.get("joint") == "IdPivot"
+             and _near((p.get("value_now") or {}).get("angle_deg"), 30, 1e-4)
+             and moved.get("occurrence") == "IdParent:1+IdArm:1"
+             and scope.get("complete") is True and scope.get("total_occurrences") == 7
+             and scope.get("sampled_occurrences") == 5 and scope.get("cap") == 200
+             and scope.get("truncated") is False and scope.get("broken_occurrences") == 0
+             and scope.get("unread") == [] and isinstance(rows, list) and len(rows) == 1)
+    if valid:
+        tip = rows[0]
+        valid = (tip.get("occurrence") == "IdParent:1+IdTip:1"
+                 and tip.get("under_joint_member") is False
+                 and _near(tip.get("delta_deg"), 30, 0.02)
+                 and _near(tip.get("geometry_moved_mm"), 35.6699, 0.03))
+    return _measured("joint drive reports the rigidly carried tip and complete bounded scope", p, valid)
+
+
+def _joint_identity_home_drive(p):
+    """Check the reset drive returned the same revolute joint to zero."""
+    value = (p.get("value_now") or {}).get("angle_deg")
+    return _measured("IdPivot home drive", {"joint": p.get("joint"), "value_now": p.get("value_now")},
+                     p.get("driven") is True and p.get("joint") == "IdPivot"
+                     and _num(value) and _mod360(value, 0) < 1e-4)
+
+
+def _joint_identity_rows():
+    """Drive one nested placement and independently verify its rigid child and untouched twin."""
+    rows = [("doc_get", {}, _home_document, ("joint_identity_home", _home_address)),
+            ("doc_new", {}, _new_document, ("joint_identity_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c, a=args: {**a, "expect_document":
+                     _ctx_get(c, "joint_identity_doc", "owned nested joint scene")}, check, None))
+    write("model_create_component", {"name": "IdParent", "activate": True}, _made_component)
+    for name, rect in (("IdArm", (30, 5, 70, 15)), ("IdTip", (80, 5, 100, 15))):
+        write("model_create_component", {"name": name, "activate": True, "parent": "IdParent:1"}, _made_component)
+        sketch = name + "Sketch"
+        write("sketch_create", {"name": sketch, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": sketch, "units": "mm", "geometry": [
+            {"kind": "rectangle", "x1": rect[0], "y1": rect[1], "x2": rect[2], "y2": rect[3]}]})
+        write("model_extrude", {"sketch_name": sketch, "distance": 10, "units": "mm", "operation": "new"}, _extruded)
+        write("assembly_ground", {"occurrence": f"IdParent:1+{name}:1", "ground_to_parent": False},
+              lambda p: p.get("isGroundToParent") is False)
+    write("design_add_instance", {"component": "IdParent:1", "x": 200, "units": "mm"},
+          lambda p: p.get("created") is True and p.get("full_path") == "IdParent:2")
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "IdBase", "activate": True}, _made_component)
+    write("sketch_create", {"name": "IdBaseSketch", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "IdBaseSketch", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "IdBaseSketch", "distance": 10, "units": "mm", "operation": "new"}, _extruded)
+    write("assembly_ground", {"occurrence": "IdBase:1", "ground_to_parent": True}, _grounded)
+    write("joint_create_as_built", {"occurrence_one": "IdParent:1+IdArm:1", "occurrence_two": "IdBase:1",
+          "geometry": "IdBase:1:top", "joint_type": "revolute", "axis": "z", "name": "IdPivot"}, _as_built)
+    write("joint_create_as_built", {"occurrence_one": "IdParent:1+IdTip:1", "occurrence_two": "IdParent:1+IdArm:1",
+          "joint_type": "rigid", "name": "IdLock"}, _as_built)
+    assembly = {"include": ["poses", "all_occurrences"], "units": "mm", "max_joints": 100,
+                "max_occurrences": 100, "max_all_occurrences": 100}
+    rows.append(("assembly_get", assembly, _joint_identity_pose("before"), None))
+    write("joint_drive", {"joint_name": "IdPivot", "angle_deg": 30}, _joint_identity_drive)
+    rows.append(("assembly_get", assembly, _joint_identity_pose("after"), None))
+    write("joint_drive", {"joint_name": "IdPivot", "angle_deg": 0}, _joint_identity_home_drive)
+    rows.append(("assembly_get", assembly, _joint_identity_pose("home"), None))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "joint_identity_home", "home"),
+                                         "expect_document": _ctx_get(c, "joint_identity_doc", "owned scene")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "joint_identity_doc", "owned scene"),
+                                      "save_changes": False,
+                                      "expect_document": _ctx_get(c, "joint_identity_home", "home")}, _document_closed, None),
+             ("doc_get", {}, _home_document, None)]
+    return rows
+
+
+_MOTION += _joint_identity_rows()
 _MOTION += _selected_owner_rows()
 
 _MOTION += _joint_failure_rows()

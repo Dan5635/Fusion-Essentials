@@ -17,6 +17,11 @@ from conftest import (BRepBody, MakeComp, _NamedCollection, body_proxy, entity_p
 common = load_tool("_common")
 
 
+def test_optional_none_keeps_a_reason_and_false_remains_an_answer():
+    assert common.read_optional(lambda: None) == (None, "the read answered nothing")
+    assert common.read_optional(lambda: False) == (False, None)
+
+
 class TestShortRef:
     """The head a wire message quotes a caller's own value back as."""
 

@@ -651,16 +651,40 @@ def find_joints_by_name(design, name):
     return [j for j in all_joints(design) if (safe(lambda j=j: j.name) or "") == want]
 
 
-def find_joint(design, name):
-    """Resolve ONE Joint or AsBuiltJoint by name over all_joints; returns (joint, error). Several
-    hits are REFUSED naming each hit's owning component, and a name no joint carries is
-    (None, None) - the caller words its own not-found error."""
-    hits = find_joints_by_name(design, name)
+def find_joint(design, name, component=None):
+    """Resolve one joint by exact name or typed handle, optionally scoped to its owning component."""
+    want = (name or "").strip()
+    if not want:
+        return None, None
+    hits = find_joints_by_name(design, want)
+    token = want.split("|@", 1)[0]
+    looks_handle = "|@" in want or (len(token) > 40 and not token.isdigit())
+    if not hits and looks_handle:
+        resolved = safe(lambda: design.findEntityByToken(token))
+        token_hits = list(resolved) if resolved else []
+        candidates = all_joints(design)
+        hits = [joint for joint in candidates if any(
+            joint == entity for entity in token_hits)]
+        if not hits:
+            return None, f"'{name}' does not resolve to a joint handle."
+    if component is not None:
+        scoped = []
+        unreadable = []
+        for joint in hits:
+            owner = safe(lambda joint=joint: joint.parentComponent)
+            same = _common.same_component(owner, component)
+            if same is None:
+                unreadable.append(joint)
+            elif same:
+                scoped.append(joint)
+        if unreadable:
+            return None, (f"'{name}' could not be scoped because the owning component of one or "
+                          "more matching joints could not be identified.")
+        hits = scoped
     if len(hits) == 1:
         return hits[0], None
     if not hits:
         return None, None
-    want = (name or "").strip()
     where = ", ".join(
         f"'{want}' in {safe(lambda j=j: j.parentComponent.name) or '(unreadable component)'}"
         for j in hits[:8])

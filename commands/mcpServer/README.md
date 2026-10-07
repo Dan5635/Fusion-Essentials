@@ -255,8 +255,8 @@ self-audit of the guidance strings). Authoring conventions live in
 - **`sys_execute_script` is separately gated.** It lets a connected agent run
   arbitrary Python in your active Fusion session — including modifying or deleting
   your design. It is **disabled by default**; enable it only if you trust the agent
-  and the client connecting to the server, via **Settings → MCP Server → "Allow AI to
-  execute arbitrary Fusion API scripts (advanced; security risk)"** (then reload). Scripts can also
+  and the client connecting to the server, via **Settings → MCP Server → "Allow AI scripts
+  (unsafe)"** (then reload). Scripts can also
   access local files and network resources. The default execution path groups document changes into
   an undo transaction, but an error does **not** guarantee rollback; verify state afterward.
 - **Read-only script option.** `sys_execute_script(read_only=true)` uses Fusion's `MCP.Execute`

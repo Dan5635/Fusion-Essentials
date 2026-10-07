@@ -7,6 +7,7 @@ never travel back. Requires a PARAMETRIC destination design and an ALREADY-OPEN 
 documents asynchronously, so createInput returns None for a source that is not open yet."""
 
 import re
+from collections import Counter
 
 import adsk.core
 import adsk.fusion
@@ -16,6 +17,7 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe
 from . import _common
+from . import _edit_feature_common
 from . import _inputs
 from . import _outputs
 from ._data_common import _resolve_data_file
@@ -361,6 +363,498 @@ def _mapped_bodies(feature, sources, excluded, comp):
     return rows, None
 
 
+_DERIVED_PARAMETER = "DerivedParameter"     # the objectType suffix a derived parameter reads
+_PARAMETER_CAP = 5000                       # parameters one census reads
+_NAMES_CAP = 50                             # names one reply lists
+
+
+def _collection_names(getter):
+    """The sorted names in a counted collection, or None when any read fails."""
+    collection = safe(getter)
+    count = _common.counted(lambda: collection.count)
+    if count is None:
+        return None
+    names = [safe(lambda i=i: collection.item(i).name) for i in range(count)]
+    return None if any(not isinstance(n, str) for n in names) else sorted(names)
+
+
+def parameter_census(design, deep=False):
+    """({name: {kind, derived, user}}, problem) over design.allParameters; `deep` adds dependents."""
+    params = safe(lambda: design.allParameters)
+    count = _common.counted(lambda: params.count)
+    if count is None:
+        return None, "design.allParameters did not count"
+    if count > _PARAMETER_CAP:
+        return None, f"the design holds {count} parameters, over the {_PARAMETER_CAP} read here"
+    users = _collection_names(lambda: design.userParameters)
+    census = {}
+    for i in range(count):
+        p = safe(lambda i=i: params.item(i))
+        name = safe(lambda: p.name)
+        if not isinstance(name, str) or name in census:
+            return None, f"parameter {i} of design.allParameters did not read a distinct name"
+        kind = safe(lambda: p.objectType.rsplit("::", 1)[-1])
+        row = {"kind": kind, "derived": None if kind is None else kind == _DERIVED_PARAMETER,
+               "user": None if users is None else name in users}
+        if deep:
+            row["expression"] = safe(lambda: p.expression)
+            row["dependents"] = _collection_names(lambda: p.dependentParameters)
+        census[name] = row
+    return census, None
+
+
+def imported_parameters(before, after):
+    """(names, reason): the parameters new since `before` that read as derived; None with the reason."""
+    if before is None or after is None:
+        return None, "the design's parameters did not read on both sides of the derive"
+    fresh = [n for n in after if n not in before]
+    blind = [n for n in fresh if after[n]["derived"] is None]
+    if blind:
+        return None, f"{len(blind)} new parameter(s) did not read their type"
+    return sorted(n for n in fresh if after[n]["derived"]), None
+
+
+def _capped(details, key, rows):
+    """Store rows under `key`, capped, flagging the reply when any list was cut."""
+    details[key] = rows[:_NAMES_CAP]
+    if len(rows) > _NAMES_CAP:
+        details["lists_truncated"] = True
+
+
+def _favorite_changes(details, before, after):
+    """Fill the parameter lists a favourites toggle is judged by; returns the became-local rows."""
+    _capped(details, "parameters_disappeared", sorted(n for n in before if n not in after))
+    _capped(details, "parameters_appeared",
+            [{"name": n, "derived": after[n]["derived"]} for n in sorted(after) if n not in before])
+    local = []
+    for name in sorted(n for n in after if n in before):
+        if before[name]["derived"] is True and after[name]["derived"] is False:
+            row = {"name": name, "dependents": after[name]["dependents"]}
+            if row["dependents"] is None:
+                row["dependents_unread"] = "dependentParameters did not read"
+            local.append(row)
+    _capped(details, "became_local", local)
+    blind = sorted(n for n in after if n in before
+                   and None in (before[n]["derived"], after[n]["derived"]))
+    if blind:
+        _capped(details, "type_unread", blind)
+    _capped(details, "user_and_derived_parameters",
+            [{"name": n, "kind": r["kind"], "in_user_parameters": r["user"],
+              "dependents": r["dependents"]}
+             for n, r in sorted(after.items()) if r["kind"] != "ModelParameter"])
+    return local
+
+
+def _recompute(design, details):
+    """Recompute the design after a derive write; returns why it did not complete, else None."""
+    # Setting isIncludeFavoriteParameters leaves bodies built after the derive without geometry
+    # until computeAll runs.
+    try:
+        answered = design.computeAll()
+    except Exception as exc:
+        details["recomputed"] = False
+        details["recompute_raised"] = _edit_feature_common.sentence(exc)
+        return f"computeAll raised: {details['recompute_raised']}"
+    details["recomputed"] = answered is True
+    return None if answered is True else f"computeAll answered {answered!r}."
+
+
+def _unverified_bodies(name, what, why, details):
+    """The error for a derive write that landed while the recompute or the body re-read did not."""
+    return _edit_feature_common.failed(
+        f"{what} on derive '{name}', but the bodies are unverified: {why} A body built after "
+        "the derive can read no geometry until the design recomputes. Run design_recompute, then "
+        "read design_get(include=['tree','timeline'], tree_bodies=true).", details)
+
+
+def _bodies_unread_refusal(name):
+    """The refusal for a derive write whose body shapes did not read beforehand."""
+    return error(f"Nothing was written to derive '{name}': the body shapes of the design did not "
+                 "read, so the edit's effect on them could not be judged. Run design_recompute, "
+                 "then retry.")
+
+
+def set_favorite_parameters(design, derive_feature, include):
+    """Set a DeriveFeature's isIncludeFavoriteParameters; the reply lists what the parameters show."""
+    include = bool(include)
+    name = safe(lambda: derive_feature.name) or "(name unreadable)"
+    marker, count = _common.timeline_marker(design)
+    if marker is None or marker != count:
+        return error(f"The timeline marker reads {marker} of {count}; favorite parameters of "
+                     f"derive '{name}' are edited with the marker at the end. Roll to the end "
+                     "with design_edit_timeline, then retry.")
+    was = _common.read_flag(lambda: derive_feature.isIncludeFavoriteParameters)
+    if was is None:
+        return error(f"Derive '{name}' did not read isIncludeFavoriteParameters; nothing was "
+                     "written. Check the feature with design_get(include=['timeline']).")
+    before, problem = parameter_census(design, deep=True)
+    if problem:
+        return error(f"Nothing was written to derive '{name}': {problem}, so the edit could not "
+                     "be judged. Read param_get(include_model_parameters=true).")
+    details = {"feature": name, "requested": include, "favorite_parameters_before": was,
+               "favorite_parameters_after": was}
+    if was is include:
+        details["edited"] = False
+        details["note"] = (f"Derive '{name}' already reads isIncludeFavoriteParameters "
+                           f"{str(include).lower()}; nothing was written.")
+        return ok(details)
+    bodies_before = _body_snapshot(design)
+    if bodies_before is None:
+        return _bodies_unread_refusal(name)
+    health_before = _edit_feature_common.health(design, marker)
+    raised = None
+    try:
+        derive_feature.isIncludeFavoriteParameters = include        # MUTATION
+    except Exception as exc:
+        raised = _edit_feature_common.sentence(exc)
+    now = _common.read_flag(lambda: derive_feature.isIncludeFavoriteParameters)
+    stale = _recompute(design, details)
+    after, problem = parameter_census(design, deep=True)
+    details["favorite_parameters_after"] = now
+    moved = _body_changes(details, bodies_before, _body_snapshot(design))
+    new_errors = _health_changes(details, design, health_before)
+    local = [] if after is None else _favorite_changes(details, before, after)
+    if after is None:
+        details["parameters_unread"] = problem
+    if raised:
+        details["raised"] = raised
+    if raised and now is include:
+        return _edit_feature_common.failed(
+            f"Fusion raised while setting isIncludeFavoriteParameters {str(include).lower()} on "
+            f"derive '{name}': {raised} The flag reads {str(now).lower()} now, and 'details' "
+            "lists the parameters as re-read after the raise. Read "
+            "param_get(include_model_parameters=true) before retrying.", details)
+    if now is not include:
+        return _edit_feature_common.failed(
+            f"Derive '{name}' reads isIncludeFavoriteParameters "
+            f"{'nothing' if now is None else str(now).lower()} after setting "
+            f"{str(include).lower()}. " + (f"Fusion raised: {raised} " if raised else "")
+            + "Read param_get(include_model_parameters=true) for the parameters as they are now.",
+            details)
+    unverified = (stale or ("the bodies did not re-read after the recompute." if moved is None
+                            else f"the timeline has new errors: {_quoted(new_errors)}."
+                            if new_errors else None))
+    if unverified:
+        return _unverified_bodies(
+            name, f"isIncludeFavoriteParameters reads {str(now).lower()} now", unverified, details)
+    details["edited"] = True
+    note = (f"Derive '{name}' now reads isIncludeFavoriteParameters {str(include).lower()}. The "
+            "design was recomputed." + _body_sentences(moved))
+    if local:
+        note += (" Still present but no longer derived: "
+                 + _common.named_with_remainder(
+                     [f"'{r['name']}'" + (f" (used by {', '.join(r['dependents'])})"
+                                          if r["dependents"] else "") for r in local]) + ".")
+    for key, label in (("parameters_disappeared", "Gone"), ("parameters_appeared", "New")):
+        rows = [r["name"] if isinstance(r, dict) else r for r in details.get(key, [])]
+        if rows:
+            note += f" {label}: " + _common.named_with_remainder([f"'{n}'" for n in rows]) + "."
+    if after is None:
+        note += f" The parameters did not re-read ({problem})."
+    details["note"] = note + " Confirm with param_get(include_model_parameters=true)."
+    return ok(details)
+
+
+_DERIVE_KIND = "DeriveFeature"              # the objectType suffix a derive's timeline entity reads
+_SOURCE_BODY_CAP = 1000                     # source root bodies one resolve reads
+
+
+def _end_marker(design, what):
+    """(marker, refusal): the marker when it sits at the timeline end, else the roll-to-end error."""
+    marker, count = _common.timeline_marker(design)
+    if marker is None or marker != count:
+        return None, error(f"The timeline marker reads {marker} of {count}; {what} with the marker "
+                           "at the end. Roll to the end with design_edit_timeline, then retry.")
+    return marker, None
+
+
+def _quoted(names):
+    """Names as a capped, quoted wire list; 'nothing readable' for an unread list."""
+    if names is None:
+        return "nothing readable"
+    return _common.named_with_remainder([f"'{n}'" for n in names], _NAMES_CAP) or "(none)"
+
+
+def _body_snapshot(design):
+    """Sorted (component, body, shape) rows for every body of the design, or None when unread."""
+    shapes = _edit_feature_common.all_shapes(design)
+    if shapes is None:
+        return None
+    return sorted((str(r["component"]), str(r["body"]), repr(r["shape"])) for r in shapes.values())
+
+
+def _body_changes(details, before, after):
+    """Fill the body lists an edit is judged by; returns the arrived, left and changed labels."""
+    label = lambda pairs: [{"component": c, "body": b} for c, b in pairs]
+    for side, rows in (("before", before), ("after", after)):
+        details["body_count_" + side] = None if rows is None else len(rows)
+        details["bodies_" + side] = None
+        if rows is not None:
+            _capped(details, "bodies_" + side, label(r[:2] for r in rows))
+    if before is None or after is None:
+        details["bodies_unread"] = "the bodies did not read on both sides of the write"
+        return None
+    was, now = Counter(r[:2] for r in before), Counter(r[:2] for r in after)
+    shapes = lambda rows, pair: sorted(r[2] for r in rows if r[:2] == pair)
+    moved = (sorted((now - was).elements()), sorted((was - now).elements()),
+             [p for p in sorted(was) if was[p] == now[p] and shapes(before, p) != shapes(after, p)])
+    for key, pairs in zip(("bodies_arrived", "bodies_left", "bodies_changed"), moved):
+        _capped(details, key, label(pairs))
+    return [[f"'{b}'" for _c, b in pairs] for pairs in moved]
+
+
+def _health_changes(details, design, before):
+    """Fill health_after and the new timeline errors and warnings; returns the new errors."""
+    marker, count = _common.timeline_marker(design)
+    after = None if marker is None else _edit_feature_common.health(design, marker)
+    details.update(health_before=before, health_after=after, marker_after=marker,
+                   timeline_count_after=count, new_timeline_errors=None,
+                   new_timeline_warnings=None)
+    if before is None or after is None:
+        details["health_unread"] = "the timeline health did not read on both sides of the write"
+        return None
+    for kind in ("errors", "warnings"):
+        details["new_timeline_" + kind] = [n for n in after[kind] if n not in before[kind]]
+    return details["new_timeline_errors"]
+
+
+def _body_sentences(moved):
+    """What the body lists say, as note sentences."""
+    if moved is None:
+        return " The bodies did not read on both sides of the write."
+    text = "".join(f" {word}: {_common.named_with_remainder(names)}."
+                   for word, names in zip(("Arrived", "Left", "Changed"), moved) if names)
+    return text or " The bodies read the same before and after."
+
+
+def _source_listing(derive_feature):
+    """(entities, sorted names) of a derive's current source entities; each None when unread."""
+    entities = safe(lambda: list(derive_feature.sourceEntities))
+    if entities is None:
+        return None, None
+    names = [safe(lambda e=e: e.name) for e in entities]
+    return entities, None if any(not isinstance(n, str) for n in names) else sorted(names)
+
+
+def _same_entities(listed, wanted):
+    """(TRI-STATE, reason): whether two entity lists hold the same entities by native identity."""
+    if listed is None:
+        return None, "sourceEntities did not read"
+    sides = (("listed", listed), ("requested", wanted))
+    keys = {side: [_common.native_identity(e) for e in entities] for side, entities in sides}
+    blind = [f"{side} " + _quoted([safe(lambda e=e: e.name) or "(name unreadable)"
+                                   for e, key in zip(entities, keys[side]) if key is None])
+             for side, entities in sides if None in keys[side]]
+    if blind:
+        return None, "no identity read for " + " and ".join(blind)
+    return Counter(keys["listed"]) == Counter(keys["requested"]), None
+
+
+def _resolve_in_source(derive_feature, name, wanted):
+    """(bodies, names, problem): each wanted name as the ONE root body of the derive's own source."""
+    source = safe(lambda: derive_feature.sourceDesign)
+    if source is None:
+        return None, None, (f"derive '{name}' did not read its sourceDesign, and the active "
+                            "design's bodies are not its source. Check the feature with "
+                            "design_get(include=['timeline'])")
+    bodies = safe(lambda: source.rootComponent.bRepBodies)
+    count = _common.counted(lambda: bodies.count)
+    if count is None or count > _SOURCE_BODY_CAP:
+        return None, None, (f"the root bodies of derive '{name}' sourceDesign read a count of "
+                            f"{count} (at most {_SOURCE_BODY_CAP} are read here)")
+    rows = [(safe(lambda b=b: b.name), b)
+            for b in (safe(lambda i=i: bodies.item(i)) for i in range(count))]
+    if any(not isinstance(n, str) for n, _b in rows):
+        return None, None, f"a root body of derive '{name}' sourceDesign did not read its name"
+    offered = _quoted(sorted(n for n, _b in rows))
+    found, names = [], []
+    for want in wanted:
+        hits = [(n, b) for n, b in rows if n.lower() == want.lower()]
+        if len(hits) != 1:
+            return None, None, (f"source body '{want}' matches {len(hits)} root bodies in the "
+                                f"source design of derive '{name}', and exactly one is needed. "
+                                f"The source offers: {offered}")
+        names.append(hits[0][0])
+        found.append(hits[0][1])
+    return found, sorted(names), None
+
+
+def set_source_entities(design, derive_feature, body_names):
+    """Set a DeriveFeature's source entities to named SOURCE root bodies; the reply lists the effect."""
+    name = safe(lambda: derive_feature.name) or "(name unreadable)"
+    try:
+        wanted = list(dict.fromkeys(_as_names(body_names, "body_names")))
+    except ValueError as exc:
+        return error(str(exc))
+    if not wanted:
+        return error(f"body_names {body_names!r} names no source body for derive '{name}'. Pass "
+                     "the source design's root body names.")
+    marker, refusal = _end_marker(design, f"the source entities of derive '{name}' are edited")
+    if refusal:
+        return refusal
+    entities, requested, problem = _resolve_in_source(derive_feature, name, wanted)
+    if problem:
+        return error(f"Nothing was written: {problem}.")
+    listed, was = _source_listing(derive_feature)
+    before, _problem = parameter_census(design)
+    bodies_before = _body_snapshot(design)
+    health_before = _edit_feature_common.health(design, marker)
+    details = {"feature": name, "requested": requested, "source_entities_before": was,
+               "source_entities_after": was, "marker_before": marker}
+    if _same_entities(listed, entities)[0] is True:
+        details["edited"] = False
+        details["note"] = (f"Derive '{name}' already reads source entities {_quoted(was)}; "
+                           "nothing was written.")
+        return ok(details)
+    if bodies_before is None:
+        return _bodies_unread_refusal(name)
+    raised = answered = None
+    try:
+        answered = derive_feature.setSourceEntities(entities, [])       # MUTATION
+    except Exception as exc:
+        raised = _edit_feature_common.sentence(exc)
+    stale = _recompute(design, details)
+    listed, now = _source_listing(derive_feature)
+    same, unread = _same_entities(listed, entities)
+    details.update(source_entities_after=now, answered=answered, source_identity_verified=same)
+    if same is None:
+        details["source_identity_unread"] = unread
+    moved = _body_changes(details, bodies_before, _body_snapshot(design))
+    new_errors = _health_changes(details, design, health_before)
+    after, _problem = parameter_census(design)
+    if before is None or after is None:
+        details["parameters_unread"] = "the parameters did not read on both sides of the write"
+    else:
+        _capped(details, "parameters_appeared", sorted(n for n in after if n not in before))
+        _capped(details, "parameters_disappeared", sorted(n for n in before if n not in after))
+    details["out_of_date"] = _common.read_flag(
+        lambda: derive_feature.documentReference.isOutOfDate)
+    if details["out_of_date"] is None:
+        details["out_of_date_unread"] = "documentReference.isOutOfDate did not read"
+    if raised:
+        details["raised"] = raised
+    why = (f"Fusion raised: {raised}" if raised
+           else f"setSourceEntities answered {answered!r}." if answered is not True
+           else "the re-read source entities are not the requested ones." if same is False
+           else "their identities did not read, so the result is unverified." if same is None
+           else stale if stale
+           else "the bodies did not re-read after the recompute." if moved is None
+           else f"the timeline has new errors: {_quoted(new_errors)}." if new_errors else None)
+    if why:
+        return _edit_feature_common.failed(
+            f"Setting the source entities of derive '{name}' to {_quoted(requested)} did not "
+            f"verify: {why} They read {_quoted(now)} now, and 'details' lists the bodies as "
+            "re-read. Read design_get(include=['tree','timeline'], tree_bodies=true) before "
+            "retrying.", details)
+    details["edited"] = True
+    details["note"] = (f"Derive '{name}' now reads source entities {_quoted(now)}. The design "
+                       "was recomputed." + _body_sentences(moved)
+                       + " Confirm with design_get(include=['tree'], tree_bodies=true).")
+    return ok(details)
+
+
+def _timeline_entry(design, index):
+    """(kind, name) of the timeline item at `index`: its entity's objectType suffix and its name."""
+    item = safe(lambda: design.timeline.item(index)) if index is not None else None
+    return safe(lambda: item.entity.objectType.rsplit("::", 1)[-1]), safe(lambda: item.name)
+
+
+def _lost_dependents(before, after):
+    """One row per parameter that used a parameter gone from `after`, with both expressions."""
+    rows = []
+    for lost in sorted(n for n in before if n not in after):
+        dependents = before[lost]["dependents"]
+        if dependents is None:
+            rows.append({"depended_on": lost, "name": None,
+                         "dependents_unread": "dependentParameters did not read"})
+        for dependent in dependents or []:
+            now = after.get(dependent)
+            row = {"name": dependent, "depended_on": lost, "present_after": now is not None,
+                   "expression_before": before.get(dependent, {}).get("expression"),
+                   "expression_after": None if now is None else now["expression"]}
+            if now is not None and now["expression"] is None:
+                row["expression_unread"] = "the expression did not read after the write"
+            rows.append(row)
+    return rows
+
+
+def break_link(design, derive_feature):
+    """Break a DeriveFeature's link; the reply names what replaced it and what went with the link."""
+    name = safe(lambda: derive_feature.name) or "(name unreadable)"
+    marker, refusal = _end_marker(design, f"the link of derive '{name}' is broken")
+    if refusal:
+        return refusal
+    index = _common.counted(lambda: derive_feature.timelineObject.index)
+    kind, _name = _timeline_entry(design, index)
+    if kind != _DERIVE_KIND:
+        return error(f"The timeline item of '{name}' at index {index} reads kind {kind!r}, not "
+                     f"{_DERIVE_KIND}; nothing was written. Pass a derive feature listed by "
+                     "design_get(include=['timeline']).")
+    before, problem = parameter_census(design, deep=True)
+    if problem:
+        return error(f"Nothing was written to derive '{name}': {problem}, so what goes with the "
+                     "link could not be judged. Read param_get(include_model_parameters=true).")
+    bodies_before = _body_snapshot(design)
+    if bodies_before is None:
+        return _bodies_unread_refusal(name)
+    health_before = _edit_feature_common.health(design, marker)
+    details = {"feature": name, "timeline_index": index, "kind_before": kind,
+               "marker_before": marker,
+               "timeline_count_before": _common.counted(lambda: design.timeline.count)}
+    raised = answered = None
+    try:
+        answered = derive_feature.breakLink()                           # MUTATION
+    except Exception as exc:
+        raised = _edit_feature_common.sentence(exc)
+    stale = _recompute(design, details)
+    kind_after, name_after = _timeline_entry(design, index)
+    replaced = kind_after is not None and kind_after != _DERIVE_KIND
+    details.update(answered=answered, kind_after=kind_after, name_after=name_after,
+                   replaced=replaced, same_feature=False if replaced else None)
+    moved = _body_changes(details, bodies_before, _body_snapshot(design))
+    new_errors = _health_changes(details, design, health_before)
+    after, problem = parameter_census(design, deep=True)
+    dependents = []
+    if after is None:
+        details["parameters_unread"] = problem
+    else:
+        _favorite_changes(details, before, after)
+        dependents = _lost_dependents(before, after)
+        _capped(details, "dependents_of_disappeared", dependents)
+    if raised:
+        details["raised"] = raised
+    state = (f"The timeline item at index {index} reads kind {kind_after!r}"
+             + (f", named '{name_after}'," if name_after else "") + " now")
+    why = (f"Fusion raised: {raised}" if raised
+           else f"breakLink answered {answered!r}." if answered is not True
+           else f"a {_DERIVE_KIND} still reads at its timeline index." if kind_after == _DERIVE_KIND
+           else "the item at its timeline index did not re-read a kind." if not replaced
+           else stale if stale
+           else "the bodies did not re-read after the recompute." if moved is None
+           else f"the timeline has new errors: {_quoted(new_errors)}." if new_errors else None)
+    if why:
+        return _edit_feature_common.failed(
+            f"Breaking the link of derive '{name}' did not verify: {why} {state}"
+            + ("; the derive was REPLACED and this function cannot restore the link" if replaced
+               else "") + ". 'details' lists the bodies and parameters as re-read. Read "
+            "design_get(include=['timeline']) and param_get(include_model_parameters=true) "
+            "before retrying.", details)
+    details["edited"] = True
+    note = (f"Derive '{name}' was REPLACED: {state}. This function cannot restore the link. "
+            "The design was recomputed." + _body_sentences(moved))
+    gone = details.get("parameters_disappeared", [])
+    if gone:
+        note += " Parameters gone with the link: " + _quoted(gone) + "."
+    used = [f"'{r['name']}' (used '{r['depended_on']}')" for r in dependents if r["name"]]
+    if used:
+        note += (" Their dependents, with expressions before and after in 'details': "
+                 + _common.named_with_remainder(used) + ".")
+    if after is None:
+        note += f" The parameters did not re-read ({problem})."
+    details["note"] = note + " Confirm with design_get(include=['timeline'])."
+    return ok(details)
+
+
 def _retained(design, feature, why):
     """The error for a derive whose feature stays in the timeline while `why` holds."""
     feature_name = _common.feature_address(feature) or "(name unreadable)"
@@ -480,10 +974,10 @@ def handler(document_id: str = "", into_component: str = "",
     except Exception as e:
         return error(f"Could not configure the derive: {e}")
 
-    before_params = safe(lambda: design.userParameters.count, 0) or 0
-    # A source value can land as a read-only MODEL parameter the userParameters delta never sees,
-    # and it lands at DESIGN level rather than on the derived component - so the count that sees it
-    # is a design-wide before/after delta.
+    before_params = _common.counted(lambda: design.userParameters.count)
+    # A favourite parameter lands as a DerivedParameter in design.allParameters, outside
+    # userParameters, so the imported ones are the new derived names of a design-wide census.
+    before_census, _problem = parameter_census(design)
     before_all_params = _common.counted(lambda: design.allParameters.count)
     before_bodies = _body_total(design)
     before_occ_tokens = _occurrence_tokens(comp)
@@ -597,18 +1091,22 @@ def handler(document_id: str = "", into_component: str = "",
     if excl_error:
         return _retained(design, feature, excl_error)
 
-    after_params = safe(lambda: design.userParameters.count, 0) or 0
-    parameters_imported = max(0, after_params - before_params)
+    after_params = _common.counted(lambda: design.userParameters.count)
+    user_parameters_added = (None if before_params is None or after_params is None
+                             else after_params - before_params)
+    imported_names, parameters_unread = imported_parameters(before_census,
+                                                            parameter_census(design)[0])
+    parameters_imported = None if imported_names is None else len(imported_names)
     after_all_params = _common.counted(lambda: design.allParameters.count)
     model_parameters_added = (None if before_all_params is None or after_all_params is None
                               else after_all_params - before_all_params)
     param_warning = None
-    if (include_parameters or include_favorite_parameters) and parameters_imported == 0:
-        param_warning = ("include_parameters/include_favorite_parameters was requested but 0 new "
-                         "user parameters landed - this Fusion API flag is reported flaky; confirm "
-                         "with param_get (the source design may also simply define none). Source "
-                         "values can land as read-only model parameters instead - read them with "
-                         "param_get(include_model_parameters=true).")
+    if ((include_parameters or include_favorite_parameters) and parameters_imported == 0
+            and not user_parameters_added):
+        param_warning = ("include_parameters/include_favorite_parameters was requested and no "
+                         "new derived or user parameter reads in the design (the source may "
+                         "define none). Source values can land as read-only model parameters - "
+                         "read them with param_get(include_model_parameters=true).")
 
     representative = (derived_components[0]["name"] if derived_components
                       else (direct_bodies[0]["name"] if direct_bodies else None))
@@ -634,10 +1132,17 @@ def handler(document_id: str = "", into_component: str = "",
     }
     if landing_note:
         result["landing_unverified"] = landing_note
+    if imported_names is None:
+        result["parameters_unread"] = parameters_unread
+    else:
+        result["imported_parameter_names"] = imported_names[:_NAMES_CAP]
+        if len(imported_names) > _NAMES_CAP:
+            result["imported_parameter_names_truncated"] = True
+    if user_parameters_added:
+        result["user_parameters_added"] = user_parameters_added
     if model_parameters_added is not None:
-        # Beside parameters_imported (the userParameters delta), because the two count different
-        # things and only the pair shows whether source values arrived at all. Omitted rather than
-        # zeroed when either count was unreadable - an unknown delta is not "nothing arrived".
+        # The allParameters count delta, beside parameters_imported (the new DERIVED names): the
+        # two count different things. Omitted rather than zeroed when either count was unreadable.
         result["model_parameters_added"] = model_parameters_added
     if excluded:
         result["excluded"] = ", ".join(excluded)

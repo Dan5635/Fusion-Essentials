@@ -11,12 +11,15 @@ keeps the bespoke doubles below.
 """
 
 import json
+from types import SimpleNamespace
+
+import adsk.fusion
 import pytest
 
 from conftest import (BRepBody, FakeApplication, FakeDataFile, FakeDocumentReference, FakeDocuments,
                       FakeFeatures, FakeFusionDocument, FakeOccurrence, FakeProducts,
-                      FakeUserParameter, FakeUserParameters, MakeComp, MakeDesign,
-                      _NamedCollection, load_tool, make_occurrence)
+                      FakeTimeline, FakeTimelineObject, FakeUserParameter, FakeUserParameters,
+                      MakeComp, MakeDesign, _NamedCollection, load_tool, make_occurrence)
 
 io = load_tool("doc_insert_derive")
 
@@ -130,14 +133,22 @@ def FakeComp(name="Root", derive_features=None, occurrences=(), token=None):
     return comp
 
 
-def _params(count):
-    """A parameter collection of `count` entries - only the count is read here."""
-    return FakeUserParameters([FakeUserParameter(f"p{i}") for i in range(count)])
+def _typed(name, kind="ModelParameter", expression="7 mm", dependents=()):
+    """A parameter reading `kind` as its objectType suffix - DerivedParameter has no shared fake."""
+    param = FakeUserParameter(name, expression=expression, dependents=dependents)
+    if kind is not None:
+        param.objectType = "adsk::fusion::" + kind
+    return param
 
 
-def _grow_params(params, count):
+def _params(count, kind="UserParameter"):
+    """A parameter collection of `count` entries named p0..pN, each reading `kind`."""
+    return FakeUserParameters([_typed(f"p{i}", kind) for i in range(count)])
+
+
+def _grow_params(params, count, kind="ModelParameter"):
     """Resize a parameter collection - what a derive that imported parameters leaves behind."""
-    params._parameters = [FakeUserParameter(f"p{i}") for i in range(count)]
+    params._parameters = [_typed(f"p{i}", kind) for i in range(count)]
 
 
 def FakeDesign(root_comp, design_type=1, user_param_count=0, all_param_count=None, cls=MakeDesign):
@@ -146,7 +157,8 @@ def FakeDesign(root_comp, design_type=1, user_param_count=0, all_param_count=Non
     model-parameter count reads as UNKNOWN rather than zero. `cls` swaps in a scenario design."""
     return cls(comp=root_comp, design_type=design_type,
                user_parameters=_params(user_param_count),
-               all_parameters=None if all_param_count is None else _params(all_param_count))
+               all_parameters=(None if all_param_count is None
+                               else _params(all_param_count, "ModelParameter")))
 
 
 class _ReadBackDeclines(MakeDesign):
@@ -786,17 +798,52 @@ class TestHealthAndReferenceVerify:
 
 class TestParameterVerify:
     def test_warns_when_flags_set_and_zero_landed(self, monkeypatch):
-        _install(monkeypatch, user_param_count=4)   # count never changes -> 0 imported
+        _install(monkeypatch, user_param_count=4, all_param_count=9)   # neither census changes
         out = _payload(io.handler(document_id="urn:x"))
-        assert out["parameters_imported"] == 0
-        assert "parameter_warning" in out and "flaky" in out["parameter_warning"]
+        assert out["parameters_imported"] == 0 and out["imported_parameter_names"] == []
+        assert "no new derived or user parameter" in out["parameter_warning"]
 
     def test_warning_points_at_the_model_parameter_route(self, monkeypatch):
-        # 0 user parameters is not "nothing arrived": source values can land as read-only MODEL
+        # 0 imported is not "nothing arrived": source values can land as read-only MODEL
         # parameters, and the warning must name the read that sees them.
-        _install(monkeypatch, user_param_count=4)
+        _install(monkeypatch, user_param_count=4, all_param_count=9)
         out = _payload(io.handler(document_id="urn:x"))
         assert "param_get(include_model_parameters=true)" in out["parameter_warning"]
+
+    def test_a_derived_favorite_outside_user_parameters_counts_as_imported(self, monkeypatch):
+        # The favourite lands in allParameters as a DerivedParameter and never in userParameters.
+        design, comp, docs, df, dfs, _ = _install(monkeypatch, user_param_count=2,
+                                                  all_param_count=3)
+        dfs.on_add = lambda: design.allParameters._parameters.append(
+            _typed("PS_Fav_Ref", "DerivedParameter"))
+        out = _payload(io.handler(document_id="urn:x"))
+        assert out["parameters_imported"] == 1
+        assert out["imported_parameter_names"] == ["PS_Fav_Ref"]
+        assert "parameter_warning" not in out and "user_parameters_added" not in out
+
+    def test_a_census_that_does_not_read_leaves_the_count_unknown(self, monkeypatch):
+        _install(monkeypatch, user_param_count=4)          # no allParameters collection at all
+        out = _payload(io.handler(document_id="urn:x"))
+        assert out["parameters_imported"] is None
+        assert "did not read on both sides" in out["parameters_unread"]
+        assert "imported_parameter_names" not in out and "parameter_warning" not in out
+
+    def test_a_new_parameter_of_unread_type_is_not_counted_either_way(self, monkeypatch):
+        design, comp, docs, df, dfs, _ = _install(monkeypatch, all_param_count=3)
+        dfs.on_add = lambda: design.allParameters._parameters.append(_typed("Mystery", None))
+        out = _payload(io.handler(document_id="urn:x"))
+        assert out["parameters_imported"] is None
+        assert out["parameters_unread"] == "1 new parameter(s) did not read their type"
+
+    @pytest.mark.parametrize("landed, truncated", [(50, False), (51, True)])
+    def test_imported_names_are_capped_and_the_cut_is_flagged(self, monkeypatch, landed, truncated):
+        design, comp, docs, df, dfs, _ = _install(monkeypatch, all_param_count=3)
+        dfs.on_add = lambda: design.allParameters._parameters.extend(
+            _typed(f"Fav{i:02d}", "DerivedParameter") for i in range(landed))
+        out = _payload(io.handler(document_id="urn:x"))
+        assert out["parameters_imported"] == landed
+        assert len(out["imported_parameter_names"]) == 50
+        assert ("imported_parameter_names_truncated" in out) is truncated
 
     def test_model_parameters_added_is_the_design_level_delta(self, monkeypatch):
         # the imported values land as MODEL parameters at the DESIGN level, so the delta is taken
@@ -805,7 +852,7 @@ class TestParameterVerify:
                                                   all_param_count=9)
         dfs.on_add = lambda: _grow_params(design.allParameters, 29)
         out = _payload(io.handler(document_id="urn:x"))
-        assert out["parameters_imported"] == 0        # the userParameters delta saw none...
+        assert out["parameters_imported"] == 0        # none of the new ones reads as derived...
         assert out["model_parameters_added"] == 20    # ...while 20 model parameters landed
 
     def test_zero_delta_is_published_honestly(self, monkeypatch):
@@ -821,17 +868,18 @@ class TestParameterVerify:
         assert "model_parameters_added" not in out
 
     def test_no_warning_when_both_flags_false(self, monkeypatch):
-        _install(monkeypatch, user_param_count=4)
+        _install(monkeypatch, user_param_count=4, all_param_count=9)
         out = _payload(io.handler(document_id="urn:x", include_parameters=False,
                                   include_favorite_parameters=False))
         assert out["parameters_imported"] == 0
         assert "parameter_warning" not in out
 
-    def test_reports_imported_count_honestly(self, monkeypatch):
-        design, comp, docs, df, dfs, _ = _install(monkeypatch, user_param_count=2)
-        dfs.on_add = lambda: _grow_params(design.userParameters, 5)
+    def test_new_user_parameters_are_published_under_their_own_key(self, monkeypatch):
+        design, comp, docs, df, dfs, _ = _install(monkeypatch, user_param_count=2,
+                                                  all_param_count=3)
+        dfs.on_add = lambda: _grow_params(design.userParameters, 5, "UserParameter")
         out = _payload(io.handler(document_id="urn:x"))
-        assert out["parameters_imported"] == 3
+        assert out["user_parameters_added"] == 3 and out["parameters_imported"] == 0
         assert "parameter_warning" not in out
 
     def test_flags_forwarded_to_derive_input(self, monkeypatch):
@@ -1026,3 +1074,557 @@ class TestPayloadContract:
         assert out["document_name"] == "Gimbal"
         assert out["source_version"] == 7
         assert out["is_parametric"] is True
+
+
+# ── set_favorite_parameters: the favourites toggle judged by the parameter census ────────────────
+
+class _FavoriteDerive:
+    """A DeriveFeature whose isIncludeFavoriteParameters setter moves the design's parameters: off
+    drops a derived parameter nothing uses and turns a used one into a local parameter of the same
+    name; on adds a derived parameter under the first free name. `mode` 'ignored' drops the write
+    and 'raises' throws on it."""
+    name = "Derive1"
+
+    def __init__(self, design, include=True, mode="honest"):
+        self._design, self._flag, self.mode = design, include, mode
+
+    @property
+    def isIncludeFavoriteParameters(self):
+        return self._flag
+
+    @isIncludeFavoriteParameters.setter
+    def isIncludeFavoriteParameters(self, value):
+        if self.mode == "raises":
+            raise RuntimeError("3 : favorites refused")
+        if self.mode == "ignored":
+            return
+        self._flag = value
+        params = self._design.allParameters._parameters
+        if value:
+            taken = {p.name for p in params}
+            params.append(_typed("PS_Fav_Ref" if "PS_Fav_Ref" not in taken else "PS_Fav_Ref1",
+                                 "DerivedParameter"))
+            return
+        for p in [p for p in params if p.objectType.endswith("DerivedParameter")]:
+            if p.dependentParameters.count:
+                p.objectType = "adsk::fusion::UserParameter"
+            else:
+                params.remove(p)
+
+
+def _favorite_design(params, marker=None):
+    """A one-body design at the end of a one-feature timeline, holding `params` in allParameters."""
+    comp = MakeComp("Root", bodies=[FakeBody("Derived")])
+    users = [p for p in params if p.objectType.endswith("UserParameter")]
+    design = MakeDesign(comp=comp, all_components=[comp],
+                        timeline=FakeTimeline([FakeTimelineObject(name="Derive1")], marker=marker),
+                        user_parameters=FakeUserParameters(users),
+                        all_parameters=FakeUserParameters(params))
+    return design
+
+
+def _details(res):
+    assert res["isError"] is True, res
+    return res["details"]
+
+
+def _shapes(design):
+    """The body snapshot the edits diff: one row per body, its volume standing for its shape."""
+    return {(c.name, i): {"component": c.name, "body": b.name, "shape": b.volume}
+            for c in design.allComponents for i, b in enumerate(c.bRepBodies._items)}
+
+
+@pytest.fixture
+def body_shapes(monkeypatch):
+    monkeypatch.setattr(io._edit_feature_common, "all_shapes", _shapes)
+
+
+def _stale_until_recompute(monkeypatch, design):
+    """Make the body snapshot unreadable after a write until the design recomputes."""
+    state = {"writes": 0}
+
+    def shapes(d):
+        return None if state["writes"] > d._computes else _shapes(d)
+    monkeypatch.setattr(io._edit_feature_common, "all_shapes", shapes)
+    return state
+
+
+class _StalingFavorite(_FavoriteDerive):
+    """A favourites setter after which the bodies read nothing until computeAll."""
+    stale = None
+
+    @property
+    def isIncludeFavoriteParameters(self):
+        return self._flag
+
+    @isIncludeFavoriteParameters.setter
+    def isIncludeFavoriteParameters(self, value):
+        _FavoriteDerive.isIncludeFavoriteParameters.fset(self, value)
+        self.stale["writes"] = self._design._computes + 1
+
+
+@pytest.mark.usefixtures("body_shapes")
+class TestSetFavoriteParameters:
+    def _staling(self, monkeypatch):
+        design = _favorite_design([_typed("PS_Fav_Ref", "DerivedParameter")])
+        derive = _StalingFavorite(design)
+        derive.stale = _stale_until_recompute(monkeypatch, design)
+        return design, derive
+
+    def test_the_design_is_recomputed_before_the_bodies_are_judged(self, monkeypatch):
+        design, derive = self._staling(monkeypatch)
+        out = _payload(io.set_favorite_parameters(design, derive, False))
+        assert out["edited"] is True and out["recomputed"] is True and design._computes == 1
+        assert out["bodies_changed"] == out["bodies_arrived"] == out["bodies_left"] == []
+        assert "recomputed" in out["note"] and "same before and after" in out["note"]
+
+    @pytest.mark.parametrize("raises", ["3 : compute failed", None])
+    def test_a_recompute_that_does_not_complete_is_an_error_carrying_the_flag(
+            self, monkeypatch, raises):
+        design, derive = self._staling(monkeypatch)
+        if raises:
+            design._compute_raises = raises
+        else:
+            monkeypatch.setattr(design, "computeAll", lambda: False)
+        res = io.set_favorite_parameters(design, derive, False)
+        details = _details(res)
+        assert "isIncludeFavoriteParameters reads false now" in res["message"]
+        assert "bodies are unverified" in res["message"] and "design_recompute" in res["message"]
+        assert (raises or "computeAll answered False") in res["message"]
+        assert details["recomputed"] is False and details["favorite_parameters_after"] is False
+        assert details["bodies_after"] is None and "edited" not in details
+
+    def test_bodies_that_do_not_read_after_the_recompute_are_an_error(self, monkeypatch):
+        design, derive = self._staling(monkeypatch)
+        derive.stale["writes"] = 0
+        monkeypatch.setattr(design, "computeAll", lambda: True)
+        res = io.set_favorite_parameters(design, derive, False)
+        assert "did not re-read after the recompute" in res["message"]
+        assert _details(res)["recomputed"] is True
+
+    def test_bodies_that_do_not_read_beforehand_refuse_before_the_write(self, monkeypatch):
+        monkeypatch.setattr(io._edit_feature_common, "all_shapes", lambda design: None)
+        design = _favorite_design([_typed("PS_Fav_Ref", "DerivedParameter")])
+        derive = _FavoriteDerive(design)
+        res = io.set_favorite_parameters(design, derive, False)
+        assert res["isError"] is True and "Nothing was written" in res["message"]
+        assert derive.isIncludeFavoriteParameters is True and design._computes == 0
+
+    def test_off_with_nothing_depending_lists_the_parameter_as_disappeared(self):
+        design = _favorite_design([_typed("PS_Fav_Ref", "DerivedParameter")])
+        out = _payload(io.set_favorite_parameters(design, _FavoriteDerive(design), False))
+        assert out["edited"] is True
+        assert (out["favorite_parameters_before"], out["favorite_parameters_after"]) == (True, False)
+        assert out["parameters_disappeared"] == ["PS_Fav_Ref"]
+        assert out["became_local"] == [] and out["parameters_appeared"] == []
+        assert (out["body_count_before"], out["body_count_after"]) == (1, 1)
+        assert out["health_after"] == {"errors": [], "warnings": []}
+        assert "Gone: 'PS_Fav_Ref'" in out["note"]
+
+    def test_off_with_a_dependent_names_the_parameter_that_stopped_being_derived(self):
+        dep = _typed("PP_Dep", "UserParameter", "PS_Fav_Ref * 2")
+        design = _favorite_design([dep, _typed("PS_Fav_Ref", "DerivedParameter", dependents=[dep])])
+        out = _payload(io.set_favorite_parameters(design, _FavoriteDerive(design), False))
+        assert out["became_local"] == [{"name": "PS_Fav_Ref", "dependents": ["PP_Dep"]}]
+        assert out["parameters_disappeared"] == []
+        assert "no longer derived: 'PS_Fav_Ref' (used by PP_Dep)" in out["note"]
+        assert not any(word in out["note"].lower() for word in ("restor", "undo", "revert"))
+
+    def test_on_after_that_reports_the_new_name_and_still_lists_the_local_copy(self):
+        dep = _typed("PP_Dep", "UserParameter", "PS_Fav_Ref * 2")
+        design = _favorite_design([dep, _typed("PS_Fav_Ref", "UserParameter", dependents=[dep])])
+        out = _payload(io.set_favorite_parameters(design, _FavoriteDerive(design, include=False),
+                                                  True))
+        assert out["parameters_appeared"] == [{"name": "PS_Fav_Ref1", "derived": True}]
+        assert out["became_local"] == []
+        listed = {row["name"]: row for row in out["user_and_derived_parameters"]}
+        assert listed["PS_Fav_Ref"]["kind"] == "UserParameter"
+        assert listed["PS_Fav_Ref"]["dependents"] == ["PP_Dep"]
+        assert "New: 'PS_Fav_Ref1'" in out["note"]
+        assert not any(word in out["note"].lower() for word in ("restor", "undo", "revert"))
+
+    @pytest.mark.parametrize("mode, raised", [("ignored", False), ("raises", True)])
+    def test_a_flag_that_does_not_read_back_as_requested_is_an_error(self, mode, raised):
+        design = _favorite_design([_typed("PS_Fav_Ref", "DerivedParameter")])
+        res = io.set_favorite_parameters(design, _FavoriteDerive(design, mode=mode), False)
+        details = _details(res)
+        assert "reads isIncludeFavoriteParameters true after setting false" in res["message"]
+        assert ("3 : favorites refused" in res["message"]) is raised
+        assert details["favorite_parameters_after"] is True
+        assert details["parameters_disappeared"] == []
+
+    def test_a_setter_that_raises_after_landing_is_an_error_carrying_what_landed(self):
+        dep = _typed("PP_Dep", "UserParameter", "PS_Fav_Ref * 2")
+        design = _favorite_design([dep, _typed("PS_Fav_Ref", "DerivedParameter", dependents=[dep]),
+                                   _typed("PS_Other", "DerivedParameter")])
+        honest = _FavoriteDerive.isIncludeFavoriteParameters.fset
+
+        class _RaisesLate(_FavoriteDerive):
+            @property
+            def isIncludeFavoriteParameters(self):
+                return self._flag
+
+            @isIncludeFavoriteParameters.setter
+            def isIncludeFavoriteParameters(self, value):
+                honest(self, value)
+                raise RuntimeError("3 : raised after the change")
+        res = io.set_favorite_parameters(design, _RaisesLate(design), False)
+        details = _details(res)
+        assert "3 : raised after the change." in res["message"]
+        assert "The flag reads false now" in res["message"]
+        assert details["favorite_parameters_after"] is False
+        assert details["parameters_disappeared"] == ["PS_Other"]
+        assert details["became_local"] == [{"name": "PS_Fav_Ref", "dependents": ["PP_Dep"]}]
+        assert (details["body_count_before"], details["body_count_after"]) == (1, 1)
+        assert details["health_after"] == {"errors": [], "warnings": []}
+
+    def test_a_flag_already_as_requested_writes_nothing(self):
+        design = _favorite_design([_typed("PS_Fav_Ref", "DerivedParameter")])
+        derive = _FavoriteDerive(design, mode="raises")
+        out = _payload(io.set_favorite_parameters(design, derive, True))
+        assert out["edited"] is False and "nothing was written" in out["note"]
+
+    @pytest.mark.parametrize("marker, refused", [(0, True), (1, False)])
+    def test_a_rolled_back_marker_is_refused_before_the_write(self, marker, refused):
+        design = _favorite_design([_typed("PS_Fav_Ref", "DerivedParameter")], marker=marker)
+        derive = _FavoriteDerive(design)
+        res = io.set_favorite_parameters(design, derive, False)
+        assert res["isError"] is refused
+        assert derive.isIncludeFavoriteParameters is refused
+        if refused:
+            assert "marker reads 0 of 1" in res["message"]
+
+    def test_a_parameter_census_that_does_not_read_refuses_before_the_write(self):
+        design = _favorite_design([_typed("PS_Fav_Ref", "DerivedParameter")])
+        design.allParameters._parameters.append(_typed("PS_Fav_Ref", "ModelParameter"))
+        derive = _FavoriteDerive(design)
+        res = io.set_favorite_parameters(design, derive, False)
+        assert res["isError"] is True and "Nothing was written" in res["message"]
+        assert derive.isIncludeFavoriteParameters is True
+
+    def test_dependents_that_do_not_read_are_null_with_a_reason(self):
+        used = _typed("PS_Fav_Ref", "DerivedParameter", dependents=[_typed("PP_Dep", "UserParameter")])
+        design = _favorite_design([used])
+        derive = _FavoriteDerive(design)
+        honest = type(derive).isIncludeFavoriteParameters.fset
+
+        class _Blind(_FavoriteDerive):
+            @property
+            def isIncludeFavoriteParameters(self):
+                return self._flag
+
+            @isIncludeFavoriteParameters.setter
+            def isIncludeFavoriteParameters(self, value):
+                honest(self, value)
+                used.dependentParameters._raises = "3 : dependents unreadable"
+        out = _payload(io.set_favorite_parameters(design, _Blind(design), False))
+        assert out["became_local"] == [{"name": "PS_Fav_Ref", "dependents": None,
+                                        "dependents_unread": "dependentParameters did not read"}]
+
+
+# ── set_source_entities / break_link: a derive edit judged by what re-reads ──────────────────────
+
+def _source_design(names=("PS_A", "PS_B", "PS_C")):
+    """The derive's SOURCE design: root bodies of 1, 2, 3... cm3 under the given names."""
+    return MakeDesign(comp=MakeComp("SrcRoot", bodies=[
+        BRepBody(n, volume=float(i + 1)) for i, n in enumerate(names)]))
+
+
+def _edit_design(params=(), derived=("PS_A",), local=(), marker=None):
+    """The TARGET design at the end of a one-feature timeline: derived bodies plus local ones."""
+    comp = MakeComp("Root", bodies=[BRepBody(n, volume=1.0, is_derived=True) for n in derived]
+                    + [BRepBody(n, volume=9.0) for n in local])
+    return MakeDesign(comp=comp, all_components=[comp],
+                      timeline=FakeTimeline([FakeTimelineObject(name="Derive1")], marker=marker),
+                      user_parameters=FakeUserParameters([]),
+                      all_parameters=FakeUserParameters(list(params)))
+
+
+class _EditDerive:
+    """A DeriveFeature at timeline index 0. setSourceEntities lands one derived body per entity;
+    breakLink swaps the timeline entity for a BaseFeature and drops the derived parameters. `mode`
+    'false' answers False and 'raises' throws, neither acting; 'ignored' answers True without
+    acting; 'late' acts and then throws; 'breaks' acts and leaves the timeline item in error."""
+    name = "Derive1"
+    objectType = "adsk::fusion::DeriveFeature"
+
+    def __init__(self, design, source=None, mode="honest"):
+        self._design, self.mode, self.calls = design, mode, []
+        self.sourceDesign = _source_design() if source is None else source
+        held = [b.name for b in design.rootComponent.bRepBodies._items if b.isDerived]
+        self.sourceEntities = [b for b in self.sourceDesign.rootComponent.bRepBodies._items
+                               if b.name in held]
+        self.documentReference = FakeDocumentReference()
+        self.timelineObject = design.timeline.item(0)
+        self.timelineObject.entity = self
+
+    def _act(self, land):
+        if self.mode == "raises":
+            raise RuntimeError("3 : refused")
+        if self.mode == "false":
+            return False
+        if self.mode != "ignored":
+            land()
+        if self.mode == "breaks":
+            self.timelineObject.healthState = adsk.fusion.FeatureHealthStates.ErrorFeatureHealthState
+        if self.mode == "late":
+            raise RuntimeError("3 : raised after the change")
+        return True
+
+    def setSourceEntities(self, entities, excluded):
+        self.calls.append((list(entities), list(excluded)))
+
+        def land():
+            self.sourceEntities = list(entities)
+            target = self._design.rootComponent.bRepBodies
+            target._items = ([b for b in target._items if not b.isDerived]
+                             + [BRepBody(e.name, volume=e.volume, is_derived=True) for e in entities])
+        return self._act(land)
+
+    def breakLink(self):
+        self.calls.append("breakLink")
+
+        def land():
+            self.timelineObject.entity = SimpleNamespace(objectType="adsk::fusion::BaseFeature")
+            params = self._design.allParameters._parameters
+            params[:] = [p for p in params if not p.objectType.endswith("DerivedParameter")]
+        return self._act(land)
+
+
+@pytest.mark.usefixtures("body_shapes")
+class TestSetSourceEntities:
+    def test_a_name_resolves_in_the_source_design_not_among_the_active_bodies(self):
+        design = _edit_design(local=("PS_B",))
+        derive = _EditDerive(design)
+        source_a, source_b, _c = derive.sourceDesign.rootComponent.bRepBodies._items
+        out = _payload(io.set_source_entities(design, derive, ["PS_A", "PS_B"]))
+        entities, excluded = derive.calls[0]
+        assert entities[0] is source_a and entities[1] is source_b and excluded == []
+        assert out["edited"] is True and out["answered"] is True
+        assert (out["source_entities_before"], out["source_entities_after"]) == (
+            ["PS_A"], ["PS_A", "PS_B"])
+        assert (out["body_count_before"], out["body_count_after"]) == (2, 3)
+        assert out["bodies_arrived"] == [{"component": "Root", "body": "PS_B"}]
+        assert out["bodies_left"] == [] and out["out_of_date"] is False
+        assert out["new_timeline_errors"] == [] and "Arrived: 'PS_B'." in out["note"]
+
+    @pytest.mark.parametrize("names, source, said", [
+        (["PS_X"], ("PS_A", "PS_B"), "'PS_X' matches 0 root bodies"),
+        (["PS_B"], ("PS_A", "PS_B", "PS_B"), "'PS_B' matches 2 root bodies"),
+        ([], ("PS_A",), "names no source body"),
+    ])
+    def test_a_name_without_exactly_one_source_body_is_refused(self, names, source, said):
+        design = _edit_design()
+        derive = _EditDerive(design, source=_source_design(source))
+        res = io.set_source_entities(design, derive, names)
+        assert res["isError"] is True and said in res["message"]
+        assert derive.calls == []
+        if names:
+            assert "The source offers: 'PS_A', 'PS_B'" in res["message"]
+
+    def test_a_source_design_that_does_not_read_is_refused_by_name(self):
+        design = _edit_design(local=("PS_B",))
+        derive = _EditDerive(design)
+        derive.sourceDesign = None
+        res = io.set_source_entities(design, derive, ["PS_B"])
+        assert res["isError"] is True and "did not read its sourceDesign" in res["message"]
+        assert derive.calls == []
+
+    @pytest.mark.parametrize("mode, said, landed", [
+        ("false", "setSourceEntities answered False", False),
+        ("ignored", "re-read source entities are not the requested ones", False),
+        ("raises", "Fusion raised: 3 : refused.", False),
+        ("late", "Fusion raised: 3 : raised after the change.", True),
+        ("breaks", "the timeline has new errors: 'Derive1'", True),
+    ])
+    def test_a_write_that_does_not_verify_is_an_error_carrying_what_landed(self, mode, said, landed):
+        design = _edit_design()
+        res = io.set_source_entities(design, _EditDerive(design, mode=mode), ["PS_A", "PS_B"])
+        details = _details(res)
+        assert said in res["message"]
+        assert details["source_entities_after"] == (["PS_A", "PS_B"] if landed else ["PS_A"])
+        assert details["bodies_arrived"] == ([{"component": "Root", "body": "PS_B"}] if landed
+                                             else [])
+        assert "edited" not in details
+
+    def test_bodies_that_arrived_and_left_are_listed_apart(self):
+        design = _edit_design(derived=("PS_A", "PS_B"))
+        out = _payload(io.set_source_entities(design, _EditDerive(design), ["PS_B", "PS_C"]))
+        assert out["bodies_arrived"] == [{"component": "Root", "body": "PS_C"}]
+        assert out["bodies_left"] == [{"component": "Root", "body": "PS_A"}]
+        assert "Arrived: 'PS_C'. Left: 'PS_A'." in out["note"]
+
+    def test_a_rolled_back_marker_is_refused_before_the_write(self):
+        design = _edit_design(marker=0)
+        derive = _EditDerive(design)
+        res = io.set_source_entities(design, derive, ["PS_B"])
+        assert res["isError"] is True and "marker reads 0 of 1" in res["message"]
+        assert derive.calls == []
+
+    def test_sources_already_as_requested_write_nothing(self):
+        design = _edit_design()
+        derive = _EditDerive(design)
+        out = _payload(io.set_source_entities(design, derive, ["ps_a"]))
+        assert out["edited"] is False and derive.calls == []
+
+    @pytest.mark.parametrize("token", ["NESTED:PS_A", None])
+    def test_a_listed_namesake_of_the_requested_root_body_does_not_skip_the_write(self, token):
+        design = _edit_design()
+        derive = _EditDerive(design)
+        namesake = BRepBody("PS_A", entity_token="NESTED:PS_A")
+        namesake.entityToken = token
+        derive.sourceEntities = [namesake]
+        out = _payload(io.set_source_entities(design, derive, ["PS_A"]))
+        root_body = derive.sourceDesign.rootComponent.bRepBodies._items[0]
+        assert derive.calls and derive.calls[0][0][0] is root_body
+        assert out["edited"] is True and out["source_identity_verified"] is True
+
+    @pytest.mark.parametrize("token, verified, said", [
+        ("OTHER", False, "re-read source entities are not the requested ones"),
+        (None, None, "identities did not read, so the result is unverified"),
+    ])
+    def test_a_re_read_namesake_of_a_requested_entity_is_not_verified(self, token, verified, said):
+        design = _edit_design()
+
+        class _LandsNamesakes(_EditDerive):
+            def setSourceEntities(self, entities, excluded):
+                answered = super().setSourceEntities(entities, excluded)
+                self.sourceEntities = [BRepBody(e.name, entity_token="OTHER") for e in entities]
+                for listed in self.sourceEntities:
+                    listed.entityToken = token
+                return answered
+        res = io.set_source_entities(design, _LandsNamesakes(design), ["PS_A", "PS_B"])
+        details = _details(res)
+        assert said in res["message"]
+        assert details["source_entities_after"] == ["PS_A", "PS_B"]
+        assert details["source_identity_verified"] is verified
+        assert ("listed 'PS_A', 'PS_B'" in details.get("source_identity_unread", "")) is (
+            verified is None)
+
+    def test_a_requested_entity_listed_twice_is_not_the_requested_set(self):
+        design = _edit_design()
+
+        class _ListsTwice(_EditDerive):
+            def setSourceEntities(self, entities, excluded):
+                answered = super().setSourceEntities(entities, excluded)
+                self.sourceEntities = list(entities) + list(entities[:1])
+                return answered
+        res = io.set_source_entities(design, _ListsTwice(design), ["PS_A", "PS_B"])
+        assert _details(res)["source_identity_verified"] is False
+        assert "re-read source entities are not the requested ones" in res["message"]
+
+    def test_bodies_that_do_not_read_beforehand_refuse_before_the_write(self, monkeypatch):
+        monkeypatch.setattr(io._edit_feature_common, "all_shapes", lambda design: None)
+        design = _edit_design()
+        derive = _EditDerive(design)
+        res = io.set_source_entities(design, derive, ["PS_B"])
+        assert res["isError"] is True and "Nothing was written" in res["message"]
+        assert derive.calls == [] and design._computes == 0
+
+    def test_bodies_are_judged_after_a_recompute_and_unread_ones_are_an_error(self, monkeypatch):
+        design = _edit_design()
+        state = _stale_until_recompute(monkeypatch, design)
+        derive = _EditDerive(design)
+        land = derive.setSourceEntities
+
+        def stale_write(entities, excluded):
+            state["writes"] = design._computes + state.get("lag", 1)
+            return land(entities, excluded)
+        monkeypatch.setattr(derive, "setSourceEntities", stale_write)
+        out = _payload(io.set_source_entities(design, derive, ["PS_B"]))
+        assert out["edited"] is True and out["recomputed"] is True and design._computes == 1
+        assert [row["body"] for row in out["bodies_arrived"]] == ["PS_B"]
+        state["lag"] = 2
+        res = io.set_source_entities(design, derive, ["PS_A"])
+        assert "did not re-read after the recompute" in res["message"]
+        assert _details(res)["source_entities_after"] == ["PS_A"]
+
+
+class _RewritesDependent(_EditDerive):
+    """DECLARED, not measured: breakLink that also rewrites the expression of a dependent."""
+    def breakLink(self):
+        answered = super().breakLink()
+        self._design.allParameters.itemByName("PP_Dep").expression = "14 mm"
+        return answered
+
+
+class _DropsBody(_EditDerive):
+    """DECLARED, not measured: breakLink that removes one body and resizes another."""
+    def breakLink(self):
+        bodies = self._design.rootComponent.bRepBodies
+        bodies._items = [b for b in bodies._items if b.name != "PS_A"]
+        bodies._items[0].volume = 5.0
+        return super().breakLink()
+
+
+@pytest.mark.usefixtures("body_shapes")
+class TestBreakLink:
+    def test_the_reply_names_the_replacement_and_never_the_same_feature(self):
+        design = _edit_design([_typed("PS_Fav_Ref", "DerivedParameter")])
+        out = _payload(io.break_link(design, _EditDerive(design)))
+        assert (out["kind_before"], out["kind_after"]) == ("DeriveFeature", "BaseFeature")
+        assert out["same_feature"] is False and out["replaced"] is True
+        assert (out["timeline_index"], out["name_after"]) == (0, "Derive1")
+        assert (out["timeline_count_before"], out["timeline_count_after"]) == (1, 1)
+        assert "was REPLACED" in out["note"] and "cannot restore the link" in out["note"]
+        assert out["parameters_disappeared"] == ["PS_Fav_Ref"]
+        assert "Parameters gone with the link: 'PS_Fav_Ref'." in out["note"]
+        assert out["bodies_changed"] == [] and out["bodies_left"] == []
+        assert "bodies read the same before and after" in out["note"]
+
+    def test_a_dependent_of_a_lost_parameter_reports_both_expressions(self):
+        dep = _typed("PP_Dep", "UserParameter", "PS_Fav_Ref * 2")
+        design = _edit_design([dep, _typed("PS_Fav_Ref", "DerivedParameter", dependents=[dep])])
+        out = _payload(io.break_link(design, _RewritesDependent(design)))
+        assert out["dependents_of_disappeared"] == [{
+            "name": "PP_Dep", "depended_on": "PS_Fav_Ref", "present_after": True,
+            "expression_before": "PS_Fav_Ref * 2", "expression_after": "14 mm"}]
+        assert "'PP_Dep' (used 'PS_Fav_Ref')" in out["note"]
+
+    def test_bodies_that_changed_or_left_with_the_link_are_named(self):
+        design = _edit_design(derived=("PS_A", "PS_B"))
+        out = _payload(io.break_link(design, _DropsBody(design)))
+        assert out["bodies_left"] == [{"component": "Root", "body": "PS_A"}]
+        assert out["bodies_changed"] == [{"component": "Root", "body": "PS_B"}]
+        assert "Left: 'PS_A'. Changed: 'PS_B'." in out["note"]
+
+    @pytest.mark.parametrize("mode, said, replaced", [
+        ("ignored", "a DeriveFeature still reads at its timeline index", False),
+        ("false", "breakLink answered False", False),
+        ("raises", "Fusion raised: 3 : refused.", False),
+        ("late", "Fusion raised: 3 : raised after the change.", True),
+        ("breaks", "the timeline has new errors: 'Derive1'", True),
+    ])
+    def test_a_break_that_does_not_verify_is_an_error_with_the_re_read_state(self, mode, said,
+                                                                             replaced):
+        design = _edit_design([_typed("PS_Fav_Ref", "DerivedParameter")])
+        res = io.break_link(design, _EditDerive(design, mode=mode))
+        details = _details(res)
+        assert said in res["message"]
+        assert details["kind_after"] == ("BaseFeature" if replaced else "DeriveFeature")
+        assert details["same_feature"] is (False if replaced else None)
+        assert ("was REPLACED and this function cannot restore" in res["message"]) is replaced
+        assert details["parameters_disappeared"] == (["PS_Fav_Ref"] if replaced else [])
+
+    def test_a_rolled_back_marker_is_refused_before_the_write(self):
+        design = _edit_design(marker=0)
+        derive = _EditDerive(design)
+        res = io.break_link(design, derive)
+        assert res["isError"] is True and "marker reads 0 of 1" in res["message"]
+        assert derive.calls == []
+
+    def test_a_feature_that_does_not_read_as_a_derive_is_refused(self):
+        design = _edit_design()
+        derive = _EditDerive(design)
+        derive.timelineObject.entity = SimpleNamespace(objectType="adsk::fusion::ExtrudeFeature")
+        res = io.break_link(design, derive)
+        assert res["isError"] is True and "reads kind 'ExtrudeFeature'" in res["message"]
+        assert derive.calls == []
+
+    def test_a_parameter_census_that_does_not_read_refuses_before_the_write(self):
+        design = _edit_design([_typed("PS_Fav_Ref", "DerivedParameter"),
+                               _typed("PS_Fav_Ref", "ModelParameter")])
+        derive = _EditDerive(design)
+        res = io.break_link(design, derive)
+        assert res["isError"] is True and "Nothing was written" in res["message"]
+        assert derive.calls == []

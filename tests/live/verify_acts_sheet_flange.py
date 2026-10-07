@@ -468,6 +468,98 @@ def _one_body(p):
                      per_body.get("per_body_count") == 1)
 
 
+def _capture_flange_height(p):
+    feature = _RECALL.get("flange_height_feature")
+    rows = [r for r in (p.get("timeline") or {}).get("timeline", [])
+            if r.get("name") == feature and r.get("component") == _PART]
+    params = (rows[0].get("params") or []) if len(rows) == 1 else []
+    matches = [r for r in params if r.get("role") == "FlangeHeight"]
+    name = matches[0].get("name") if len(matches) == 1 else None
+    if name:
+        _RECALL["flange_height_parameter"] = name
+    return _measured("one scoped flange height parameter", {"feature": feature,
+                     "rows": len(rows), "matches": matches},
+                     len(rows) == 1 and len(matches) == 1 and bool(name)
+                     and matches[0].get("expression") == "20 mm" and _healthy_timeline(p))
+
+
+def _read_flange_height(expression, value):
+    def check(p):
+        rows = [r for r in (p.get("timeline") or {}).get("timeline", [])
+                if r.get("name") == _RECALL.get("flange_height_feature")
+                and r.get("component") == _PART]
+        params = (rows[0].get("params") or []) if len(rows) == 1 else []
+        matches = [r for r in params if r.get("name") == _RECALL.get("flange_height_parameter")]
+        got = matches[0] if len(matches) == 1 else {}
+        return _measured("flange height expression and value", got,
+                         len(matches) == 1 and got.get("role") == "FlangeHeight"
+                         and got.get("expression") == expression and _near(got.get("value"), value, 1e-6)
+                         and _healthy_timeline(p))
+    return check
+
+
+def _flange_height_effect(expected_height, volume_delta):
+    def check(p):
+        mass = p.get("mass") or {}
+        bbox = {axis: p.get(axis) for axis in "xyz"}
+        return _measured("flange parameter drives landed body", {
+            "bbox": bbox, "volume": mass.get("volume"),
+            "parameter": _RECALL.get("flange_height_parameter")},
+            _near(p.get("z"), expected_height, .05)
+            and _near(mass.get("volume"),
+                      _RECALL.get("flange_landed_volume", 0) + volume_delta, .02))
+    return check
+
+
+def _capture_flange_landed_volume(p):
+    volume = (p.get("mass") or {}).get("volume")
+    if isinstance(volume, (int, float)):
+        _RECALL["flange_landed_volume"] = volume
+    return _measured("landed flange volume baseline", {"volume": volume, "z": p.get("z")},
+                     isinstance(volume, (int, float)) and _near(p.get("z"), 20, .05))
+
+
+def _healthy_timeline(p):
+    timeline = p.get("timeline") or {}
+    summary = timeline.get("summary") or {}
+    rows = timeline.get("timeline") or []
+    return (timeline.get("truncated", False) is False and timeline.get("returned") == timeline.get("count")
+            and set(summary.get("states") or {}) == {"healthy"}
+            and isinstance(summary.get("exceptions"), list) and not summary.get("exceptions")
+            and all(r.get("health", "healthy") == "healthy"
+                    and r.get("is_rolled_back", False) is False for r in rows))
+
+
+def _flange_baseline(p):
+    rows = (p.get("timeline") or {}).get("timeline") or []
+    state = [(r.get("name"), r.get("type"), r.get("health", "healthy")) for r in rows]
+    _RECALL["flange_refusal_timeline"] = state
+    return _measured("flange refusal timeline baseline", state,
+                     bool(state) and _healthy_timeline(p))
+
+
+def _flange_refusal_timeline(p):
+    rows = (p.get("timeline") or {}).get("timeline") or []
+    state = [(r.get("name"), r.get("type"), r.get("health", "healthy")) for r in rows]
+    return _measured("numeric-only flange refusal preserves timeline", state,
+                     state == _RECALL.get("flange_refusal_timeline")
+                     and _healthy_timeline(p))
+
+
+def _flange_blank_state(p, compare=False):
+    mass = p.get("mass") or {}
+    state = {"min": p.get("min_point"), "max": p.get("max_point"),
+             "volume": mass.get("volume"), "body_count": mass.get("per_body_count")}
+    if not compare:
+        _RECALL["flange_refusal_body"] = state
+    return _measured("numeric-only flange refusal preserves blank body", state,
+                     bool(state["min"]) and bool(state["max"])
+                     and _near(state["volume"], _RECALL.get("flange_refusal_body", {}).get("volume"), .01)
+                     and state["min"] == _RECALL.get("flange_refusal_body", {}).get("min")
+                     and state["max"] == _RECALL.get("flange_refusal_body", {}).get("max")
+                     and state["body_count"] == _RECALL.get("flange_refusal_body", {}).get("body_count"))
+
+
 _SHEET_FLANGE = _SHEET_BUILD[:-1] + [
     # --- native edge flanges off the SAME rule (R=2, T=1.5, K=0.42, all mm): the bend bulges the
     # rim by R+T=3.5 mm and an OUTER-datum distance reaches that height exactly --------------------
@@ -475,9 +567,37 @@ _SHEET_FLANGE = _SHEET_BUILD[:-1] + [
     ("find_geometry", {"target": _PART, "kind": "line_edge", "max_results": 40},
      _one_edge("blank rim edge at x=80", x=80, z=1.5, length=40),
      ("sm_edge_x80", _edge_handle(x=80, z=1.5, length=40))),
+    ("param_add", {"name": "FlangeWitnessH", "expression": "12 mm", "unit": "mm"},
+     lambda p: p.get("added") is True and (p.get("parameter") or {}).get("name") == "FlangeWitnessH", None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _flange_baseline, None),
+    ("model_inspect", {"target": _PART, "include": ["default", "mass"], "per_body": True, "units": "mm",
+                        "accuracy": "very_high"}, lambda p: _flange_blank_state(p), None),
     ("sheet_create_flange", lambda c: {"kind": "edge",
                                         "edges": [_ctx_get(c, "sm_edge_x80", "blank rim edge at x=80")],
-                                        "distance": 20}, _flange_created(), None),
+                                        "distance": "FlangeWitnessH"},
+     _refused("'distance' must be a number"), None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _flange_refusal_timeline, None),
+    ("model_inspect", {"target": _PART, "include": ["default", "mass"], "per_body": True, "units": "mm",
+                        "accuracy": "very_high"}, lambda p: _flange_blank_state(p, True), None),
+    ("sheet_create_flange", lambda c: {"kind": "edge",
+                                        "edges": [_ctx_get(c, "sm_edge_x80", "blank rim edge at x=80")],
+                                        "distance": 20}, _flange_created(),
+     ("flange_height_feature", _recall("flange_height_feature", lambda p: p["feature"]))),
+    ("model_inspect", {"target": _PART, "include": ["default", "mass"], "per_body": True,
+                        "units": "mm", "accuracy": "very_high"}, _capture_flange_landed_volume, None),
+    ("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+     _capture_flange_height, None),
+    ("param_set", lambda c: {"name": _RECALL.get("flange_height_parameter"),
+                              "expression": "FlangeWitnessH"}, "ok", None),
+    ("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+     _read_flange_height("FlangeWitnessH", 1.2), None),
+    ("model_inspect", {"target": _PART, "include": ["default", "mass"], "units": "mm",
+                        "accuracy": "very_high"}, _flange_height_effect(12, -480), None),
+    ("param_set", {"name": "FlangeWitnessH", "expression": "20 mm"}, "ok", None),
+    ("design_get", {"include": ["timeline"], "timeline_params": True, "max_results": 2000},
+     _read_flange_height("FlangeWitnessH", 2.0), None),
+    ("model_inspect", {"target": _PART, "include": ["default", "mass"], "units": "mm",
+                        "accuracy": "very_high"}, _flange_height_effect(20, 0), None),
     ("model_inspect", {"target": _PART, "include": ["default"]}, _flange1_envelope, None),
     ("find_geometry", {"target": _PART, "kind": "line_edge", "max_results": 40},
      _one_edge("blank rim edge at x=0", x=0, z=1.5, length=40),

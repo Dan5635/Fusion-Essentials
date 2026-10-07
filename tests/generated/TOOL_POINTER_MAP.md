@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 213  |  **description breadcrumbs:** 323  |  **note/error breadcrumbs:** 708
+**Tools:** 215  |  **description breadcrumbs:** 327  |  **note/error breadcrumbs:** 717
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,36 +17,37 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (8)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (56)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (58)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_edit`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
-- **55x** across 54 module(s): "No active design. Create or open a document first (see doc_new)."
+- **56x** across 55 module(s): "No active design. Create or open a document first (see doc_new)."
 - **24x** across 24 module(s): "No active design. Open or create a document first (see doc_new)."
 - **8x** across 8 module(s): "No active design with components."
 - **7x** across 2 module(s): "' with design_delete_feature."
 - **6x** across 3 module(s): "Could not create output directory '"
+- **5x** across 4 module(s): "' has unreadable timeline identity; nothing was edited."
 - **5x** across 5 module(s): "'. Use: new, join, cut, intersect."
 - **5x** across 5 module(s): "Fusion declined to delete '"
-- **4x** across 3 module(s): "' has unreadable timeline identity; nothing was edited."
+- **5x** across 4 module(s): "No active design (open a document with design geometry)."
 - **4x** across 4 module(s): "'. Use sketch_get or sketch_create."
 - **4x** across 3 module(s): "'s evaluated-health census is unreadable; nothing was edited."
+- **4x** across 1 module(s): ". Read design_get(include=['configurations'])."
 - **4x** across 3 module(s): "; roll after it with design_edit_timeline."
 - **4x** across 1 module(s): "Edits already applied before the failure:"
-- **4x** across 4 module(s): "No active design (open a document with design geometry)."
 - **4x** across 4 module(s): "deleteMe() reported success for '"
 - **4x** across 4 module(s): "is not available on this Fusion version."
 - **4x** across 1 module(s): "setMotionData reported success on '"
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
-- `doc_new`  <- 88  (desc 0, note 88)
-- `design_get`  <- 60  (desc 12, note 48)
+- `doc_new`  <- 89  (desc 0, note 89)
+- `design_get`  <- 63  (desc 13, note 50)
 - `find_geometry`  <- 56  (desc 14, note 42)
 - `design_delete_feature`  <- 39  (desc 16, note 23)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
 - `model_inspect`  <- 31  (desc 5, note 26)
-- `sketch_get`  <- 26  (desc 7, note 19)
+- `sketch_get`  <- 28  (desc 8, note 20)
 - `data_get`  <- 25  (desc 9, note 16)
 - `doc_open`  <- 25  (desc 5, note 20)
 - `sketch_create`  <- 25  (desc 7, note 18)
@@ -1359,6 +1360,22 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - No configuration named '
 - ' did not take (the API may still be persisting a recent save - retry shortly).
 - Configuration renamed. Address it by the new name from now on.
+- . Address the copy by 'configuration' or 'id'.
+- Provide 'name' - the configuration to copy (its name or id); 'new_name' names the copy.
+- . Read design_get(include=['configurations']).
+- copy() ran on configuration '
+- - whether a row was added is unread. Read design_get(include=['configurations']) before retrying.
+- . Read design_get(include=['configurations']) before retrying.
+- Copying configuration '
+- ' did not verify: copy() returned
+- copied cell(s) read differently from the source in column(s)
+- ; the new row stays in the table. Read design_get(include=['configurations']); to discard the copy, call action='delete_configuration', name='
+- ' deleted; this tool cannot restore a deleted configuration.
+- Provide 'name' - the configuration to delete (its name or id).
+- - whether the row is gone is unread. Read design_get(include=['configurations']) before retrying.
+- Deleting configuration '
+- ' did not verify: deleteMe() answered
+- Fusion refused deleting configuration '
 - Provide 'parameter' - the name of a model parameter to vary across configurations.
 - '. (Add/expose it first; a parameter column only matters if the parameter drives geometry.)
 - Values reference configurations that don't exist:
@@ -1438,8 +1455,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' after the set - the mapping did not take.
 - No material named '' in the design. Copy it into the design first (design.materials.addByCopy from a loaded material library) - a configuration material cell only accepts a material the design alre...
 - Switching to '' left the timeline with a new error (). This configuration's values may over/under-constrain the model - the switch stands; inspect with design_get(include=['timeline']).
+- copy() ran on configuration '', but afterwards  - whether a row was added is unread. Read design_get(include=['configurations']) before retrying.
+- Copying configuration '' did not verify: copy() returned  and the table lists  new row(s). Read design_get(include=['configurations']) before retrying.
+- , but  copied cell(s) read differently from the source in column(s) ; the new row stays in the table. Read design_get(include=['configurations']); to discard the copy, call action='delete_configura...
+- deleteMe() answered  for configuration '', but afterwards  - whether the row is gone is unread. Read design_get(include=['configurations']) before retrying.
 - '' is a  parameter and a  column cannot be driven: a cell's expression and its textValue each accept a write and discard it, cell.textValue raises on read, and the parameter's textValue is the same...
 - Cell '' of the '' column reads  after the set - the expression '' did not verifiably take.  Relabel per configuration with param_set after activating the row.
+- The suppress column for group '' did not verify: addSuppressColumn . Read design_get(include=['configurations']) before retrying.
+- Suppress column  (id ) for group ''  and stays, but  of  requested cell(s) do not read suppressed: . Cells that do: . Read design_get(include=['configurations']).
+- Group '' reads half applied under the active configuration '': suppressed ; not suppressed . The column and its cells stay. Read design_get(include=['timeline']).
 - No appearance named '' in the design. Copy it in first (design.appearances.addByCopy) - appearance_set copies the Fusion Appearance Library's 'Paint - Enamel Glossy (White)' and keeps it in the doc...
 - The appearance table holds  theme rows after adding, not the  this call needs - one per configuration named in 'appearances'. Name fewer configurations, or add the theme rows in the UI first.
 - Configuration '' moved to a new theme row, but column '' did not carry its material over - the material table is partially built; inspect it before retrying.
@@ -1681,6 +1705,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Could not read the timeline:
 - The active design is not a Configured Design (it has no configuration table) - e.g. a design with Variant A/Variant B style options.
 - include=['attributes'] needs 'attribute_group' - the group to read (the same group design_edit_timeline(action='set_attribute') wrote with). Leave 'attribute_key' empty to get every key in that group.
+- Read at the current marker without rolling. supported_edits gives qualified calls and usable operand handles; reacquire at edit time.
 - Read at the current marker without rolling. Null is unknown unless applicable=false; unavailable gives getter failures. Through-all extent_side_count is its native one/two-side flag; extrude direct...
 - Loft sections are in order; null fields are unreadable. Use profile_handle with model_edit_loft; model_inspect include=['mass'] reads mass, volume and density, not the assigned material's name.
 - tapped=false or thread_present=false means absent; applicable=false means inapplicable. Other null fields are unknown. Measure tapped bore geometry with find_geometry/model_inspect; full-length thr...
@@ -1689,7 +1714,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - adsk::fusion::LoftFeature
 - include=['definition'] requires 'feature'; use include=['timeline'] to find it.
 - ' has unsupported definition type
-- ; this slice reads Hole/Thread/Loft/Extrude/Sweep. Use include=['timeline'] or model_inspect.
+- ; use include=['timeline'] or model_inspect.
 - Definition inventory only. Use find_geometry(kind=construction_axis/construction_plane/construction_point, target=<occurrence>, name=<exact name>) for world geometry and a placed handle. Narrow wit...
 - Light nodes: name, component, body_count, child_count. Narrow: name_filter, component=<name>, max_depth, max_results. tree_handles=true adds handle/full_path/source ids. children_truncated = a leve...
 - lists at most  (per_body_truncated past that); one component has no narrower scope, so read the rest with model_inspect(target='<body>').
@@ -1697,7 +1722,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Each params[].value is in Fusion internal units (cm / radians) - params[].expression carries the authored unit. Full records: param_get(include_model_parameters=true).
 - A group is ONE row here, carrying member_count and is_collapsed; a COLLAPSED group's members are not listed, though summary.states counts them (an exception from one carries index null - address it...
 - part_number and description are writable with design_set_metadata; id and revision_id are reads only - no tool here writes them.
-- '' has unsupported definition type ; this slice reads Hole/Thread/Loft/Extrude/Sweep. Use include=['timeline'] or model_inspect.
 - 'default' keeps overview; include=. 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/'tree_handles' scope the tree; 'group'/'include_suppressed'/'timeline_params' the timeline; 'li...
 
 ### `design_move_occurrence`
@@ -1782,14 +1806,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `design_set_name`
 - 'new_name' is required - a non-empty name to give the target.
+- Unknown rename kind '
 - No active design. Open a document first (see doc_open / doc_new).
+- already holds the name '
 - ' but the name could not be read back, so the rename is unverified. Check the browser (design_get(include=['tree'])).
 - The rename did not take -
 - ' after setting the name to '
 - Could not reach the component behind
 - ' is the ROOT component and Fusion refuses to rename it ('root component name cannot be changed') - its name IS the document name. Rename the document instead (doc_save_as), or target a body/sub-co...
 - ' is this design's ROOT component could not be read, and the platform's refusal to rename the root aborts the enclosing transaction even when it is caught - so this rename was not attempted. Target...
-- already holds the name '
 - '' is the ROOT component and Fusion refuses to rename it ('root component name cannot be changed') - its name IS the document name. Rename the document instead (doc_save_as), or target a body/sub-c...
 - Whether '' is this design's ROOT component could not be read, and the platform's refusal to rename the root aborts the enclosing transaction even when it is caught - so this rename was not attempte...
 - Renamed  to '' but the name could not be read back, so the rename is unverified. Check the browser (design_get(include=['tree'])).
@@ -1905,12 +1930,24 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Source component name '' is ambiguous -  distinct components share it; refusing rather than deriving the wrong one. Available: .
 - Source body '' not found. Use a SOURCE body name or 'Component/Body', not a handle; doc_activate the source, then design_get(include=['tree'], tree_bodies=true).
 - Whether source component '' is the source design's ROOT could not be read, and the root derives as itself while any other component derives through its occurrences - so which entities to derive is ...
+- on derive '', but the bodies are unverified:  A body built after the derive can read no geometry until the design recomputes. Run design_recompute, then read design_get(include=['tree','timeline'],...
+- Nothing was written to derive '': the body shapes of the design did not read, so the edit's effect on them could not be judged. Run design_recompute, then retry.
+- The timeline marker reads  of ; favorite parameters of derive '' are edited with the marker at the end. Roll to the end with design_edit_timeline, then retry.
+- Derive '' did not read isIncludeFavoriteParameters; nothing was written. Check the feature with design_get(include=['timeline']).
+- Fusion raised while setting isIncludeFavoriteParameters  on derive '':  The flag reads  now, and 'details' lists the parameters as re-read after the raise. Read param_get(include_model_parameters=t...
+- Derive '' reads isIncludeFavoriteParameters  after setting . Read param_get(include_model_parameters=true) for the parameters as they are now.
+- derive '' did not read its sourceDesign, and the active design's bodies are not its source. Check the feature with design_get(include=['timeline'])
+- Setting the source entities of derive '' to  did not verify:  They read  now, and 'details' lists the bodies as re-read. Read design_get(include=['tree','timeline'], tree_bodies=true) before retrying.
+- Derive '' now reads source entities . The design was recomputed. Confirm with design_get(include=['tree'], tree_bodies=true).
+- The timeline item of '' at index  reads kind , not ; nothing was written. Pass a derive feature listed by design_get(include=['timeline']).
+- Nothing was written to derive '': , so what goes with the link could not be judged. Read param_get(include_model_parameters=true).
+- Breaking the link of derive '' did not verify:  . 'details' lists the bodies and parameters as re-read. Read design_get(include=['timeline']) and param_get(include_model_parameters=true) before ret...
 - Could not resolve '' to a saved document. Tried: . Pass a lineage URN or web URL (from data_get). The document must be SAVED to the cloud.
 - The source document '' is not open. This tool derives from an ALREADY-OPEN source (Fusion loads documents asynchronously - it cannot load one within a single call). Open it first: doc_open(file_id=...
 - Source body '' belongs to sub-component ''; a derive with a sub-component body in source_bodies is refused at configure ('3 : invalid argument entities'). Nothing was derived. Derive its component:...
 - Whether the derive's target component is this design's root could not be read, so the check for a derive that landed at ROOT instead of nested was not run - the bodies reported below landed, but WH...
 - Derive landed at the ROOT component (), not in  - the target activation did not take, so the nesting failed. Retry after removing it, or keep it and move on.
-- include_parameters/include_favorite_parameters was requested but 0 new user parameters landed - this Fusion API flag is reported flaky; confirm with param_get (the source design may also simply def...
+- include_parameters/include_favorite_parameters was requested and no new derived or user parameter reads in the design (the source may define none). Source values can land as read-only model paramet...
 - nesting activated  and the restore to root ran, but  - the return to ROOT is not confirmed. Set the edit target with design_activate_component(occurrence='root').
 - the active edit target was '' before this call and reads ROOT now (nesting activates the target, then returns to root). Re-activate with design_activate_component if needed.
 
@@ -2609,6 +2646,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Drive of '' moved the placement of '' by  mm but its own body geometry did not move ( mm) - the transform is a claim, the body corner is the evidence. Read the pose back with assembly_get.
 - 'moved' names the member whose placement changed across this drive: delta_mm is how far its origin moved (mm), delta_deg the angle between its before and after orientation (a magnitude, no sense), ...
 - No body of  itself gave a box on both sides of the drive, so geometry_moved_mm is unread there - the placement change is not checked against geometry.
+- other_moved samples other placed occurrences across this drive; motion_scope qualifies the scan. Read assembly_get(include=['poses']) for the remaining placements.
 - NOTE: '' names  joints, so which one the link points at is not established here - the second-member refusal was decided over ALL of them. Rename one in Fusion so the name resolves to a single joint.
 - NOTE: '' is motion-linked to '' by , which reads neither suppressed nor compute-failed - the link couples the two joints, so read the partner back with assembly_get rather than driving it. In xref ...
 - NOTE: '' is motion-linked to '' by , which  - this receipt makes NO claim that the partner moved with it, and the second-member refusal is not armed for this pair. Read '' back with assembly_get to...
@@ -3200,6 +3238,37 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Two-sided through_all with cut/intersect participant assignment is unsupported. Use separate one-sided features or the Fusion UI.
 - The profile sketch '' has an unreadable timeline row. Read design_get(include=['timeline']) before retrying; nothing was edited.
 
+### `model_edit_feature`
+- The feature definition and checked body shapes and occurrence frames were read back.
+- Read design_get(include=['definition']).
+- ' does not support action='
+- This feature subtype has no admitted edits.
+- 'set_index' is unused for action='
+- 'references' is unused for action='
+- 'mode' is unused for action='
+- ' has unreadable timeline identity; nothing was edited.
+- The timeline marker is at
+- ; roll it to the end with design_edit_timeline(action='roll', to='end') before editing.
+- ' has invalid timeline row
+- ' must be unsuppressed; nothing was edited.
+- ' must be an unsuppressed parametric feature; nothing was edited.
+- ' has a base-feature relationship that is not readable as absent; inspect design_get before editing it.
+- ' evaluated health is unreadable; nothing was edited.
+- ' has an unreadable owner; nothing was edited.
+- ' geometry is unreadable (
+- ); nothing was edited.
+- Feature edit refused:
+- . Nothing was edited.
+- , the only type action='
+- ' edits. Build one with
+- ' must be an unsuppressed parametric datum; nothing was edited.
+- ' owner or evaluated health is unreadable; nothing was edited.
+- ' definition is unreadable:
+- ; nothing was edited.
+- ' geometry or the body census is unreadable
+- 'references' did not read as an operand:
+- Edit one aspect; design_get lists typed inputs. Edits change the shared owner component definition. Dimensions: param_set.
+
 ### `model_edit_loft`
 - Loft section changed on the same feature. Inspect model_inspect.
 - 'section_index' must be a nonnegative integer (got
@@ -3216,7 +3285,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Restore it with model_edit_loft(feature='', action='retarget', section_index=, profile={'sketch': '', 'profile_index': }).
 
 ### `model_edit_sweep`
+- Sweep Cut scope changed on the same feature; inspect model_inspect.
+- Sweep changed to Cut with the requested bodies; inspect model_inspect.
 - Sweep operand changed on the same feature. Boolean edits retain the current participants; newly reached bodies are excluded. Inspect model_inspect.
+- action='operation' requires 'operation'.
+- action='operation' requires nonempty explicit 'target_bodies'.
+- action='participants' requires nonempty 'target_bodies'.
 - ' has unreadable timeline identity; nothing was edited.
 - ; roll after it with design_edit_timeline.
 - ' has unreadable or active linked features; nothing was edited.
@@ -3372,8 +3446,14 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - with design_delete_feature, then retry with 'face' taken from find_geometry on the instance you mean.
 - Provide 'points' - a list of [x, y, z] positions on the face to drill at.
 - ' is not a drillable hole - a blind hole needs a POSITIVE depth (e.g. '10 mm'), or use extent='through'.
+- The native owner of 'face' did not read; reacquire it with find_geometry on the intended body.
+- The owner-space plane of 'face' did not read; reacquire a planar face with find_geometry.
+- off the plane of 'face'; use a point on the selected face in its owner's frame.
+- ; use an interior owner-frame point on 'face'. No hole was created.
 - Could not resolve 'edge' to an edge. Pass a find_geometry edge handle.
 - (sketches.add returned nothing)
+- landed but its owner-space drill axis did not verify at point=
+- ; inspect design_get(include=['timeline']) and remove it with design_delete_feature.
 - The hole was drilled but carries no tap, so '
 - ' did not take. Remove '
 - ' with design_delete_feature.
@@ -3389,17 +3469,21 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The tap was requested
 - placement='on_edge' needs 'edge' - a find_geometry handle at the edge to position the hole along.
 - placement='on_edge' needs 'edge_position' - one of:
-- placement='plane_offsets' needs 'point' - an approximate [x, y, z] hole location (picks the solution when several are possible).
-- placement='plane_offsets' needs 'offset_edge_one' and 'offset_one'.
-- placement='plane_offsets': 'offset_edge_two' and 'offset_two' must be given together.
 - . Use a decimal length such as '0.3125 in' or an existing parameter expression.
 - Could not resolve 'offset_edge_two' to an edge.
 - Could not position the hole at the edge's center:
 - is not available on this Fusion version.
 - Fusion refused to place the hole at the '
 - ' of that edge, so nothing was placed. Check that 'edge' borders 'face'.
-- Fusion refused the plane-and-offsets placement, so nothing was placed. Check that both offset edges border 'face' and the offsets reach a point on it.
+- placement='face_point' needs a finite [x,y,z] 'point'; got
+- placement='face_point' uses only 'face' and 'point'; remove points, edge and offsets.
+- placement='plane_offsets' needs 'point' - an approximate [x, y, z] hole location (picks the solution when several are possible).
+- placement='plane_offsets' needs 'offset_edge_one' and 'offset_one'.
+- placement='plane_offsets': 'offset_edge_two' and 'offset_two' must be given together.
 - Could not position the hole on the edge:
+- setPositionByPoint returned
+- Fusion refused the plane-and-offsets placement, so nothing was placed. Check that both offset edges border 'face' and the offsets reach a point on it.
+- Could not position the hole at point=
 - ; expected [x, y, z] in '
 - Could not position the hole by plane and offsets:
 - placement='plane_offsets' measures from STRAIGHT edges; '' is  edge. Pass a linear edge handle from find_geometry(kind='line_edge').
@@ -3411,6 +3495,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Point  lies  '' off the plane of 'face', and a points_space='world' point must lie ON that face - projecting it would drill somewhere else. Take the position from find_geometry on this face.
 - Fusion rejected the through-all hole extent (setAllExtent returned false), so nothing was drilled. Retry with extent='blind' and a depth that clears the body.
 - The hole was created through the host component, but . Remove  with design_delete_feature, then retry with 'face' taken from find_geometry on the instance you mean.
+- Hole  landed but its owner-space drill axis did not verify at point=; inspect design_get(include=['timeline']) and remove it with design_delete_feature.
 - 'scoped_to_bodies' lists the configured participant bodies; Fusion does not expose a readback for this input. The face only locates the hole.
 - Hole '' landed, but thread controls did not verify: . Inspect design_get(include=['definition']); remove the feature with design_delete_feature if unwanted.
 - A modeled thread was requested, but the hole's thread feature could not be read back, so there is no proof the helix was cut. Remove '' with design_delete_feature.
@@ -3418,8 +3503,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `model_inspect`
 - Mesh target: triangle/vertex counts + watertight (is_closed) + bbox. (A mesh has no B-Rep bounding box or mass; target a solid body/occurrence for include=['mass'].)
-- Bounding box over the SOLID/SURFACE/MESH bodies only - sketch and construction geometry (planes, axes) are excluded, so an orphaned datum does not inflate it. Add include=['mass'] for full physical...
 - No active design. Open or create a document first (see doc_new).
+- Bounding box over the SOLID/SURFACE/MESH bodies only - sketch and construction geometry (planes, axes) are excluded, so an orphaned datum does not inflate it. Add include=['mass'] for physical prop...
+- Material/appearance reads require a body, component, or occurrence target.
 - '. Valid: mm, cm, in.
 - No bounding box available for
 - (it may have no solid geometry).
@@ -3435,6 +3521,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Use: low, medium, high, very_high.
 - Could not compute physical properties for
 - (no measurable solid? an empty or surface-only target has no mass).
+- Material/appearance reads do not support target kind '
+- '. Target a body, component, or occurrence.
 - per_body:  of  bodies shown (cap , per_body_truncated). Target a narrower occurrence/component - design_get(include=['tree']) lists them.
 - Joint Origin '' resolved, but its  axis vector did not read, so there is no frame to measure in. Omit 'frame' for a world-aligned box.
 - Joint Origin '' could not be placed in the same space as the target, so the frame its extents would be measured in is unknown. Target a body inside the occurrence you mean (find_geometry returns on...
@@ -3930,8 +4018,21 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Creating user parameter '
 - . (Model/feature parameters may be read-only or require a valid expression; text parameters need quotes, e.g. "'text'".)
 - Could not create user parameter '
+- . Rename in one call and set the value in another.
+- '. Use param_get to list them.
+- The name of parameter '
+- ' did not read; nothing was renamed.
+- ' is already this parameter's name; nothing was renamed.
+- ': another parameter already has that name. Nothing was renamed; choose a name param_get does not list.
+- ' but the name did not read back, so the rename is unverified. Read param_get before using either name.
+- ' raised no error but the parameter is still named '
+- ' - the rename did not take, and Fusion gave no reason. Try another name.
 - sketch_moves lists the points that moved over  mm, in each sketch's own coordinates (mm); sketch_get(sketch_name=...) gives that sketch's frame.
 - The value took, and the recompute left  new timeline error(s) and  new warning(s): . Nothing was rolled back; read design_get(include=['timeline']) for the messages, or set the previous value again.
+- Cannot rename '' to '': another parameter already has that name. Nothing was renamed; choose a name param_get does not list.
+- '' was assigned to '' but the name did not read back, so the rename is unverified. Read param_get before using either name.
+- Assigning '' raised no error but the parameter is still named '' - the rename did not take, and Fusion gave no reason. Try another name.
+- '' is now named '', but  dependent expression(s) do not use the new name: ;  followed. Nothing was rolled back; 'dependents' lists each expression before and after - set the stray ones with param_set.
 - Could not set '' to '': . (Model/feature parameters may be read-only or require a valid expression; text parameters need quotes, e.g. "'text'".)
 
 ### `param_set_favorite`
@@ -4395,14 +4496,53 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The solver moved , but satisfying this dimension demanded only  mm of change ( mm measured before it, driven to  mm) - a move far beyond that is what a dimension attached to the UNINTENDED entity l...
 - already stand(s) at the same  ( mm) as . If one of them is already dimensioned in , tie the two with sketch_constrain '' instead of a second , or move one point off that  first.
 - When present, 'solved' is each REFERENCED entity's geometry read back after the solve, with the distance it moved (moved_mm) getting there; geometry the solve moved elsewhere in the sketch is not c...
+- 'dimension'/'is_driving' edit one existing dimension and take no 'dimensions' batch; this call carries both. Send the batch in its own call.
+- is_driving= was assigned to  but the flag did not read back, so the change is unverified. Read it with sketch_get(include_entities=true).
 - dimensions[] uses numeric line:N or point:N ref(s)  after  in this batch. Ellipse-radius dimensions can add construction axes and endpoints, shifting line and point indices. This entry was refused ...
 - is_driving=false creates a DRIVEN (reference) dimension - the geometry controls it, so value '' cannot drive it. Drop 'value', or leave is_driving true.
 - entity_one '' did not resolve. Use '<type>:<index>' (), optionally with an anchor ':start'/':end'/':mid'/':center', e.g. 'line:0:end'.
 - This distance evaluated NEGATIVE - the solver does not mirror it. It placed the point at the signed offset, flipping it across its reference; if that spot coincides with another point the two merge...
 
+### `sketch_edit`
+- Pass exactly one of new_name, visible, plane; got
+- . Nothing was changed.
+- No active design. Create or open a document first (see doc_new).
+- 'sketch_name' is required - sketch_get lists the sketches.
+- the target's. later_features lists the timeline rows after this sketch with their health. Moving back to an earlier plane can return a different in-plane orientation; compare frame_after.
+- The timeline marker did not read, so the plane of sketch '
+- The timeline marker is at
+- ; a plane change needs it at the end. Call design_edit_timeline(action='roll', to='end') first.
+- 'plane' is empty; pass a plane alias, name or handle.
+- , which is not read as belonging to the sketch's own component, so this support change is not available yet; sketch '
+- ' was not changed. Pass a construction plane or planar face of the sketch's own component.
+- The plane geometry of
+- did not read, so sketch '
+- 'new_name' must be a non-empty name; got
+- ' already has that name; nothing was changed.
+- ' was assigned the name '
+- ' but its name did not read back, so the rename is unverified. Read it with sketch_get.
+- The rename did not take - the sketch still reads '
+- Could not rename sketch '
+- 'visible' must be true or false; got
+- but did not read back (
+- ), so the change is unverified. Read it with sketch_get.
+- The bulb did not take - sketch '
+- ' still reads isLightBulbOn=
+- Could not set the bulb of sketch '
+- Sketch '' was assigned the name '' but its name did not read back, so the rename is unverified. Read it with sketch_get.
+- The timeline marker is at  of ; a plane change needs it at the end. Call design_edit_timeline(action='roll', to='end') first.
+- 'plane' resolved to , which is not read as belonging to the sketch's own component, so this support change is not available yet; sketch '' was not changed. Pass a construction plane or planar face ...
+- Sketch.redefine returned true but the frame of sketch '' did not read back, so the change is unverified. Read it with sketch_get.
+- Sketch '' reads on  and the change REMAINS, but these timeline rows newly read error or warning: . Inspect them with design_get.
+- Sketch '' reads on  and the change REMAINS, but the timeline marker reads , was  of . Call design_edit_timeline(action='roll', to='end'), then read the sketch with sketch_get.
+- Sketch '' reads on , its normal  the target's. later_features lists the timeline rows after this sketch with their health. Moving back to an earlier plane can return a different in-plane orientatio...
+
 ### `sketch_edit_curve`
 - Curve ids are creation-order indexes per kind: removing a curve RENUMBERS the ones after it, while an added curve APPENDS at the end (both measured) - re-read sketch_get(include_entities=true) befo...
 - The whole curve was consumed: a trim on a curve with no intersections deletes it outright.
+- ' needs 'state' (true or false); got
+- break_link only breaks a link - this tool cannot re-establish one, so 'state' must be false or omitted (got
+- 'state' applies to construction/centerline only; '
 - '. Valid: mm, cm, in.
 - No active design. Create or open a document first (see doc_new).
 - No sketch to edit. Draw one first with sketch_create + sketch_add_geometry.
@@ -4422,7 +4562,29 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'distance_two' must be > 0; got
 - 'angle_deg' must be between 0 and 180 exclusive; got
 - offset needs 'distance' > 0 (in 'units'); the SIDE comes from the pick point x1,y1, so the distance is a magnitude. Got
+- centerline applies to a straight LINE; 'entity_one' = '
+- ' but the flag did not read back, so the change is unverified. Read it with sketch_get(include_entities=true).
+- ' reference True -> False. This tool cannot restore the link
+- ' did not read its reference flag, so break_link wrote nothing. Read it with sketch_get(include_entities=true).
+- reference=False was assigned to '
+- ' but the flag did not read back, so the break is unverified. Read it with sketch_get(include_entities=true).
+- break_link did not take - '
+- ' still reads reference=True after False was assigned.
+- ' broke (reference True -> False) AND the curve's geometry changed: length
+- . This tool cannot restore the link; read the curve with sketch_get(include_entities=true).
+- Could not break the link of '
+- ' still links to its source (it re-reads reference=True).
+- Breaking the link of '
+- . The link IS broken - '
+- ' re-reads reference=False - and this tool cannot restore it.
+- . Its reference flag did not read back, so whether the link broke is not known. Read it with sketch_get(include_entities=true).
 - What the pick point selects - trim: the nearest segment. extend: the nearest end. break: the crossings either side. split: the point itself. fillet/chamfer: the corner between the two. offset: the ...
+- = was assigned to '' in sketch '' but the flag did not read back, so the change is unverified. Read it with sketch_get(include_entities=true).
+- '' in sketch '' did not read its reference flag, so break_link wrote nothing. Read it with sketch_get(include_entities=true).
+- Breaking the link of '' in sketch '' raised: . The link IS broken - '' re-reads reference=False - and this tool cannot restore it.
+- Breaking the link of '' in sketch '' raised: . Its reference flag did not read back, so whether the link broke is not known. Read it with sketch_get(include_entities=true).
+- reference=False was assigned to '' in sketch '' but the flag did not read back, so the break is unverified. Read it with sketch_get(include_entities=true).
+- The link of '' in sketch '' broke (reference True -> False) AND the curve's geometry changed: length  ->  , position . This tool cannot restore the link; read the curve with sketch_get(include_enti...
 - '' needs the pick point x1,y1 (in 'units') - it chooses which segment, end, quadrant or side of the curve the edit applies to.
 - '' needs a pick point on EACH curve: x1,y1 on entity_one and x2,y2 on entity_two - together they choose the quadrant to build in.
 - offset needs 'distance' > 0 (in 'units'); the SIDE comes from the pick point x1,y1, so the distance is a magnitude. Got .
@@ -4825,11 +4987,14 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `sys_request_selection`
 - No selection was made within
-- s. Nothing was picked - an expected outcome, not a tool defect. Do NOT re-fire this tool in a loop: an unanswered hold usually means the user is not at the Fusion window or never learned a pick was...
+- s - an expected outcome, not a tool defect. Do NOT re-fire in a loop: an unanswered hold usually means the user is not at the Fusion window or never learned a pick was wanted. Tell the user what to...
 - A sys_request_selection call is already waiting (
-- s so far) - only one can be pending at a time. Wait for it to finish or time out, then retry.
+- s into its wait_seconds=
+- s left). Only one hold runs at a time, and this call does not cancel it: its caller may still be waiting. A click made while it waits is taken by that hold, which does not clear it - read it with s...
 - Could not set up the selection request (main thread unreachable).
 - Could not start the selection request:
+- A sys_request_selection call (wait_seconds=
+- ) is already running and has not begun waiting for a pick. Only one runs at a time, and this call does not cancel it. Request again.
 - Could not read the completed selection:
 - A pick landed, but the document it was made in could not be read, so no handle is returned. Read it with doc_get, then sys_get_selection.
 - The pick was made in '
@@ -4839,8 +5004,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Present a one-click confirmation to the user (a structured-output button). When they click it, call sys_get_selection to read the pick, or call sys_request_selection again with wait_seconds>0 to ho...
 - The selection listener did not register - ui.activeSelectionChanged.add() returned false. Only that listener wakes this call, so no hold was started and nothing is waiting on a pick. Retry, or call...
 - The pick was made in '' (), not in '' () where it was requested, so no handle is returned. doc_activate the document you want, then request the pick again; or read this pick in its own document wit...
-- A sys_request_selection call is already waiting (s so far) - only one can be pending at a time. Wait for it to finish or time out, then retry.
-- No selection was made within s. Nothing was picked - an expected outcome, not a tool defect. Do NOT re-fire this tool in a loop: an unanswered hold usually means the user is not at the Fusion windo...
+- A sys_request_selection call (wait_seconds=) is already running and has not begun waiting for a pick. Only one runs at a time, and this call does not cancel it. Request again.
+- A sys_request_selection call is already waiting (s into its wait_seconds=, s left). Only one hold runs at a time, and this call does not cancel it: its caller may still be waiting. A click made whi...
+- No selection was made within s - an expected outcome, not a tool defect. Do NOT re-fire in a loop: an unanswered hold usually means the user is not at the Fusion window or never learned a pick was ...
 - The pick listener could NOT be detached (), so it is still registered in Fusion and will fire on the user's next click, into this expired hold that nothing is waiting on. The next sys_request_selec...
 
 ### `sys_set_preferences`

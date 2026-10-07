@@ -25,6 +25,31 @@ from conftest import (install, load_tool, make_design, make_occurrence, _make_ob
 inp = load_tool("_inputs")
 
 
+def test_resolved_sketch_scope_keeps_the_exact_component_with_a_duplicate_name(monkeypatch):
+    curve = types.SimpleNamespace(name="Line1")
+    own_sketch = Sketch("SamePath", curves=SketchCurves(lines=[curve]))
+    other_sketch = Sketch("SamePath", curves=SketchCurves(lines=[types.SimpleNamespace(name="Twin")]))
+    owner = MakeComp(name="SameOwner", sketches=[own_sketch])
+    twin = MakeComp(name="SameOwner", sketches=[other_sketch])
+    design = MakeDesign(owner, all_components=[owner, twin])
+    monkeypatch.setattr(inp._common, "find_sketch",
+                        lambda *_args, **_kwargs: pytest.fail("lost resolved owner"))
+    resolved, reason = inp.resolve_sketch_entity(
+        design, "SamePath/line:0", resolved_component=owner)
+    assert reason is None and resolved is curve
+
+
+def test_resolved_sketch_scope_miss_does_not_offer_an_absent_component_input():
+    owner = MakeComp(name="FeatureOwner", sketches=[])
+    other = MakeComp(name="Other", sketches=[Sketch("OtherPath")])
+    design = MakeDesign(owner, all_components=[owner, other])
+    resolved, reason = inp.resolve_sketch_entity(
+        design, "OtherPath/line:0", resolved_component=owner)
+    assert resolved is None and "feature's own component" in reason
+    assert "references" in reason and "find_geometry" in reason
+    assert "as 'component'" not in reason
+
+
 # ── fakes for entity resolution ─────────────────────────────────────────────
 #
 # Faces and edges are the shared BRepFace/BRepEdge; each surface/curve fake carries its own measured
@@ -883,11 +908,10 @@ class TestPlaneRef:
         assert err is None and val is cp
 
     def test_contract_note_mentions_all_three_sources(self):
-        # All three vocabularies, in one wire clause: the alias set, the construction-plane name and
-        # the face handle. Where a handle comes from is the miss refusal's job, tested below.
+        # All three vocabularies, in one wire clause: aliases, plane names and face handles.
         note = inp.PlaneRef("plane").contract_note()
         assert "xy/xz/yz" in note and "top/front/right" in note
-        assert "construction-plane name" in note and "handle" in note
+        assert "plane name/handle" in note and "handle" in note
         assert len(note) <= 90, note
 
     def test_non_string_raw_does_not_crash(self):
@@ -2683,6 +2707,95 @@ class TestFeatureRefResolve:
         monkeypatch.setattr(inp._common, "design", lambda: design)
         _val, err = inp.FeatureRef("feature").resolve("Fillet2")
         assert "This design has no timeline" in err and "Act on the bodies" in err
+
+
+def _timeline_group(name, index, collapsed=True, members=()):
+    """A timeline group as its timeline row and its timelineGroups entry: no feature entity, a
+    collapsed flag (dropped when `collapsed` is None) and counted members."""
+    group = FakeTimelineObject(name, index, entity=None, is_group=True)
+    group.isCollapsed = collapsed
+    group.count, group.item = len(members), lambda i: members[i]
+    if collapsed is None:
+        del group.isCollapsed
+    return group
+
+
+def _install_timeline(monkeypatch, rows, groups):
+    """A parametric design whose timeline lists `rows` and whose group list holds `groups`."""
+    design = MakeDesign(design_type=1)
+    design.timeline = FakeTimeline(rows)
+    design.timeline.timelineGroups = _NamedCollection(groups)
+    monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
+    monkeypatch.setattr(inp._common, "design", lambda: design)
+
+
+class TestFeatureRefGroups:
+    """FeatureRef(allow_group=True): a collapsed timeline group by name, name@index or index."""
+
+    def _rows(self):
+        cut = FakeTimelineObject("Cut1", 0, entity=types.SimpleNamespace())
+        return cut, _timeline_group("PP_Grp", 2)
+
+    def test_the_default_kind_still_refuses_a_group_with_its_own_text(self, monkeypatch):
+        cut, group = self._rows()
+        _install_timeline(monkeypatch, [cut, group], [group])
+        val, err = inp.FeatureRef("feature").resolve("PP_Grp")
+        assert val is None
+        assert err == ("'feature': 'PP_Grp' is a timeline GROUP, which has no feature entity. "
+                       "Name the features inside it instead.")
+
+    @pytest.mark.parametrize("address", ["PP_Grp", "PP_Grp@2", "2"])
+    def test_a_group_resolves_by_name_address_and_index(self, monkeypatch, address):
+        cut, group = self._rows()
+        _install_timeline(monkeypatch, [cut, group], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve(address)
+        assert err is None and val[0] is group and val[1] == "PP_Grp"
+
+    def test_a_feature_still_resolves_through_the_group_accepting_kind(self, monkeypatch):
+        cut, group = self._rows()
+        _install_timeline(monkeypatch, [cut, group], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve("Cut1")
+        assert err is None and val == (cut.entity, "Cut1")
+
+    def test_a_name_two_groups_share_is_refused_listing_their_indexes(self, monkeypatch):
+        cut, group = self._rows()
+        twin = _timeline_group("PP_Grp", 5)
+        _install_timeline(monkeypatch, [cut, group, twin], [group, twin])
+        kind = inp.FeatureRef("feature", allow_group=True)
+        val, err = kind.resolve("PP_Grp")
+        assert val is None
+        assert err == ("'feature': 'PP_Grp' matches 2 timeline groups (PP_Grp@2, PP_Grp@5) - "
+                       "name one exactly as listed.")
+        assert kind.resolve("PP_Grp@5")[0][0] is twin
+
+    def test_a_name_a_feature_and_a_group_share_is_refused_naming_both(self, monkeypatch):
+        cut, group = self._rows()
+        feature = FakeTimelineObject("PP_Grp", 4, entity=types.SimpleNamespace())
+        _install_timeline(monkeypatch, [cut, group, feature], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve("PP_Grp")
+        assert val is None
+        assert err == ("'feature': 'PP_Grp' names both a timeline group (PP_Grp@2) and a feature "
+                       "(PP_Grp@4) - name one exactly as listed.")
+
+    def test_a_component_in_front_of_a_group_name_is_refused(self, monkeypatch):
+        cut, group = self._rows()
+        _install_timeline(monkeypatch, [cut, group], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve("Root/PP_Grp")
+        assert val is None
+        assert err == ("'feature': 'Root/PP_Grp' puts a component in front of the timeline group "
+                       "'PP_Grp', and a group takes no component qualifier. Address it as "
+                       "PP_Grp@2 or by its timeline index.")
+
+    @pytest.mark.parametrize("collapsed, reads", [(False, "reads False"), (None, "does not read")])
+    def test_a_group_that_does_not_read_collapsed_is_refused(self, monkeypatch, collapsed, reads):
+        cut, _group = self._rows()
+        group = _timeline_group("PP_Grp", 2, collapsed=collapsed)
+        _install_timeline(monkeypatch, [cut], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve("PP_Grp")
+        assert val is None
+        assert err == ("'feature': the timeline group 'PP_Grp' must be collapsed for this "
+                       f"reference, and its collapsed flag {reads}. "
+                       "design_get(include=['timeline']) lists is_collapsed per group.")
 
 
 # ── ProfileRef / ProfileRefList: stable handle first, legacy {sketch, index} fallback, ORDER-keeping ─
@@ -4595,6 +4708,41 @@ class TestJointOriginRefNativeSelector:
         root = _RootJO(jos=[], occ_by_comp={"Jaw": [_OccJO("Jaw:1", sub), _OccJO("Jaw:2", sub)]})
         return native, _DesignJO(root, subs=[sub])
 
+    def test_native_component_scope_selects_one_of_two_same_named_origins(self):
+        left_jo, right_jo = _JO("Center"), _JO("Center")
+        left, right = _Comp("Left", [left_jo]), _Comp("Right", [right_jo])
+        left.entityToken, right.entityToken = "left-owner", "right-owner"
+        design = _DesignJO(_RootJO(jos=[]), subs=[left, right])
+        found, err = self._native(design).resolve("Center", component=right)
+        assert err is None and found is right_jo
+
+    def test_native_component_scope_resolves_the_typed_origin_handle(self):
+        left_jo, right_jo = _JO("Center"), _JO("Center")
+        left, right = _Comp("Left", [left_jo]), _Comp("Right", [right_jo])
+        left.entityToken, right.entityToken = "left-owner", "right-owner"
+        handle = "JO" * 24
+        design = _DesignJO(_RootJO(jos=[]), subs=[left, right], token_map={handle: right_jo})
+        found, err = self._native(design).resolve(handle, component=right)
+        assert err is None and found is right_jo
+
+    def test_native_component_scope_refuses_an_unreadable_matching_owner(self, monkeypatch):
+        left_jo, right_jo = _JO("Center"), _JO("Center")
+        left, right = _Comp("Left", [left_jo]), _Comp("Right", [right_jo])
+        left.entityToken, right.entityToken = "left-owner", "right-owner"
+        design = _DesignJO(_RootJO(jos=[]), subs=[left, right])
+        ref = self._native(design)
+        original = inp._common.same_component
+        monkeypatch.setattr(inp._common, "same_component",
+                            lambda a, b: None if a is left else original(a, b))
+        found, err = ref.resolve("Center", component=right)
+        assert found is None and "owning component could not be identified" in err
+
+    def test_native_component_scope_rejects_a_non_joint_origin_handle(self):
+        owner = MakeComp(name="Owner", entity_token="owner")
+        design = _DesignJO(_RootJO(jos=[]), subs=[owner], token_map={"F" * 48: object()})
+        found, err = self._native(design).resolve("F" * 48, component=owner)
+        assert found is None and "not a Joint Origin" in err
+
     def test_a_single_instance_bare_name_resolves_to_the_NATIVE_not_a_proxy(self):
         native = _JO("Stock_Center")
         sub = _Comp("Stock", [native])
@@ -5882,6 +6030,29 @@ class TestPointRefForms:
         assert inp.PointRef("p").resolve("point1") == (bench_pt, None)
         env.design.activeComponent = env.root
         assert inp.PointRef("p").resolve("Point1") == (root_pt, None)
+
+    def test_owner_component_selects_a_same_named_construction_point(self, operand_env):
+        env = operand_env()
+        root_pt = ConstructionPoint("Datum", env.root, FakePoint(), token="ROOT-DATUM")
+        handle = "BENCH-DATUM-" + "X" * 48
+        bench_pt = ConstructionPoint("Datum", env.bench, FakePoint(), token=handle)
+        env.design._tokens[handle] = bench_pt
+        env.root.constructionPoints = _NamedCollection([root_pt])
+        env.bench.constructionPoints = _NamedCollection([bench_pt])
+        ref = inp.PointRef("p")
+        assert ref.resolve("Datum", owner_component=env.bench) == (bench_pt, None)
+        assert ref.resolve("Datum", owner_component=env.root) == (root_pt, None)
+        assert ref.resolve(handle, owner_component=env.bench) == (bench_pt, None)
+        point, err = ref.resolve(handle, owner_component=env.root)
+        assert point is None and "does not belong" in err
+
+    def test_owner_component_still_refuses_duplicate_names_inside_that_component(self, operand_env):
+        env = operand_env()
+        one = ConstructionPoint("Datum", env.bench, FakePoint())
+        two = ConstructionPoint("Datum", env.bench, FakePoint())
+        env.bench.constructionPoints = _NamedCollection([one, two])
+        point, err = inp.PointRef("p").resolve("Datum", owner_component=env.bench)
+        assert point is None and "names 2 construction points" in err
 
     def test_a_handle_naming_a_face_is_refused_with_its_type(self, operand_env):
         operand_env(tokens={"F": BRepFace(Plane(FakeVector3D(0, 0, 1)))})

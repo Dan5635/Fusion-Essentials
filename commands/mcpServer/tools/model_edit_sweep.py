@@ -1,7 +1,7 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Replace one profile or path operand on a parametric Sweep feature."""
+"""Edit a measured Sweep operand or Boolean scope on a parametric feature."""
 
 import hashlib
 
@@ -14,6 +14,7 @@ from ..mcp_primitives.registry import register
 from . import _assert, _common, _design_common, _inputs, _sketch_detail, _sweep_common
 from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address,
                                    body_creator, failed,
+                                   collection_entities as _collection_entities,
                                    feature_body_keys as _feature_body_keys,
                                    health as _health, identical_geometry_reply,
                                    later_operand_refusal, matched, operand_source,
@@ -24,8 +25,11 @@ from ._common import counted, error, ok, outcome_clause, safe
 
 
 _FEATURE = _inputs.FeatureRef("feature", required=True)
-_ACTION = _inputs.Choice("action", ("profile", "path"), required=True)
-_SPEC = [_FEATURE, _ACTION]
+_ACTION = _inputs.Choice("action", ("profile", "path", "guide_path", "operation", "participants"),
+                        required=True)
+_OPERATION = _inputs.boolean_op(default=None, description="")
+_TARGET_BODIES = _inputs.BodyRefList("target_bodies", kind="solid")
+_SPEC = [_FEATURE, _ACTION, _OPERATION, _TARGET_BODIES]
 _UNREAD = object()
 _KEEP_OWNER_MODE = "Replacement profile must keep this Sweep's owner and solid/surface mode."
 
@@ -59,23 +63,52 @@ def _definition(feature):
     read = read_sweep_definition(feature)
     profile = _profile_members(read["profile"])
     path = _path_members(read["path"])
-    operation, orientation, solid = read["operation"], read["orientation"], read["is_solid"]
-    if (profile is None or path is None or operation is None or orientation is None
-            or solid not in (True, False)):
+    raw_guide = safe(lambda: feature.guideRail, _UNREAD)
+    guide_path = (None if raw_guide is None else
+                  _path_members(raw_guide) if raw_guide is not _UNREAD else None)
+    guide_surfaces = _collection_entities(safe(lambda: feature.guideSurfaces, _UNREAD))
+    solid_body = safe(lambda: feature.solidBody, _UNREAD)
+    operation, solid = read["operation"], read["is_solid"]
+    orientation_applicable = raw_guide is None
+    profile_scaling = (safe(lambda: feature.profileScaling, _UNREAD)
+                       if raw_guide is not None and raw_guide is not _UNREAD else None)
+    orientation = read["orientation"] if orientation_applicable else None
+    orientation_name = read["orientation_name"] if orientation_applicable else None
+    if (profile is None or path is None or operation is None
+            or raw_guide is not None and raw_guide is not _UNREAD
+            and type(profile_scaling) is not int
+            or orientation_applicable and orientation_name not in ("perpendicular", "parallel")
+            or raw_guide is _UNREAD or raw_guide is not None and guide_path is None
+            or guide_surfaces != [] or solid_body is not None or solid not in (True, False)):
         return None
-    return {"profile": profile, "path": path, "operation": operation,
-            "orientation": orientation, "is_solid": solid}
+    participants = _participants(feature, operation)
+    if operation != adsk.fusion.FeatureOperations.NewBodyFeatureOperation and participants is None:
+        return None
+    participant_keys = (None if participants is None else
+                        tuple(_common.native_identity(body) for body in participants))
+    return {"profile": profile, "path": path, "guide_path": guide_path, "operation": operation,
+            "participants": participant_keys, "orientation": orientation,
+            "orientation_applicable": orientation_applicable,
+            "profile_scaling": profile_scaling, "is_solid": solid}
 
 def _definition_report(definition):
     """A compact account of read-back members and retained mode controls."""
     if definition is None:
         return None
-    profile, path = definition["profile"], definition["path"]
+    profile, path, guide = (definition["profile"], definition["path"],
+                            definition.get("guide_path"))
     return {"profile_signature": hashlib.sha256(repr(profile).encode("ascii")).hexdigest()[:16],
             "profile_members": len(profile) if isinstance(profile, tuple) else 1,
             "path_signature": hashlib.sha256(repr(path).encode("ascii")).hexdigest()[:16],
-            "path_curves": len(path), "operation": definition["operation"],
-            "orientation": definition["orientation"], "is_solid": definition["is_solid"]}
+            "path_curves": len(path),
+            "guide_path_signature": (hashlib.sha256(repr(guide).encode("ascii")).hexdigest()[:16]
+                                     if guide is not None else None),
+            "guide_path_curves": len(guide) if guide is not None else 0,
+            "operation": definition["operation"],
+            "orientation": definition["orientation"],
+            "orientation_applicable": definition.get("orientation_applicable"),
+            "profile_scaling": definition.get("profile_scaling"),
+            "is_solid": definition["is_solid"]}
 
 
 def _members(operand):
@@ -111,7 +144,7 @@ def _rolled_back_row(design, owner, name):
 def _later_refusal(design, owner, label, index, action, raw, component):
     """(reorder advice, unmovable refusal, open profile, refusal before any roll, later-body refusal)."""
     open_profile = host = later_body = None
-    if action == "path":
+    if action in ("path", "guide_path"):
         operand, _label, refusal = _common.build_path(owner, raw)
         name = raw.split(":", 1)[1].strip() if isinstance(raw, str) and ":" in raw else None
         row = (_rolled_back_row(design, owner, name)
@@ -168,7 +201,7 @@ def _remedy(label, action, addresses, host):
     call = f"Restore it with model_edit_sweep(feature='{label}', action='{action}', "
     if action == "profile" and name and len(addresses) == 1 and addresses[0][1] == "profile":
         return f"{call}profile={{'sketch': '{name}', 'profile_index': {addresses[0][2]}}})."
-    curves = [at_address(a) for a in addresses] if name and action == "path" else []
+    curves = [at_address(a) for a in addresses] if name and action in ("path", "guide_path") else []
     # 'sketch:<name>' builds from every non-construction curve of the sketch that name resolves to.
     if (curves and None not in curves and len({a[1:] for a in addresses}) == len(addresses)
             and all(a[1] != "profile" and a[0] == sketch for a in addresses)
@@ -179,7 +212,7 @@ def _remedy(label, action, addresses, host):
     return "Undo it in Fusion."
 
 
-def _path_restorer(entity, owner, addresses, participants):
+def _path_restorer(entity, owner, addresses, participants, member="path"):
     """The measured path reverse - createPath over the prior sketch curves - or None."""
     if not addresses or any(a is None or a[1] == "profile" for a in addresses):
         return None
@@ -193,32 +226,57 @@ def _path_restorer(entity, owner, addresses, participants):
             seed = adsk.core.ObjectCollection.create()
             for curve in curves:
                 seed.add(curve)
-        entity.path = owner.features.createPath(seed, False)
+        setattr(entity, member, owner.features.createPath(seed, False))
         if participants:
             entity.participantBodies = list(participants)
     return restore
 
 
-def _settle(design, entity, label, restore, rows, remedy, details, prior, where):
+def _settle(design, entity, label, restore, rows, remedy, details, prior, where,
+            member="path", result_bodies_before=None):
     """Run the measured path reverse; the outcome sentence its re-read backs."""
     definition_before, before_shapes, participants_before, health_before = prior
     marker, index, token, count = where
     operation = definition_before["operation"]
-    back = restore_definition(
-        design, entity, restore,
-        lambda e: (_definition(e), _addresses(safe(lambda: e.path)), _participant_keys(e, operation)),
-        index + 1, lambda: _all_shapes(design), marker)
+    result_bodies_after = {}
+
+    def restored_definition(e):
+        operand = (_addresses(safe(lambda: getattr(e, member))) if member else None)
+        return (_definition(e), operand,
+                _participant_keys(e, operation))
+
+    def restored_shapes():
+        shapes = _all_shapes(design)
+        if result_bodies_before is not None:
+            result_bodies_after["rows"] = _result_body_rows(entity)
+        return shapes
+
+    back = restore_definition(design, entity, restore, restored_definition,
+                              index + 1, restored_shapes, marker)
     definition, members, keys = back["definition"] or (None, None, None)
     health_back = _health(design, marker) if back["marker_after"] == marker else None
     shapes_back, recreated = shape_match(back["shapes"], before_shapes)
-    why = restore_gaps(
-        back["error"], definition=matched(definition, definition_before),
-        scope=matched(keys, participants_before), shapes=shapes_back,
-        health=matched(health_back, health_before),
-        row=_same_feature(design, token, entity, index, count))
+    scope_match = (matched(keys, participants_before)
+                   if operation != adsk.fusion.FeatureOperations.NewBodyFeatureOperation else None)
+    why = restore_gaps(back["error"], definition=matched(definition, definition_before),
+                       shapes=shapes_back,
+                       health=matched(health_back, health_before),
+                       row=_same_feature(design, token, entity, index, count),
+                       **({"scope": scope_match} if scope_match is not None else {}))
+    result_identity_restored = None
+    if result_bodies_before is not None:
+        result_bodies_now = result_bodies_after.get("rows")
+        result_identity_restored = (None if result_bodies_now is None else
+            {row["token"] for row in result_bodies_now} ==
+            {row["token"] for row in result_bodies_before})
+        if result_identity_restored is not True:
+            why.append("the restored result body identity changed or could not be read; refresh its handle")
+        details["result_bodies_after_restore"] = result_bodies_now
+        details["result_body_identity_restored"] = result_identity_restored
     details["rollback"] = {"ran": back["ran"], "verified": not why, "unverified": why,
                            "operand_after": _members_text(members), "marker_after": back["marker_after"],
-                           "recreated": recreated}
+                           "recreated": recreated,
+                           "result_body_identity_restored": result_identity_restored}
     if not back["ran"]:
         return outcome_clause("kept", f"'{label}'", rows, remedy, back["error"])
     if not why:
@@ -232,7 +290,7 @@ def _settle(design, entity, label, restore, rows, remedy, details, prior, where)
 def _participants(feature, operation):
     """Native participant bodies for a boolean sweep, or None on an unreadable list."""
     if operation == adsk.fusion.FeatureOperations.NewBodyFeatureOperation:
-        return []
+        return None
     bodies = safe(lambda: list(feature.participantBodies))
     if bodies is None:
         return None
@@ -245,6 +303,77 @@ def _participant_keys(feature, operation):
     """Native participant identities after a setter, or None when unreadable."""
     bodies = _participants(feature, operation)
     return None if bodies is None else {_common.native_identity(body) for body in bodies}
+
+
+def _result_body_rows(feature, cap=64):
+    """Result-body names and native tokens at the evaluated Sweep position, or None when unread."""
+    bodies = safe(lambda: feature.bodies)
+    count = counted(lambda: bodies.count)
+    if count is None or count > cap:
+        return None
+    rows = []
+    for index in range(count):
+        body = safe(lambda index=index: bodies.item(index))
+        token = safe(lambda body=body: body.entityToken)
+        name = safe(lambda body=body: body.name)
+        owner = safe(lambda body=body: body.parentComponent.name)
+        if (body is None or not isinstance(token, str) or not token or not isinstance(name, str)
+                or not isinstance(owner, str) or not owner):
+            return None
+        rows.append({"name": name, "token": token, "component": owner})
+    return rows
+
+
+def _participant_rows(bodies):
+    """The native body names, tokens and owners for an explicitly known participant list."""
+    if bodies is None:
+        return None
+    rows = []
+    for body in bodies:
+        native = _common._native_of(body)
+        token = safe(lambda: native.entityToken)
+        name = safe(lambda: native.name)
+        owner = safe(lambda: native.parentComponent.name)
+        if not all(isinstance(value, str) and value for value in (token, name, owner)):
+            return None
+        rows.append({"name": name, "token": token, "component": owner})
+    return rows
+
+
+def _participant_refusal(design, owner, index, bodies):
+    """A refusal when an explicit Boolean target is not an earlier native solid body of this owner."""
+    if not bodies:
+        return "Boolean Sweep edits require nonempty explicit 'target_bodies'."
+    keys = [_common.native_identity(_common._native_of(body)) for body in bodies]
+    if any(key is None for key in keys) or len(keys) != len(set(keys)):
+        return "'target_bodies' must contain uniquely readable native body identities."
+    for body in bodies:
+        native = _common._native_of(body)
+        if (native is None or safe(lambda: native.isSolid) is not True
+                or _common.same_component(owner, safe(lambda: native.parentComponent)) is not True
+                or safe(lambda: native.assemblyContext, _UNREAD) is not None):
+            return "Each 'target_bodies' entry must be a native solid body in the Sweep owner."
+        creator = body_creator(design, native)
+        if creator is None:
+            return "A 'target_bodies' source feature could not be read; inspect design_get before editing."
+        if creator[1] >= index:
+            return (f"'target_bodies' body '{safe(lambda: native.name)}' is created at row "
+                    f"{creator[1]}; every target must precede Sweep row {index}.")
+    return None
+
+
+def _operation_restorer(entity, operation):
+    """Restore the measured NewBody operation without inventing a prior participant list."""
+    def restore():
+        entity.operation = operation
+    return restore
+
+
+def _participants_restorer(entity, participants):
+    """Restore an explicitly read Boolean participant list."""
+    def restore():
+        entity.participantBodies = list(participants)
+    return restore
 
 
 def _operand_owner(entity):
@@ -331,18 +460,29 @@ def _target_error(feature, label):
 
 
 def handler(feature: str = "", action: str = "", profile=None, path=None,
-            component: str = "") -> dict:
+            component: str = "", operation: str = "", target_bodies=None) -> dict:
     """Replace one Sweep operand and report definition, geometry, scope and health evidence."""
     raw = dict(locals())
     values, refusal = _inputs.resolve_inputs(_SPEC, raw)
     if refusal:
         return refusal
     action = values["action"]
-    for name in ("profile", "path"):
-        if name != action and raw[name] not in (None, "", []):
+    allowed = {"profile": {"profile", "component"}, "path": {"path", "component"},
+               "guide_path": {"path", "component"}, "operation": {"operation", "target_bodies"},
+               "participants": {"target_bodies"}}[action]
+    for name in ("profile", "path", "component", "operation", "target_bodies"):
+        if raw[name] not in (None, "", []) and name not in allowed:
             return error(f"'{name}' is unused for action='{action}'; remove it.")
-    if raw[action] in (None, "", []):
-        return error(f"action='{action}' requires '{action}'.")
+    operand_input = ("profile" if action == "profile" else
+                     "path" if action in ("path", "guide_path") else None)
+    if operand_input and raw[operand_input] in (None, "", []):
+        return error(f"action='{action}' requires '{operand_input}'.")
+    if action == "operation" and not values["operation"]:
+        return error("action='operation' requires 'operation'.")
+    if action == "operation" and not values.get("target_bodies"):
+        return error("action='operation' requires nonempty explicit 'target_bodies'.")
+    if action == "participants" and not values["target_bodies"]:
+        return error("action='participants' requires nonempty 'target_bodies'.")
     entity, label = values["feature"]
     refusal = _target_error(entity, label)
     if refusal:
@@ -358,10 +498,13 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         return error(f"'{label}' has unreadable timeline identity; nothing was edited.")
     if marker <= index:
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
-    pending_later_refusal, later_blocker, later_open, unread_row, later_body = _later_refusal(
-        design, component_owner, label, index, action, raw[action], component)
-    if unread_row:
-        return error(unread_row)
+    if action in ("profile", "path", "guide_path"):
+        pending_later_refusal, later_blocker, later_open, unread_row, later_body = _later_refusal(
+            design, component_owner, label, index, action, raw[operand_input], component)
+        if unread_row:
+            return error(unread_row)
+    else:
+        pending_later_refusal, later_blocker, later_open, later_body = None, None, False, None
     linked_before = _inactive_link_count(entity, index)
     if linked_before is None:
         return error(f"'{label}' has unreadable or active linked features; nothing was edited.")
@@ -371,18 +514,35 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
     failure = post_error_read_failure = None
     attempted = replayed = False
     definition_before = definition_after = None
+    operation_after = None
+    participant_rows_before = participant_rows_requested = participant_rows_after = None
     participants_before = participants_after = participant_names = participants = None
     desired = before_shapes = after_shapes = target_before = target_after = None
+    result_bodies_before = result_bodies_after = None
+    target_before_bodies = target_after_bodies = participant_names_after = None
+    target_participants = None
+    target_participants_match = None
     linked_evaluated = linked_restored = None
     sketch_curve_count = members_before = members_after = None
     left_out = []
     try:
         if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
             raise RuntimeError("Fusion refused the Sweep edit position.")
-        if (safe(lambda: entity.guideRail, _UNREAD) is not None
-                or safe(lambda: len(entity.guideSurfaces), _UNREAD) != 0
-                or safe(lambda: entity.solidBody, _UNREAD) is not None):
-            raise ValueError("Sweep guide or solid-tool definition is not absent/readable at the edit position.")
+        current_guide = safe(lambda: entity.guideRail, _UNREAD)
+        current_guide_surfaces = safe(lambda: entity.guideSurfaces, _UNREAD)
+        current_solid_tool = safe(lambda: entity.solidBody, _UNREAD)
+        if (current_guide is _UNREAD or current_guide_surfaces is _UNREAD
+                or current_solid_tool is _UNREAD):
+            raise ValueError("Sweep guide and solid-tool fields are unreadable at the edit position.")
+        surface_entities = _collection_entities(current_guide_surfaces)
+        if surface_entities is None:
+            raise ValueError("Sweep guide-surface collection is unreadable at the edit position.")
+        if surface_entities or current_solid_tool is not None:
+            raise ValueError("Sweep guide surfaces and solid-tool edits are not supported here.")
+        if action == "guide_path" and current_guide is None:
+            raise ValueError("action='guide_path' requires an existing guide rail.")
+        if action != "guide_path" and current_guide is not None:
+            raise ValueError("This action supports only a Sweep without a guide or solid-tool definition.")
         timeline.markerPosition = index + 1
         if counted(lambda: timeline.markerPosition) != index + 1:
             raise RuntimeError("The original Sweep could not be evaluated for a body census.")
@@ -390,12 +550,19 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         target_before = _feature_body_keys(entity)
         if before_shapes is None or not target_before:
             raise ValueError("The original Sweep's body census is unreadable.")
+        if action in ("operation", "participants"):
+            result_bodies_before = _result_body_rows(entity)
+            if result_bodies_before is None:
+                raise ValueError("The original Sweep result-body identities are unreadable.")
         if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
             raise RuntimeError("The Sweep could not return to its edit position.")
         definition_before = _definition(entity)
         if definition_before is None:
             raise ValueError("The Sweep definition is unreadable at its edit position.")
-        members_before = _addresses(safe(lambda: getattr(entity, action)))
+        member = ("profile" if action == "profile" else "path" if action == "path"
+                  else "guideRail" if action == "guide_path" else None)
+        members_before = (_addresses(safe(lambda: getattr(entity, member)))
+                          if member is not None else None)
         operation = definition_before["operation"]
         allowed_operations = (adsk.fusion.FeatureOperations.NewBodyFeatureOperation,
                               adsk.fusion.FeatureOperations.JoinFeatureOperation,
@@ -404,10 +571,39 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         if operation not in allowed_operations:
             raise ValueError("This Sweep operation is outside model_sweep's editable operation set.")
         participants = _participants(entity, operation)
-        if participants is None:
-            raise ValueError("Current boolean participants are empty or unreadable; their material scope cannot be retained.")
-        participants_before = {_common.native_identity(body) for body in participants}
-        participant_names = [safe(lambda b=body: b.name) for body in participants]
+        is_new = operation == adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+        if not is_new and participants is None:
+            raise ValueError("Current Boolean participants are unreadable; their material scope cannot be retained.")
+        participants_before = (None if is_new else
+                               {_common.native_identity(body) for body in participants})
+        participant_names = (None if participants is None else
+                             [safe(lambda b=body: b.name) for body in participants])
+        target_participants = participants
+        if action == "operation":
+            if not is_new or values.get("operation") != "cut":
+                raise ValueError("Only the measured NewBody-to-Cut Sweep operation is supported.")
+            refusal = _participant_refusal(design, component_owner, index,
+                                          values.get("target_bodies"))
+            if refusal:
+                raise ValueError(refusal)
+            target_participants = [_common._native_of(body) for body in values["target_bodies"]]
+            desired = adsk.fusion.FeatureOperations.CutFeatureOperation
+        elif action == "participants":
+            if operation != adsk.fusion.FeatureOperations.CutFeatureOperation:
+                raise ValueError("Participant edits require an existing Cut Sweep.")
+            refusal = _participant_refusal(design, component_owner, index,
+                                          values.get("target_bodies"))
+            if refusal:
+                raise ValueError(refusal)
+            target_participants = [_common._native_of(body) for body in values["target_bodies"]]
+            desired = tuple(_common.native_identity(body) for body in target_participants)
+            if set(desired) == participants_before:
+                raise ValueError(f"'{label}' already uses those participants.")
+        if action in ("operation", "participants"):
+            participant_rows_before = _participant_rows(participants)
+            participant_rows_requested = _participant_rows(target_participants)
+            if participant_rows_requested is None or not is_new and participant_rows_before is None:
+                raise ValueError("Sweep participant names, tokens or owners are unreadable.")
         if pending_later_refusal:
             # Every refusal a reorder would not cure comes first: the advice is a lasting change.
             if later_blocker:
@@ -437,32 +633,40 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                 if source_count is None or counted(lambda: checked_operand.count) != source_count:
                     raise ValueError("The open profile's source path omits sketch curves.")
             desired = _profile_members(checked_operand)
-        else:
+        elif action in ("path", "guide_path"):
             operand, _label, refusal = _common.build_path(component_owner, path, left_out)
             if refusal:
                 raise ValueError(later_body or refusal)
             desired = _path_members(operand)
             sketch_curve_count = _common.path_sketch_curve_count(component_owner, path)
             checked_operand = operand
-        if desired is None:
-            raise ValueError(f"Replacement '{action}' members could not be read.")
-        refusal = _operand_error(checked_operand, action, component_owner, index)
-        if refusal:
-            raise ValueError(refusal)
-        if desired == definition_before[action]:
-            raise ValueError(f"'{label}' already uses that {action}.")
+        if action in ("profile", "path", "guide_path"):
+            if desired is None:
+                raise ValueError(f"Replacement '{action}' members could not be read.")
+            refusal = _operand_error(checked_operand, action, component_owner, index)
+            if refusal:
+                raise ValueError(refusal)
+            if desired == definition_before[action]:
+                raise ValueError(f"'{label}' already uses that {action}.")
         attempted = True
         setter_failure = None
         try:
-            setattr(entity, action, operand)
+            if action == "operation":
+                entity.operation = desired
+                entity.participantBodies = list(target_participants)
+            elif action == "participants":
+                entity.participantBodies = list(target_participants)
+            else:
+                setattr(entity, member, operand)
         except Exception as exc:
             setter_failure = exc
         # Native setters can expand scope even when they raise after a partial assignment.
-        if participants:
+        if action in ("profile", "path", "guide_path") and participants:
             entity.participantBodies = list(participants)
             replayed = True
-        participants_after = _participant_keys(entity, operation)
         definition_after = _definition(entity)
+        operation_after = definition_after.get("operation") if definition_after else None
+        participants_after = _participant_keys(entity, operation_after)
         if setter_failure is not None:
             raise setter_failure
         timeline.markerPosition = index + 1
@@ -470,21 +674,36 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
             raise RuntimeError("The edited Sweep could not be evaluated for a body census.")
         after_shapes = _all_shapes(design)
         target_after = _feature_body_keys(entity)
+        if action in ("operation", "participants"):
+            result_bodies_after = _result_body_rows(entity)
+            if result_bodies_after is None:
+                raise RuntimeError("The edited Sweep result-body identities are unreadable.")
         linked_evaluated = _inactive_link_count(entity, index)
         if linked_evaluated is None:
             raise RuntimeError("The edited Sweep has an active or unreadable linked feature.")
         if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
             raise RuntimeError("The evaluated Sweep could not be rolled back for definition verification.")
         definition_after = _definition(entity)
-        members_after = _addresses(safe(lambda: getattr(entity, action)))
-        participants_after = _participant_keys(entity, operation)
+        members_after = (_addresses(safe(lambda: getattr(entity, member)))
+                         if member is not None else None)
+        definition_after = _definition(entity)
+        operation_after = definition_after.get("operation") if definition_after else None
+        participants_after = _participant_keys(entity, operation_after)
+        if action in ("operation", "participants"):
+            participant_rows_after = _participant_rows(_participants(entity, operation_after))
+            if participant_rows_after is None:
+                raise RuntimeError("The edited Sweep participant read-back is unreadable.")
     except Exception as exc:
         failure = sentence(exc)
         if attempted:
             if counted(lambda: timeline.markerPosition) == index:
                 definition_after = _definition(entity)
-                members_after = _addresses(safe(lambda: getattr(entity, action)))
-                participants_after = _participant_keys(entity, definition_before["operation"])
+                members_after = (_addresses(safe(lambda: getattr(entity, member)))
+                                 if member is not None else None)
+                operation_after = definition_after.get("operation") if definition_after else None
+                participants_after = _participant_keys(entity, operation_after)
+                if action in ("operation", "participants"):
+                    participant_rows_after = _participant_rows(_participants(entity, operation_after))
             if after_shapes is None:
                 try:
                     timeline.markerPosition = index + 1
@@ -492,6 +711,8 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                         raise RuntimeError("The partial edit could not be evaluated.")
                     after_shapes = _all_shapes(design)
                     target_after = _feature_body_keys(entity)
+                    if action in ("operation", "participants"):
+                        result_bodies_after = _result_body_rows(entity)
                     if after_shapes is None or target_after is None:
                         raise RuntimeError("The partial edit body census is unreadable.")
                 except Exception as read_exc:
@@ -509,21 +730,61 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                   [name for name in health_after["errors"] if name not in health_before["errors"]])
     new_warnings = (None if health_after is None else
                     [name for name in health_after["warnings"] if name not in health_before["warnings"]])
+    definition_keys = ({"operation", "participants"} if action == "operation" else
+                       {"participants"} if action == "participants" else {action})
+    operation_participant_keys = (None if target_participants is None else
+                                  {_common.native_identity(body) for body in target_participants})
+
+    def same_definition_value(key, left, right):
+        if key == "participants":
+            if left is None or right is None:
+                return left is right
+            return set(left) == set(right)
+        return left == right
+
     definition_matches = (definition_before is not None and definition_after is not None
-                          and definition_after[action] == desired
-                          and all(definition_after[key] == definition_before[key]
-                                  for key in definition_before if key != action))
-    scope_matches = participants_after == participants_before if participants_after is not None else None
+                          and (same_definition_value("participants",
+                                                     definition_after.get("participants"), desired)
+                               if action == "participants"
+                               else definition_after.get(action) == desired)
+                          and (action != "operation" or
+                               operation_participant_keys is not None
+                               and set(definition_after.get("participants") or ()) ==
+                               operation_participant_keys)
+                          and all(same_definition_value(key, definition_after[key],
+                                                        definition_before[key])
+                                  for key in definition_before if key not in definition_keys))
+    if action == "participants":
+        requested_participant_keys = set(desired) if desired is not None else None
+    elif action == "operation":
+        requested_participant_keys = operation_participant_keys
+    else:
+        requested_participant_keys = participants_before
+    scope_matches = (participants_after == requested_participant_keys
+                     if participants_after is not None
+                     else True if requested_participant_keys is None else None)
+    affected = set(target_before or ())
+    if action in ("operation", "participants") and target_participants:
+        affected.update(_common.native_identity(body) for body in target_participants)
     target_before_shapes = ({key: before_shapes[key]["shape"] for key in target_before}
                             if before_shapes is not None and target_before is not None
                             and target_before <= set(before_shapes) else None)
     target_after_shapes = ({key: after_shapes[key]["shape"] for key in target_after}
                            if after_shapes is not None and target_after is not None
                            and target_after <= set(after_shapes) else None)
-    geometry_changed = (None if target_before_shapes is None or target_after_shapes is None else
-                        sorted(target_before_shapes.values(), key=repr) !=
-                        sorted(target_after_shapes.values(), key=repr))
-    outside = (set(before_shapes) - target_before if before_shapes is not None
+    if action in ("operation", "participants"):
+        if before_shapes is None or after_shapes is None:
+            geometry_changed = None
+        else:
+            geometry_changed = any(
+                (before_shapes.get(key) or {}).get("shape") !=
+                (after_shapes.get(key) or {}).get("shape")
+                for key in affected)
+    else:
+        geometry_changed = (None if target_before_shapes is None or target_after_shapes is None else
+                            sorted(target_before_shapes.values(), key=repr) !=
+                            sorted(target_after_shapes.values(), key=repr))
+    outside = (set(before_shapes) - affected if before_shapes is not None
                and target_before is not None else None)
     outside_changes = (None if after_shapes is None or target_after is None or outside is None else
                        [before_shapes[key]["body"] for key in outside
@@ -534,8 +795,22 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                "definition_before": _definition_report(definition_before),
                "definition_after": _definition_report(definition_after),
                "definition_matches": definition_matches, "participants_replayed": replayed,
-               "participant_scope_preserved": scope_matches,
+               "participant_scope_preserved": (scope_matches
+                                               if action not in ("operation", "participants")
+                                               else None),
+               "participant_scope_matches_request": (scope_matches
+                                                     if action in ("operation", "participants")
+                                                     else None),
                "retained_participants": participant_names, "geometry_changed": geometry_changed,
+               "participant_scope_reason": (
+                   "The original NewBody sweep has no Boolean participant scope."
+                   if (definition_before or {}).get("operation") ==
+                   adsk.fusion.FeatureOperations.NewBodyFeatureOperation else None),
+               "requested_participants": participant_rows_requested,
+               "participants_before": participant_rows_before,
+               "participants_after": participant_rows_after,
+               "result_bodies_before": result_bodies_before,
+               "result_bodies_after": result_bodies_after,
                "target_before": list(target_before_shapes.values()) if target_before_shapes is not None else None,
                "target_after": list(target_after_shapes.values()) if target_after_shapes is not None else None,
                "outside_body_changes": outside_changes,
@@ -550,7 +825,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                "post_error_read_failure": post_error_read_failure,
                "new_timeline_errors": new_errors, "new_timeline_warnings": new_warnings,
                "geometry_frame": "owning_component", "geometry_units": "cm, cm2, cm3"}
-    if action == "path":
+    if action in ("path", "guide_path"):
         details["path_curves"] = len(desired) if desired is not None else None
         if sketch_curve_count is not None:
             details["path_sketch_curves"] = sketch_curve_count
@@ -587,20 +862,28 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                     f"geometry_changed={geometry_changed}, outside_body_changes={outside_changes}, "
                     f"participant_scope_preserved={scope_matches}"))
         else:
-            restore = (_path_restorer(entity, component_owner, members_before, participants)
-                       if action == "path" else None)
+            restore = (_path_restorer(entity, component_owner, members_before, participants, member)
+                       if action in ("path", "guide_path") else
+                       _operation_restorer(entity, operation) if action == "operation" else
+                       _participants_restorer(entity, participants) if action == "participants" else None)
+            settle_member = member if action in ("profile", "path", "guide_path") else None
             text = f"{reason} " + (outcome_clause("kept", f"'{label}'", rows, remedy) if restore is None
                                    else _settle(design, entity, label, restore, rows, remedy, details,
                                                 (definition_before, before_shapes, participants_before,
-                                                 health_before), (marker, index, token, count)))
+                                                 health_before), (marker, index, token, count),
+                                                member=settle_member, result_bodies_before=result_bodies_before))
         now = counted(lambda: timeline.markerPosition)
         if now != marker:
             text += f" Also, {_common.marker_clause(marker, now, 'the edit')}."
         return failed(f"Editing '{label}': {text}", details)
     details["edited"] = True
-    details["note"] = ("Sweep operand changed on the same feature. Boolean edits retain the current "
+    details["note"] = ("Sweep Cut scope changed on the same feature; inspect model_inspect."
+                       if action == "participants" else
+                       "Sweep changed to Cut with the requested bodies; inspect model_inspect."
+                       if action == "operation" else
+                       "Sweep operand changed on the same feature. Boolean edits retain the current "
                        "participants; newly reached bodies are excluded. Inspect model_inspect.")
-    if action == "path":
+    if action in ("path", "guide_path"):
         details["note"] += " " + _common.path_chain_warning(len(desired), sketch_curve_count, "sweep", left_out)
         details["note"] = details["note"].strip()
     return identical_geometry_reply(details) if identical else ok(details)
@@ -608,7 +891,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
 
 tool = _inputs.apply_to_tool(
     Tool.create_simple(name="model_edit_sweep", description=(
-        "Edit Sweep profile/path. Keeps participants; read model_inspect.")),
+        "Edit Sweep operands or Boolean scope; read model_inspect.")),
     _SPEC)
 tool.add_input_property("profile", _inputs.ProfileRef("profile", scope_input="component").schema())
 tool.add_input_property("path", {"type": ["string", "array"], "items": {"type": "string"},

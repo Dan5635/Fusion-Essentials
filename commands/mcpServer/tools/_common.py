@@ -14,9 +14,9 @@ import adsk.fusion
 
 MAP_BLURB = (
     "response+resolve: ok/error/safe (per-FIELD, never a MUTATION), "
-    "measured/read_flag/counted/finite_number, design/target_component, "
-    "find_sketch/resolve_sketch (shared name REFUSED), timeline_health/timeline_message/"
-    "set_verified/rolled_to (effect reads; ONE roll-restore), same_component/native_identity/occurrence_walk/"
+    "read_optional/measured/read_flag/counted/finite_number, design/target_component, "
+    "find_sketch/resolve_sketch (ambiguity), timeline_health/timeline_message/"
+    "set_verified/rolled_to (effect; roll-restore), same_component/native_identity/occurrence_walk/"
     "broken_reference (TRI-STATE), scale/iter_collection/named_with_remainder/told_apart")
 
 app = adsk.core.Application.get()
@@ -47,6 +47,15 @@ def safe(getter, default=None):
 
 
 _UNREADABLE = object()      # a getter that RAISED - distinct from one that returned None
+
+
+def read_optional(getter):
+    """(value, None), or (None, why) when a field raises or answers nothing."""
+    try:
+        value = getter()
+    except Exception as exc:
+        return None, str(exc) or type(exc).__name__
+    return (value, None) if value is not None else (None, "the read answered nothing")
 
 
 def read_flag(getter):

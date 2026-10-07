@@ -23,6 +23,7 @@ from . import _cam_common
 from . import _inputs
 from . import _joints
 from . import _materials
+from .design_configure import _CELL_FIELDS, _row_census
 from .model_inspect import _MAX_PER_BODY_ROWS
 
 app = adsk.core.Application.get()
@@ -655,7 +656,73 @@ def _column_summary(col):
             "index": safe(lambda: col.index), "type": safe(lambda: type(col).__name__)}
 
 
-def _slice_configurations(design):
+_CELL_DEFAULT, _CELL_CEILING = 200, 1000
+_PARAMETER_CELL, _PROPERTY_CELL = "ConfigurationParameterCell", "ConfigurationPropertyCell"
+_CELL_CAP_NOTE = (f"Cells past the cap are not listed. Raise max_results (max {_CELL_CEILING}); "
+                  "cell_count is the whole table.")
+
+
+def _cell_record(row, column_index):
+    """One table cell: its kind and the fields that read, or why it is absent or unread."""
+    if column_index is None:
+        return {"kind": None, "value_unread": "the column's index did not read"}
+    try:
+        cell = row.getCellByColumnIndex(column_index)
+    except Exception as exc:
+        return {"kind": None, "raised": str(exc)}
+    if cell is None:
+        return {"absent": True}
+    kind = safe(lambda: cell.objectType.rsplit("::", 1)[-1])
+    if kind is None:
+        return {"kind": None, "value_unread": "the cell's objectType did not read"}
+    if kind == _PROPERTY_CELL:
+        return {"kind": kind, "value_unread": "no value field of this cell kind is read here"}
+    if kind == _PARAMETER_CELL:
+        try:
+            expression = cell.expression
+        except Exception as exc:
+            return {"kind": kind, "expression": None, "raised": str(exc)}
+        record = {"kind": kind, "expression": expression}
+        if expression is None:
+            record["value_unread"] = "the cell's expression read nothing"
+        return record
+    record = {"kind": kind}
+    for key, read in _CELL_FIELDS:
+        value = safe(lambda read=read: read(cell))
+        if value is not None:
+            record[key] = value
+    if len(record) == 1:
+        record["value_unread"] = "none of the fields read here answered on this cell kind"
+    return record
+
+
+def _cell_table(table, max_results):
+    """The slice's cell keys: one record per row x column, addressed by row id and column id."""
+    records, rows, problem = _row_census(table)
+    columns = safe(lambda: table.columns)
+    column_count = _common.counted(lambda: columns.count)
+    if problem or column_count is None:
+        return {"cells": None, "cells_unread": problem or "the table's columns did not count"}
+    cap = _cam_common.clamp_rows(max_results, _CELL_DEFAULT, _CELL_CEILING)
+    total = len(rows) * column_count
+    heads = []
+    for i in range(min(column_count, cap)):
+        column = safe(lambda i=i: columns.item(i))
+        # A cell is fetched by the index its column reads, never by the column's list position.
+        heads.append((safe(lambda: column.id), _common.counted(lambda: column.index)))
+    cells = []
+    for record, row in zip(records, rows):
+        for column_id, column_index in heads:
+            if len(cells) < cap:
+                cells.append({"row_id": record["id"], "column_id": column_id,
+                              **_cell_record(row, column_index)})
+    out = {"cell_count": total, "cells": cells}
+    if total > cap:
+        out["cells_truncated"], out["cells_truncated_note"] = True, _CELL_CAP_NOTE
+    return out
+
+
+def _slice_configurations(design, max_results=0):
     """The configuration table, READ side. Returns (payload, error); a non-configured design errors
     (the router degrades that to a {configured: False} marker rather than failing the read)."""
     table = safe(lambda: design.configurationTopTable)
@@ -684,6 +751,7 @@ def _slice_configurations(design):
            "configuration_count": len(rows), "configurations": rows, "columns": columns}
     if truncated:
         out["truncated"] = True
+    out.update(_cell_table(table, max_results))
     return out, None
 
 
@@ -1001,7 +1069,8 @@ def _has_cam(design):
 def _definition_identity(feature):
     """The definition's feature identity and owning component as read, without timeline movement."""
     return {"feature": safe(lambda: feature.name),
-            "component": safe(lambda: feature.parentComponent.name),
+            "component": safe(lambda: (safe(lambda: feature.parentComponent)
+                                       or _inputs.entity_component(feature)).name),
             "type": safe(lambda: feature.objectType.rsplit("::", 1)[-1]),
             "timeline_index": _common.counted(lambda: feature.timelineObject.index)}
 
@@ -1074,13 +1143,20 @@ def _slice_definition(feature, units):
         return None, error("include=['definition'] requires 'feature'; use include=['timeline'] to find it.")
     entity, label = values["feature"]
     kind = safe(lambda: entity.objectType)
-    if kind not in ("adsk::fusion::HoleFeature", "adsk::fusion::ThreadFeature",
+    if kind not in _edit_feature_common.FEATURE_EDIT_SUPPORT and kind not in (
+                    "adsk::fusion::HoleFeature", "adsk::fusion::ThreadFeature",
                     "adsk::fusion::LoftFeature", "adsk::fusion::ExtrudeFeature",
                     "adsk::fusion::SweepFeature"):
-        return None, error(f"'{label}' has unsupported definition type {kind!r}; this slice reads "
-                           "Hole/Thread/Loft/Extrude/Sweep. Use include=['timeline'] or model_inspect.")
+        return None, error(f"'{label}' has unsupported definition type {kind!r}; use "
+                           "include=['timeline'] or model_inspect.")
     factor = 1 / _common.scale(values["units"])
-    if kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature"):
+    if kind in _edit_feature_common.FEATURE_EDIT_SUPPORT:
+        out = {**_definition_identity(entity), **_edit_feature_common.feature_definition(entity, factor)}
+        if kind == "adsk::fusion::ThreadFeature":
+            thread = _definition_thread(entity, factor)
+            out.update({key: value for key, value in thread.items()
+                        if key not in ("feature", "component", "type", "timeline_index")})
+    elif kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature"):
         out = {**_definition_identity(entity), **_edit_feature_common.feature_definition(entity, factor)}
     elif kind == "adsk::fusion::LoftFeature":
         out = _definition_loft(entity)
@@ -1109,7 +1185,9 @@ def _slice_definition(feature, units):
                "thread": (_definition_thread(child, factor)
                           if child is not _DEFINITION_UNREAD and child is not None else None)}
     out["units"] = (units or "mm").strip().lower()
-    out["note"] = ("Read at the current marker without rolling. Null is unknown unless applicable=false; "
+    out["note"] = ("Read at the current marker without rolling. supported_edits gives qualified calls and usable operand handles; reacquire at edit time."
+                   if kind in _edit_feature_common.FEATURE_EDIT_SUPPORT else
+                   "Read at the current marker without rolling. Null is unknown unless applicable=false; "
                    "unavailable gives getter failures. Through-all extent_side_count is its native "
                    "one/two-side flag; extrude direction is unknown here. Sweep orientation_name gives the readable "
                    "enum. Use profile_handle as a profile input. Distances are signed; "
@@ -1201,7 +1279,7 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
     if "configurations" in inc:
         # A non-configured design legitimately has no config table - that's not an error of design_get,
         # so degrade to a null + reason rather than failing the whole read.
-        cfg, cerr = _slice_configurations(design)
+        cfg, cerr = _slice_configurations(design, max_results)
         out["configurations"] = cfg if cfg is not None else {
             "configured": False,
             "reason": (cerr.get("message") if cerr else "no configuration table"),
@@ -1286,7 +1364,7 @@ tool = (
     .add_input_property("library", {"type": "string",
             "description": "Exact library name/id."})
     .add_input_property("name_filter", {"type": "string",
-            "description": "Name substring."})
+            "description": "Substring: top-level tree, metadata, datums, catalogs."})
     .add_input_property("max_results", {"type": "integer",
             "description": f"Catalog 50 (max 200); tree {_TREE_CHILDREN_DEFAULT}/level; "
                            f"timeline {_TIMELINE_MAX_ITEMS}; metadata {_METADATA_MAX_ROWS}."})

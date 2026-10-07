@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 213  |  **Input-kinds:** 29  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 215  |  **Input-kinds:** 31  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -17,6 +17,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `CurvePointRef` | A point of a drawing view curve as '<curve_index>:<start\|end\|mid\|center>'. |
 | `Distance` | A length value in display 'units', resolved to Fusion's internal cm. The companion 'units' |
 | `EdgeLoopRef` | A boundary of find_geometry edge handles: closed=True a CLOSED loop, a one-body set checked |
+| `FeatureEditOperands` | A references array resolved by the selected feature action's typed operand kind. |
 | `FeatureRef` | A reference to ONE timeline FEATURE by name, '<component>/<name>', or timeline index, as |
 | `FeatureRefList` | A LIST of timeline features, resolving to (entities, labels) - the entity list plus the |
 | `GeometryHandle` | A reference to EXISTING geometry, as a SHORT-LIVED handle from find_geometry (an entityToken). |
@@ -33,6 +34,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `ProfileRefList` | An ORDERED list of profile references - for loft, where profile ORDER is load-bearing (the loft |
 | `SectionRef` | A reference to one SectionAnalysis by its generated name from view_section cut/list. |
 | `SheetMetalRuleRef` | A rule selected by scoped name or a current scope/index/name ref. |
+| `SketchDimensionRef` | An existing sketch dimension by its parameter name, among ONE sketch's own dimensions. |
 | `SketchLineRef` | An exact sketch line from sketch_get, optionally scoped to a component. |
 | `SketchRefList` | A LIST of SKETCHES by name - the reference an operation taking WHOLE sketches needs (a CAM |
 | `SurfaceRef` | The FACE/PLANE a sketch entity is constrained or dimensioned to. Schema and resolution come |
@@ -56,13 +58,14 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `model_draft` | Taper (draft) faces relative to a pull plane |
 | ✎ | `model_edit_body` | Copy, move or rehome a body; merge two coplanar faces in direct mode |
 | ✎ | `model_edit_extrude` | Edit solid Extrude; refs from design_get/sketch_get. |
+| ✎ | `model_edit_feature` | Edit one aspect; design_get lists typed inputs |
 | ✎ | `model_edit_loft` | Retarget, remove or reorder one Loft section |
-| ✎ | `model_edit_sweep` | Edit Sweep profile/path |
+| ✎ | `model_edit_sweep` | Edit Sweep operands or Boolean scope; read model_inspect. |
 | ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves |
 | ✎ | `model_extrude` | Extrude profiles/curves to solids/surfaces; sketch_get handles. |
 | ✎ | `model_fillet` | Round (fillet) edges; model_chamfer bevels |
 | ✎ | `model_hole` | Drill a Hole feature; multiple points share one feature. |
-| · | `model_inspect` | Measure a target: the bounding box by default, mass or mesh stats through 'include'. |
+| · | `model_inspect` | Measure bounds or mesh stats; opt-in mass/material/appearance. |
 | ✎ | `model_loft` | Loft ordered sections; G1/G2: open surface edge to open sketch curve |
 | · | `model_measure_between` | Measure the distance or angle between two targets; a distance of 0 is touching. |
 | · | `model_measure_continuity` | Measure gap, normal angle and curvature jump across each edge's seam; a one-faced edge reads against the 'against' body. |
@@ -140,7 +143,8 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `sketch_copy` | COPY sketch entities, transformed. |
 | ✎ | `sketch_create` | Create a sketch on a plane or a planar face; draw on it with sketch_add_geometry. |
 | ⚠ | `sketch_delete_entity` | Delete ONE sketch entity, constraint, dimension or text, named as '<type>:<index>'. |
-| ✎ | `sketch_dimension` | Add dimensional constraints to one sketch, each optionally driven to a value. |
+| ✎ | `sketch_dimension` | Add dimensions, or edit dimension/is_driving; sketch_get reads state. |
+| ✎ | `sketch_edit` | Edit sketch name, visibility or plane; sketch_get reads it. |
 | ✎ | `sketch_edit_curve` | Edit an EXISTING sketch curve in place |
 | · | `sketch_get` | Read sketches, curves, constraints and profile handles for model_extrude. |
 | ✎ | `sketch_insert_svg` | Import an SVG into a sketch at (x,y) |
@@ -222,7 +226,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `design_remove_feature` | Remove ONE body or occurrence as a timeline Remove FEATURE. |
 | ✎ | `design_set_metadata` | Set a component's part number and/or description; an occurrence sets its COMPONENT's |
 | ⚠ | `design_set_mode` | Convert the active design between parametric and direct modeling; going direct destroys the timeline and all design history. |
-| ✎ | `design_set_name` | Rename a body or component; an occurrence renames its COMPONENT |
+| ✎ | `design_set_name` | Rename by kind |
 
 ### doc
 
@@ -282,7 +286,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `param_add` | Add ONE user parameter (name + expression), or MANY with 'params' |
 | ⚠ | `param_delete` | Delete a USER parameter |
 | · | `param_get` | Read the active design's parameters - name, expression, value, unit, comment |
-| ✎ | `param_set` | Set a parameter expression |
+| ✎ | `param_set` | Set expression or rename; param_get lists names |
 | ✎ | `param_set_favorite` | Toggle a user parameter's 'favorite' flag (whether it appears in the favorites list). |
 
 ### pmi
@@ -357,6 +361,6 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | · | `sys_get_preferences` | Read the APPLICATION's preferences: app.preferences, which belong to no document |
 | · | `sys_get_selection` | Read the user's CURRENT selection in Fusion |
 | ✎ | `sys_reload_addin` | Reload the add-in to pick up code changes |
-| ✎ | `sys_request_selection` | Hand the pick to the USER: holds the call, and by default clears their current selection |
+| ✎ | `sys_request_selection` | Hand the pick to the USER: holds the call, and by default clears their selection |
 | ⚠ | `sys_set_preferences` | SET one APPLICATION preference, by the path sys_get_preferences reports |
 

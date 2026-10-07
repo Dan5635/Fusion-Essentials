@@ -137,14 +137,16 @@ def _reset_pending_and_identity(monkeypatch):
     # and a working _PickHandler stand-in (see _install_fake_pick_handler).
     sel._pending["active"] = False
     sel._pending["handler"] = None
-    sel._pending["started"] = None
+    sel._pending["wait"] = None
+    sel._pending["wait_started"] = None
     monkeypatch.setattr(sel._write_guard, "_active_identity", lambda: ("TestDoc", "urn:test:doc"))
     monkeypatch.setattr(sel, "_active_design", lambda: _fake_pickable_design())
     _install_fake_pick_handler(monkeypatch)
     yield
     sel._pending["active"] = False
     sel._pending["handler"] = None
-    sel._pending["started"] = None
+    sel._pending["wait"] = None
+    sel._pending["wait_started"] = None
 
 
 # ── _on_selection_changed: the notify() logic, tested directly (see _install_fake_pick_handler) ──
@@ -308,6 +310,8 @@ class TestRequestSelectionTimeout:
         assert out["status"] == "timeout"
         assert out["waited_seconds"] == 0.05
         assert "not a tool defect" in out["note"]
+        # the recovery for a pick made after this hold: both reads that do not clear it
+        assert "sys_get_selection" in out["note"] and "clear_current=false" in out["note"]
         assert sel._pending["handler"] is None   # the timeout cleanup detached the listener
         # the cleanup reached the main thread, so there is nothing to disclose
         assert "listener_detached" not in out
@@ -415,10 +419,114 @@ class TestOrphanPickListener:
 class TestRequestSelectionPendingGuard:
     def test_second_request_refused_while_one_is_pending(self):
         sel._pending["active"] = True
-        sel._pending["started"] = time.monotonic()
+        sel._pending["wait_started"] = time.monotonic()
         res = sel.handler(wait_seconds=1)
         assert res["isError"] is True
         assert "already waiting" in res["message"]
+
+    def _refuse_at(self, monkeypatch, elapsed, wait=60.0):
+        """The refusal a second request gets `elapsed` seconds into a live hold of `wait` seconds,
+        with the hold's listener registered -> (result, ui, pending handler)."""
+        ui = _fake_ui()
+        monkeypatch.setattr(sel, "_ui", lambda: ui)
+        box, _done = _register_hold(ui)
+        sel._pending.update(active=True, wait_started=1000.0, wait=wait)
+        monkeypatch.setattr(sel, "time", types.SimpleNamespace(monotonic=lambda: 1000.0 + elapsed))
+        return sel.handler(wait_seconds=1), ui, box["handler"]
+
+    def test_refusal_names_elapsed_and_remaining_from_the_pending_hold(self, monkeypatch):
+        res, _ui, _h = self._refuse_at(monkeypatch, elapsed=49.5)
+        assert res["isError"] is True
+        # the PENDING hold's wait (60), not this call's wait_seconds=1
+        assert "49.5s into its wait_seconds=60, 10.5s left" in res["message"]
+
+    def test_remaining_is_zero_not_negative_once_the_wait_has_run_out(self, monkeypatch):
+        res, _ui, _h = self._refuse_at(monkeypatch, elapsed=63.0)
+        assert "63.0s into its wait_seconds=60, 0.0s left" in res["message"]
+
+    def test_refusal_names_the_two_ways_to_recover_a_pick(self, monkeypatch):
+        res, _ui, _h = self._refuse_at(monkeypatch, elapsed=5.0)
+        assert "sys_get_selection" in res["message"] and "clear_current=false" in res["message"]
+        assert "does not cancel" in res["message"]
+
+    def test_refused_request_leaves_the_pending_hold_live(self, monkeypatch):
+        posts = _install_fake_task_manager(monkeypatch)
+        res, ui, pending = self._refuse_at(monkeypatch, elapsed=5.0)
+        assert res["isError"] is True
+        assert ui.activeSelectionChanged.handlers == [pending]     # still registered
+        assert sel._pending["handler"] is pending
+        assert sel._pending["active"] is True and sel._pending["wait"] == 60.0
+        assert sel._pending["wait_started"] == 1000.0
+        assert posts == []                                          # nothing reached Fusion
+
+    def _second_requests_during_a_hold(self, monkeypatch):
+        """One 60 s hold on a fake clock: entry at 1000, the setup marshal ends at 1007, and a
+        second request arrives once inside that marshal and once at 1027, while the hold waits
+        -> (refusal during setup, refusal during the wait)."""
+        monkeypatch.setattr(sel, "_ui", lambda: _fake_ui())
+        clock = {"now": 1000.0}
+        seen = {}
+
+        class _Event:
+            def __init__(self):
+                self._set = False
+
+            def set(self):
+                self._set = True
+
+            def is_set(self):
+                return self._set
+
+            def wait(self, timeout=None):
+                if not self._set and timeout == 60.0:       # the hold's own wait, never a marshal's
+                    clock["now"] = 1027.0
+                    seen["waiting"] = sel.handler(wait_seconds=1)
+                return self._set
+
+        def _post(command, callback, data):
+            if "setup" not in seen:
+                seen["setup"] = sel.handler(wait_seconds=1)
+                clock["now"] = 1007.0
+            callback(data)
+            return "fake-task"
+
+        monkeypatch.setattr(sel, "time", types.SimpleNamespace(monotonic=lambda: clock["now"]))
+        monkeypatch.setattr(sel, "threading", types.SimpleNamespace(Event=_Event))
+        monkeypatch.setattr(sel, "_task_manager", lambda: types.SimpleNamespace(
+            is_running=lambda: True, start=lambda: True, post=_post, cancel=lambda t: False))
+        assert _payload(sel.handler(wait_seconds=60))["status"] == "timeout"
+        return seen["setup"], seen["waiting"]
+
+    def test_remaining_time_runs_from_the_wait_start_not_from_handler_entry(self, monkeypatch):
+        _setup, waiting = self._second_requests_during_a_hold(monkeypatch)
+        assert waiting["isError"] is True
+        # 1027 - 1007 (the wait start); from the 1000 entry it would read 27.0s and 33.0s
+        assert "20.0s into its wait_seconds=60, 40.0s left" in waiting["message"]
+
+    def test_a_request_during_setup_is_refused_without_a_remaining_time(self, monkeypatch):
+        setup, _waiting = self._second_requests_during_a_hold(monkeypatch)
+        assert setup["isError"] is True
+        assert "has not begun waiting" in setup["message"] and "wait_seconds=60" in setup["message"]
+        assert "does not cancel" in setup["message"] and "left" not in setup["message"]
+
+    def test_description_says_to_read_the_selection_first_after_a_client_timeout(self):
+        assert ("After a client timeout, read sys_get_selection first"
+                in sel.item.primitive.description)
+
+    def test_a_hold_records_its_own_wait_and_releases_it(self, monkeypatch):
+        monkeypatch.setattr(sel, "_ui", lambda: _fake_ui())
+        seen = []
+
+        def _post(command, callback, data):
+            seen.append(sel._pending["wait"])
+            callback(data)
+            return "fake-task"
+
+        monkeypatch.setattr(sel, "_task_manager", lambda: types.SimpleNamespace(
+            is_running=lambda: True, start=lambda: True, post=_post, cancel=lambda t: False))
+        sel.handler(wait_seconds=0.05)
+        assert seen[0] == 0.05
+        assert sel._pending["wait"] is None and sel._pending["wait_started"] is None
 
     def test_pending_flag_clears_after_a_timeout(self, monkeypatch):
         monkeypatch.setattr(sel, "_ui", lambda: _fake_ui())

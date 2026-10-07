@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import adsk.fusion
 import pytest
 
+from _datum_fakes import datum_scene
 from conftest import (FakeOccurrence, FakeTimeline, FakeTimelineObject, FakeFeature,
                       FakeUserParameters, FakeModelParameter, Profile, Sketch, MakeComp, MakeDesign,
                       _NamedCollection, error_message, load_tool, make_design, make_sketch_curve, install)
@@ -132,8 +133,43 @@ def test_definition_requires_explicit_supported_feature_and_units(definition_sce
     assert "requires 'feature'" in error_message(dg.handler(include=["definition"]))
     assert "Unknown units" in error_message(dg.handler(include=["definition"], feature="Hole4", units="ft"))
     assert "include" in error_message(dg.handler(feature="Hole4"))
-    definition_scene.hole.objectType = "adsk::fusion::RevolveFeature"
+    definition_scene.hole.objectType = "adsk::fusion::UnsupportedFeature"
     assert "unsupported definition type" in error_message(dg.handler(include=["definition"], feature="Hole4"))
+
+
+def test_measured_feature_definition_reader_emits_edits_without_rolling(definition_scene):
+    s = definition_scene
+    thread = s.hole
+    thread.objectType = "adsk::fusion::ThreadFeature"
+    thread.isFullLength, thread.isModeled, thread.isRightHanded = False, False, True
+    thread.threadInfo = SimpleNamespace(threadType="ISO", threadDesignation="M10x1.5",
+                                        threadClass="6H", isInternal=True)
+    thread.threadLength = SimpleNamespace(value=1.5, expression="1.5 mm")
+    thread.threadOffset = SimpleNamespace(value=0.25, expression="0.25 mm")
+    result = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]
+    mode = next(row for row in result["supported_edits"] if row["action"] == "mode")
+    assert mode["call"] == "model_edit_feature(feature='Cradle/Hole4@0', action='mode', mode='cosmetic')"
+    assert result["thread_info"]["designation"] == "M10x1.5"
+    assert result["unavailable"] == {}
+    assert s.timeline.markerPosition == 0 and s.timeline._moves == [] and s.row._rolls == []
+
+
+@pytest.mark.parametrize("kind, feature, action, shape", [
+    ("plane", "Part/Plane1@1", "plane", "references=['xy-token|@construction_plane:"),
+    ("axis", "Part/Axis1@1", "axis", "references=[{'first_plane': 'xy-token|@construction_plane:"),
+    ("point", "Part/Point1@1", "point", "references=['vertex-a|@vertex:"),
+    ("origin", "Part/Origin1@1", "geometry", "references=['face-top|@face:"),
+])
+def test_definition_lists_datum_and_joint_origin_edits_without_rolling(
+        monkeypatch, kind, feature, action, shape):
+    s = datum_scene(dg, monkeypatch, kind)
+    result = _payload(dg.handler(include=["definition"], feature=feature))["definition"]
+    assert [row["action"] for row in result["supported_edits"]] == [action]
+    assert result["supported_edits"][0]["call"].startswith(
+        f"model_edit_feature(feature='{feature}', action='{action}', {shape}")
+    assert result["unavailable"] == {} and result["timeline_index"] == 1
+    assert result["component"] == "Part"
+    assert s.timeline._moves == [] and s.row._rolls == []
 
 
 def test_definition_keeps_feature_ref_ambiguity_refusal(definition_scene):
@@ -399,7 +435,8 @@ def stub_slices(monkeypatch):
     monkeypatch.setattr(dg, "_slice_timeline", lambda d, include_suppressed, group,
                         with_params=False, max_rows=0: (
         {"count": 4, "timeline": [], "with_params": with_params, "max_rows": max_rows}, None))
-    monkeypatch.setattr(dg, "_slice_configurations", lambda d: ({"table_name": "Configs"}, None))
+    monkeypatch.setattr(dg, "_slice_configurations",
+                        lambda d, cap=0: ({"table_name": "Configs", "cap": cap}, None))
     monkeypatch.setattr(dg, "_slice_attributes", lambda d, group, key: (
         {"group": group, "key": key, "attributes": []}, None))
     monkeypatch.setattr(dg, "_slice_metadata", lambda d, name_filter, max_results, component="": (
@@ -1450,10 +1487,14 @@ class TestTimelineRazor:
 
     def test_configurations_degrades_for_non_configured_design(self, monkeypatch, stub_slices):
         # a non-configured design errors in the source -> design_get degrades to a marker, not a failure
-        monkeypatch.setattr(dg, "_slice_configurations",
-                            lambda d: (None, {"isError": True, "message": "not a configured design"}))
+        monkeypatch.setattr(dg, "_slice_configurations", lambda d, cap=0: (
+            None, {"isError": True, "message": "not a configured design"}))
         out = _payload(dg.handler(include=["configurations"]))
         assert out["configurations"]["configured"] is False
+
+    def test_configurations_cell_cap_is_the_callers_max_results(self, stub_slices):
+        out = _payload(dg.handler(include=["configurations"], max_results=7))
+        assert out["configurations"]["cap"] == 7
 
 
 # ── guards ──────────────────────────────────────────────────────────────────────────────────────
@@ -2127,6 +2168,121 @@ class TestSliceConfigurations:
         out, _ = dg._slice_configurations(self._design([self._row("A", "r1", 0),
                                                         self._row("B", "r2", 1)]))
         assert out["truncated"] is True and out["configuration_count"] == 1
+
+
+def _cfg_cell(kind, **fields):
+    """A configuration cell reading `kind` as its objectType suffix, plus the given fields."""
+    return SimpleNamespace(objectType="adsk::fusion::" + kind, **fields)
+
+
+class _RaisingExpression:
+    objectType = "adsk::fusion::ConfigurationParameterCell"
+
+    @property
+    def expression(self):
+        raise RuntimeError("3 : expression unavailable")
+
+
+def _cfg_table(rows, columns, active="r1"):
+    """A top table of `rows` {id: {column index: cell}} and `columns` [(id, index as read)]."""
+    def row(position, rid, cells):
+        def cell(index):
+            got = cells[index]          # an index no column reads raises, as a positional guess would
+            if isinstance(got, Exception):
+                raise got
+            return got
+        # The first row reads index 1.
+        return SimpleNamespace(name="Row " + rid, id=rid, index=position + 1,
+                               getCellByColumnIndex=cell)
+    made = [row(i, rid, cells) for i, (rid, cells) in enumerate(rows.items())]
+    cols = [SimpleNamespace(title="Col " + cid, id=cid, index=index) for cid, index in columns]
+    table = SimpleNamespace(name="Table1", id="t1", rows=_NamedCollection(made),
+                            columns=_NamedCollection(cols),
+                            activeRow=next(r for r in made if r.id == active))
+    return SimpleNamespace(configurationTopTable=table)
+
+
+_PROPERTY = _cfg_cell("ConfigurationPropertyCell")
+
+
+def _expression(text):
+    return _cfg_cell("ConfigurationParameterCell", expression=text)
+
+
+class TestConfigurationCells:
+    def _cells(self, design, cap=0):
+        out, err = dg._slice_configurations(design, cap)
+        assert err is None
+        return out
+
+    def test_an_inactive_rows_parameter_cell_reads_its_expression(self):
+        design = _cfg_table({"r1": {0: _PROPERTY, 1: _expression("10 mm")},
+                             "r2": {0: _PROPERTY, 1: _expression("20 mm")}},
+                            [("c0", 0), ("c1", 1)])
+        out = self._cells(design)
+        assert [r["is_active"] for r in out["configurations"]] == [True, False]
+        assert out["cells"][3] == {"row_id": "r2", "column_id": "c1",
+                                   "kind": "ConfigurationParameterCell", "expression": "20 mm"}
+        assert out["cell_count"] == 4 and "cells_truncated" not in out
+
+    def test_a_property_cell_is_unread_and_a_null_cell_is_absent(self):
+        answering = _cfg_cell("ConfigurationPropertyCell", isVisible=True)
+        out = self._cells(_cfg_table({"r1": {0: answering, 1: None}}, [("c0", 0), ("c1", 1)]))
+        unread, absent = out["cells"]
+        assert unread["kind"] == "ConfigurationPropertyCell"
+        assert set(unread) == {"row_id", "column_id", "kind", "value_unread"}
+        assert absent == {"row_id": "r1", "column_id": "c1", "absent": True}
+
+    def test_a_read_that_raises_is_null_with_the_raised_text(self):
+        out = self._cells(_cfg_table(
+            {"r1": {0: _RaisingExpression(), 1: RuntimeError("3 : no such cell")}},
+            [("c0", 0), ("c1", 1)]))
+        assert out["cells"][0] == {"row_id": "r1", "column_id": "c0", "expression": None,
+                                   "kind": "ConfigurationParameterCell",
+                                   "raised": "3 : expression unavailable"}
+        assert out["cells"][1] == {"row_id": "r1", "column_id": "c1", "kind": None,
+                                   "raised": "3 : no such cell"}
+
+    def test_a_cell_is_fetched_by_the_index_its_column_reads(self):
+        out = self._cells(_cfg_table({"r1": {5: _expression("30 mm"), 2: _PROPERTY}},
+                                     [("c5", 5), ("c2", 2)]))
+        assert [(c["column_id"], c["kind"]) for c in out["cells"]] == [
+            ("c5", "ConfigurationParameterCell"), ("c2", "ConfigurationPropertyCell")]
+        assert out["configurations"][0]["index"] == 1
+        assert [c["index"] for c in out["columns"]] == [5, 2]
+
+    def test_a_false_flag_on_another_cell_kind_is_published(self):
+        cell = _cfg_cell("ConfigurationSuppressCell", isSuppressed=False)
+        out = self._cells(_cfg_table({"r1": {0: cell, 1: _cfg_cell("ConfigurationThemeCell")}},
+                                     [("c0", 0), ("c1", 1)]))
+        assert out["cells"][0] == {"row_id": "r1", "column_id": "c0", "is_suppressed": False,
+                                   "kind": "ConfigurationSuppressCell"}
+        assert "none of the fields" in out["cells"][1]["value_unread"]
+
+    @pytest.mark.parametrize("cap, listed, truncated", [(4, 4, False), (3, 3, True)])
+    def test_cells_past_the_cap_are_cut_and_flagged(self, cap, listed, truncated):
+        cells = {0: _PROPERTY, 1: _expression("10 mm")}
+        out = self._cells(_cfg_table({"r1": cells, "r2": cells}, [("c0", 0), ("c1", 1)]), cap)
+        assert len(out["cells"]) == listed and out["cell_count"] == 4
+        assert out.get("cells_truncated", False) is truncated
+        assert ("cells_truncated_note" in out) is truncated
+
+    def test_rows_that_do_not_count_leave_the_cells_unread(self):
+        table = SimpleNamespace(name="T", id="t1", activeRow=None, rows=[], columns=[])
+        out = self._cells(SimpleNamespace(configurationTopTable=table))
+        assert out["cells"] is None and "did not count" in out["cells_unread"]
+
+    def test_the_slices_other_keys_read_as_before(self):
+        design = _cfg_table({"r1": {0: _PROPERTY}}, [("c0", 0)])
+        out = self._cells(design)
+        for key in ("cell_count", "cells"):
+            out.pop(key)
+        assert out == {"table_name": "Table1", "table_id": "t1", "active_configuration": "Row r1",
+                       "configuration_count": 1,
+                       "configurations": [{"name": "Row r1", "id": "r1", "index": 1,
+                                           "is_active": True}],
+                       "columns": [{"title": "Col c0", "id": "c0", "index": 0,
+                                    "type": "SimpleNamespace"}]}
 
 
 # ── the attributes slice (_slice_attributes) ───────────────────────────────────────────────────────

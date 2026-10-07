@@ -30,6 +30,7 @@ import sys
 import pytest
 
 from conftest import COMMANDS_DIR, REPO_ROOT, load_mcp_server
+from test_shared_state import shared_state  # noqa: F401  (the isolated temporary settings store)
 
 if COMMANDS_DIR not in sys.path:                   # the flat package root the add-in code lives in
     sys.path.insert(0, COMMANDS_DIR)
@@ -133,6 +134,7 @@ class _FakeThreading:
 
 
 SETTINGS_FILE = "S:/settings/FusionEssentialsSettings.json"
+SETTINGS_ID = "GTF_Test_MCP"
 _DEFAULT_ROW = object()
 
 
@@ -164,7 +166,8 @@ def real_server_module():
 
 
 def _run_start(real, *, result, start_result=True, collect_raises=None, thread_raises=None,
-               catalog=("resource",), port_row=_DEFAULT_ROW, settings_raise=None, listener=None):
+               catalog=("resource",), port_row=_DEFAULT_ROW, settings_raise=None, listener=None,
+               settings_store=None):
     """Execute entry.start() against fakes; return the fake TaskManager and the collected log.
 
     The returned server fake also carries `workers` (the thread seam) and `ns` (the namespace)."""
@@ -202,8 +205,8 @@ def _run_start(real, *, result, start_result=True, collect_raises=None, thread_r
         "_lifecycle": 0,
         "_report_start_problem": lambda message: log.append(("warn", message)),
         "endpoint": endpoint,
-        "shared_state": _fake_shared_state(port_row, settings_raise),
-        "SETTINGS_ID": "GTF_Test_MCP",
+        "shared_state": settings_store or _fake_shared_state(port_row, settings_raise),
+        "SETTINGS_ID": SETTINGS_ID,
         "adsk": fake_adsk,
         "futil": type("F", (), {"log": staticmethod(_log),
                                 "handle_error": staticmethod(
@@ -483,3 +486,127 @@ class TestTheResourceCatalogEntryBuilds:
         catalog, log = self._catalog(monkeypatch, guidance_path=str(tmp_path / "gone.json"))
         assert catalog == [], "a missing document must publish no address at all"
         assert any("gone.json" in message for message in log), log
+
+
+_SETTINGS_ASSIGNMENTS = ("_ALLOW_EXECUTE_KEY", "ICON_FOLDER", "DEFAULT_SETTINGS")
+_SETTINGS_CALLS = ("shared_state.load_settings_init", "_refresh_stored_presentation")
+
+
+def _settings_bootstrap(store, label, refresh=True):
+    """entry.py's own settings statements, run in source order against the temporary store."""
+    with open(ENTRY_PATH, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=ENTRY_PATH)
+    body, calls = [], []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) in _SETTINGS_ASSIGNMENTS:
+            body.append(node)
+        elif isinstance(node, ast.FunctionDef) and node.name == _SETTINGS_CALLS[1]:
+            body.append(node)
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) \
+                and ast.unparse(node.value.func) in _SETTINGS_CALLS:
+            calls.append(ast.unparse(node.value.func))
+            if refresh or calls[-1] != _SETTINGS_CALLS[1]:
+                body.append(node)
+    assert calls == list(_SETTINGS_CALLS), "entry.py registers the group, then refreshes it"
+    log = []
+    ns = {"__file__": ENTRY_PATH, "os": os, "endpoint": endpoint, "shared_state": store,
+          "GATED_TOOLS": {"sys_execute_script": label}, "SETTINGS_ID": SETTINGS_ID,
+          "CMD_NAME": "MCP Server",
+          "futil": type("F", (), {"log": staticmethod(lambda m: log.append(m))})()}
+    exec(compile(ast.Module(body=body, type_ignores=[]), ENTRY_PATH, "exec"), ns)
+    return ns, log
+
+
+def _stored_before_the_fix(store):
+    """A settings file as an existing user holds it: old labels, default icon, changed values."""
+    return {
+        "FEATURE_ENABLEMENT": {"name": "General", "img_path": store.DEFAULT_ICON, "settings": {
+            "GTF_Test_MCP_Server": {"type": "checkbox", "label": "old label", "default": True}}},
+        SETTINGS_ID: {"name": "MCP Server", "img_path": store.DEFAULT_ICON, "settings": {
+            "allow_execute_api_script": {"type": "checkbox", "label": "old label",
+                                         "default": True},
+            "family_enabled_cam": {"type": "checkbox", "label": "Enable cam MCP tools",
+                                   "default": False},
+            endpoint.PORT_SETTING: {"type": "number", "label": "old port label",
+                                    "default": 41627},
+            "retired_row": {"type": "checkbox", "label": "old label", "default": True}}},
+        "GTF_Test_Other": {"name": "Other", "img_path": store.DEFAULT_ICON, "settings": {
+            "allow_execute_api_script": {"type": "checkbox", "label": "old label",
+                                         "default": False}}},
+    }
+
+
+def _values(group):
+    return {key: (row["type"], row["default"]) for key, row in group["settings"].items()}
+
+
+class TestTheStoredSettingsPresentation:
+    """The Settings dialog draws the stored labels and the stored icon path, so both must follow
+    the shipped ones for a group that already exists - and no stored value may move."""
+
+    def test_a_fresh_install_stores_the_shipped_icon_folder_and_labels(self, shared_state):
+        store, settings_file = shared_state
+        ns, _log = _settings_bootstrap(store, "current label", refresh=False)
+        group = json.loads(settings_file.read_text())[SETTINGS_ID]
+        folder = os.path.join(COMMANDS_DIR, "mcpServer", "resources", "")
+        assert group["img_path"] == ns["ICON_FOLDER"] == folder
+        for size in (16, 32, 64):
+            with open(os.path.join(folder, f"{size}x{size}-normal.png"), "rb") as fh:
+                assert fh.read(8) == b"\x89PNG\r\n\x1a\n"
+        assert group["settings"]["allow_execute_api_script"]["label"] == "current label"
+        assert group["settings"][endpoint.PORT_SETTING]["default"] == endpoint.DEFAULT_PORT
+
+    def test_an_existing_group_gets_the_labels_and_icon_and_keeps_every_value(self, shared_state):
+        store, settings_file = shared_state
+        before = _stored_before_the_fix(store)
+        settings_file.write_text(json.dumps(before))
+        ns, log = _settings_bootstrap(store, "current label")
+        after = json.loads(settings_file.read_text())
+        group = after[SETTINGS_ID]
+        assert group["img_path"] == ns["ICON_FOLDER"]
+        for key, shipped in ns["DEFAULT_SETTINGS"].items():
+            assert group["settings"][key]["label"] == shipped["label"], key
+        kept = _values(before[SETTINGS_ID])
+        assert kept[endpoint.PORT_SETTING] == ("number", 41627)
+        assert {key: _values(group)[key] for key in kept} == kept
+        assert group["settings"]["retired_row"] == before[SETTINGS_ID]["settings"]["retired_row"]
+        assert group["name"] == "MCP Server"
+        for other in ("FEATURE_ENABLEMENT", "GTF_Test_Other"):
+            assert json.dumps(after[other]) == json.dumps(before[other]), other
+        assert sorted(after) == sorted(before) and log == []
+
+    def test_a_current_file_is_not_rewritten(self, shared_state, monkeypatch):
+        store, settings_file = shared_state
+        settings_file.write_text(json.dumps(_stored_before_the_fix(store)))
+        ns, _log = _settings_bootstrap(store, "current label")
+        current = settings_file.read_bytes()
+        writes = []
+        monkeypatch.setattr(store, "_write_settings", writes.append)
+        ns["_refresh_stored_presentation"]()
+        assert writes == [] and settings_file.read_bytes() == current
+
+    @pytest.mark.parametrize("failure", ["unreadable file", "failing write"])
+    def test_a_refresh_that_cannot_finish_is_logged_and_start_still_runs(
+            self, shared_state, monkeypatch, real_server_module, failure):
+        store, settings_file = shared_state
+        settings_file.write_text(json.dumps(_stored_before_the_fix(store)))
+        ns, log = _settings_bootstrap(store, "current label", refresh=False)
+        if failure == "unreadable file":
+            settings_file.write_bytes(b"{not json")
+        else:
+            def refuse(_groups):
+                raise OSError("disk full")
+            monkeypatch.setattr(store, "_write_settings", refuse)
+        stored = settings_file.read_bytes()
+        ns["_refresh_stored_presentation"]()
+        (message,) = log
+        assert "not refreshed" in message
+        assert ("disk full" in message) == (failure == "failing write")
+        assert settings_file.read_bytes() == stored
+        tm, start_log, server = _run_start(real_server_module, settings_store=store,
+                                           result=_ok_result(real_server_module))
+        assert ("error", "MCP Server.start") not in start_log
+        if failure == "failing write":
+            assert server.binds == [41627] and tm.running is True
+        else:
+            assert server.binds == [] and len(_warnings(start_log)) == 1

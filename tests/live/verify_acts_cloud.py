@@ -5,7 +5,8 @@
 
 The acts that touch an operator's own Autodesk hub, and so run only where cloud_config names
 one (verify_core._cloud_tier_probe). Each act creates run-stamped artifacts under the configured
-folder. CAM persistence and configuration coupons are retained; other artifacts are removed with read-back.
+folder. CAM persistence, configuration coupons and the favourite-parameter derive source are retained;
+other artifacts are removed with read-back.
 Each act ends by activating the document the session was on when the tier started, so a chunk
 boundary can fall between them and a partial run leaves the session where it found it.
 """
@@ -593,14 +594,20 @@ _SETTLE_POLLS = 96
 _SETTLE_GAP_S = 5.0
 
 
-def _file_settled(folder_path, polls=_SETTLE_POLLS):
+def _file_settled(folder_path, polls=_SETTLE_POLLS, *, file_key=None, file_name=None):
     """data_get(file=<urn>) re-read until the record reads is_complete True, then judged by
     _file_record; the LAST read is what a failure prints."""
     record = _file_record(folder_path)
 
     def check(p):
         call = facade("call")        # resolved when the row runs, after tool_verify has loaded
+        expected = _RECALL.get(file_key) if file_key else None
         for i in range(polls):
+            if file_key:
+                current = p.get("file") or {}
+                _measured("publication reads the exact saved source", current,
+                          bool(expected) and current.get("id") == expected
+                          and current.get("name") == file_name)
             if (p.get("state") or {}).get("is_complete") is True or i == polls - 1:
                 break
             time.sleep(_SETTLE_GAP_S)
@@ -4626,12 +4633,23 @@ def _configure_column_rows():
     def legal_table(p):
         now, old = _configure_table_state(p), _RECALL.get("configure_table")
         new = [c for c in (now or {}).get("columns", []) if c.get("id") not in {c["id"] for c in (old or {}).get("columns", [])}]
+        cells = (now or {}).get("cells") or []
+        column_id = _RECALL.get("configure_legal_column")
+        added_cells = [c for c in cells if c.get("column_id") == column_id]
+        expected_cells = [{"row_id": r["id"], "column_id": column_id,
+                           "kind": "ConfigurationParameterCell",
+                           "expression": "13 mm" if r["name"] == "B" else "10 mm"}
+                          for r in (old or {}).get("configurations", [])]
+        changed = {"columns", "cells", "cell_count"}
         return _measured("one fresh ProbeW column with unchanged existing table identities", now,
                          now is not None and old is not None and len(new) == 1 and new[0]["title"] == "ProbeW"
                          and new[0]["type"] == "ConfigurationParameterColumn"
-                         and {k: v for k, v in now.items() if k != "columns"} == {k: v for k, v in old.items() if k != "columns"}
+                         and {k: v for k, v in now.items() if k not in changed} == {k: v for k, v in old.items() if k not in changed}
                          and [c for c in now["columns"] if c not in new] == old["columns"]
-                         and new[0]["id"] == _RECALL.get("configure_legal_column"))
+                         and new[0]["id"] == column_id
+                         and now.get("cell_count") == len(cells) == old.get("cell_count", 0) + 2
+                         and added_cells == expected_cells
+                         and [c for c in cells if c.get("column_id") != column_id] == old.get("cells"))
     def legal_params(p):
         old = copy.deepcopy(_RECALL.get("configure_params"))
         if old:
@@ -4895,3 +4913,840 @@ def _lineage_open_rows():
 
 
 _CLOUD_CONFIGURE += _lineage_open_rows()
+
+
+
+def _parameter_table(p):
+    """Return param_get's complete user and model rows by name, or None when the read is partial."""
+    users, models = p.get("user_parameters"), p.get("model_parameters")
+    if (not isinstance(users, list) or not isinstance(models, list)
+            or p.get("user_parameter_count") != len(users) or p.get("matched") != len(users)
+            or p.get("returned") != len(users) or p.get("model_parameter_count") != len(models)
+            or any(k in p for k in ("truncated", "walk_truncated", "generated_skipped",
+                                    "model_walk_truncated", "model_parameters_truncated"))):
+        return None
+    out = {"user": {}, "model": {}}
+    for group, rows in (("user", users), ("model", models)):
+        for row in rows:
+            name = row.get("name")
+            if (not isinstance(name, str) or not name or name in out["user"] or name in out["model"]
+                    or not isinstance(row.get("expression"), str)
+                    or not all(_num(row.get(k)) for k in ("value", "value_internal"))):
+                return None
+            out[group][name] = {k: row.get(k) for k in (
+                "expression", "unit", "value", "value_internal", "value_units", "favorite",
+                "comment", "owner", "owner_type", "role")}
+    return out
+
+
+def _parameter_table_renamed(table, previous, name, expressions):
+    """Return `table` with one row re-keyed and the named dependents' expressions replaced."""
+    out = copy.deepcopy(table)
+    for rows in out.values():
+        if previous in rows:
+            rows[name] = rows.pop(previous)
+        for dependent, expression in expressions.items():
+            if dependent in rows:
+                rows[dependent]["expression"] = expression
+    return out
+
+
+def _param_rename_rows():
+    """Rename a user and a model parameter on an owned scratch, refuse four renames, rename back."""
+    first, twice, span, depth = "RenameLen", "RenameTwice", "RenameSpan", "RenameDepth"
+    listing = {"include_model_parameters": True}
+    body_read = {"include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True}
+
+    def write(args):
+        return lambda c: dict(args(c) if callable(args) else args,
+                              expect_document=_ctx_get(c, "rename_owned", "the rename scratch"))
+
+    def driven(n):
+        return _RECALL.get("rename_d%d" % n)
+
+    def expected(stage):
+        table = _RECALL.get("rename_table")
+        if table is not None and stage >= 1:
+            table = _parameter_table_renamed(table, first, span, {twice: span + " * 2", driven(1): span})
+        if table is not None and stage >= 2:
+            table = _parameter_table_renamed(table, driven(1), depth, {driven(2): depth + " + 1 mm"})
+        return table
+
+    def table_is(stage):
+        def check(p):
+            want, now = expected(stage), _parameter_table(p)
+            return _measured(f"the parameter table after {stage} rename(s)", {"want": want, "now": now},
+                             now is not None and want is not None and now == want)
+        return check
+
+    def one_model_row(expression, reply_key):
+        def pick(p):
+            hits = [r.get("name") for r in p.get("model_parameters") or []
+                    if r.get("expression") == expression()]
+            _measured(f"one model parameter reads '{expression()}', the one the extrude reported",
+                      {"hits": hits, "reported": _RECALL.get(reply_key)},
+                      len(hits) == 1 and hits[0] == _RECALL.get(reply_key))
+            return hits[0]
+        return pick
+
+    def baseline(p):
+        table = _parameter_table(p)
+        users, models = (table or {}).get("user", {}), (table or {}).get("model", {})
+        stacked_on = [n for n, r in models.items() if r["expression"] == f"{driven(1)} + 1 mm"]
+        valid = (table is not None and set(users) == {first, twice}
+                 and users[first]["expression"] == "10 mm" and _near(users[first]["value"], 10, 1e-9)
+                 and users[twice]["expression"] == first + " * 2" and _near(users[twice]["value"], 20, 1e-9)
+                 and [n for n, r in models.items() if r["expression"] == first] == [driven(1)]
+                 and _near(models[driven(1)]["value"], 10, 1e-9)
+                 and stacked_on == [_RECALL.get("rename_d2_reply")]
+                 and _near(models[stacked_on[0]]["value"], 11, 1e-9))
+        if valid:
+            _RECALL["rename_table"] = table
+        return _measured("the two user parameters and both extrude depths before any rename", table, valid)
+
+    def renamed(previous, name, closure, follows):
+        def check(p):
+            was, now = previous(), name()
+            rows = p.get("dependents")
+            by_name = {r.get("name"): r for r in rows} if isinstance(rows, list) else {}
+            judged = {n: (r.get("expression_before"), r.get("expression_after"), r["follows"])
+                      for n, r in by_name.items() if "follows" in r}
+            before, after = p.get("before") or {}, p.get("after") or {}
+            return _measured(
+                f"'{was}' renamed '{now}' and the expressions naming it follow",
+                {k: p.get(k) for k in ("renamed", "previous_name", "requested_name", "name", "dependents",
+                                       "dependents_total", "unread", "note")},
+                p.get("renamed") is True and p.get("previous_name") == was
+                and p.get("requested_name") == now and p.get("name") == now
+                and before.get("name") == was and after.get("name") == now
+                and {k: v for k, v in before.items() if k != "name"}
+                == {k: v for k, v in after.items() if k != "name"}
+                and isinstance(rows, list) and len(by_name) == len(rows)
+                and p.get("dependents_total") == len(rows) and p.get("dependents_truncated") is False
+                and set(by_name) == set(closure())
+                and judged == {n: (b, a, True) for n, (b, a) in follows().items()}
+                and all(r.get("expression_before") == r.get("expression_after")
+                        for n, r in by_name.items() if n not in judged)
+                and not any(k in p for k in ("unread", "new_timeline_errors", "new_timeline_warnings", "note")))
+        return check
+
+    def history(p):
+        state = _retire_design_state(p)
+        tl = (state or {}).get("timeline") or {}
+        return state if (tl.get("count") == 4 and (tl.get("summary") or {}).get("states") == {"healthy": 4}
+                         and (tl.get("summary") or {}).get("exceptions") == []) else None
+
+    def geometry(after):
+        rows = [("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                                "max_depth": 10, "max_results": 2000},
+                 _retire_compare("rename_history", history, after), None)]
+        for body, size, volume in (("Body1", [10, 8, 10], 800), ("Body2", [5, 5, 11], 275)):
+            def solid(p, size=size, volume=volume):
+                state = _symmetric_target_body_state(p)
+                return state if (state is not None and state["size"] == size
+                                 and _near(state["material"]["volume"], volume, .001)) else None
+            rows.append(("model_inspect", _lit(dict(body_read, target=body)),
+                         _retire_compare("rename_" + body, solid, after), None))
+        return rows
+
+    def refusal(args, *fragments):
+        return [("param_set", write(args), _refused(*fragments), None),
+                ("param_get", listing, table_is(2), None)]
+
+    everything = lambda: {twice, driven(1), driven(2)}
+    stacked = lambda: {driven(2)}
+    rows = [("doc_get", {}, _home_document, ("rename_home", _recall("rename_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "rename_home", "the home session")},
+             _new_document, ("rename_owned", _recall("rename_owned", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("param_add", write({"name": first, "expression": "10 mm", "unit": "mm"}),
+             lambda p: p.get("added") is True and p["parameter"]["name"] == first, None),
+            ("param_add", write({"name": twice, "expression": first + " * 2", "unit": "mm"}),
+             lambda p: p.get("added") is True and p["parameter"]["name"] == twice, None),
+            ("sketch_create", write({"name": "RenameBase", "plane": "xy"}), "ok", None),
+            ("sketch_add_geometry", write({"sketch_name": "RenameBase", "units": "mm", "geometry": [
+                {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 8}]}), "ok", None),
+            ("model_extrude", write({"sketch_name": "RenameBase", "distance": first, "units": "mm",
+                                     "operation": "new"}),
+             lambda p: _extruded(p) and p.get("result_bodies") == ["Body1"],
+             ("rename_d1_reply", _recall("rename_d1_reply", lambda p: p["model_parameters"]["distance"]))),
+            ("param_get", listing, lambda p: bool(one_model_row(lambda: first, "rename_d1_reply")(p)),
+             ("rename_d1", _recall("rename_d1", one_model_row(lambda: first, "rename_d1_reply")))),
+            ("sketch_create", write({"name": "RenameStack", "plane": "xy"}), "ok", None),
+            ("sketch_add_geometry", write({"sketch_name": "RenameStack", "units": "mm", "geometry": [
+                {"kind": "rectangle", "x1": 40, "y1": 0, "x2": 45, "y2": 5}]}), "ok", None),
+            ("model_extrude", write(lambda c: {
+                "sketch_name": "RenameStack", "units": "mm", "operation": "new",
+                "distance": _ctx_get(c, "rename_d1", "the first extrude's depth parameter") + " + 1 mm"}),
+             lambda p: _extruded(p) and p.get("result_bodies") == ["Body2"],
+             ("rename_d2_reply", _recall("rename_d2_reply", lambda p: p["model_parameters"]["distance"]))),
+            ("param_get", listing, baseline,
+             ("rename_d2", _recall("rename_d2", one_model_row(lambda: f"{driven(1)} + 1 mm",
+                                                              "rename_d2_reply"))))]
+    rows += geometry(False)
+    rows += [("param_set", write({"name": first, "new_name": span}),
+              renamed(lambda: first, lambda: span, everything,
+                      lambda: {twice: (first + " * 2", span + " * 2"), driven(1): (first, span)}), None),
+             ("param_get", listing, table_is(1), None),
+             ("param_get", {"name": first}, _refused(f"Parameter not found: '{first}'."), None)]
+    rows += geometry(True)
+    rows += [("param_set", write(lambda c: {"name": _ctx_get(c, "rename_d1", "the depth parameter"),
+                                            "new_name": depth}),
+              renamed(lambda: driven(1), lambda: depth, stacked,
+                      lambda: {driven(2): (f"{driven(1)} + 1 mm", depth + " + 1 mm")}), None),
+             ("param_get", listing, table_is(2), None)]
+    rows += geometry(True)
+    rows += refusal({"name": twice, "new_name": span},
+                    f"Cannot rename '{twice}' to '{span}': another parameter already has that name.",
+                    "Nothing was renamed")
+    rows += refusal({"name": span, "new_name": span},
+                    f"'{span}' is already this parameter's name; nothing was renamed.")
+    rows += refusal({"name": span, "new_name": "RenameOther", "expression": "12 mm"},
+                    f"new_name 'RenameOther' only renames '{span}'; it was sent with expression '12 mm'.",
+                    "Rename in one call and set the value in another.")
+    # A name holding a space passes the tool's own checks; Fusion keeps the name and raises nothing.
+    rows += refusal({"name": twice, "new_name": "bad name"},
+                    f"Assigning 'bad name' raised no error but the parameter is still named '{twice}'",
+                    "the rename did not take")
+    rows += geometry(True)
+    rows += [("param_set", write(lambda c: {"name": depth,
+                                            "new_name": _ctx_get(c, "rename_d1", "the depth parameter")}),
+              renamed(lambda: depth, lambda: driven(1), stacked,
+                      lambda: {driven(2): (depth + " + 1 mm", f"{driven(1)} + 1 mm")}), None),
+             ("param_get", listing, table_is(1), None),
+             ("param_set", write({"name": span, "new_name": first}),
+              renamed(lambda: span, lambda: first, everything,
+                      lambda: {twice: (span + " * 2", first + " * 2"), driven(1): (span, first)}), None),
+             ("param_get", listing, table_is(0), None)]
+    rows += geometry(True)
+    rows += [("doc_close", lambda c: {"name": _ctx_get(c, "rename_owned", "the rename scratch"),
+                                      "save_changes": False, "expect_document": c["rename_owned"]},
+              _document_closed, None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "rename_home", "the home session")},
+              _activated(), None),
+             ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("rename_home")
+              and all(r.get("document_handle") != _RECALL.get("rename_owned") for r in p["open_documents"]),
+              None)]
+    return rows
+
+
+def _derive_favorite_rows():
+    """Derive one body with and without favourite parameters from a retained saved source."""
+    name = "SweepDeriveFavorite." + _STAMP
+    favorite, plain = "DeriveFav", "DerivePlain"
+    listing = {"include_model_parameters": True}
+    rows = [("doc_get", {}, _home_document, ("fav_home", _recall("fav_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": c["fav_home"]}, _new_document,
+             ("fav_source", _recall("fav_source", lambda p: p["document_handle"])))]
+
+    def write(tool, args, check="ok", save=None, owner="fav_source"):
+        rows.append((tool, lambda c, args=args, owner=owner: {
+            **(args(c) if callable(args) else args), "expect_document": c[owner]}, check, save))
+
+    def source_table(p):
+        table = _parameter_table(p)
+        users = (table or {}).get("user", {})
+        return table if (table is not None and set(users) == {favorite, plain}
+                         and users[favorite]["expression"] == "7 mm" and users[favorite]["favorite"] is True
+                         and users[plain]["expression"] == "3 mm" and users[plain]["favorite"] is False) else None
+
+    def cube(p):
+        return _measured("the derived 10 mm cube", {k: p.get(k) for k in ("kind", "x", "y", "z", "mass")},
+                         p.get("kind") == "design" and all(_near(p.get(a), 10, .0001) for a in "xyz")
+                         and _near((p.get("mass") or {}).get("volume"), 1000, .001))
+
+    def empty(p):
+        return _measured("the host lists no parameter", _parameter_table(p),
+                         _parameter_table(p) == {"user": {}, "model": {}})
+
+    def landed(count):
+        def check(p):
+            names = p.get("imported_parameter_names")
+            return _derived(name)(p) and _measured(
+                f"{count} favourite parameter(s) imported by the derive",
+                {k: p.get(k) for k in ("bodies_landed", "parameters_imported", "imported_parameter_names",
+                                       "model_parameters_added", "parameter_warning", "parameters_unread")},
+                p.get("bodies_landed") == 1 and p.get("parameters_imported") == count
+                and isinstance(names, list) and len(names) == count
+                and all(isinstance(n, str) and n for n in names)
+                and (count == 0 or p.get("model_parameters_added") == 1)
+                and not any(k in p for k in ("parameter_warning", "parameters_unread", "user_parameters_added",
+                                             "imported_parameter_names_truncated")))
+        return check
+
+    def derived_row(p):
+        table = _parameter_table(p)
+        row = ((table or {}).get("model") or {}).get(_RECALL.get("fav_derived"))
+        return _measured("the host lists exactly the imported name, at the source's 7 mm", table,
+                         table is not None and table["user"] == {} and len(table["model"]) == 1
+                         and row is not None and row["expression"] == "7 mm" and row["unit"] == "mm"
+                         and _near(row["value"], 7, 1e-9))
+
+    def derive(flag):
+        return lambda c: {"document_id": c["fav_urn"], "source_bodies": [c["fav_body"]],
+                          "include_parameters": False, "include_favorite_parameters": flag}
+
+    write("param_add", {"name": favorite, "expression": "7 mm", "unit": "mm", "favorite": True},
+          lambda p: p.get("added") is True and p.get("favorite") is True)
+    write("param_add", {"name": plain, "expression": "3 mm", "unit": "mm"},
+          lambda p: p.get("added") is True and p.get("favorite") is False)
+    write("sketch_create", {"plane": "xy", "name": "DeriveFavSource"})
+    write("sketch_add_geometry", {"sketch_name": "DeriveFavSource", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]})
+    write("model_extrude", {"sketch_name": "DeriveFavSource", "distance": 10, "operation": "new"},
+          lambda p: _extruded(p) and len(p.get("result_bodies") or []) == 1,
+          ("fav_body", _recall("fav_body", lambda p: p["result_bodies"][0])))
+    write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
+          _saved_as(name, FOLDER))
+    rows += _settled(name, "fav_urn")
+    rows.append(("data_get", lambda c: {"file": c["fav_urn"]},
+                 _file_settled(FOLDER, file_key="fav_urn", file_name=name), None))
+    rows.append(("param_get", listing, _retire_compare("fav_source_table", source_table, False), None))
+    for host, flag, owner in (("fav_host_on", True, "fav_source"), ("fav_host_off", False, "fav_host_on")):
+        write("doc_new", {}, _new_document, (host, _recall(host, lambda p: p["document_handle"])), owner=owner)
+        rows.append(("param_get", listing, empty, None))
+        write("doc_insert_derive", derive(flag), landed(1 if flag else 0),
+              ("fav_derived", _recall("fav_derived", lambda p: p["imported_parameter_names"][0]))
+              if flag else None, owner=host)
+        rows += [("param_get", listing, derived_row if flag else empty, None),
+                 ("model_inspect", {"include": ["default", "mass"], "units": "mm"}, cube, None)]
+    write("doc_activate", lambda c: {"name": c["fav_source"]}, _activated(name), owner="fav_host_off")
+    write("doc_close", lambda c: {"name": c["fav_host_off"], "save_changes": False}, _document_closed)
+    write("doc_close", lambda c: {"name": c["fav_host_on"], "save_changes": False}, _document_closed)
+    rows.append(("param_get", listing, _retire_compare("fav_source_table", source_table, True), None))
+    write("doc_activate", lambda c: {"name": c["fav_home"]}, _activated())
+    write("doc_close", lambda c: {"name": c["fav_source"], "save_changes": False},
+          _document_closed, owner="fav_home")
+    rows.append(("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("fav_home")
+                 and not {r.get("document_handle") for r in p["open_documents"]}
+                 & {_RECALL.get(k) for k in ("fav_source", "fav_host_on", "fav_host_off")}, None))
+    return rows
+
+
+_CLOUD_DOC += _param_rename_rows() + _derive_favorite_rows()
+
+
+# design_get's configuration cell table: its list key, then each cell's row id, column id and
+# expression keys.
+_CELL_TABLE_KEYS = ("cells", "row_id", "column_id", "expression")
+
+
+def _configure_row_rows():
+    """Copy and delete configuration rows on a retained saved coupon, re-reading the table each time."""
+    name = "SweepConfigureRows." + _STAMP
+    top, parameter = "Configuration 1", "ProbeW"
+    body_read = {"include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True}
+
+    def write(args):
+        return lambda c: dict(args, expect_document=_ctx_get(c, "configure_owned", "the configuration coupon"))
+
+    def saved(p):
+        return (_document_is(name)(p) and _home_address(p) == _RECALL.get("configure_owned")
+                and p["active"]["document_id"] == _RECALL.get("configure_urn"))
+
+    def table(p):
+        read = p.get("configurations") or {}
+        rows, columns = read.get("configurations"), read.get("columns")
+        if (not read.get("table_id") or read.get("truncated") or not isinstance(rows, list) or not rows
+                or read.get("configuration_count") != len(rows)
+                or any(not isinstance(r.get("name"), str) or not r.get("id") or not _num(r.get("index"))
+                       or type(r.get("is_active")) is not bool for r in rows)
+                or len({r["id"] for r in rows}) != len(rows)
+                or [r["name"] for r in rows if r["is_active"]] != [read.get("active_configuration")]
+                or any(a["index"] >= b["index"] for a, b in zip(rows, rows[1:]))
+                or not isinstance(columns, list)
+                or [(c.get("title"), c.get("type")) for c in columns]
+                != [("Part Number", "ConfigurationPropertyColumn"), (parameter, "ConfigurationParameterColumn")]
+                or not all(c.get("id") for c in columns) or columns[0]["id"] == columns[1]["id"]
+                or columns[1]["id"] != _RECALL.get("cfgrow_column")):
+            return None
+        return {"table_id": read["table_id"], "columns": columns,
+                "rows": [{k: r[k] for k in ("name", "id", "index", "is_active")} for r in rows]}
+
+    def identities(state):
+        return [(r["name"], r["id"]) for r in state["rows"]]
+
+    def active(state):
+        return next({"name": r["name"], "id": r["id"]} for r in state["rows"] if r["is_active"])
+
+    def position(state, row):
+        return [r["name"] for r in state["rows"]].index(row)
+
+    def table_reads(label, want):
+        def check(p):
+            now, before = table(p), _RECALL.get("cfgrow_table")
+            valid = (now is not None and before is not None and now["table_id"] == before["table_id"]
+                     and now["columns"] == before["columns"] and bool(want(before, now)))
+            if valid:
+                _RECALL["cfgrow_table"] = now
+            return _measured(label, {"before": before, "now": now}, valid)
+        return ("design_get", {"include": ["configurations"]}, check, None)
+
+    def base(p):
+        state = table(p)
+        valid = (state is not None and [r["name"] for r in state["rows"]] == [top, "B", "C"]
+                 and [r["id"] for r in state["rows"][1:]] == [_RECALL.get("cfgrow_B"), _RECALL.get("cfgrow_C")]
+                 and active(state)["name"] == "C")
+        if valid:
+            _RECALL["cfgrow_table"] = state
+        return _measured("three rows in the order added, the last added active", state, valid)
+
+    def same_rows(active_row):
+        return lambda before, now: now["rows"] == [dict(r, is_active=r["name"] == active_row)
+                                                   for r in before["rows"]]
+
+    def unchanged(before, now):
+        return now == before
+
+    def inserted_after_b(adopted, key):
+        def want(before, now):
+            at = position(before, "B") + 1
+            new = _RECALL.get(key) or {}
+            return (identities(now) == identities(before)[:at] + [(adopted, new.get("id"))] + identities(before)[at:]
+                    and now["rows"][:at] == before["rows"][:at] and now["rows"][at]["index"] == new.get("index")
+                    and active(now) == active(before))
+        return want
+
+    def removed(row):
+        def want(before, now):
+            at = position(before, row)
+            above = {k: before["rows"][at - 1][k] for k in ("name", "id")}
+            return (at == len(before["rows"]) - 1 and identities(now) == identities(before)[:at]
+                    and [r["index"] for r in now["rows"]] == [r["index"] for r in before["rows"][:at]]
+                    and active(now) == (above if before["rows"][at]["is_active"] else active(before)))
+        return want
+
+    def activated(row, previous):
+        return lambda p: _measured(f"'{row}' activated from '{previous}'", p,
+                                   p.get("activated") is True and p.get("requested") == row
+                                   and p.get("previous") == previous and p.get("now_active") == row
+                                   and "timeline_warning" not in p)
+
+    def copied(new_name, adopted):
+        def check(p):
+            before = _RECALL.get("cfgrow_table")
+            names = [r["name"] for r in before["rows"]]
+            at = names.index("B") + 1
+            source = before["rows"][at - 1]
+            cells, note = p.get("cells"), p.get("note") or ""
+            width = [c for c in cells or [] if c.get("column_id") == _RECALL.get("cfgrow_column")]
+            return _measured(
+                f"'B' copied as '{adopted}' with an equal {parameter} cell and the active row kept",
+                {k: p.get(k) for k in ("copied", "source", "configuration", "id", "index", "requested_name",
+                                       "adopted_differs", "active_before", "active_after", "active_changed",
+                                       "cells", "configurations")},
+                p.get("copied") is True and p.get("source") == {k: source[k] for k in ("name", "id", "index")}
+                and p.get("configuration") == adopted and isinstance(p.get("id"), str) and bool(p["id"])
+                and p["id"] not in {r["id"] for r in before["rows"]} and _num(p.get("index"))
+                and ((p.get("requested_name") == new_name and p.get("adopted_differs") is True)
+                     if adopted != new_name else
+                     ("requested_name" not in p and "adopted_differs" not in p))
+                and p.get("active_before") == p.get("active_after") == active(before)
+                and p.get("active_changed") is False and "active_unread" not in p
+                and isinstance(cells, list)
+                and [(c.get("column"), c.get("column_id")) for c in cells]
+                == [(c["title"], c["id"]) for c in before["columns"]]
+                and len(width) == 1 and width[0].get("equal") is True and "unread" not in width[0]
+                and (width[0].get("source") or {}).get("expression") == "20 mm"
+                and width[0]["source"] == width[0].get("copy")
+                and not any(c.get("equal") is False for c in cells)
+                and not any(k in p for k in ("verified", "cells_differ", "cells_unread", "cells_truncated",
+                                             "configurations_truncated"))
+                and p.get("configurations") == names[:at] + [adopted] + names[at:]
+                and f"Configuration 'B' copied as '{adopted}'" in note
+                and (f"not the requested '{new_name}'" in note) is (adopted != new_name))
+        return check
+
+    def deleted(row):
+        def check(p):
+            before = _RECALL.get("cfgrow_table")
+            at = position(before, row)
+            target, note = before["rows"][at], p.get("note") or ""
+            after = ({k: before["rows"][at - 1][k] for k in ("name", "id")}
+                     if target["is_active"] else active(before))
+            return _measured(
+                f"'{row}' deleted, the rows above it kept, the active row named",
+                {k: p.get(k) for k in ("deleted", "remaining", "active_before", "active_after",
+                                       "active_changed", "note")},
+                at == len(before["rows"]) - 1
+                and p.get("deleted") == {k: target[k] for k in ("name", "id", "index")}
+                and p.get("remaining") == [{k: r[k] for k in ("name", "id", "index")}
+                                           for r in before["rows"][:at]]
+                and "remaining_truncated" not in p and "active_unread" not in p
+                and p.get("active_before") == active(before) and p.get("active_after") == after
+                and p.get("active_changed") is target["is_active"]
+                and f"Configuration '{row}' deleted; this tool cannot restore a deleted configuration." in note
+                and (f"It was the active one: '{after['name']}' is active now" in note) is target["is_active"]
+                and ("read the model with design_get / param_get" in note) is target["is_active"])
+        return check
+
+    def width(expression, value):
+        def state(p):
+            return p if (_configure_parameters(p) is not None
+                         and p["user_parameters"][0]["expression"] == expression
+                         and _near(p["user_parameters"][0]["value"], value, 1e-9)) else None
+        return state
+
+    def stock(height):
+        def state(p):
+            now = _symmetric_target_body_state(p)
+            return now if (now is not None and now["size"] == [10, 10, height]
+                           and now["bounds"]["min_point"] == {"x": 0, "y": 0, "z": 0}
+                           and now["bounds"]["max_point"] == {"x": 10, "y": 10, "z": height}
+                           and _near(now["material"]["volume"], 100 * height, .001)) else None
+        return state
+
+    def witness(p):
+        now = _symmetric_target_body_state(p)
+        return now if (now is not None and now["size"] == [5, 5, 5]
+                       and _near(now["material"]["volume"], 125, .001)) else None
+
+    def held(tag, expression, height, after):
+        return [("param_get", {}, _retire_compare("cfgrow_params" + tag, width(expression, height), after), None),
+                ("model_inspect", _lit(dict(body_read, target="Body1")),
+                 _retire_compare("cfgrow_Body1" + tag, stock(height), after), None)]
+
+    def witness_read(after):
+        return ("model_inspect", _lit(dict(body_read, target="Body2")),
+                _retire_compare("cfgrow_Body2", witness, after), None)
+
+    def cell_step(want):
+        """Return the design_get cell-table read: the parameter column's expression per row name."""
+        list_key, row_key, column_key, expression_key = _CELL_TABLE_KEYS
+
+        def check(p):
+            read = p.get("configurations") or {}
+            names = {r.get("id"): r.get("name") for r in read.get("configurations") or []}
+            cells = [c for c in read.get(list_key) or [] if c.get(column_key) == _RECALL.get("cfgrow_column")]
+            got = {names.get(c.get(row_key)): c.get(expression_key) for c in cells}
+            return _measured(f"the {parameter} column's cell expression per row", got,
+                             len(cells) == len(want) and got == want)
+        return ("design_get", {"include": ["configurations"]}, check, None)
+
+    def configure(action, row, new_name=None):
+        args = {"action": action, "name": row}
+        return write(dict(args, new_name=new_name) if new_name else args)
+
+    rows = [("doc_get", {}, _home_document, ("configure_home", _recall("configure_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "configure_home", "the home session")},
+             _new_document, ("configure_owned", _recall("configure_owned", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("param_add", write({"name": parameter, "expression": "10 mm", "unit": "mm"}), "ok", None)]
+    for sketch, x, side, distance, body in [("ConfigureRowStock", 0, 10, parameter, "Body1"),
+                                            ("ConfigureRowWitness", 40, 5, "5 mm", "Body2")]:
+        rows += [("sketch_create", write({"name": sketch, "plane": "xy"}), "ok", None),
+                 ("sketch_add_geometry", write({"sketch_name": sketch, "units": "mm", "geometry": [
+                     {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + side, "y2": side}]}), "ok", None),
+                 ("model_extrude", write({"sketch_name": sketch, "distance": distance, "units": "mm",
+                                          "operation": "new"}),
+                  lambda p, body=body: _extruded(p) and p.get("result_bodies") == [body], None)]
+    rows += [("view_set", write({"action": "orient", "orientation": "iso-top-right", "fit": True}), "ok", None),
+             ("doc_save_as", write({"name": name, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+              _saved_as(name, FOLDER), ("configure_urn", _recall("configure_urn", lambda p: p["document_id"]))),
+             ("doc_get", {}, saved, None),
+             ("design_configure", write({"action": "create"}),
+              lambda p: p.get("configured") is True and p.get("created") is True
+              and p.get("configurations") == [top], None)]
+    for row, listed in (("B", [top, "B"]), ("C", [top, "B", "C"])):
+        rows.append(("design_configure", configure("add_configuration", row),
+                     lambda p, row=row, listed=listed: p.get("configuration") == row and bool(p.get("id"))
+                     and p.get("active_configuration") == row and p.get("configurations") == listed,
+                     ("cfgrow_" + row, _recall("cfgrow_" + row, lambda p: p["id"]))))
+    rows += [("design_configure", write({"action": "add_parameter", "parameter": parameter,
+                                         "values": {"B": "20 mm", "C": "30 mm"}}),
+              lambda p: p.get("parameter") == parameter and p.get("set") == 2 and bool(p.get("column_id")),
+              ("cfgrow_column", _recall("cfgrow_column", lambda p: p["column_id"]))),
+             ("design_get", {"include": ["configurations"]}, base, None),
+             cell_step({top: "10 mm", "B": "20 mm", "C": "30 mm"}),
+             ("design_configure", configure("activate", top), activated(top, "C"), None),
+             table_reads("the first row active, every row identity kept", same_rows(top))]
+    rows += held("", "10 mm", 10, False) + [witness_read(False)]
+    rows += [("design_configure", configure("copy_configuration", "B", "B2"), copied("B2", "B2"),
+              ("cfgrow_B2", _recall("cfgrow_B2", lambda p: {"id": p["id"], "index": p["index"]}))),
+             table_reads("the copy listed directly after its source", inserted_after_b("B2", "cfgrow_B2"))]
+    rows += held("", "10 mm", 10, True) + [cell_step({top: "10 mm", "B": "20 mm", "B2": "20 mm", "C": "30 mm"})]
+    rows += [("design_configure", configure("copy_configuration", "B", "B"), copied("B", "B (1)"),
+              ("cfgrow_B1", _recall("cfgrow_B1", lambda p: {"id": p["id"], "index": p["index"]}))),
+             table_reads("the adopted name listed directly after its source",
+                         inserted_after_b("B (1)", "cfgrow_B1"))]
+    rows += held("", "10 mm", 10, True) + [cell_step({top: "10 mm", "B": "20 mm", "B (1)": "20 mm",
+                                                      "B2": "20 mm", "C": "30 mm"})]
+    rows += [("design_configure", configure("delete_configuration", "C"), deleted("C"), None),
+             table_reads("the deleted row gone, the others and the active row kept", removed("C"))]
+    rows += held("", "10 mm", 10, True)
+    rows += [("design_configure", configure("delete_configuration", top),
+              _refused(f"Fusion refused deleting configuration '{top}':", "Cannot delete the first row",
+                       f"The table reads unchanged (rows '{top}', 'B', 'B (1)', 'B2'; active '{top}')."), None),
+             table_reads("the refused first-row delete leaves the table as read", unchanged)]
+    rows += held("", "10 mm", 10, True)
+    rows += [("design_configure", configure("delete_configuration", "NoSuchRow"),
+              _refused(f"No configuration matched 'NoSuchRow'. Available: {top}, B, B (1), B2."), None),
+             table_reads("the unknown row name leaves the table as read", unchanged),
+             ("design_configure", configure("activate", "B2"), activated("B2", top), None),
+             table_reads("the copy active, every row identity kept", same_rows("B2"))]
+    rows += held("_copy", "20 mm", 20, False)
+    rows += [("design_configure", configure("delete_configuration", "B2"), deleted("B2"), None),
+             table_reads("the active row gone and the row above it active", removed("B2"))]
+    rows += held("_copy", "20 mm", 20, True)
+    rows += [("design_configure", configure("activate", top), activated(top, "B (1)"), None),
+             table_reads("the first row active again under its first id", same_rows(top))]
+    rows += held("", "10 mm", 10, True) + [witness_read(True),
+                                           cell_step({top: "10 mm", "B": "20 mm", "B (1)": "20 mm"})]
+    rows += [("doc_close", lambda c: {"name": _ctx_get(c, "configure_owned", "the coupon"), "save_changes": False,
+                                      "expect_document": c["configure_owned"]}, _document_closed, None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "configure_home", "the home session")},
+              _activated(), None),
+             ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("configure_home")
+              and all(r.get("document_handle") != _RECALL.get("configure_owned") for r in p["open_documents"]),
+              None)]
+    return rows
+
+
+_CLOUD_CONFIGURE += _configure_row_rows()
+
+
+def _configure_group_rows():
+    """Suppress a collapsed timeline group per configuration on a retained saved coupon."""
+    name = "SweepConfigureGroup." + _STAMP
+    top, asked = "Configuration 1", "SweepCutGroup"
+    body_read = {"include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True}
+    timeline_read = {"include": ["timeline"], "include_suppressed": True, "max_results": 250}
+
+    def group():
+        return _RECALL.get("cfggrp_group")
+
+    def write(args):
+        return lambda c: dict(args(c) if callable(args) else args,
+                              expect_document=_ctx_get(c, "configure_owned", "the configuration coupon"))
+
+    def saved(p):
+        return (_document_is(name)(p) and _home_address(p) == _RECALL.get("configure_owned")
+                and p["active"]["document_id"] == _RECALL.get("configure_urn"))
+
+    def flag(row):
+        return row.get("is_suppressed", False)
+
+    def rows_state(p):
+        tl = p.get("timeline") or {}
+        rows = tl.get("timeline")
+        if (not isinstance(rows, list) or len(rows) != 5 or tl.get("truncated")
+                or tl.get("count") != 5 or tl.get("returned") != 5 or tl.get("marker_position") != 5
+                or tl.get("groups") != {group(): 4} or [r.get("index") for r in rows] != list(range(5))
+                or any(not r.get("name") or not r.get("type") or type(flag(r)) is not bool for r in rows)
+                or [i for i, r in enumerate(rows) if r.get("is_group") is True] != [2]
+                or rows[2]["name"] != group() or rows[2]["type"] != "TimelineGroup"
+                or rows[2].get("member_count") != 4 or rows[2].get("is_collapsed") is not True):
+            return None
+        return {"rows": [(r["name"], r["type"]) for r in rows], "group_index": rows[2]["index"],
+                "group_suppressed": flag(rows[2]),
+                "others_suppressed": [flag(r) for i, r in enumerate(rows) if i != 2]}
+
+    def members_state(p):
+        rows = (p.get("timeline") or {}).get("timeline")
+        if (not isinstance(rows, list) or len(rows) != 4 or (p.get("timeline") or {}).get("truncated")
+                or any(r.get("parent_group") != group() or not r.get("name")
+                       or type(flag(r)) is not bool for r in rows)
+                or [r["name"] for r in rows] != ["GroupCutA", _RECALL.get("cfggrp_cut_a"),
+                                                 "GroupCutB", _RECALL.get("cfggrp_cut_b")]):
+            return None
+        return {"names": [r["name"] for r in rows], "suppressed": [flag(r) for r in rows]}
+
+    def clear(extract, key):
+        def state(p):
+            now = extract(p)
+            return now if (now is not None and not any(now[key])
+                           and not now.get("group_suppressed")) else None
+        return state
+
+    def timeline_reads(after):
+        return [("design_get", timeline_read,
+                 _retire_compare("cfggrp_rows", clear(rows_state, "others_suppressed"), after), None),
+                ("design_get", lambda c: dict(timeline_read, group=group()),
+                 _retire_compare("cfggrp_members", clear(members_state, "suppressed"), after), None)]
+
+    def block(volume):
+        def state(p):
+            now = _symmetric_target_body_state(p)
+            return now if (now is not None and now["size"] == [40, 20, 10]
+                           and now["bounds"]["min_point"] == {"x": 0, "y": 0, "z": 0}
+                           and now["bounds"]["max_point"] == {"x": 40, "y": 20, "z": 10}
+                           and _near(now["material"]["volume"], volume, .001)) else None
+        return state
+
+    def control(p):
+        now = _symmetric_target_body_state(p)
+        return now if (now is not None and now["size"] == [10, 10, 10]
+                       and _near(now["material"]["volume"], 1000, .001)) else None
+
+    def body(target):
+        return _lit(dict(body_read, target=target))
+
+    def bodies(after):
+        return [("model_inspect", body("Body1"), _retire_compare("cfggrp_Body1", block(7500), after), None),
+                ("model_inspect", body("Body2"), _retire_compare("cfggrp_Body2", control, after), None)]
+
+    def table(p):
+        state = _configure_table_state(p, top)
+        cells = (state or {}).get("cells")
+        return state if (state is not None and isinstance(cells, list)
+                         and state.get("cell_count") == len(cells) == 2 * len(state["columns"])
+                         and "cells_truncated" not in state and "cells_unread" not in state) else None
+
+    def table_before(p):
+        state = table(p)
+        return state if (state is not None and [c["title"] for c in state["columns"]] == ["Part Number"]
+                         and [r["name"] for r in state["configurations"]] == [top, "B"]
+                         and state["configurations"][1]["id"] == _RECALL.get("cfggrp_B")) else None
+
+    def table_with_column(p):
+        state, before = table(p), _RECALL.get("cfggrp_table") or {}
+        columns = (state or {}).get("columns") or []
+        column = columns[-1] if columns else {}
+        ids = [r["id"] for r in before.get("configurations") or []]
+        cells = {c.get("row_id"): c.get("is_suppressed") for c in (state or {}).get("cells") or []
+                 if c.get("column_id") == _RECALL.get("cfggrp_column")}
+        return state if (state is not None and columns[:-1] == before.get("columns")
+                         and state["configurations"] == before.get("configurations")
+                         and column.get("title") == group() and column.get("type") == "ConfigurationSuppressColumn"
+                         and column.get("id") == _RECALL.get("cfggrp_column")
+                         and cells == {ids[0]: False, ids[1]: True}) else None
+
+    def column_added(existed, suppressed_in):
+        def check(p):
+            before = _RECALL.get("cfggrp_table")
+            rows = before["configurations"]
+            timeline, members = _RECALL.get("cfggrp_rows"), _RECALL.get("cfggrp_members")
+            note = p.get("note") or ""
+            state = "was already in the table" if existed else "was added"
+            return _measured(
+                f"the group's suppress column {state}, only B's cell set, the first row still active",
+                {k: p.get(k) for k in ("target_kind", "group", "column_id", "column_title", "column_existed",
+                                       "suppressed_in", "cells", "active_configuration",
+                                       "members_suppressed_now", "note")},
+                p.get("target_kind") == "group"
+                and p.get("group") == {"name": group(), "index": timeline["group_index"],
+                                       "member_count": 4, "members": members["names"]}
+                and isinstance(p.get("column_id"), str) and bool(p["column_id"])
+                and ((p["column_id"] == _RECALL.get("cfggrp_column")) if existed else
+                     (p["column_id"] not in {c["id"] for c in before["columns"]}))
+                and p.get("column_title") == group() and p.get("column_existed") is existed
+                and p.get("suppressed_in") == suppressed_in
+                and p.get("cells") == [{"configuration": r["name"], "id": r["id"], "suppressed": r["name"] == "B"}
+                                       for r in rows]
+                and p.get("active_configuration") == {"name": top, "id": rows[0]["id"]}
+                and not any(k in p for k in ("members_suppressed_now", "members_unread", "members_differ",
+                                             "cells_failed", "cells_truncated", "active_unread"))
+                and f"Suppress column '{group()}' {state} for timeline group '{group()}'" in note
+                and "linked to its group by title only" in note
+                and "That title is not the group's name" not in note
+                and ("The model changes for 'B' when that configuration is activated" in note) is bool(suppressed_in)
+                and ("No cell was set; name configurations in suppressed_in." in note) is (not suppressed_in))
+        return check
+
+    def activated(row, previous):
+        return lambda p: _measured(f"'{row}' activated from '{previous}'", p,
+                                   p.get("activated") is True and p.get("requested") == row
+                                   and p.get("previous") == previous and p.get("now_active") == row
+                                   and "timeline_warning" not in p)
+
+    def group_suppressed(p):
+        now, before = rows_state(p), _RECALL.get("cfggrp_rows")
+        return _measured("the group row reads suppressed and no other row does", now,
+                         now is not None and now == dict(before, group_suppressed=True))
+
+    def members_suppressed(p):
+        now, before = members_state(p), _RECALL.get("cfggrp_members")
+        return _measured("every member of the group reads suppressed", now,
+                         now is not None and now == dict(before, suppressed=[True] * 4))
+
+    def suppress(feature, suppressed_in):
+        return write(lambda c: {"action": "add_suppress", "feature": feature(), "suppressed_in": suppressed_in})
+
+    class Qualified(_Refusal):
+        """The refusal naming the group that a component was put in front of."""
+
+        def __init__(self):
+            super().__init__(())
+
+        def missing(self, text):
+            want = (f"'feature': 'NoSuchComponent/{group()}' puts a component in front of the timeline "
+                    f"group '{group()}'", "a group takes no component qualifier")
+            return [f for f in want if f not in text]
+
+    def table_held():
+        return ("design_get", {"include": ["configurations"]},
+                _retire_compare("cfggrp_table_column", table_with_column, True), None)
+
+    rows = [("doc_get", {}, _home_document, ("configure_home", _recall("configure_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "configure_home", "the home session")},
+             _new_document, ("configure_owned", _recall("configure_owned", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    for sketch, x, y, wide, deep, extra, made, key in [
+            ("GroupBlock", 0, 0, 40, 20, {"operation": "new"}, ["Body1"], None),
+            ("GroupCutA", 5, 5, 5, 5, {"operation": "cut", "symmetric": True}, None, "cfggrp_cut_a"),
+            ("GroupCutB", 25, 5, 5, 5, {"operation": "cut", "symmetric": True}, None, "cfggrp_cut_b"),
+            ("GroupControl", 60, 0, 10, 10, {"operation": "new"}, ["Body2"], None)]:
+        rows += [("sketch_create", write({"name": sketch, "plane": "xy"}), "ok", None),
+                 ("sketch_add_geometry", write({"sketch_name": sketch, "units": "mm", "geometry": [
+                     {"kind": "rectangle", "x1": x, "y1": y, "x2": x + wide, "y2": y + deep}]}), "ok", None),
+                 ("model_extrude", write(dict(extra, sketch_name=sketch, distance=10, units="mm")),
+                  lambda p, made=made: _extruded(p) and (made is None or p.get("result_bodies") == made),
+                  (key, _recall(key, lambda p: p["feature"])) if key else None)]
+    rows += [("design_edit_timeline", write(lambda c: {
+                  "action": "group", "feature": "GroupCutA", "name": asked,
+                  "end_feature": _ctx_get(c, "cfggrp_cut_b", "the second cut feature")}),
+              lambda p: _measured("the four cut rows grouped under the asked name", p,
+                                  p.get("grouped") is True and p.get("group") == asked
+                                  and p.get("member_count") == 4 and p.get("start_index") == 2
+                                  and p.get("end_index") == 5 and p.get("groups") == 1
+                                  and "name_warning" not in p),
+              ("cfggrp_group", _recall("cfggrp_group", lambda p: p["group"]))),
+             ("view_set", write({"action": "orient", "orientation": "iso-top-right", "fit": True}), "ok", None),
+             ("doc_save_as", write({"name": name, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+              _saved_as(name, FOLDER), ("configure_urn", _recall("configure_urn", lambda p: p["document_id"]))),
+             ("doc_get", {}, saved, None),
+             ("design_configure", write({"action": "create"}),
+              lambda p: p.get("configured") is True and p.get("created") is True
+              and p.get("configurations") == [top], None),
+             ("design_configure", write({"action": "add_configuration", "name": "B"}),
+              lambda p: p.get("configuration") == "B" and bool(p.get("id"))
+              and p.get("active_configuration") == "B" and p.get("configurations") == [top, "B"],
+              ("cfggrp_B", _recall("cfggrp_B", lambda p: p["id"]))),
+             ("design_configure", write({"action": "activate", "name": top}), activated(top, "B"), None)]
+    rows += timeline_reads(False) + bodies(False)
+    rows += [("design_get", {"include": ["configurations"]},
+              _retire_compare("cfggrp_table", table_before, False), None),
+             ("design_configure", suppress(group, ["B"]), column_added(False, ["B"]),
+              ("cfggrp_column", _recall("cfggrp_column", lambda p: p["column_id"]))),
+             ("design_get", {"include": ["configurations"]},
+              _retire_compare("cfggrp_table_column", table_with_column, False), None)]
+    rows += timeline_reads(True) + bodies(True)
+    rows += [("design_configure", write({"action": "activate", "name": "B"}), activated("B", top), None),
+             ("design_get", timeline_read, group_suppressed, None),
+             ("design_get", lambda c: dict(timeline_read, group=group()), members_suppressed, None),
+             ("model_inspect", body("Body1"),
+              lambda p: _measured("the block without either cut, 8000 mm3", _symmetric_target_body_state(p),
+                                  block(8000)(p) is not None), None),
+             ("model_inspect", body("Body2"), _retire_compare("cfggrp_Body2", control, True), None),
+             ("design_configure", write({"action": "activate", "name": top}), activated(top, "B"), None)]
+    rows += timeline_reads(True) + bodies(True)
+    rows += [("design_configure", suppress(group, ["NoSuchRow"]),
+              _refused("No column was added - suppressed_in: No configuration matched 'NoSuchRow'. "
+                       f"Available: {top}, B."), None),
+             table_held(),
+             ("design_configure", suppress(lambda: f"NoSuchComponent/{group()}", ["B"]), Qualified(), None),
+             table_held(),
+             ("design_configure", suppress(group, []), column_added(True, []), None),
+             table_held()]
+    rows += timeline_reads(True) + bodies(True)
+    rows += [("doc_close", lambda c: {"name": _ctx_get(c, "configure_owned", "the coupon"), "save_changes": False,
+                                      "expect_document": c["configure_owned"]}, _document_closed, None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "configure_home", "the home session")},
+              _activated(), None),
+             ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("configure_home")
+              and all(r.get("document_handle") != _RECALL.get("configure_owned") for r in p["open_documents"]),
+              None)]
+    return rows
+
+
+_CLOUD_CONFIGURE += _configure_group_rows()
