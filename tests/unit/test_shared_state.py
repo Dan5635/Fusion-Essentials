@@ -25,15 +25,13 @@ def shared_state(tmp_path, monkeypatch):
     lib = types.ModuleType(f"{package_name}.lib")
     lib.__path__ = []
     futil = types.ModuleType(f"{package_name}.lib.fusion360utils")
-    adsk = types.ModuleType("adsk")
-    adsk.core = types.ModuleType("adsk.core")
+    # shared_state.py imports adsk.core and conftest's fakes already answer that. Replacing the adsk
+    # entries here would make a later install_mock_adsk() build a second set of fakes.
     modules = {
         package_name: package,
         config.__name__: config,
         lib.__name__: lib,
         futil.__name__: futil,
-        "adsk": adsk,
-        "adsk.core": adsk.core,
     }
     for name, value in modules.items():
         monkeypatch.setitem(sys.modules, name, value)
@@ -47,6 +45,15 @@ def shared_state(tmp_path, monkeypatch):
     assert settings_file.is_relative_to(tmp_path)
     assert Path(module.settings_dir).is_relative_to(tmp_path)
     return module, settings_file
+
+
+def test_the_isolated_import_leaves_the_session_adsk_fakes_installed(shared_state):
+    import conftest
+    names = ("adsk", "adsk.core", "adsk.fusion", "adsk.cam", "adsk.drawing")
+    before = {name: sys.modules[name] for name in names}
+    conftest.install_mock_adsk()
+    assert {name: sys.modules[name] for name in names} == before
+    assert all(getattr(before["adsk"], name.split(".")[1]) is before[name] for name in names[1:])
 
 
 @pytest.mark.parametrize("caller", ["init", "save"])

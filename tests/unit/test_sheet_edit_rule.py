@@ -35,6 +35,49 @@ def test_update_refuses_library_rule(rule_design):
     assert "library rule" in result["message"]
 
 
+@pytest.mark.parametrize("local", [None, _NamedCollection(items=[])])
+def test_real_empty_rule_collection_path_names_initializer_before_copy(monkeypatch, local):
+    design = SimpleNamespace(designSheetMetalRules=local)
+    source = SimpleNamespace(name="Library source")
+    monkeypatch.setattr(mod._common, "design", lambda: design)
+    monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((source, "library"), None))
+    result = mod.handler(action="copy", rule="library:Library source", name="Unused copy")
+    assert result["isError"] and "model_create_component(sheet_metal=true)" in result["message"]
+    assert "no copy attempted" in result["message"]
+    assert local is None or local.count == 0
+
+
+def test_unread_slot_is_not_treated_as_an_empty_uninitialized_collection(monkeypatch):
+    local = _NamedCollection(items=[None])
+    writes = []
+    local.addByCopy = lambda *args: writes.append(args)
+    design = SimpleNamespace(designSheetMetalRules=local)
+    monkeypatch.setattr(mod._common, "design", lambda: design)
+    monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((SimpleNamespace(name="Source"), "library"), None))
+    result = mod.handler(action="copy", rule="library:Source", name="Copy")
+    assert result["isError"] and "sheet_get" in result["message"]
+    assert "model_create_component" not in result["message"] and writes == []
+
+
+def test_unread_count_names_conditional_initializer_without_attempting_copy(monkeypatch):
+    class UnreadCount(_NamedCollection):
+        """A rule collection whose count raises before sheet-metal initialization."""
+
+        @property
+        def count(self):
+            raise RuntimeError("2 : InternalValidationError : smDataRoot")
+
+    local = UnreadCount(items=[])
+    writes = []
+    local.addByCopy = lambda *args: writes.append(args)
+    monkeypatch.setattr(mod._common, "design", lambda: SimpleNamespace(designSheetMetalRules=local))
+    monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((SimpleNamespace(name="Source"), "library"), None))
+    result = mod.handler(action="copy", rule="library:Source", name="Copy")
+    assert result["isError"] and "If uninitialized" in result["message"]
+    assert "model_create_component(sheet_metal=true)" in result["message"]
+    assert "no copy attempted" in result["message"] and writes == []
+
+
 def test_length_readback_checks_evaluated_centimeters(rule_design, monkeypatch):
     design, source = rule_design
     value = SimpleNamespace(expression="2 mm", value=0.2)

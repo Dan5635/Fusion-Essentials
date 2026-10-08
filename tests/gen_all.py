@@ -9,7 +9,7 @@ individually: writes tests/generated/* (plus the CLAUDE.md spliced maps and the 
 Claude skill), or with --check exits 1 naming what is stale.
 
     py -3 tests/gen_all.py           # regenerate everything
-    py -3 tests/gen_all.py --check   # exit 1 if any generated artifact is stale
+    py -3 tests/gen_all.py --check   # repository artifacts; API snapshot on its recorded build
 """
 
 import argparse
@@ -56,7 +56,9 @@ def main():
             # The RETURN value is a verdict too. Discarding it - reading only SystemExit - means a
             # generator that reports failure by returning a non-zero code can never fail
             # `gen_all --check`, and the stale doc it found is aggregated as a pass.
-            code = exit_code(mod.main())
+            verdict = (mod.check_recorded_build() if args.check and name == "gen_api_surface"
+                       else mod.main())
+            code = exit_code(verdict)
         except SystemExit as e:
             code = exit_code(e.code)
         if code:

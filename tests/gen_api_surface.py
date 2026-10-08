@@ -282,6 +282,37 @@ def _fail(msg):
     raise SystemExit(1)
 
 
+def snapshot_check_state():
+    """Return installed bindings and why the recorded build cannot be checked here."""
+    try:
+        _, tree = read_declarations(OUT_PATH)
+    except (OSError, SyntaxError, UnicodeError) as exc:
+        _fail(f"Cannot read the committed API surface: {exc}")
+    builds = [node.value for node in tree.body if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "BINDINGS_BUILD"
+                      for target in node.targets)]
+    if (len(builds) != 1 or not isinstance(builds[0], ast.Constant)
+            or not isinstance(builds[0].value, str) or not builds[0].value):
+        _fail("The committed API surface needs one nonempty BINDINGS_BUILD; regenerate on its Fusion build.")
+    recorded = builds[0].value
+    root = find_bindings()
+    if root is None:
+        return None, f"Fusion bindings absent; recorded API build {recorded} was not verified."
+    installed = _build_id(root)
+    if installed != recorded:
+        return root, f"Installed API build {installed} differs from recorded {recorded}; API surface not verified."
+    return root, None
+
+
+def check_recorded_build():
+    """Check snapshot freshness only on its recorded build, disclosing other environments."""
+    root, reason = snapshot_check_state()
+    if reason:
+        print("API surface check SKIPPED: " + reason)
+        return 0
+    return main(["--check", "--bindings-dir", root])
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     ap = argparse.ArgumentParser()

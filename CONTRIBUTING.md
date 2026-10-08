@@ -87,15 +87,30 @@ From the repository root in PowerShell, create an isolated environment without a
 
 ```powershell
 py -3.13 -m venv .cache/contributor-python
-.\.cache\contributor-python\Scripts\python.exe -m pip install pytest
+.\.cache\contributor-python\Scripts\python.exe -m pip install pytest numpy
 .\.cache\contributor-python\Scripts\python.exe -m pytest tests/unit -q
 ```
 
-From here on, `python` means that environment's `.cache/contributor-python/Scripts/python.exe`; keep
-the same interpreter for every later command. Installing dependencies needs access to a Python
+On macOS or Linux the same three steps are, from a shell in the repository root:
+
+```bash
+python3 -m venv .cache/contributor-python
+.cache/contributor-python/bin/python -m pip install pytest numpy
+.cache/contributor-python/bin/python -m pytest tests/unit -q
+```
+
+Nobody has run them there yet, so treat a failure on those platforms as a finding to report, not
+as a mistake in your setup.
+
+From here on, `python` means that environment's interpreter
+(`.cache/contributor-python/Scripts/python.exe` on Windows, `.cache/contributor-python/bin/python`
+elsewhere); keep the same interpreter for every later command. Where another document writes
+`py -3`, that is the Windows launcher for the same thing. Installing dependencies needs access to a Python
 package source; the unit-test command itself runs offline, without Fusion or an MCP client.
 `tests/conftest.py` supplies the fake `adsk` objects and the committed API facts. To iterate on one
-tool, replace `tests/unit` with its test file. You do not need the coverage or eval tools for this.
+tool, replace `tests/unit` with its test file. You do not need the coverage or eval tools for this:
+`pytest` and `numpy` are the only packages the unit tests and lints import, and a `--no-cov` or
+`--cov` flag copied from elsewhere works only after `pytest-cov` is installed.
 Scratch files and task artifacts go in the gitignored `outputs/` directory (root
 [CLAUDE.md](CLAUDE.md), "Planning files").
 

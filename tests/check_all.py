@@ -94,7 +94,7 @@ def main():
                 "py -3 tests/gen_all.py   (then commit the regenerated files)"):
         return 1
     if args.gen:
-        print("\nGEN GREEN: every generated artifact is current. Run the full button before "
+        print("\nGEN GREEN: repository-generated artifacts are current; API applicability is reported above. Run the full button before "
               "calling the change done.")
         return 0
 
@@ -107,7 +107,7 @@ def main():
         return 1
 
     if args.fast:
-        print("\nFAST GREEN: generators current + lints pass. Run the full button before "
+        print("\nFAST GREEN: repository generators current + lints pass; API applicability is reported above. Run the full button before "
               "calling the change done.")
         return 0
 
@@ -118,7 +118,7 @@ def main():
         return 1
 
     if args.offline:
-        print("\nOFFLINE GREEN: generators current, suite green, and the live-run receipt matches")
+        print("\nOFFLINE GREEN: repository generators current, suite green, and the live-run receipt matches")
         print("this tool source - but the mocks were NOT re-confirmed against the installed")
         print("Fusion. Re-run without --offline (Fusion up, add-in enabled) before releasing.")
         return 0

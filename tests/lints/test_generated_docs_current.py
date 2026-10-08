@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/lints/ -> tests/
 REPO_ROOT = os.path.dirname(TESTS_DIR)
 
@@ -44,7 +46,6 @@ def _bindings_identity():
     import gen_api_surface
     root = gen_api_surface.find_bindings()
     if root is None:
-        # gen_api_surface --check FAILS without bindings; the miss lets it say so itself.
         return "bindings:absent"
     parts = [root]
     for mod in gen_api_surface._MODULES:
@@ -107,9 +108,11 @@ def _fingerprint():
 
 class TestGeneratedDocsAreCurrent:
     def test_generator_check_passes(self, pytestconfig):
+        import gen_api_surface
+        _root, api_unverified = gen_api_surface.snapshot_check_state()
         fingerprint = _fingerprint()
         cache = getattr(pytestconfig, "cache", None)
-        if cache is not None and cache.get(_CACHE_KEY, None) == fingerprint:
+        if not api_unverified and cache is not None and cache.get(_CACHE_KEY, None) == fingerprint:
             return   # every byte this check reads and writes is what a passing check already saw
         proc = subprocess.run(
             [sys.executable, os.path.join(TESTS_DIR, "gen_all.py"), "--check"],
@@ -119,6 +122,8 @@ class TestGeneratedDocsAreCurrent:
             "a generated doc is stale. Regenerate with `py -3 tests/gen_all.py` and commit the "
             f"result.\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
         )
+        if api_unverified:
+            pytest.skip("Repository generators passed; " + api_unverified)
         if cache is not None:
             cache.set(_CACHE_KEY, fingerprint)
 

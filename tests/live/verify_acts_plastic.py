@@ -205,7 +205,38 @@ def sheet_relief_rule_rows():
     from verify_acts_sketch import _scratch_rows
     rows, write, read, close = _scratch_rows("sheet_relief_doc")
     name = "Sweep Relief Edit"
+
+    def empty_rules(p, capture=False):
+        local = p.get("rules") or {}
+        library = p.get("library_rules") or {}
+        entries = library.get("rules") or []
+        good = ((local.get("readable") is False and local.get("rules") is None)
+                or (local.get("readable") is True and local.get("total") == 0 and local.get("rules") == []))
+        good = good and library.get("readable") is True and library.get("truncated") is False and bool(entries)
+        if capture and good:
+            _RECALL["sheet_relief_uninitialized"] = {"local": local, "library": library, "ref": entries[0].get("ref")}
+            good = _RECALL["sheet_relief_uninitialized"]["ref"] is not None
+        elif not capture:
+            before = _RECALL["sheet_relief_uninitialized"]
+            good = good and local == before["local"] and library == before["library"]
+        return _measured("uninitialized sheet data and library preservation", {"local": local, "library": library}, good)
+
+    read("sheet_get", {"include": ["rules", "library_rules"], "max_results": 200}, lambda p: empty_rules(p, True))
+    write("sheet_edit_rule", lambda ctx: {"action": "copy", "rule": _RECALL["sheet_relief_uninitialized"]["ref"],
+        "name": name}, _refused("model_create_component(sheet_metal=true)", "no copy attempted"))
+    read("sheet_get", {"include": ["rules", "library_rules"], "max_results": 200}, empty_rules)
     write("model_create_component", {"name": "ReliefSeed", "sheet_metal": True, "activate": True})
+
+    def library_state(p, capture=False):
+        state = p.get("library_rules") or {}
+        good = state.get("readable") is True and state.get("truncated") is False
+        if capture and good:
+            _RECALL["sheet_relief_library_initialized"] = state
+        elif not capture:
+            good = good and state == _RECALL["sheet_relief_library_initialized"]
+        return _measured("library rule source preserved after local edits", state, good)
+
+    read("sheet_get", {"include": ["library_rules"], "max_results": 200}, lambda p: library_state(p, True))
 
     def census(state, capture=False, removed=False, expected=None):
         entries = state.get("rules") or []
@@ -233,7 +264,7 @@ def sheet_relief_rule_rows():
         return _measured("independent relief rule state and source preservation", trial, good)
 
     read("sheet_get", {"include": ["rules"]}, lambda p: census(p.get("rules") or {}, True))
-    write("sheet_edit_rule", lambda ctx: {"action": "copy", "rule": _RECALL["sheet_relief_source"]["ref"],
+    write("sheet_edit_rule", lambda ctx: {"action": "copy", "rule": _RECALL["sheet_relief_uninitialized"]["ref"],
         "name": name, "relief_width": "3 mm", "relief_depth": "4 mm", "relief_remnant": "5 mm",
         "two_bend_relief_size": "6 mm", "three_bend_relief_radius": "7 mm", "relief_shape": "round",
         "two_bend_relief_shape": "round", "two_bend_relief_placement": "tangent", "three_bend_relief_shape": "full_round"})
@@ -270,5 +301,6 @@ def sheet_relief_rule_rows():
     read("sheet_get", {"include": ["rules"]}, lambda p: census(p.get("rules") or {}, expected=initial))
     write("sheet_edit_rule", {"action": "delete", "rule": "design:" + name}, lambda p: p.get("deleted") is True)
     read("sheet_get", {"include": ["rules"]}, lambda p: census(p.get("rules") or {}, removed=True))
+    read("sheet_get", {"include": ["library_rules"], "max_results": 200}, library_state)
     close()
     return rows

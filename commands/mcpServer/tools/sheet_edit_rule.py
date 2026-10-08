@@ -115,15 +115,19 @@ def handler(action: str = "copy", rule: str = "", name: str = "", thickness: str
         new_name = name.strip()
         if not new_name:
             return error("action='copy' needs a nonempty 'name' for the design-local rule.")
+        local = safe(lambda: design.designSheetMetalRules)
+        count = safe(lambda: local.count)
+        if local is None or count is None:
+            return error("Design-local rule data could not be read. If uninitialized, create a root sheet-metal "
+                         "component with model_create_component(sheet_metal=true), then retry; no copy attempted.")
+        if type(count) is int and count == 0:
+            return error("Design sheet-metal rules are uninitialized or unavailable. Create a root sheet-metal "
+                         "component with model_create_component(sheet_metal=true), then retry; no copy attempted.")
         existing = _sheet_common.matching_rules(design, "design", new_name)
         if existing is None:
-            return error("Design-local rules could not be read; no copy attempted.")
+            return error("Design-local rules could not be read; no copy attempted. Read sheet_get(include=['rules']) before retrying.")
         if existing:
             return error(f"Design-local rule '{new_name}' already exists; choose another name or update it.")
-        local = safe(lambda: design.designSheetMetalRules)
-        if local is None or safe(lambda: local.count) in (None, 0):
-            return error("Design sheet-metal rule data is uninitialized. Create a root sheet-metal "
-                         "component with model_create_component(sheet_metal=true), then retry the copy.")
         before = safe(lambda: local.count)
         try:
             created = local.addByCopy(selected, new_name)

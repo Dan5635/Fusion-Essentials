@@ -4617,9 +4617,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The selected rule's collection position did not read; re-read sheet_get before deleting.
 - Rule deletion was not confirmed; read sheet_get before retrying.
 - action='copy' needs a nonempty 'name' for the design-local rule.
-- Design-local rules could not be read; no copy attempted.
+- Design-local rule data could not be read. If uninitialized, create a root sheet-metal component with model_create_component(sheet_metal=true), then retry; no copy attempted.
+- Design sheet-metal rules are uninitialized or unavailable. Create a root sheet-metal component with model_create_component(sheet_metal=true), then retry; no copy attempted.
+- Design-local rules could not be read; no copy attempted. Read sheet_get(include=['rules']) before retrying.
 - ' already exists; choose another name or update it.
-- Design sheet-metal rule data is uninitialized. Create a root sheet-metal component with model_create_component(sheet_metal=true), then retry the copy.
 - ' was not verified. Read sheet_get(include=['rules']) to inspect any partial effect.
 - 'name' applies only to action='copy'; use the scoped rule ref for update.
 - action='update' needs a length, k_factor or relief choice.

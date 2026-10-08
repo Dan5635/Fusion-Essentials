@@ -24,6 +24,10 @@ py -3 tests/gen_all.py                       # regenerate the docs under tests/g
 `check_all.py` runs everything in dependency order and, when a stage fails, prints the command that
 repairs it. `py -3 tests/check_all.py --help` lists every stage.
 
+`py -3` is the Windows Python launcher. On macOS or Linux type `python3` in its place; the rest of
+each command is the same. Those two platforms are untested (see
+[CONTRIBUTING.md](../CONTRIBUTING.md), "Contributor setup and verification").
+
 ## Live sweep local inputs
 
 The family producers prepare only the state each owned document's acts consume. The map lists the
@@ -142,9 +146,16 @@ The receipt's count line splits `covered` (a step's predicate read a value off t
 `called` (bare `ok` steps only: the call did not fail, but the effect was not read). The `called`
 number is the queue of steps that still need an effect read.
 
-> Requires `pytest` (`py -3 -m pip install pytest`). The live sheet-metal drawing check also
-> requires `pypdf` (`py -3 -m pip install pypdf`). Config lives in `pytest.ini` at the repo root;
-> it sets `testpaths`/`pythonpath`, so no environment variables are needed.
+> Requires `pytest` and `numpy` (`py -3 -m pip install pytest numpy`) for the unit tests and
+> lints; `numpy` is imported by the pose checks in `tests/unit/test_design_add_instance.py` alone.
+> The live sheet-metal drawing check also requires `pypdf` (`py -3 -m pip install pypdf`).
+> Config lives in `pytest.ini` at the repo root; it sets `testpaths`/`pythonpath`, so no
+> environment variables are needed.
+>
+> `--no-cov` and `--cov...` are `pytest-cov` options. Pass them only when that plugin is
+> installed; without it pytest stops with "unrecognized arguments" before running a test. The
+> tests do not depend on their order: a plugin that shuffles it, such as `pytest-randomly`, is
+> neither needed nor a problem.
 
 ## What these test (and what they don't)
 

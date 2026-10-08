@@ -297,6 +297,62 @@ class TestApiSurfaceCheckNeedsBindings:
         assert gen_api_surface.main(["--check", "--bindings-dir", expected]) == 0
         assert seen == [expected]
 
+class TestRecordedBuildApplicability:
+    @pytest.fixture
+    def surface(self, tmp_path, monkeypatch):
+        root = tmp_path / "recorded" / "Api" / "Python" / "packages" / "adsk"
+        root.mkdir(parents=True)
+        for name in gen_api_surface._MODULES:
+            (root / (name + ".py")).write_text("", encoding="utf-8")
+        output = tmp_path / "snapshot.py"
+        output.write_text(gen_api_surface._render(str(root), {}, {}, set()), encoding="utf-8")
+        monkeypatch.setattr(gen_api_surface, "OUT_PATH", str(output))
+        monkeypatch.setattr(gen_api_surface, "_BINDING_GLOBS", (str(root),))
+        monkeypatch.setattr(gen_api_surface, "_EXTRA_CLASSES", ())
+        return root, output
+
+    @pytest.mark.parametrize("environment", ["absent", "different"])
+    def test_inapplicable_check_discloses_unverified_build_and_keeps_snapshot(self, surface, monkeypatch, capsys, environment):
+        root, output = surface
+        before = output.read_bytes()
+        monkeypatch.setattr(gen_api_surface, "find_bindings", lambda: None if environment == "absent" else str(root))
+        if environment == "different":
+            monkeypatch.setattr(gen_api_surface, "_build_id", lambda path: "other")
+        monkeypatch.setattr(gen_api_surface, "build", lambda *args: pytest.fail("inapplicable bindings were scanned"))
+        assert gen_api_surface.check_recorded_build() == 0
+        note = capsys.readouterr().out
+        assert "SKIPPED" in note and "recorded" in note and "not verified" in note
+        assert output.read_bytes() == before
+
+    def test_matching_build_runs_strict_comparison_and_stale_snapshot_fails(self, surface, capsys):
+        _root, output = surface
+        assert gen_api_surface.check_recorded_build() == 0
+        assert "api surface current" in capsys.readouterr().out
+        output.write_text(output.read_text(encoding="utf-8") + "\n# stale\n", encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            gen_api_surface.check_recorded_build()
+        assert exc.value.code == 1 and "STALE" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("text", ["PROPERTIES = {}", 'BINDINGS_BUILD = "recorded"\nBINDINGS_BUILD = None'])
+    def test_missing_or_ambiguous_snapshot_identity_cannot_be_skipped(self, surface, monkeypatch, text):
+        _root, output = surface
+        output.write_text(text, encoding="utf-8")
+        monkeypatch.setattr(gen_api_surface, "find_bindings", lambda: None)
+        with pytest.raises(SystemExit) as exc:
+            gen_api_surface.check_recorded_build()
+        assert exc.value.code == 1
+
+    def test_aggregate_keeps_repository_generator_failure_after_api_skip(self, monkeypatch):
+        seen = []
+        api = types.SimpleNamespace(check_recorded_build=lambda: seen.append("skipped") or 0)
+        docs = types.SimpleNamespace(main=lambda: seen.append("stale docs") or 1)
+        monkeypatch.setitem(gen_all.sys.modules, "gen_api_surface", api)
+        monkeypatch.setitem(gen_all.sys.modules, "gen_test_docs", docs)
+        monkeypatch.setattr(gen_all, "_GENERATORS", ("gen_api_surface", "gen_test_docs"))
+        monkeypatch.setattr(gen_all.sys, "argv", ["gen_all.py", "--check"])
+        assert gen_all.main() == 1 and seen == ["skipped", "stale docs"]
+
+
 # ── gen_api_surface: a measured runtime return beats a broken binding annotation ──
 
 class TestMeasuredFactoryReturns:
