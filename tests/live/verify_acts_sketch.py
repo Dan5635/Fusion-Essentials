@@ -3984,7 +3984,9 @@ def _mirror_rows():
     write("sketch_copy", {"sketch_name": "MrSk", "entities": "line:0,arc:0", "mirror_line": "line:1",
                           "dx": 5}, _refused("Drop: dx."))
     write("sketch_copy", {"sketch_name": "MrSk", "entities": "circle:0", "mirror_line": "line:1"},
-          _refused("mirrors lines and arcs", "circle:0 is neither"))
+          _refused("Could not resolve 'circle:0'"))
+    write("sketch_copy", {"sketch_name": "MrSk", "entities": "ellipse:0", "mirror_line": "line:1"},
+          _refused("mirrors lines, arcs and circles", "ellipse:0 is none of them"))
     write("sketch_copy", {"sketch_name": "MrSk", "entities": "line:0,line:1",
                           "mirror_line": "line:1"}, _refused("also in 'entities'"))
     read("sketch_get", _xray("MrSk"),
@@ -4008,9 +4010,24 @@ def _mirror_rows():
          lambda p: p["profiles"][0]["centroid"][0] < -10 and p["profiles"][0]["centroid"][1] > 20)
     # The image follows its source through the symmetry constraints.
     write("sketch_move", {"sketch_name": "MrSk", "entities": "line:0", "dy": 5},
-          lambda p: p.get("moved_entities") == ["line:0"])
+          lambda p: p.get("moved_entities") == ["line:0"]
+          and "line:2" in (p.get("followed_entities") or []))
     read("sketch_get", _xray("MrSk"), _line_ends("line:0", (10, 5), (30, 15)))
     read("sketch_get", _xray("MrSk"), _line_ends("line:2", (-10, 5), (-30, 15)))
+    # A circle mirrors too: reflected centre, same radius, the source left alone, one curve added.
+    write("sketch_add_geometry", {"sketch_name": "MrSk", "geometry": [
+        {"kind": "circle", "cx": 20, "cy": -10, "radius": 5}]})
+    write("sketch_copy", {"sketch_name": "MrSk", "entities": "circle:0", "mirror_line": "line:1"},
+          lambda p: p.get("mirrored") is True and p.get("new_curves") == ["circle:1"]
+          and p.get("curve_count_after") == p.get("curve_count_before") + 1
+          and p.get("constraints_added", 0) > 0)
+    read("sketch_get", _xray("MrSk"), _round_row("circle:1", -20, -10, 5))
+    read("sketch_get", _xray("MrSk"), _round_row("circle:0", 20, -10, 5))
+    write("sketch_move", {"sketch_name": "MrSk", "entities": "circle:0", "dy": 5},
+          lambda p: p.get("moved_entities") == ["circle:0"]
+          and "circle:1" in (p.get("followed_entities") or []))
+    read("sketch_get", _xray("MrSk"), _round_row("circle:1", -20, -5, 5))
+    read("sketch_get", _xray("MrSk"), _round_row("circle:0", 20, -5, 5))
     close()
     return rows
 
@@ -4296,7 +4313,8 @@ def _off_plane_rows():
          and _near((_rows_by_id(p)[_RECALL["dz_corner"]].get("position") or {}).get("z"), 5, .001))
     corner(-5, lambda p: (p.get("profile_count_before"), p.get("profile_count_after")) == (0, 1)
            and p.get("moved_entities") == [_RECALL["dz_corner"]]
-           and p.get("on_plane_entities") == [_RECALL["dz_corner"]])
+           and p.get("returned_to_plane") == [_RECALL["dz_corner"]]
+           and "on_plane_entities" not in p and "still read z = 0" not in p.get("note", ""))
     read("sketch_get", _xray("DzSk"), _one_profile(400.0, (10, 10)))
     write("sketch_copy", {"sketch_name": "DzSk", "entities": "line:4", "dz": 10},
           lambda p: p.get("new_curves") == ["line:5"] and p["requested"].get("dz") == 10.0)
@@ -4307,6 +4325,38 @@ def _off_plane_rows():
 
 
 _SKETCHWORK += _off_plane_rows()
+
+
+def _constrained_lift_rows():
+    """Lift one corner of a CONSTRAINED rectangle: the whole loop follows and keeps its profile."""
+    rows, write, read, close = _scratch_rows("cl_doc")
+    sides = ["line:0", "line:1", "line:2", "line:3"]
+    write("sketch_create", {"plane": "xy", "name": "ClSk"})
+    write("sketch_add_geometry", {"sketch_name": "ClSk", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}]})
+    read("sketch_get", _xray("ClSk"), _one_profile(400.0, (10, 10)),
+         ("cl_corner", _recall("cl_corner", _point_at(20, 20))))
+
+    def corner(dz, check):
+        write("sketch_move", lambda c: {"sketch_name": "ClSk", "dz": dz,
+                                        "entities": _ctx_get(c, "cl_corner", "the corner point")},
+              lambda p: (p.get("profile_count_before"), p.get("profile_count_after")) == (1, 1)
+              and p.get("moved_entities") == [_RECALL["cl_corner"]]
+              and sorted(p.get("followed_entities") or []) == sides and check(p))
+    corner(5, lambda p: "on_plane_entities" not in p and "returned_to_plane" not in p)
+    for side in sides:
+        read("sketch_get", _xray("ClSk"), _line_height(side, 5.0))
+    read("sketch_get", _xray("ClSk"), _one_profile(400.0, (10, 10)))
+    corner(-5, lambda p: p.get("returned_to_plane") == [_RECALL["cl_corner"]]
+           and "on_plane_entities" not in p)
+    for side in sides:
+        read("sketch_get", _xray("ClSk"), _line_height(side, 0.0))
+    read("sketch_get", _xray("ClSk"), _one_profile(400.0, (10, 10)))
+    close()
+    return rows
+
+
+_SKETCHWORK += _constrained_lift_rows()
 
 
 _TEXT_OUTLINE_SCRIPT = (

@@ -1061,7 +1061,7 @@ def op_state_facts(op, cam=None) -> dict:
 
 def is_empty_toolpath(facts: dict) -> bool:
     """True for the EMPTY class: an operation that generated, is not suppressed, and cuts nothing.
-    An additive build op joins the manual-NC exclusion - it carries no toolpath by construction."""
+    An additive op joins the manual-NC exclusion: a valid one is never reported empty."""
     # 'valid' is answered off operationState IsValid (0) only, so the empty claim rests on a state
     # that was READ; a state that raised buckets _UNREAD_STATE and stops here.
     if (facts.get("strategy") == _MANUAL_NC_STRATEGY

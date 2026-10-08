@@ -6,6 +6,9 @@
 from verify_acts_sheet import (_PART, _RULE, _SEED_BASE, _SHEET_BUILD, _closed_one, _converted,
                                _story_restored, _top_face, _top_handle, _top_match)
 from verify_core import _RECALL, _ctx_get, _dwell, _extruded, _measured, _near, _recall, _refused
+from verify_acts_feature_edit import (_clean, _definition_restored, _shape_capture,
+                                    _shape_changed, _shape_restored, _roll_landed,
+                                    _draft_face_identity_args, _draft_face_identity_check)
 
 _RIP_BOX = "SM Sweep Rip Box"
 _RIP_BASE = "SM Sweep Rip Box Base"
@@ -866,3 +869,271 @@ _SHEET_FLANGE = _SHEET_BUILD[:-1] + [
     _dwell(4.0),
     ("doc_get", {"max_results": 1000}, _story_restored, None),
 ]
+
+
+def _sheet_definition_before(key, field, kind):
+    """Bank a complete rolled sheet definition with a usable public edit offer."""
+    def check(p):
+        definition = p.get("definition") or {}
+        offers = definition.get("supported_edits") or []
+        good = (definition.get("type") == kind and definition.get("unavailable") == {}
+                and definition.get(field) is not None and bool(definition.get("feature_address"))
+                and any(isinstance(row.get("call"), str) and "model_edit_feature(" in row["call"]
+                        for row in offers))
+        if good:
+            _RECALL[key] = definition
+        return _measured("rolled sheet definition and edit offer", definition, good)
+    return check
+
+
+def _sheet_edit_landed(p):
+    """Require the setter's verified definition, identity, health and end marker."""
+    return _measured("sheet definition edit", p,
+        p.get("edited") is True and p.get("definition_matches") is True
+        and p.get("same_feature") is True and p.get("owner_matches") is True
+        and p.get("marker_restored") is True and p.get("new_timeline_errors") == []
+        and p.get("new_timeline_warnings") == [])
+
+
+def _sheet_edit_rows(feature_key, target, field, kind, payload, candidate=None, original=None):
+    """Edit, independently read the landed field and geometry, restore and independently compare."""
+    key = feature_key + "_" + (payload or {}).get("type", field)
+    definition_key, shape_key = key + "_definition", key + "_shape"
+    control = _RIP_SEED if kind == "RipFeature" else "SM Sweep Seed"
+    def roll(ctx):
+        return {"action": "roll", "feature": _ctx_get(ctx, feature_key, "sheet feature"), "to": "before"}
+    end = {"action": "roll", "to": "end"}
+    read = lambda ctx: {"include": ["definition"], "feature": _ctx_get(ctx, feature_key, "sheet feature")}
+    inspect = {"target": target, "include": ["default", "mass"], "units": "mm",
+               "per_body": True, "accuracy": "very_high"}
+    action = "mode" if payload else "inputs"
+    def edit(ctx, restore=False):
+        baseline = _RECALL[definition_key]
+        args = {"feature": baseline["feature_address"], "action": action}
+        if payload:
+            hem = baseline["hem"]
+            args["hem"] = ({"type": hem["type"], "flip": hem["flip"],
+                "bend_position": hem["bend_position"],
+                **{name: dimension["expression"] for name, dimension in hem["dimensions"].items()}}
+                if restore else dict(payload))
+        else:
+            args["references"] = [_ctx_get(ctx, key + "_restore", "fresh original Rip operand") if restore
+                                   else _ctx_get(ctx, key + "_candidate", "fresh Rip operand")]
+        return args
+    def changed(p):
+        before, after = _RECALL[definition_key], p.get("definition") or {}
+        stable = all(_clean(after.get(name)) == _clean(value) for name, value in before.items()
+                     if name not in (field, "supported_edits", "unavailable", "not_read", "note"))
+        value = after.get(field) or {}
+        if payload:
+            dimensions = value.get("dimensions") or {}
+            requested = {name: (number / 10 if name != "angle_deg" else number * 3.141592653589793 / 180)
+                         for name, number in {"length": 9, "gap": 3, "radius": 4,
+                                              "angle_deg": 180, "setback": 4}.items()
+                         if name in payload}
+            if payload["type"] == "double":
+                requested["length"] = 1.2
+            effect = (value.get("type") == payload["type"]
+                and value.get("flip") == payload.get("flip", before[field]["flip"])
+                and value.get("bend_position") == payload.get("bend_position", before[field]["bend_position"])
+                and all(_near((dimensions.get(name) or {}).get(
+                    "value_rad" if name == "angle_deg" else "value_cm"), number, 1e-8)
+                    for name, number in requested.items()))
+        else:
+            effect = (_clean(value) != _clean(before[field])
+                      and isinstance(value.get("geometry"), dict) and bool(value["geometry"]))
+        good = stable and effect and after.get("unavailable") == {}
+        if good:
+            _RECALL[key + "_after"] = after
+        return _measured("independent sheet definition read", after, good)
+    rows = [("design_edit_timeline", roll, _roll_landed("before"), None),
+            ("design_get", read, _sheet_definition_before(definition_key, field, kind), None)]
+    if candidate:
+        def save(p):
+            matches = p.get("matches") or []
+            if len(matches) != 1 or not matches[0].get("handle"):
+                raise ValueError("fresh Rip operand needs one acquired geometry handle")
+            _RECALL[key + "_candidate_desc"] = matches[0]
+            return matches[0]["handle"]
+        rows.append(("find_geometry", candidate, lambda p: len(p.get("matches") or []) == 1,
+                     (key + "_candidate", _recall(key + "_candidate", save))))
+    rows += [("design_edit_timeline", end, _roll_landed("end"), None),
+             ("model_inspect", inspect, _shape_capture(shape_key, key + " baseline"), None)]
+    if kind == "HemFeature":
+        rows.append(("model_inspect", {**inspect, "target": control},
+                     _shape_capture(key + "_control", key + " sibling baseline"), None))
+    rows += [("model_edit_feature", edit, _sheet_edit_landed, None),
+             ("design_edit_timeline", roll, _roll_landed("before"), None),
+             ("design_get", read, changed,
+              (key + "_landed_operand", lambda p: {"input_faces": [p["definition"][field]]})
+              if candidate else None)]
+    if candidate:
+        rows.append(("sys_execute_script", lambda ctx: _draft_face_identity_args(
+            ctx, key + "_candidate", key + "_landed_operand"), _draft_face_identity_check, None))
+    rows += [
+             ("sheet_get", {"include": ["features"]},
+              lambda p: isinstance(p.get("features"), dict)
+              and _sheet_disclosure(p, target, field, _RECALL[key + "_after"]), None),
+             ("design_edit_timeline", end, _roll_landed("end"), None),
+             ("model_inspect", inspect, _shape_changed(shape_key, key + " changed"), None)]
+    if candidate:
+        def original_read(p):
+            matches = p.get("matches") or []
+            baseline = _RECALL[definition_key][field].get("geometry")
+            good = len(matches) == 1 and bool(matches[0].get("handle")) and bool(baseline)
+            return _measured("reacquired original Rip operand before restoration", matches, good)
+        rows += [("design_edit_timeline", roll, _roll_landed("before"), None),
+                 ("find_geometry", original, original_read,
+                  (key + "_restore", _recall(key + "_restore", lambda p: p["matches"][0]["handle"]))),
+                 ("design_edit_timeline", end, _roll_landed("end"), None)]
+    rows += [("model_edit_feature", lambda ctx: edit(ctx, True), _sheet_edit_landed, None),
+             ("design_edit_timeline", roll, _roll_landed("before"), None),
+             ("design_get", read, _definition_restored(definition_key, field), None),
+             ("design_edit_timeline", end, _roll_landed("end"), None),
+             ("model_inspect", inspect, _shape_restored(shape_key, key + " restored"), None)]
+    if kind == "HemFeature":
+        rows.append(("model_inspect", {**inspect, "target": control},
+                     _shape_restored(key + "_control", key + " untouched sibling"), None))
+    return rows
+
+
+def _sheet_disclosure(p, component, field, expected):
+    """Require sheet_get's bounded feature definition to agree with the separate design read."""
+    rows = [row for row in (p.get("features") or {}).get("components") or []
+            if row.get("component") == component]
+    entries = (rows[0].get("hems" if field == "hem" else "rip_definitions") or []) if len(rows) == 1 else []
+    return _measured("bounded sheet definition disclosure", entries,
+        len(entries) == 1 and (entries[0].get("definition") or {}).get("unavailable") == {}
+        and (entries[0].get("definition") or {}).get(field) is not None
+        and _clean(entries[0]["definition"][field]) == _clean(expected[field]))
+
+
+def _hem_edit_story():
+    """Use one isolated flat blank for four supported Hem modes and each exact restoration."""
+    rows = []
+    for row in _SHEET_BUILD:
+        rows.append(row)
+        if row[0] == "sheet_convert" and row[2] is _converted:
+            break
+    rows += [("find_geometry", {"target": _PART, "kind": "line_edge", "max_results": 30},
+              _one_edge("Hem editor flat rim", x=40, y=40, z=1.5, length=80),
+              ("sm_hem_edit_edge", _edge_handle(x=40, y=40, z=1.5, length=80))),
+             ("sheet_create_hem", lambda ctx: {"edge": _ctx_get(ctx, "sm_hem_edit_edge", "flat rim"),
+                 "kind": "flat", "length": 8, "flip": True}, _hem_created("flat"),
+              ("sm_hem_edit_feature", _recall("sm_hem_edit_feature", lambda p: _PART + "/" + p["feature"])))]
+    for hem in ({"type": "flat", "length": "9 mm"},
+                {"type": "open", "length": "9 mm", "gap": "3 mm", "bend_position": "tangent_to_side"},
+                {"type": "rolled", "radius": "4 mm", "angle_deg": 180},
+                {"type": "double", "length": "12 mm", "gap": "3 mm", "setback": "4 mm"}):
+        rows += _sheet_edit_rows("sm_hem_edit_feature", _PART, "hem", "HemFeature", hem)
+    rows += [("doc_close", lambda ctx: {"name": _ctx_get(ctx, "sm_coupon", "Hem coupon"),
+                "save_changes": False}, _closed_one, None),
+             ("doc_activate", lambda ctx: {"name": _ctx_get(ctx, "sm_home", "home")}, "ok", None),
+             ("doc_get", {"max_results": 1000}, _story_restored, None)]
+    return rows
+
+
+_SHEET_FLANGE += _hem_edit_story()
+
+
+def _rip_edit_story(kind):
+    """Use a fresh rounded converted box for one same-kind Rip edit and restoration."""
+    rows = [_SHEET_BUILD[0]]
+    building = False
+    for row in _SHEET_FLANGE:
+        if row[0] == "doc_new" and row[2] is _rip_session:
+            building = True
+        if not building:
+            continue
+        rows.append(row)
+        if row[0] == "sheet_convert" and row[2] is _converted:
+            break
+    key = "sm_rip_edit_" + kind
+    query = {"target": _RIP_BOX, "kind": "cylinder_face" if kind == "face" else "line_edge",
+             "nearest_to": [204, 4, 20] if kind == "face" else [260, 4, 20],
+             "max_results": 1, "units": "mm"}
+    if kind == "face":
+        query["radius"] = 4
+    def operand(p):
+        matches = p.get("matches") or []
+        good = (len(matches) == 1 and matches[0].get("kind") == query["kind"]
+                and bool(matches[0].get("handle")))
+        if kind == "face":
+            good = good and _near(matches[0].get("radius"), 4, 1e-5)
+        else:
+            good = good and _near(matches[0].get("length"), 40, 1e-5)
+        return _measured("fresh Rip creation operand", matches, good)
+    rows.append(("find_geometry", query, operand,
+                 (key + "_original", _recall(key + "_original", lambda p: p["matches"][0]["handle"]))))
+    def create(ctx):
+        args = {"mode": "face" if kind == "face" else "along_edge",
+                "face" if kind == "face" else "edge": _ctx_get(ctx, key + "_original", "Rip operand")}
+        if kind == "edge":
+            args["gap"] = 1
+        return args
+    rows.append(("sheet_create_rip", create, _rip_created("face" if kind == "face" else "along_edge"),
+                 (key, _recall(key, lambda p: _RIP_BOX + "/" + p["feature"]))))
+    candidate = {**query, "nearest_to": [256, 4, 20] if kind == "face" else [200, 56, 20]}
+    rows += _sheet_edit_rows(key, _RIP_BOX, "rip_face" if kind == "face" else "rip_edge",
+                             "RipFeature", None, candidate=candidate, original=query)
+    rows += [("doc_close", lambda ctx: {"name": _ctx_get(ctx, "sm_rip", "Rip scratch"),
+                "save_changes": False}, _closed_one, None),
+             ("doc_activate", lambda ctx: {"name": _ctx_get(ctx, "sm_home", "home")}, "ok", None),
+             ("doc_get", {"max_results": 1000}, _story_restored, None)]
+    return rows
+
+
+_SHEET_FLANGE += _rip_edit_story("face") + _rip_edit_story("edge")
+
+
+def _plastic_rule_read_story():
+    """Read one native copied plastic rule in two unit systems without altering its library source."""
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("pr_doc")
+    script = (
+        "import adsk.core, adsk.fusion, json, math\n"
+        "def run(context):\n"
+        "    app=adsk.core.Application.get(); d=adsk.fusion.Design.cast(app.activeProduct)\n"
+        "    if d is None or app.activeDocument.isSaved or d.timeline.count:\n"
+        "        raise RuntimeError('fresh owned unsaved scratch required')\n"
+        "    def fields(rule):\n"
+        "        return {'thickness':rule.thickness.value, 'radius':rule.nominalRadius.value,\n"
+        "                'draft':math.degrees(rule.draftAngle.value),\n"
+        "                'minimum':rule.minimumThickness, 'maximum':rule.maximumThickness}\n"
+        "    source=d.libraryPlasticRules.item(0); before=fields(source)\n"
+        "    rule=d.designPlasticRules.addByCopy(source, 'Sweep Plastic Read')\n"
+        "    if rule is None or rule.name!='Sweep Plastic Read':\n"
+        "        raise RuntimeError('plastic rule copy did not land')\n"
+        "    print(json.dumps({'name':rule.name,'copied':fields(rule),'source':source.name,\n"
+        "                      'source_before':before,'source_after':fields(source)}))\n")
+    write("sys_execute_script", {"script": script},
+          lambda p: p.get("name") == "Sweep Plastic Read" and p.get("source_before") == p.get("source_after"),
+          ("pr_baseline", _recall("pr_baseline", lambda p: p)))
+    def check(scope, factor, units):
+        def verify(p):
+            state = p.get("plastic_rules" if scope == "design" else "library_plastic_rules") or {}
+            entries = state.get("rules") or []
+            expected = _RECALL["pr_baseline"]
+            name = expected["name" if scope == "design" else "source"]
+            hits = [entry for entry in entries if (entry.get("ref") or {}).get("name") == name]
+            values = hits[0] if len(hits) == 1 else {}
+            native = expected["copied" if scope == "design" else "source_before"]
+            good = (state.get("available") is True and state.get("units") == units
+                and state.get("walk_complete") is True and len(hits) == 1
+                and values.get("ref", {}).get("scope") == scope
+                and _near((values.get("thickness") or {}).get("value"), native["thickness"] * factor, 5e-7)
+                and _near((values.get("nominal_radius") or {}).get("value"), native["radius"] * factor, 5e-7)
+                and _near((values.get("draft_angle") or {}).get("value_deg"), native["draft"], 5e-7)
+                and _near(values.get("minimum_thickness"), native["minimum"] * factor, 5e-7)
+                and _near(values.get("maximum_thickness"), native["maximum"] * factor, 5e-7))
+            return _measured("scoped plastic rule values and units", state, good)
+        return verify
+    for units, factor in (("mm", 10), ("in", 1 / 2.54)):
+        read("design_get", {"include": ["plastic_rules"], "units": units}, check("design", factor, units))
+    read("design_get", lambda ctx: {"include": ["library_plastic_rules"], "units": "mm",
+        "name_filter": _RECALL["pr_baseline"]["source"]}, check("library", 10, "mm"))
+    close()
+    return rows
+
+
+_SHEET_FLANGE += _plastic_rule_read_story()

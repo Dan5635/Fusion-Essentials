@@ -583,7 +583,7 @@ def _operation_summary(op, machine_max=None, node=None, cam=None) -> dict:
     "has_error": has_err,
     }
     # An op that generated EMPTY still reads state 'valid' beside has_toolpath true. An additive
-    # build op carries no toolpath by construction and joins the manual-NC exclusion instead.
+    # op joins the manual-NC exclusion instead: only its slice ever reads a toolpath.
     if is_empty_toolpath(facts):
         summary["empty_toolpath"] = True
     if has_warn:

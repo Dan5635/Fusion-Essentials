@@ -549,7 +549,7 @@ class TestMirror:
         ({"dx": 5}, "Drop: dx."),
         ({"target_sketch": "Other", "rotation_deg": 0}, "Drop: rotation_deg, target_sketch."),
         ({"entities": "line:0,line:2"}, "'line:2' is also in 'entities'"),
-        ({"entities": "point:0"}, "point:0 is neither"),
+        ({"entities": "point:0"}, "point:0 is none of them"),
         ({"mirror_line": "arc:0"}, "must be a 'line:<index>' of sketch 'Plate'. Got 'arc:0'"),
         ({"mirror_line": "line:9"}, "Got 'line:9'")])
     def test_refusals_come_before_the_mirror_call(self, mod, mirror_sketch, extra, text):
@@ -627,8 +627,82 @@ class TestMirrorChecksTheCurveNotOnlyItsEnds:
     def test_a_kind_the_check_cannot_judge_is_refused(self, mod, mirror_sketch):
         calls = []
         mirror_sketch.mirror = _mirrorer(calls, mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
+        message = error_message(mod.handler(entities="ellipse:0", mirror_line="line:2"))
+        assert "mirrors lines, arcs and circles; ellipse:0 is none of them" in message
+        assert calls == []
+
+    def test_a_circle_the_sketch_does_not_hold_is_refused_as_missing(self, mod, mirror_sketch):
+        calls = []
+        mirror_sketch.mirror = _mirrorer(calls, mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
         message = error_message(mod.handler(entities="circle:0", mirror_line="line:2"))
-        assert "mirrors lines and arcs; circle:0 is neither" in message and calls == []
+        assert "circle:0" in message and "mirrors lines" not in message and calls == []
+
+
+def _circle_curve(token, centre, radius, z=0.0):
+    circle = make_sketch_curve(token)
+    circle.centerSketchPoint = types.SimpleNamespace(geometry=FakePoint(*centre, z))
+    circle.radius = radius
+    circle.nativeObject = None
+    return circle
+
+
+@pytest.fixture
+def circle_sketch(mod):
+    """'Plate': circle:0 of radius 0.5 about (1,2); line:0 the axis x = 3."""
+    plate = make_sketch("Plate", lines=[_boxed("AX", 3.0, -1.0, dx=0.0, dy=2.0)],
+                        circles=[_circle_curve("C0", (1.0, 2.0), 0.5)])
+    install(mod, make_design(sketches=[plate]))
+    return plate
+
+
+def _circle_mirrorer(sketch, image, calls=None):
+    def _mirror(entities, axis):
+        if calls is not None:
+            calls.append(entities)
+        sketch.sketchCurves._items.append(image)
+        sketch.sketchCurves.sketchCircles._items.append(image)
+        return [image, make_sketch_curve("PT0")]
+    return _mirror
+
+
+class TestMirrorACircle:
+    def test_the_reflected_centre_with_the_same_radius_passes(self, mod, circle_sketch):
+        circle_sketch.mirror = _circle_mirrorer(circle_sketch, _circle_curve("M0", (5.0, 2.0), 0.5))
+        out = payload(mod.handler(entities="circle:0", mirror_line="line:0"))
+        assert out["mirrored"] is True and out["new_curves"] == ["circle:1"]
+
+    @pytest.mark.parametrize("centre,radius", [((5.0, 2.0), 0.6), ((1.0, 2.0), 0.5),
+                                               ((5.0, -2.0), 0.5)])
+    def test_another_radius_or_centre_is_an_error(self, mod, circle_sketch, centre, radius):
+        circle_sketch.mirror = _circle_mirrorer(circle_sketch, _circle_curve("M0", centre, radius))
+        assert "'circle:0' is not its reflection about 'line:0'" in error_message(
+            mod.handler(entities="circle:0", mirror_line="line:0"))
+
+    def test_a_copy_lifted_off_the_plane_is_an_error(self, mod, circle_sketch):
+        circle_sketch.mirror = _circle_mirrorer(
+            circle_sketch, _circle_curve("M0", (5.0, 2.0), 0.5, z=0.3))
+        assert "is not its reflection" in error_message(
+            mod.handler(entities="circle:0", mirror_line="line:0"))
+
+    def test_a_source_circle_off_the_plane_is_refused_before_the_call(self, mod, circle_sketch):
+        calls = []
+        circle_sketch.mirror = _circle_mirrorer(circle_sketch, _circle_curve("M0", (5.0, 2.0), 0.5),
+                                                calls)
+        circle_sketch.sketchCurves.sketchCircles.item(0).centerSketchPoint.geometry.z = 0.5
+        message = error_message(mod.handler(entities="circle:0", mirror_line="line:0"))
+        assert "'circle:0' has its centre off it" in message and calls == []
+
+    def test_a_mirror_that_resizes_its_source_is_an_error(self, mod, circle_sketch):
+        source = circle_sketch.sketchCurves.sketchCircles.item(0)
+        inner = _circle_mirrorer(circle_sketch, _circle_curve("M0", (5.0, 2.0), 0.5))
+
+        def mirror(entities, axis):
+            made = inner(entities, axis)
+            source.radius = 0.7
+            return made
+        circle_sketch.mirror = mirror
+        assert "is not its reflection" in error_message(
+            mod.handler(entities="circle:0", mirror_line="line:0"))
 
 
 class TestMirrorPlaneAndCentre:

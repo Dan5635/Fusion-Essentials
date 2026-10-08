@@ -71,7 +71,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | · | `model_measure_continuity` | Measure gap, normal angle and curvature jump across each edge's seam; a one-faced edge reads against the 'against' body. |
 | · | `model_measure_relation` | Judge a geometric relation between two entities |
 | ✎ | `model_mirror` | Mirror bodies or timeline features across a plane. |
-| ✎ | `model_move` | Move bodies as a timeline feature; assembly_move moves an occurrence |
+| ✎ | `model_move` | Move BRep bodies as a timeline feature, or translate mesh bodies; assembly_move moves an occurrence |
 | ✎ | `model_offset_face` | Push faces along the normal; positive adds material |
 | ✎ | `model_pattern_circular` | Pattern occurrences or bodies evenly around an axis |
 | ✎ | `model_pattern_path` | Pattern occurrences, bodies, faces or features along a path; one seed kind per call |
@@ -109,7 +109,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 
 | | Tool | Summary |
 |---|---|---|
-| ✎ | `form_create` | Create a T-spline Form's B-Rep body from a box [x,y,z] or 8-sided cylinder [diameter, height] primitive centred on origin, or a quad cage; form_get(include=['ca... |
+| ✎ | `form_create` | Create a T-spline Form's B-Rep body from a primitive centred on origin (the cylinder is 8-sided), or a quad cage; form_get(include=['cage']) reads one back |
 | · | `form_get` | List T-spline Forms with their creation records; include=['cage'] returns one Form's cage for form_create. |
 
 ### mesh
@@ -148,7 +148,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `sketch_edit_curve` | Edit an EXISTING sketch curve in place |
 | · | `sketch_get` | Read sketches, curves, constraints and profile handles for model_extrude. |
 | ✎ | `sketch_insert_svg` | Import an SVG into a sketch at (x,y) |
-| ✎ | `sketch_move` | MOVE existing sketch entities by one transform. |
+| ✎ | `sketch_move` | MOVE existing sketch entities by one transform |
 | ✎ | `sketch_project` | Create sketch curves from model geometry |
 | ✎ | `sketch_set_text` | Set the displayed string of sketch text, or add new text with create=true. |
 

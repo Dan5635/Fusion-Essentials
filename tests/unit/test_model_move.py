@@ -11,11 +11,13 @@ import types
 
 import adsk.core
 import adsk.fusion
+import pytest
 
 from conftest import (load_tool, make_design, make_occurrence, install, MakeComp, BRepBody,
                       BRepEdge, BRepFace, FakePoint, FakeBoundingBox3D, Line3D, Plane,
                       FakeVector3D, go_stale, payload, error_message, assert_no_active_design,
-                      assert_unknown_units, _NamedCollection)
+                      assert_unknown_units, _NamedCollection, FakeTimeline,
+                      FakeTimelineObject)
 
 mm = load_tool("model_move")
 
@@ -396,12 +398,6 @@ class TestSelection:
         assert out["bodies"] == ["A", "B"]
         assert feats.last_input.inputEntities.count == 2
 
-    def test_a_mesh_body_is_refused_by_the_brep_kind(self, monkeypatch):
-        mesh = object()
-        _wire(monkeypatch, [_body()], tokens={"m1": mesh})
-        monkeypatch.setattr(adsk.fusion, "MeshBody", type(mesh))
-        msg = error_message(mm.handler(bodies=["m1"], dx=5))
-        assert "MESH" in msg and "mesh_to_brep" in msg
 
 
 
@@ -594,7 +590,7 @@ class TestDirectModeNoFeature:
         _wire(monkeypatch, [body], FakeMoveFeatures([body], returns_nothing=True), design_type=0)
         out = payload(mm.handler(bodies=["Block"], dx=5))
         assert "feature" not in out
-        assert out["no_timeline_feature"] is True
+        assert out["no_timeline_feature"] is True and out["no_feature_object"] is True
         assert "DIRECT mode" in out["note"] and "replays on every recompute" not in out["note"]
 
     def test_direct_none_names_the_bodies_captured_before_the_move(self, monkeypatch):
@@ -752,3 +748,116 @@ class TestMoveToleranceIsPinned:
         under = 3.0 + mm._MOVE_TOL_CM / 2
         _wire(monkeypatch, [body], FakeMoveFeatures([body], shift=(under, 0.0, 0.0)))
         assert payload(mm.handler(bodies=["Block"], dx=30, units="mm"))["moved"] is True
+
+
+class _Mesh:
+    """A mesh body: a name, an owner and the flat node list its `mesh` hands back."""
+    def __init__(self, name, owner, nodes):
+        self.name, self.parentComponent, self.entityToken = name, owner, name
+        self.mesh = types.SimpleNamespace(nodeCoordinatesAsDouble=list(nodes))
+
+
+class _MeshMoves(FakeMoveFeatures):
+    """moveFeatures for mesh targets: add() shifts each target's nodes by `shift` (the definition's
+    by default), adds one timeline item and returns nothing - the measured shape."""
+    def __init__(self, targets, timeline, shift=None, raises=None, defined=True, skip_last=False):
+        super().__init__(targets, shift=shift, returns_nothing=True, defined=defined)
+        self.timeline, self.raises, self.skip_last = timeline, raises, skip_last
+
+    def add(self, move_input):
+        self.added += 1
+        delta = self.shift or self._definition_shift()
+        for target in self.targets:
+            nodes = target.mesh.nodeCoordinatesAsDouble
+            last = len(nodes) - (3 if self.skip_last else 0)
+            target.mesh.nodeCoordinatesAsDouble = [v + (delta[i % 3] if i < last else 0.0)
+                                                   for i, v in enumerate(nodes)]
+        self.timeline._items.append(FakeTimelineObject("Modify%d" % (self.timeline.count + 1)))
+        self.timeline.markerPosition = self.timeline.count
+        if self.raises:
+            raise RuntimeError(self.raises)
+        return None
+
+
+_TETRA = [0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _mesh_rig(monkeypatch, owner_is_root=True, extra=(), **moves):
+    """A parametric design whose root owns mesh 'Tetra' (or a sub-component does)."""
+    timeline = FakeTimeline([FakeTimelineObject("Base1")])
+    mesh = _Mesh("Tetra", None, _TETRA)
+    feats = _MeshMoves([mesh], timeline, **moves)
+    _wire(monkeypatch, list(extra), feats, tokens={"m1": mesh}, design_type=1)
+    design = mm._common.design()
+    design.timeline = timeline
+    mesh.parentComponent = design.rootComponent if owner_is_root else MakeComp(name="Rail")
+    monkeypatch.setattr(adsk.fusion, "MeshBody", _Mesh)
+    return mesh, feats
+
+
+class TestMeshTranslate:
+    def test_every_node_shifted_is_ok_with_no_feature_and_the_timeline_item_named(self,
+                                                                                 monkeypatch):
+        mesh, feats = _mesh_rig(monkeypatch)
+        out = payload(mm.handler(bodies=["m1"], dx=10))
+        assert feats.last_input.definition[1].value == 1.0 and feats.last_input.definition[4] is True
+        assert mesh.mesh.nodeCoordinatesAsDouble[:3] == [1.0, 0.0, 0.0]
+        assert out["moved"] is True and out["displacement"] == 10.0 and out["nodes_checked"] == 4
+        assert "feature" not in out and out["no_feature_object"] is True
+        assert out["timeline_items_added"] == 1 and out["timeline_item"] == "Modify2"
+        assert "no_timeline_feature" not in out
+
+    @pytest.mark.parametrize("moves", [{"shift": (0.0, 0.0, 0.0)}, {"shift": (0.5, 0.0, 0.0)},
+                                       {"skip_last": True}])
+    def test_nodes_not_where_the_translation_puts_them_are_an_error(self, monkeypatch, moves):
+        _mesh_rig(monkeypatch, **moves)
+        msg = error_message(mm.handler(bodies=["m1"], dx=10))
+        assert "nodes of ['Tetra'] are not where the translation puts them" in msg
+
+    def test_a_node_that_does_not_read_finite_stops_the_move_before_it(self, monkeypatch):
+        mesh, feats = _mesh_rig(monkeypatch)
+        mesh.mesh.nodeCoordinatesAsDouble[0] = float("nan")
+        msg = error_message(mm.handler(bodies=["m1"], dx=10))
+        assert "did not read" in msg and "nothing was moved" in msg and feats.added == 0
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_a_node_read_back_non_finite_is_never_a_verified_move(self, monkeypatch, bad):
+        mesh, feats = _mesh_rig(monkeypatch)
+        add = feats.add
+
+        def add_then_spoil(move_input):
+            made = add(move_input)
+            mesh.mesh.nodeCoordinatesAsDouble[4] = bad
+            return made
+        feats.add = add_then_spoil
+        msg = error_message(mm.handler(bodies=["m1"], dx=10))
+        assert "not where the translation puts them" in msg and "largest miss None" in msg
+
+    def test_a_raise_that_still_moved_the_nodes_says_it_may_have_landed(self, monkeypatch):
+        _mesh_rig(monkeypatch, raises="3 : internal")
+        msg = error_message(mm.handler(bodies=["m1"], dx=10))
+        assert "Move failed: 3 : internal" in msg and "may have landed" in msg
+
+    def test_a_raise_that_moved_nothing_says_the_nodes_read_where_they_were(self, monkeypatch):
+        _mesh_rig(monkeypatch, raises="3 : internal", shift=(0.0, 0.0, 0.0))
+        assert "its nodes read where they were" in error_message(mm.handler(bodies=["m1"], dx=10))
+
+    def test_a_definition_that_does_not_answer_true_adds_nothing(self, monkeypatch):
+        _mesh, feats = _mesh_rig(monkeypatch, defined=None)
+        msg = error_message(mm.handler(bodies=["m1"], dx=10))
+        assert "refused the mesh translation" in msg and feats.added == 0
+
+    def test_a_mesh_and_a_brep_body_in_one_call_are_refused_before_the_move(self, monkeypatch):
+        _mesh, feats = _mesh_rig(monkeypatch, extra=[_body()])
+        msg = error_message(mm.handler(bodies=["m1", "Block"], dx=10))
+        assert "mixes mesh and BRep bodies" in msg and feats.added == 0
+
+    def test_a_mesh_takes_translate_only(self, monkeypatch):
+        _mesh, feats = _mesh_rig(monkeypatch)
+        msg = error_message(mm.handler(mode="rotate", bodies=["m1"], axis="z", angle_deg=90))
+        assert "moves by mode 'translate' only - got 'rotate'" in msg and feats.added == 0
+
+    def test_a_mesh_another_component_owns_is_refused_before_the_move(self, monkeypatch):
+        _mesh, feats = _mesh_rig(monkeypatch, owner_is_root=False)
+        msg = error_message(mm.handler(bodies=["m1"], dx=10))
+        assert "reads owner 'Rail'" in msg and "assembly_move" in msg and feats.added == 0

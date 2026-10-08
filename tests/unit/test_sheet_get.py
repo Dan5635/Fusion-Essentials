@@ -51,6 +51,23 @@ def test_hem_kind_strips_suffix_and_lowercases():
     assert mod._hem_kind(hem) == "flat"
 
 
+def test_feature_definition_cap_never_walks_past_the_bound_and_discloses_missing(monkeypatch):
+    hem = SimpleNamespace(name="Hem", definition=SimpleNamespace(
+        objectType="adsk::fusion::FlatHemFeatureDefinition"))
+    reads = []
+
+    def item(index):
+        reads.append(index)
+        return [hem, None][index]
+
+    monkeypatch.setattr(mod._edit_feature_common, "feature_definition", lambda *_: {"available": True})
+    out, state = mod._definition_rows(SimpleNamespace(count=100, item=item), 2, hem=True)
+    assert reads == [0, 1] and len(out) == 1 and out[0]["kind"] == "flat"
+    assert state == {"total": 100, "truncated": True, "unread_indices": [1]}
+    out, state = mod._definition_rows(None, 2)
+    assert out is None and state["total"] is None and state["truncated"] is None
+
+
 @pytest.fixture
 def flat_geometry(monkeypatch):
     plane = Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, -0.1))

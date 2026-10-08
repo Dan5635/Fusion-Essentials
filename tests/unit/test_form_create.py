@@ -397,3 +397,138 @@ class TestFormCreate:
         msg = error_message(fc.handler(primitive=_BOX))
         assert said in msg and ff._finishes == (1 if case == "load" else 0)
         assert len(rig.timeline._items) == 0
+
+
+class _NativeBodies(FakeTSplineBodies):
+    """tSplineBodies with the four primitive inputs: each create*Input records its arguments and
+    addByShapeInput lands a body reading `text` back (or raises `refuses`)."""
+
+    def __init__(self, text, owner, refuses=None):
+        super().__init__(owner=owner)
+        self._text, self._refuses, self.inputs = text, refuses, []
+
+    def _input(self, kind, *args):
+        made = types.SimpleNamespace(kind=kind, args=args)
+        self.inputs.append(made)
+        return made
+
+    def createSphereInput(self, *args):
+        return self._input("sphere", *args)
+
+    def createTorusInput(self, *args):
+        return self._input("torus", *args)
+
+    def createQuadballInput(self, *args):
+        return self._input("quadball", *args)
+
+    def createPlaneInput(self, *args):
+        return self._input("plane", *args)
+
+    def addByShapeInput(self, inp):
+        if self._refuses:
+            raise RuntimeError(self._refuses)
+        body = FakeTSplineBody("Body1", self._text, self._owner)
+        self._bodies.append(body)
+        return body
+
+
+def _boxed(lo, hi, solid=True):
+    """The finish's conversion with its own box corners (cm)."""
+    def land(ff):
+        if ff.tSplineBodies.count:
+            ff.bodies = _NamedCollection([BRepBody(
+                name=ff.tSplineBodies.item(0).name, bbox=make_bbox(lo, hi), volume=4.17,
+                is_solid=solid, face_count=6, area=12.0)])
+    return land
+
+
+# A closed 54-face cage text and an open 4-face one: what the native bodies read back here.
+_BALL_54 = tsm.emit(tsm.translated(tsm.box([2.0, 2.0, 2.0], [3, 3, 3]), 1.0, [0, 0, 0]))
+_SHEET_4 = tsm.emit({"vertices": [[x, y, 0.0] for y in (0, 1, 2) for x in (0, 1, 2)],
+                     "faces": [[0, 1, 4, 3], [1, 2, 5, 4], [3, 4, 7, 6], [4, 5, 8, 7]],
+                     "creases": []})
+
+
+@pytest.fixture
+def points(monkeypatch):
+    """adsk.core points and vectors as plain tuples, so a primitive's placement can be read."""
+    monkeypatch.setattr(fc.adsk.core, "Point3D", types.SimpleNamespace(create=lambda *a: a),
+                        raising=False)
+    monkeypatch.setattr(fc.adsk.core, "Vector3D", types.SimpleNamespace(create=lambda *a: a),
+                        raising=False)
+
+
+def _native(rig, text, lo, hi, solid=True, refuses=None):
+    ff = _form(rig, on_finish=_boxed(lo, hi, solid))
+    ff.tSplineBodies = _NativeBodies(text, ff, refuses)
+    return ff
+
+
+class TestNativePrimitives:
+    def test_a_quadball_is_built_in_cm_at_its_centre_and_recorded(self, rig, points):
+        ff = _native(rig, _BALL_54, (0.0, -1.0, -1.0), (2.0, 1.0, 1.0))
+        out = payload(fc.handler(primitive={"shape": "quadball", "size": [10], "spans": [3]},
+                                 origin=[10, 0, 0]))
+        inp = ff.tSplineBodies.inputs[0]
+        assert inp.kind == "quadball" and inp.args[0] == (1.0, 0.0, 0.0) and inp.args[3:] == (1.0,)
+        assert inp.faceCount == 3
+        assert out["created"] is True and out["is_solid"] is True and out["cage"]["faces"] == 54
+        assert out["readback"] == "faces, solidity and box"
+        assert fc._form_common.read_record(ff)["primitive"] == {
+            "shape": "quadball", "size_cm": [1.0], "spans": [3]}
+
+    def test_a_plane_is_placed_by_its_corner_so_it_ends_up_centred(self, rig, points):
+        ff = _native(rig, _SHEET_4, (0.0, -0.5, 0.0), (2.0, 0.5, 0.0), solid=False)
+        out = payload(fc.handler(primitive={"shape": "plane", "size": [20, 10], "spans": [2, 2]},
+                                 origin=[10, 0, 0]))
+        inp = ff.tSplineBodies.inputs[0]
+        assert inp.args[0] == (0.0, -0.5, 0.0) and inp.args[3:] == (2.0, 1.0)
+        assert (inp.xFaceCount, inp.yFaceCount) == (2, 2)
+        assert out["is_solid"] is False and "area_cm2" in out
+
+    def test_a_cage_with_another_face_count_than_asked_is_removed(self, rig, points):
+        ff = _native(rig, _BALL_54, (-1.0, -1.0, -1.0), (1.0, 1.0, 1.0))
+        msg = error_message(fc.handler(primitive={"shape": "quadball", "size": [10],
+                                                  "spans": [2]}))
+        assert "reads 54 faces for 24 asked" in msg and ff._deletes == 1
+
+    def test_a_solid_whose_cage_text_reads_open_is_kept(self, rig, points):
+        # a native sphere's TSM reads open at its poles (measured); the body's isSolid is the judge
+        ff = _native(rig, _SHEET_4, (-1.0,) * 3, (1.0,) * 3)
+        out = payload(fc.handler(primitive={"shape": "sphere", "size": [10], "spans": [2, 2]}))
+        assert out["created"] is True and out["is_solid"] is True and ff._deletes == 0
+
+    def test_a_closed_primitive_whose_body_reads_open_is_removed(self, rig, points):
+        ff = _native(rig, _BALL_54, (-1.0,) * 3, (1.0,) * 3, solid=False)
+        msg = error_message(fc.handler(primitive={"shape": "quadball", "size": [10],
+                                                  "spans": [3]}))
+        assert "isSolid" in msg and ff._deletes == 1
+
+    def test_a_body_a_tenth_the_size_asked_is_removed(self, rig, points):
+        ff = _native(rig, _BALL_54, (-0.1, -0.1, -0.1), (0.1, 0.1, 0.1))
+        msg = error_message(fc.handler(primitive={"shape": "quadball", "size": [10],
+                                                  "spans": [3]}))
+        assert "does not fill the quadball asked" in msg and ff._deletes == 1
+
+    def test_a_torus_body_taller_than_its_minor_radius_is_removed(self, rig, points):
+        ff = _native(rig, _BALL_54, (-2.5, -2.5, -2.5), (2.5, 2.5, 2.5))
+        msg = error_message(fc.handler(primitive={"shape": "torus", "size": [20, 5],
+                                                  "spans": [9, 6]}))
+        assert "not inside the primitive's" in msg and ff._deletes == 1
+        inp = ff.tSplineBodies.inputs[0]
+        assert inp.args[3:] == (2.0, 0.5) and (inp.majorFaceCount, inp.minorFaceCount) == (9, 6)
+
+    def test_a_primitive_fusion_refuses_is_removed_with_its_message(self, rig, points):
+        ff = _native(rig, _BALL_54, (-1.0,) * 3, (1.0,) * 3, refuses="3 : invalid faceCount")
+        msg = error_message(fc.handler(primitive={"shape": "sphere", "size": [10],
+                                                  "spans": [1, 1]}))
+        assert "Fusion refused the primitive: 3 : invalid faceCount" in msg and ff._deletes == 1
+
+    @pytest.mark.parametrize("primitive,said", [
+        ({"shape": "sphere", "size": [10, 10], "spans": [8, 8]}, "size for a sphere is 1"),
+        ({"shape": "torus", "size": [20, 5], "spans": [8]}, "spans for a torus is 2"),
+        ({"shape": "plane", "size": [20, 10], "spans": [2, 2], "capped": False}, "has no caps"),
+        ({"shape": "quadball", "size": [10], "spans": [40]}, "make 9600 faces"),
+        ({"shape": "sphere", "size": [10], "spans": [8, 8], "radius": 5}, "radius")])
+    def test_a_malformed_native_primitive_is_refused_before_add(self, rig, primitive, said):
+        assert said in error_message(fc.handler(primitive=primitive)) and rig.forms._adds == 0

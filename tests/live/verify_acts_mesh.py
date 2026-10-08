@@ -3398,3 +3398,119 @@ _MESH = [
 ]
 
 _MESH += _mesh_remedy_rows()
+
+
+# name -> (primitive, cage faces, solid, half extents in mm, volume cm3 or None for the open plane)
+_NATIVE_FORMS = {
+    "W3Sphere": ({"shape": "sphere", "size": [10], "spans": [8, 8]}, 64, True, (10, 10, 10),
+                 4.182580493),
+    "W3Torus": ({"shape": "torus", "size": [20, 5], "spans": [8, 4]}, 32, True, (25, 25, 5),
+                9.570318357),
+    "W3Quadball": ({"shape": "quadball", "size": [10], "spans": [2]}, 24, True, (10, 10, 10),
+                   4.173558535),
+    "W3Plane": ({"shape": "plane", "size": [20, 10], "spans": [2, 2]}, 4, False, (10, 5, 0), None),
+}
+
+
+def _native_form_made(name):
+    """form_create: Fusion's own primitive, checked by faces, solidity and box, at its size."""
+    _prim, faces, solid, _half, volume = _NATIVE_FORMS[name]
+
+    def check(p):
+        facts = {k: p.get(k) for k in ("created", "is_solid", "readback", "volume_cm3", "area_cm2")}
+        facts["cage_faces"] = (p.get("cage") or {}).get("faces")
+        return _measured(f"native Form {name}", facts,
+                         p.get("created") is True and p.get("is_solid") is solid
+                         and facts["cage_faces"] == faces
+                         and p.get("readback") == "faces, solidity and box"
+                         and (_near_rel(p.get("volume_cm3"), volume) if solid
+                              else _near(p.get("area_cm2"), 2.0, 1e-6)))
+    return check
+
+
+def _native_form_box(name, x_mm):
+    """model_inspect: the Form's body spans exactly the asked envelope about its origin, in mm."""
+    half = _NATIVE_FORMS[name][3]
+
+    def check(p):
+        lo, hi = p.get("min_point") or {}, p.get("max_point") or {}
+        want = [(x_mm - half[0], x_mm + half[0]), (-half[1], half[1]), (-half[2], half[2])]
+        return _measured(f"{name} bounds", {"min": lo, "max": hi},
+                         all(_near(lo.get(a), w[0], 0.01) and _near(hi.get(a), w[1], 0.01)
+                             for a, w in zip("xyz", want)))
+    return check
+
+
+def _native_form_rows():
+    """The four native Form primitives, each read back apart from the create's own reply."""
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("nf_doc")
+    for i, name in enumerate(_NATIVE_FORMS):
+        x_mm = 80 * i
+        write("form_create", {"primitive": _NATIVE_FORMS[name][0], "name": name,
+                              "origin": [x_mm, 0, 0]}, _native_form_made(name))
+        read("model_inspect", {"target": name, "units": "mm"}, _native_form_box(name, x_mm))
+        read("form_get", {"max_results": 10},
+             lambda p, name=name, i=i: _measured(
+                 f"{name} recorded as a primitive", (p.get("forms") or [{}])[-1].get("record"),
+                 p.get("count") == i + 1
+                 and ((p["forms"][-1].get("record") or {}).get("primitive") or {}).get("shape")
+                 == _NATIVE_FORMS[name][0]["shape"]
+                 and p["forms"][-1].get("modified_downstream") is False))
+    # refusals that never reach Fusion, and the cylinder's unchanged meaning beside them
+    write("form_create", {"primitive": {"shape": "sphere", "size": [10], "spans": [8, 8],
+                                        "capped": False}}, _refused("has no caps"))
+    write("form_create", {"primitive": {"shape": "torus", "size": [20], "spans": [8, 4]}},
+          _refused("size for a torus is 2"))
+    read("form_get", {}, lambda p: p.get("count") == len(_NATIVE_FORMS))
+    close()
+    return rows
+
+
+_MESH += _native_form_rows()
+
+
+def _mesh_translate_rows():
+    """Translate a mesh body and translate it back, each judged by a later independent read."""
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("mt_doc")
+    write("sketch_create", {"plane": "xy", "name": "MtSk"})
+    write("sketch_add_geometry", {"sketch_name": "MtSk", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 10}]})
+    write("model_extrude", {"sketch_name": "MtSk", "distance": 5}, "ok",
+          ("mt_body", _recall("mt_body", lambda p: (p.get("result_bodies") or p.get("bodies"))[0])))
+    write("save_as_mesh", lambda c: {"body": _ctx_get(c, "mt_body", "source body"),
+                                     "name": "MtMesh", "quality": "low"},
+          lambda p: p.get("name") == "MtMesh")
+
+    def at(x_mm):
+        return lambda p: _measured(f"MtMesh min x at {x_mm} mm", p.get("bbox"),
+                                   _near(((p.get("bbox") or {}).get("min_point") or {}).get("x"), x_mm, 0.001)
+                                   and _near(((p.get("bbox") or {}).get("max_point") or {}).get("x"), x_mm + 20, 0.001))
+
+    def moved(p):
+        return (p.get("moved") is True and p.get("body_kind") == "mesh"
+                and p.get("displacement") == 10.0 and p.get("nodes_checked", 0) > 0
+                and "feature" not in p and p.get("no_feature_object") is True
+                and p.get("timeline_items_added") == 1 and bool(p.get("timeline_item")))
+    read("model_inspect", {"target": "MtMesh", "units": "mm"}, at(0))
+    write("model_move", {"bodies": ["MtMesh"], "dx": 10}, moved,
+          ("mt_item", _recall("mt_item", lambda p: p["timeline_item"])))
+    read("model_inspect", {"target": "MtMesh", "units": "mm"}, at(10))
+    # the source solid did not ride along
+    read("model_inspect", lambda c: {"target": _ctx_get(c, "mt_body", "source body"), "units": "mm"},
+         lambda p: _near((p.get("min_point") or {}).get("x"), 0, 0.001))
+    write("model_move", {"bodies": ["MtMesh"], "dx": -10},
+          lambda p: moved(p) and p.get("timeline_item") != _RECALL["mt_item"])
+    read("model_inspect", {"target": "MtMesh", "units": "mm"}, at(0))
+    # the guards: one kind per call, translate only
+    write("model_move", lambda c: {"bodies": ["MtMesh", _ctx_get(c, "mt_body", "source body")],
+                                   "dx": 5}, _refused("mixes mesh and BRep bodies"))
+    write("model_move", {"mode": "rotate", "bodies": ["MtMesh"], "axis": "z", "angle_deg": 30},
+          _refused("moves by mode 'translate' only"))
+    read("model_inspect", {"target": "MtMesh", "units": "mm"}, at(0))
+    close()
+    return rows
+
+
+_MESH += _mesh_translate_rows()

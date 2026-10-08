@@ -169,8 +169,8 @@ def retire(design, ff, label, count_before):
             f"design_delete_feature(feature='{label}').")
 
 
-def create_form(design, comp, text, name):
-    """(facts, error): add, load and always-finish a Form in comp; a failed open or load is deleted."""
+def create_form(design, comp, text, name, shape=None):
+    """(facts, error): add a Form, load `text` or build `shape(bodies)`, always finish it."""
     marker = _common.timeline_marker(design)[0]
     count = _common.counted(lambda: design.timeline.count)
     forms = safe(lambda: comp.features.formFeatures)
@@ -194,11 +194,13 @@ def create_form(design, comp, text, name):
     tb, load_error, rename_warning, back, tb_name = None, None, None, None, None
     try:
         try:
-            tb = ff.tSplineBodies.addByTSMDescription(text)
+            tb = (shape(ff.tSplineBodies) if shape is not None
+                  else ff.tSplineBodies.addByTSMDescription(text))
         except Exception as e:
             load_error = str(e) or type(e).__name__
         if tb is None and load_error is None:
-            load_error = "addByTSMDescription returned nothing"
+            load_error = (("addByShapeInput" if shape is not None else "addByTSMDescription")
+                          + " returned nothing")
         if tb is not None:
             # Named at once, the B-Rep the finish converts takes the same name.
             tb_name, rename_warning = _common.apply_rename(tb, want)
@@ -229,7 +231,8 @@ def create_form(design, comp, text, name):
                       "design still reads direct (workspace_orient design.mode), ask the user to "
                       "click Finish Form; then" + remove)
     if load_error:
-        return None, (f"Fusion refused the cage: {load_error}."
+        what = "primitive" if shape is not None else "cage"
+        return None, (f"Fusion refused the {what}: {load_error}."
                       + (retire(design, ff, label, count) or " The Form made for it was removed."))
     return {"ff": ff, "label": label, "count_before": count, "marker_before": marker,
             "tspline_body": tb_name, "rename_warning": rename_warning, "readback": back}, None

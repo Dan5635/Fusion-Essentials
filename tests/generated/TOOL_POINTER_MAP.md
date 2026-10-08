@@ -1099,7 +1099,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Provide 'folder' - the folder or setup name to show.
 - Use cam_show_toolpath(list) or cam_get(include=['operations']).
 - ' still reads isVisible=true after hide - the write did not take.
-- This operation carries no toolpath by construction - cam_get(include=['parameters'], operation=...) reads what it carries.
+- This additive operation currently reads no toolpath - cam_get(include=['parameters'], operation=...) reads what it carries.
 - activate() ran but setup '' still reads isActive=false - the viewport still shows another setup's models, not this operation's part.
 - activate() ran but isActive cannot be read on setup '', so the activation is UNCONFIRMED - the viewport may still show another setup's models rather than this operation's part.
 - The setup's model box read, but the camera could not be measured against it, so the frame stayed on the plain fit (fitted_to='viewport').
@@ -1760,6 +1760,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' has unsupported definition type
 - ; use include=['timeline'] or model_inspect.
 - Definition inventory only. Use find_geometry(kind=construction_axis/construction_plane/construction_point, target=<occurrence>, name=<exact name>) for world geometry and a placed handle. Narrow wit...
+- Length values use units; angle values use deg. Null fields are unreadable.
+- The plastic-rule collection did not read on this design.
 - Light nodes: name, component, body_count, child_count. Narrow: name_filter, component=<name>, max_depth, max_results. tree_handles=true adds handle/full_path/source ids. children_truncated = a leve...
 - lists at most  (per_body_truncated past that); one component has no narrower scope, so read the rest with model_inspect(target='<body>').
 - Bodies directly in the root component (not occurrences). A root body can't be jointed - model_create_component then move it in to joint it.
@@ -2549,9 +2551,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `form_create`
 - '. Use mm, cm, or in.
 - 'origin' is three numbers [x, y, z] - got
-- The cage was refused before Fusion saw it:
 - No active design. Create or open a document first (see doc_new).
 - with total surface area
+- 'primitive' is an object of
+- The cage was refused before Fusion saw it:
 - A Form has no parameters. To change it: form_get(include=['cage']), edit the cage, form_create it, then delete the Form it replaces.
 - No two-faced B-Rep edge reads sharper than  deg, though the crease records read back exactly; find_geometry lists the edges.
 
@@ -3330,6 +3333,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' geometry is unreadable (
 - ); nothing was edited.
 - Feature edit refused:
+- 'hem' is only used on a Hem feature with action='mode'; remove it.
+- 'hem' must be an object with type and the mode's dimensions.
+- disagrees with hem.type=
 - . Nothing was edited.
 - , the only type action='
 - ' edits. Build one with
@@ -3767,6 +3773,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - A move feature cannot move FACES - pass 'bodies'. createInput2 accepts a BRepFace collection and then raises InternalValidationError inside the kernel. To push or pull a face, use model_offset_face.
 - 'bodies' is required - the bodies to move.
 - No active design. Create or open a document first (see doc_new).
+- 'bodies' mixes mesh and BRep bodies - move each kind in its own call.
+- A mesh body moves by mode 'translate' only - got '
 - Move feature was created but failed to compute:
 - . Try a smaller move, or a different axis/point selection.
 - ' move definition, so nothing was moved.
@@ -3777,6 +3785,15 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - mode 'point_to_point' needs
 - - a vertex handle from find_geometry.
 - 'angle_deg' must be a number (rotation in degrees), got
+- Every mesh node sits where the translation puts it.
+- did not read, so a move could not be checked; nothing was moved.
+- . The mesh was re-read:
+- Move reported success but the nodes of
+- are not where the translation puts them (largest miss
+- model_move translates a mesh body the root component owns; '
+- '. Move its occurrence with assembly_move.
+- Fusion refused the mesh translation (the definition answered
+- ), so nothing was moved.
 - Move reported success but no moved geometry could be read back, so the result could not be verified. Re-read it with model_inspect.
 - 'axis': the active component has no  origin construction axis to move along. Pass a find_geometry handle at a straight edge or sketch line.
 
@@ -4678,19 +4695,19 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - mirror_line mirrors in place of a transform, in the same sketch. Drop:
 - No active design. Create or open a document first (see doc_new).
 - No sketch to mirror in. Draw one first with sketch_create.
-- mirror_line mirrors lines and arcs;
-- is neither. Mirror the lines and arcs, and draw the rest.
+- mirror_line mirrors lines, arcs and circles;
+- is none of them. Mirror those, and draw the rest.
 - 'entities' is required - comma-separated '<type>:<index>' curve refs from sketch_get(include_entities=true).
 - mirror_line must be a 'line:<index>' of sketch '
 - ' is also in 'entities'; a line cannot be mirrored about itself.
 - ' has no readable length.
 - An end point of one of the entities did not read; nothing was mirrored.
+- The radius of a circle did not read, so its mirror could not be checked; nothing was mirrored.
 - entity(ies) and sketch '
 - asked - re-read sketch_get(include_entities=true) before going on.
 - Nothing was mirrored.
 - mirror_line works in the sketch plane; '
-- has an end off it (z is not 0).
-- did not read its end points.
+- did not read its points.
 - ' did not read, so its mirror could not be checked; nothing was mirrored.
 - mirror moved its source '
 - The curve built for '

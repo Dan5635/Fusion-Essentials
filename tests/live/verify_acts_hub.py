@@ -9,6 +9,7 @@ them, which is the sketch recipes' own bar; the two setups at the bottom are the
 beat addresses. The hub is authored a metre out along X on the XZ plane and stays there.
 """
 
+import json
 import time
 
 import _dump_reader
@@ -1250,6 +1251,13 @@ def _facet_narrowed(bare_count):
     return check
 
 
+def _additive_slices(p):
+    """cam_get(include=['operations']): the names of the additive setup's slice operations."""
+    return [r.get("name") for rec in ((p.get("operations") or {}).get("setups") or [])
+            if rec.get("setup") == _ADD_SETUP for r in rec.get("operations") or []
+            if r.get("strategy") == "additive_buildstyle"]
+
+
 def _additive_no_tool_blockers(setup, op_name):
     """cam_get(include=['operations']): an ADDITIVE row never carries tool_unselected or a
     spindle_check, and the setup's own readiness names no tool remedy - additive operations take
@@ -1421,6 +1429,89 @@ def _container_order(first, second):
     return check
 
 
+
+_SLICE_SETUP = "SliceBuild"
+_SLICE_NATIVE = (
+    "import adsk.core, adsk.cam, json\n"
+    "def run(context):\n"
+    "    doc=adsk.core.Application.get().activeDocument\n"
+    "    cam=adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))\n"
+    "    rows=[[o.name,o.strategy,o.hasToolpath,o.isToolpathValid,int(o.operationState)]\n"
+    "          for s in cam.setups for o in s.allOperations if o.strategy=='additive_buildstyle']\n"
+    "    print(json.dumps({'slices':rows}))\n")
+
+
+def _slice_row(p):
+    """cam_get(include=['operations']): the one additive_buildstyle row of the slice setup."""
+    rows = [r for rec in ((p.get("operations") or {}).get("setups") or [])
+            if rec.get("setup") == _SLICE_SETUP for r in rec.get("operations") or []
+            if r.get("strategy") == "additive_buildstyle"]
+    return rows[0] if len(rows) == 1 else {}
+
+
+def _slice_native(p):
+    """The native flags of the generated slice, read apart from every tool reply."""
+    reply = p if isinstance(p, dict) else {}
+    if not reply:
+        for line in str(p or "").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and "slices" in row:
+                reply = row
+    rows = reply.get("slices") or []
+    return _measured("the generated slice natively", rows,
+                     len(rows) == 1 and rows[0][0] == _RECALL["slice_op"]
+                     and rows[0][2] is True and rows[0][3] is True and rows[0][4] == 0)
+
+
+def _additive_slice_rows():
+    """An FFF slice generated through the public tools: pathless before, a valid toolpath after."""
+    from verify_acts_cam import _face_op_settled
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("as_doc")
+    write("sketch_create", {"plane": "xy", "name": "AsSk"})
+    write("sketch_add_geometry", {"sketch_name": "AsSk", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 30, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "AsSk", "distance": 10})
+    write("view_switch_workspace", {"workspace": "manufacture"})
+    write("cam_create_setup", {"operation_type": "additive", "name": _SLICE_SETUP,
+                               "machine": "Autodesk|Generic FFF Machine",
+                               "print_setting": "PLA (Bowden Tube)"},
+          lambda p: p.get("created") is True and p.get("print_setting_technology") == "FFF")
+    read("cam_get", {"include": ["operations"], "setup": _SLICE_SETUP},
+         lambda p: _measured("the ungenerated slice row", _slice_row(p),
+                             _slice_row(p).get("has_toolpath") is False
+                             and _slice_row(p).get("state") == "no_toolpath"),
+         ("slice_op", _recall("slice_op", lambda p: _slice_row(p)["name"])))
+    write("cam_show_toolpath", lambda c: {"action": "show",
+                                          "operation": _ctx_get(c, "slice_op", "the slice")},
+          lambda p: p.get("has_toolpath") is False
+          and "Generate it first" in (p.get("warning") or ""))
+    write("cam_generate", lambda c: {"target": _ctx_get(c, "slice_op", "the slice"),
+                                     "skip_valid": False},
+          lambda p: p.get("launched") is True and bool(p.get("handle")),
+          ("slice_gen", _recall("slice_gen", lambda p: p["handle"])))
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "slice_gen", "the slice generation")},
+         _face_op_settled("slice_gen", "the slice generation settled valid", {"valid": 1}))
+    # cam_get omits has_toolpath and toolpath_valid only when their native read is True.
+    read("cam_get", {"include": ["operations"], "setup": _SLICE_SETUP},
+         lambda p: _measured("the generated slice row", _slice_row(p),
+                             _slice_row(p).get("state") == "valid"
+                             and _slice_row(p).get("has_toolpath", True) is True
+                             and _slice_row(p).get("toolpath_valid", True) is True
+                             and "error" not in _slice_row(p)))
+    read("sys_execute_script", {"script": _SLICE_NATIVE, "read_only": True}, _slice_native)
+    write("cam_show_toolpath", lambda c: {"action": "show",
+                                          "operation": _ctx_get(c, "slice_op", "the slice")},
+          lambda p: p.get("has_toolpath") is not False and "warning" not in p)
+    write("cam_show_toolpath", {"action": "hide_all"})
+    write("view_switch_workspace", {"workspace": "design"})
+    close()
+    return rows
+
+
 _HUB_ADDITIVE = [
     _watch(HUB_COMP + ":1"),
     # The catalog reads first: the names the setup below is built from are READ, not assumed.
@@ -1515,8 +1606,26 @@ _HUB_ADDITIVE = [
     # construction, the manual-NC exclusion's additive sibling.
     ("cam_get", {"include": ["operations"], "setup": _ADD_SETUP},
      lambda p: _additive_no_tool_blockers(_ADD_SETUP, _RECALL["add_orient_op"])(p), None),
-    # The status health names no additive row as an empty toolpath: an additive build op carries
-    # no toolpath by construction, the same exclusion the operations reader applies.
+    # Showing a pathless additive operation: the orientation is not sent to cam_generate, the
+    # setup's own slice is - it is the one additive strategy measured reading a toolpath.
+    ("cam_show_toolpath", lambda c: {"action": "show",
+                                     "operation": _ctx_get(c, "add_orient_op", "the orientation")},
+     lambda p: _measured("the orientation's pathless warning", p.get("warning"),
+                         p.get("has_toolpath") is False
+                         and "currently reads no toolpath" in (p.get("warning") or "")
+                         and "Generate it first" not in (p.get("warning") or "")), None),
+    ("cam_get", {"include": ["operations"], "setup": _ADD_SETUP},
+     lambda p: len(_additive_slices(p)) == 1,
+     ("add_slice_op", _recall("add_slice_op", lambda p: _additive_slices(p)[0]))),
+    ("cam_show_toolpath", lambda c: {"action": "show",
+                                     "operation": _ctx_get(c, "add_slice_op", "the slice")},
+     lambda p: _measured("the slice's pathless warning", p.get("warning"),
+                         p.get("has_toolpath") is False
+                         and "Generate it first" in (p.get("warning") or "")
+                         and "currently reads" not in (p.get("warning") or "")), None),
+    ("cam_show_toolpath", {"action": "hide_all"}, "ok", None),
+    # The status health names no additive row as an empty toolpath: a valid additive operation
+    # is never reported empty, the same exclusion the operations reader applies.
     ("cam_get_status", {"target": _ADD_SETUP},
      lambda p: _measured("no additive operation named in empty_toolpaths",
                          {"empty_toolpaths": p.get("empty_toolpaths"), "counts": p.get("counts")},
@@ -1549,3 +1658,5 @@ _HUB_ADDITIVE = [
     # act's boundary poll certifies it before the next act reads its times.
     ("cam_generate", {"target": _MX_SETUP, "skip_valid": True}, _relaunched(_MX_SETUP), None),
 ]
+
+_HUB_ADDITIVE += _additive_slice_rows()

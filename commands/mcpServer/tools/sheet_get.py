@@ -6,8 +6,8 @@
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
-from ._common import error, iter_collection, ok, safe
-from . import _common, _sheet_common
+from ._common import error, ok, safe
+from . import _common, _sheet_common, _edit_feature_common
 
 _SLICES = ("rules", "library_rules", "components", "features")
 
@@ -57,13 +57,33 @@ def _feature_row(component, geometry_limit):
     def _count(attr):
         coll = safe(lambda: getattr(feats, attr)) if feats is not None else None
         return safe(lambda: coll.count) if coll is not None else None
-    hems_coll = safe(lambda: feats.hemFeatures) if feats is not None else None
-    hems = ([{"name": safe(lambda h=h: h.name), "kind": _hem_kind(h)} for h in iter_collection(hems_coll)]
-            if hems_coll is not None else None)
+    hems, hem_read = _definition_rows(safe(lambda: feats.hemFeatures), geometry_limit, hem=True)
+    rips, rip_read = _definition_rows(safe(lambda: feats.ripFeatures), geometry_limit)
     return {"component": safe(lambda: component.name),
-            "folds": _count("foldFeatures"), "hems": hems, "rips": _count("ripFeatures"),
+            "folds": _count("foldFeatures"), "hems": hems, "hem_count": _count("hemFeatures"),
+            "rips": _count("ripFeatures"), "rip_definitions": rips,
+            "definition_limit": geometry_limit, "hem_read": hem_read, "rip_read": rip_read,
             "joins": _count("joinByBendFeatures"), "flanges": _count("flangeFeatures"),
             "flat_pattern": _sheet_common.flat_pattern_row(component, geometry_limit=geometry_limit)}
+
+
+def _definition_rows(collection, limit, hem=False):
+    """Read capped feature definitions and disclose missing collection entries."""
+    count = _common.counted(lambda: collection.count)
+    if count is None:
+        return None, {"total": None, "truncated": None, "unread_indices": None}
+    rows, unread = [], []
+    for index in range(min(count, limit)):
+        feature = safe(lambda index=index: collection.item(index))
+        if feature is None:
+            unread.append(index)
+            continue
+        row = {"name": safe(lambda: feature.name),
+               "definition": _edit_feature_common.feature_definition(feature, 10)}
+        if hem:
+            row["kind"] = _hem_kind(feature)
+        rows.append(row)
+    return rows, {"total": count, "truncated": count > limit, "unread_indices": unread}
 
 
 def _features(design, limit):

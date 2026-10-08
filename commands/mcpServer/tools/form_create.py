@@ -1,9 +1,11 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""MCP building block: create one T-spline Form from a control cage and check Fusion's copy of it
-record by record, removing the Form when a check fails. WRITES. FormFeatures.add() in a direct
+"""MCP building block: create one T-spline Form from a control cage or a native primitive and check
+Fusion's copy of it, removing the Form when a check fails. WRITES. FormFeatures.add() in a direct
 design crashed Fusion (measured), so a design that is not parametric is refused before it."""
+
+import adsk.core
 
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
@@ -29,10 +31,25 @@ BBOX_TOL_CM = 1e-4
 
 # Unknown keys in either object are refused by _cage_in_units.
 _SHAPE = {"type": "object", "required": ["shape", "size", "spans"],
-          "properties": {"shape": {"type": "string", "enum": ["box", "cylinder"]},
-                         "size": {"type": "array", "items": {"type": "number"}},
-                         "spans": {"type": "array", "items": {"type": "integer"}},
+          "properties": {"shape": {"type": "string", "enum": ["box", "cylinder", "sphere", "torus",
+                                                              "quadball", "plane"]},
+                         "size": {"type": "array", "items": {"type": "number"},
+                                  "description": "Box: xyz; cylinder: diameter,height; sphere/"
+                                                 "quadball: radius; torus: major,minor radii; "
+                                                 "plane: xy."},
+                         "spans": {"type": "array", "items": {"type": "integer"},
+                                   "description": "Box: xyz; cylinder: height rows; sphere: "
+                                                  "around,pole-to-pole; torus: major,minor; "
+                                                  "quadball: per side; plane: xy."},
                          "capped": {"type": "boolean", "default": True}}}
+
+# Fusion's own primitives: shape -> (sizes, spans, the input's face-count members, closed).
+_NATIVE = {"sphere": (1, 2, ("longitudeFaceCount", "latitudeFaceCount"), True),
+           "torus": (2, 2, ("majorFaceCount", "minorFaceCount"), True),
+           "quadball": (1, 1, ("faceCount",), True),
+           "plane": (2, 2, ("xFaceCount", "yFaceCount"), False)}
+# A body box smaller than this share of the asked envelope is another size, not this primitive.
+_ENVELOPE_MIN = 0.5
 
 
 def _tuples(kind, n):
@@ -78,10 +95,55 @@ def _component(design, raw):
     return comp, occ, None
 
 
+def _native_spec(primitive, k, at_cm):
+    """(spec, error) for a native primitive: cm sizes, face counts, its envelope and cage faces."""
+    shape = primitive.get("shape")
+    n_size, n_spans, members, closed = _NATIVE[shape]
+    size, spans = primitive.get("size"), primitive.get("spans")
+    if not isinstance(size, (list, tuple)) or len(size) != n_size or not all(
+            _tsm._real(s) and s > 0 for s in size):
+        return None, f"primitive.size for a {shape} is {n_size} number(s) above 0 - got {size!r}."
+    if not isinstance(spans, (list, tuple)) or len(spans) != n_spans or not all(
+            _tsm._count(n) and n >= 1 for n in spans):
+        return None, (f"primitive.spans for a {shape} is {n_spans} whole number(s) of at least 1 - "
+                      f"got {spans!r}.")
+    if "capped" in primitive:
+        return None, f"primitive.capped belongs to a cylinder; a {shape} has no caps."
+    cm = [s * k for s in size]
+    faces = 6 * spans[0] ** 2 if shape == "quadball" else spans[0] * spans[1]
+    if faces > _tsm.MAX_FACES:
+        return None, (f"primitive.spans {list(spans)} make {faces} faces; the largest cage loaded "
+                      f"had {_tsm.MAX_FACES}.")
+    half = {"sphere": [cm[0]] * 3, "quadball": [cm[0]] * 3,
+            "torus": [sum(cm)] * 2 + [cm[-1]], "plane": [cm[0] / 2, cm[-1] / 2, 0.0]}[shape]
+    reach = max(abs(c) + h for c, h in zip(at_cm, half))
+    if reach > _tsm.MAX_REACH_CM:
+        return None, (f"the {shape} reaches {reach:g} cm from the origin, past "
+                      f"{_tsm.MAX_REACH_CM:g}.")
+    return {"shape": shape, "cm": cm, "spans": list(spans), "members": members, "closed": closed,
+            "faces": faces, "lo": [c - h for c, h in zip(at_cm, half)],
+            "hi": [c + h for c, h in zip(at_cm, half)]}, None
+
+
+def _native_shape(spec):
+    """The loader create_form calls inside the open edit: one native primitive, face counts set."""
+    def build(bodies):
+        x, y = adsk.core.Vector3D.create(1, 0, 0), adsk.core.Vector3D.create(0, 1, 0)
+        lo, hi = spec["lo"], spec["hi"]
+        # createPlaneInput places a CORNER at its origin (measured); the other three their centre.
+        at = lo if spec["shape"] == "plane" else [(a + b) / 2 for a, b in zip(lo, hi)]
+        inp = getattr(bodies, f"create{spec['shape'].capitalize()}Input")(
+            adsk.core.Point3D.create(*at), x, y, *spec["cm"])
+        for member, n in zip(spec["members"], spec["spans"]):
+            setattr(inp, member, n)
+        return bodies.addByShapeInput(inp)
+    return build
+
+
 def _cage_in_units(primitive, cage):
     """(cage in the call's units, error) from exactly one of the two inputs."""
     if (primitive is None) == (cage is None):
-        return None, ("Pass exactly one of 'primitive' (a box or cylinder) and 'cage' (vertices, "
+        return None, ("Pass exactly one of 'primitive' (shape, size, spans) and 'cage' (vertices, "
                       "faces, creases) - got " + ("both." if primitive is not None else "neither."))
     name, given = ("primitive", primitive) if primitive is not None else ("cage", cage)
     keys = _SHAPE["properties"] if primitive is not None else _CAGE["properties"]
@@ -107,7 +169,7 @@ def _edge_handle(edge, occ):
                                safe(lambda: (p.x, p.y, p.z)))
 
 
-def _verify(design, facts, text, cage_cm, closed, creased):
+def _verify(design, facts, text, lo, hi, closed, creased, census=None, native=None):
     """(problems, bodies, sharp [(edge, deg)], unread seams) - the checks a new Form must pass."""
     ff, problems = facts["ff"], []
     n_tb = _common.counted(lambda: ff.tSplineBodies.count)
@@ -127,13 +189,20 @@ def _verify(design, facts, text, cage_cm, closed, creased):
         problems.append(f"the timeline reads {now} items, {facts['count_before']} before")
     if not isinstance(facts["readback"], str):
         problems.append("the T-spline body's TSM did not read back")
-    else:
+    elif native is None:
         problems += _tsm.compare(text, facts["readback"])
+    elif census["faces"] != native["faces"]:
+        # Closure is judged on the body alone: a native sphere's text reads open at its poles.
+        problems.append(f"the cage reads {census['faces']} faces for {native['faces']} asked")
     box = _form_common.body_box_cm(bodies)
-    lo = [min(p[i] for p in cage_cm["vertices"]) - BBOX_TOL_CM for i in range(3)]
-    hi = [max(p[i] for p in cage_cm["vertices"]) + BBOX_TOL_CM for i in range(3)]
+    asked = [h - l for l, h in zip(lo, hi)]
+    lo, hi = [c - BBOX_TOL_CM for c in lo], [c + BBOX_TOL_CM for c in hi]
     if bodies and (box is None or any(box[0][i] < lo[i] or box[1][i] > hi[i] for i in range(3))):
-        problems.append(f"the body's box {box} (cm) is not inside the cage's")
+        problems.append(f"the body's box {box} (cm) is not inside the "
+                        + ("primitive's" if native else "cage's"))
+    elif bodies and native and any(box[1][i] - box[0][i] < _ENVELOPE_MIN * asked[i]
+                                   for i in range(3)):
+        problems.append(f"the body's box {box} (cm) does not fill the {native['shape']} asked")
     seams = [row for b in bodies for row in _continuity.body_seams(b)]
     sharp = [(e, a) for e, a in seams if a is not None and a > SMOOTH_DEG]
     unread = sum(1 for _e, a in seams if a is None)
@@ -161,20 +230,29 @@ def handler(primitive=None, cage=None, origin=None, name: str = "", component: s
     k = _common.scale(units)
     if k is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
-    cage_u, cerr = _cage_in_units(primitive, cage)
-    if cerr:
-        return error(cerr)
     at = [0.0, 0.0, 0.0] if origin is None else origin
     if not isinstance(at, (list, tuple)) or len(at) != 3 or any(
             _common.measured(lambda c=c: c) is None for c in at):
         return error(f"'origin' is three numbers [x, y, z] - got {origin!r}.")
-    verr = _tsm.validate(cage_u)
-    if not verr:
-        cage_cm = _tsm.translated(cage_u, k, [c * k for c in at])
-        verr = _tsm.validate(cage_cm, _tsm.MAX_REACH_CM)
-        verr = verr and f"in cm, moved by 'origin', {verr}"
-    if verr:
-        return error(f"The cage was refused before Fusion saw it: {verr}")
+    native = None
+    if cage is None and isinstance(primitive, dict) and primitive.get("shape") in _NATIVE:
+        if set(primitive) - set(_SHAPE["properties"]):
+            return error(f"'primitive' is an object of {', '.join(_SHAPE['properties'])} - got "
+                         f"{sorted(set(primitive) - set(_SHAPE['properties']))}.")
+        native, cerr = _native_spec(primitive, k, [c * k for c in at])
+        if cerr:
+            return error(cerr)
+    else:
+        cage_u, cerr = _cage_in_units(primitive, cage)
+        if cerr:
+            return error(cerr)
+        verr = _tsm.validate(cage_u)
+        if not verr:
+            cage_cm = _tsm.translated(cage_u, k, [c * k for c in at])
+            verr = _tsm.validate(cage_cm, _tsm.MAX_REACH_CM)
+            verr = verr and f"in cm, moved by 'origin', {verr}"
+        if verr:
+            return error(f"The cage was refused before Fusion saw it: {verr}")
     design = _common.design()
     if not design:
         return error("No active design. Create or open a document first (see doc_new).")
@@ -184,14 +262,25 @@ def handler(primitive=None, cage=None, origin=None, name: str = "", component: s
     comp, occ, oerr = _component(design, component)
     if oerr:
         return error(oerr)
-    text = _tsm.emit(cage_cm)
-    census = _tsm.parse(text)[1]
-    facts, ferr = _form_common.create_form(design, comp, text, name)
-    if ferr:
-        return error(ferr)
-    creased = bool(cage_cm["creases"])
-    problems, bodies, sharp, unread = _verify(design, facts, text, cage_cm, census["closed"],
-                                              creased)
+    if native:
+        text = None
+        facts, ferr = _form_common.create_form(design, comp, None, name, _native_shape(native))
+        if ferr:
+            return error(ferr)
+        read_cage, census, _why = _tsm.parse(facts["readback"] or "")
+        creased, lo, hi = False, native["lo"], native["hi"]
+    else:
+        text = _tsm.emit(cage_cm)
+        read_cage, census = cage_cm, _tsm.parse(text)[1]
+        facts, ferr = _form_common.create_form(design, comp, text, name)
+        if ferr:
+            return error(ferr)
+        creased = bool(cage_cm["creases"])
+        lo = [min(p[i] for p in cage_cm["vertices"]) for i in range(3)]
+        hi = [max(p[i] for p in cage_cm["vertices"]) for i in range(3)]
+    closed = native["closed"] if native else census["closed"]
+    problems, bodies, sharp, unread = _verify(design, facts, text, lo, hi, closed, creased,
+                                              census, native)
     ff, label = facts["ff"], facts["label"]
     if problems:
         left = _form_common.retire(design, ff, label, facts["count_before"])
@@ -204,21 +293,23 @@ def handler(primitive=None, cage=None, origin=None, name: str = "", component: s
         return error(f"'{label}' created B-Rep body {result_names} with total surface area "
                      f"{sum(body_areas):.12g} cm2, not above {_assert._AREA_TOL_CM2:g} cm2."
                      + (left or " It was removed."))
-    shape = _shape_facts(bodies, census["closed"])
+    shape = _shape_facts(bodies, closed)
     box = shape.pop("box_cm")
     extent = [round(box[1][i] - box[0][i], 9) for i in range(3)] if box else None
     out = {"created": True, "form": label,
            "timeline_index": safe(lambda: ff.timelineObject.index),
            "tspline_body": facts["tspline_body"],
            "result_bodies": [safe(lambda b=b: b.name) for b in bodies],
-           "is_solid": census["closed"], **shape,
+           "is_solid": closed, **shape,
            "extent": [round(v / k, 6) for v in extent] if extent else None, "units": units or "mm",
            "cage": {key: census[key] for key in ("vertices", "faces", "closed", "stars",
                                                  "creases")},
-           "readback": "exact",
+           "readback": "faces, solidity and box" if native else "exact",
            "sharp_edges": [{"edge": _edge_handle(e, occ), "angle_deg": round(a, 3)}
                            for e, a in sharp],
            "note": _NOTE}
+    if native:
+        del out["cage"]["closed"]          # the text's own closure read; is_solid is the body's
     marker, count = facts["marker_before"], facts["count_before"]
     if isinstance(marker, int) and isinstance(count, int) and marker < count:
         out["inserted_before"] = safe(lambda: design.timeline.item(out["timeline_index"] + 1).name)
@@ -231,17 +322,24 @@ def handler(primitive=None, cage=None, origin=None, name: str = "", component: s
     if creased and not sharp:
         out["note"] += (f" No two-faced B-Rep edge reads sharper than {SMOOTH_DEG} deg, though "
                         "the crease records read back exactly; find_geometry lists the edges.")
-    record = {"cage_hash": _tsm.canonical_hash(cage_cm), "brep_faces": shape["brep_faces"],
+    record = {"cage_hash": _tsm.canonical_hash(read_cage) if read_cage else None,
+              "brep_faces": shape["brep_faces"],
               "volume_cm3": shape.get("volume_cm3"), "area_cm2": shape.get("area_cm2"),
               "extent_cm": extent, "box_cm": [list(c) for c in box] if box else None}
+    if native:
+        record["primitive"] = {"shape": native["shape"], "size_cm": native["cm"],
+                               "spans": native["spans"]}
+        if read_cage is None:
+            out["note"] += (" form_get(include=['cage']) says why this primitive's cage is not one "
+                            "form_create takes.")
     if not _form_common.store_record(ff, record):
         out["record_stored"] = False
     return ok(out)
 
 
 TOOL_DESCRIPTION = (
-    "Create a T-spline Form's B-Rep body from a box [x,y,z] or 8-sided cylinder [diameter, height] "
-    "primitive centred on origin, or a quad cage; form_get(include=['cage']) reads one back.\n"
+    "Create a T-spline Form's B-Rep body from a primitive centred on origin (the cylinder is "
+    "8-sided), or a quad cage; form_get(include=['cage']) reads one back.\n"
     + _outputs.produces_block(RETURNS))
 
 tool = (

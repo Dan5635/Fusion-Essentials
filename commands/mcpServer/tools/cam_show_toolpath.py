@@ -26,8 +26,10 @@ _ACTIONS = ("show", "hide", "isolate", "show_folder", "hide_all", "list")
 _NO_TOOLPATH_WARNING = ("This operation has no generated toolpath yet - nothing to display. "
                         "Generate it first (cam_generate).")
 
-# An additive build op never has a toolpath to generate - nothing here regenerates it.
-_ADDITIVE_NO_TOOLPATH = ("This operation carries no toolpath by construction - "
+# The setup's slice reads hasToolpath true once generated (measured); a valid arrange, orientation
+# or support reads none, so "generate it first" is said for the slice alone.
+_ADDITIVE_SLICE = "additive_buildstyle"
+_ADDITIVE_NO_TOOLPATH = ("This additive operation currently reads no toolpath - "
                          "cam_get(include=['parameters'], operation=...) reads what it carries.")
 
 
@@ -335,7 +337,8 @@ def handler(action: str = "", operation: str = "", folder: str = "", fit: bool =
     if not safe(lambda: o.hasToolpath):
         app.activeViewport.refresh()
         owner = owning_setup(onode)
-        additive = owner is not None and is_additive_setup(owner)
+        additive = (owner is not None and is_additive_setup(owner)
+                    and safe(lambda: o.strategy) != _ADDITIVE_SLICE)
         out = {"action": action, "operation": name,
         "warning": _ADDITIVE_NO_TOOLPATH if additive else _NO_TOOLPATH_WARNING,
         "has_toolpath": False}

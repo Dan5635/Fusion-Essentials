@@ -462,3 +462,76 @@ class TestOffThePlane:
         plate.move = _mover([], moves=None)
         out = payload(mod.handler(entities="line:0", dx=10))
         assert "dz" not in out["requested"] and "profile_count_before" not in out
+
+
+class TestMotionNobodyAskedFor:
+    def _dragging(self, plate):
+        """A move that carries line:1 along with whatever was asked, as a constraint would."""
+        asked = _mover([], moves=None)
+
+        def move(collection, matrix):
+            _place(_lines(plate).item(1), matrix)
+            return asked(collection, matrix)
+        return move
+
+    def test_a_curve_a_constraint_dragged_along_is_named_apart_from_the_request(self, mod,
+                                                                               sketches):
+        plate, _ = sketches
+        plate.move = self._dragging(plate)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert out["moved_entities"] == ["line:0"] and out["followed_entities"] == ["line:1"]
+        assert "1 entity not asked for moved too" in out["note"]
+
+    def test_a_move_that_carries_nothing_else_names_no_follower(self, mod, sketches):
+        plate, _ = sketches
+        plate.move = _mover([], moves=None)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert "followed_entities" not in out and "followed_entities_read" not in out
+        assert "not asked for" not in out["note"]
+
+    def test_both_asked_entities_are_never_their_own_followers(self, mod, sketches):
+        plate, _ = sketches
+        plate.move = _mover([], moves=None)
+        out = payload(mod.handler(entities="line:0,line:1", dx=10))
+        assert out["moved_entities"] == ["line:0", "line:1"] and "followed_entities" not in out
+
+    def test_a_sketch_past_the_scan_bound_says_followers_were_not_read(self, mod, sketches,
+                                                                      monkeypatch):
+        plate, _ = sketches
+        monkeypatch.setattr(mod, "_FOLLOW_SCAN", 1)
+        plate.move = self._dragging(plate)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert out["followed_entities_read"] is False and "followed_entities" not in out
+
+    def test_a_bystander_whose_position_does_not_read_marks_the_followers_partial(
+            self, mod, sketches, monkeypatch):
+        plate, _ = sketches
+        third = _boxed("L2", 9.0, 0.0)
+        plate.sketchCurves._items.append(third)
+        plate.sketchCurves.sketchLines._items.append(third)
+        plate.move = self._dragging(plate)
+        real = mod._assert.entity_position
+        monkeypatch.setattr(mod._assert, "entity_position",
+                            lambda e: None if e is third else real(e))
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert out["followed_entities"] == ["line:1"] and out["followed_entities_read"] is False
+
+    def test_an_asked_curve_is_told_from_bystanders_by_equality_not_by_its_token(self, mod,
+                                                                                sketches):
+        plate, _ = sketches
+        # two different curves sharing one token string: only the asked one is excluded
+        _lines(plate).item(1).entityToken = _lines(plate).item(0).entityToken
+        plate.move = self._dragging(plate)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert out["followed_entities"] == ["line:1"]
+
+    def test_a_lifted_line_brought_back_down_is_not_said_to_have_stayed_flat(self, mod, sketches):
+        plate, _ = sketches
+        line = _lines(plate).item(0)
+        line.startSketchPoint.geometry.z = line.endSketchPoint.geometry.z = 0.5
+        _rebox(line)
+        plate.move = _mover([], moves=None)
+        out = payload(mod.handler(entities="line:0", dz=-5))
+        assert out["returned_to_plane"] == ["line:0"] and "on_plane_entities" not in out
+        assert "still read z = 0" not in out["note"]
+        assert line.startSketchPoint.geometry.z == 0.0

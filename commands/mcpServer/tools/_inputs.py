@@ -2882,14 +2882,8 @@ class FeatureEditOperands(InputKind):
         rows = support.get(feature_type, support)
         row = rows.get(action)
         if row is not None and isinstance(row.get("variants"), dict):
-            variants = []
-            for variant in row["variants"].values():
-                value = _common.safe(lambda variant=variant: getattr(feature, variant["when_member"]))
-                expected = _common.safe(lambda variant=variant: getattr(
-                    adsk.fusion.FilletFeatureTypes, variant["when_enum"]))
-                if value is not None and expected is not None and value == expected:
-                    variants.append(variant)
-            row = variants[0] if len(variants) == 1 else None
+            from . import _edit_feature_common
+            row = _edit_feature_common._row_for(feature, row)
         if row is None or row.get("reference") is None:
             return None, f"action='{action}' does not take references for this feature."
         if not isinstance(raw, list) or not raw:

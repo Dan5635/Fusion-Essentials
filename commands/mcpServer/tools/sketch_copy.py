@@ -77,10 +77,10 @@ def _key_points(curve):
     return ends, ((c.x, c.y) if c is not None else None)
 
 
-def _in_plane(curve):
-    """True when every end of a line or arc reads z = 0, False when one does not, None when unread."""
-    zs = [safe(lambda n=n: getattr(curve, n).geometry.z) for n in ("startSketchPoint",
-                                                                   "endSketchPoint")]
+def _in_plane(curve, circle=False):
+    """True when each end (a circle: its centre) reads z = 0, False when one does not, else None."""
+    zs = [safe(lambda n=n: getattr(curve, n).geometry.z)
+          for n in (("centerSketchPoint",) if circle else ("startSketchPoint", "endSketchPoint"))]
     if any(not isinstance(z, (int, float)) for z in zs):
         return None
     return all(abs(z) <= _MIRROR_TOL_CM for z in zs)
@@ -142,10 +142,10 @@ def _mirror(sketch_name, entities, mirror_line, component, others):
             if requested else "No sketch to mirror in. Draw one first with sketch_create.")
     name = safe(lambda: sketch.name)
     other = [r.strip() for r in (entities or "").split(",")
-             if r.strip() and r.strip().lower().rpartition(":")[0] not in ("line", "arc")]
+             if r.strip() and r.strip().lower().rpartition(":")[0] not in ("line", "arc", "circle")]
     if other:
-        return error(f"mirror_line mirrors lines and arcs; {', '.join(other)} is neither. Mirror "
-                     "the lines and arcs, and draw the rest.")
+        return error(f"mirror_line mirrors lines, arcs and circles; {', '.join(other)} is none of "
+                     "them. Mirror those, and draw the rest.")
     ents, refs, rerr = _common.resolve_entity_refs(sketch, entities)
     if rerr:
         return error(rerr)
@@ -165,19 +165,27 @@ def _mirror(sketch_name, entities, mirror_line, component, others):
         return error(f"mirror_line '{mirror_line}' has no readable length.")
     a, b = axis_ends
 
-    for ref, curve in list(zip(refs, ents)) + [(mirror_line, axis)]:
-        flat = _in_plane(curve)
+    round_ = [ref.lower().startswith("circle:") for ref in refs]
+    for ref, curve, is_circle in list(zip(refs, ents, round_)) + [(mirror_line, axis, False)]:
+        flat = _in_plane(curve, is_circle)
         if flat is not True:
             return error(f"mirror_line works in the sketch plane; '{ref}' "
-                         + ("has an end off it (z is not 0)." if flat is False else
-                            "did not read its end points.") + " Nothing was mirrored.")
+                         + (f"has {'its centre' if is_circle else 'an end'} off it (z is not 0)."
+                            if flat is False else "did not read its points.")
+                         + " Nothing was mirrored.")
     before = [_key_points(e) for e in ents]
-    if any(len(ends) != 2 for ends, _centre in before):
+    if any(len(ends) != (0 if is_circle else 2)
+           for (ends, _centre), is_circle in zip(before, round_)):
         return error("An end point of one of the entities did not read; nothing was mirrored.")
     for ref, (_ends, centre) in zip(refs, before):
-        if ref.lower().startswith("arc:") and centre is None:
+        if not ref.lower().startswith("line:") and centre is None:
             return error(f"The centre of '{ref}' did not read, so its mirror could not be "
                          "checked; nothing was mirrored.")
+    radii = [_common.measured(lambda e=e: e.radius, 1.0, 9) if is_circle else None
+             for e, is_circle in zip(ents, round_)]
+    if any(is_circle and not r for r, is_circle in zip(radii, round_)):
+        return error("The radius of a circle did not read, so its mirror could not be checked; "
+                     "nothing was mirrored.")
     curves_before = safe(lambda: sketch.sketchCurves.count, 0) or 0
     constraints_before = safe(lambda: sketch.geometricConstraints.count)
     try:
@@ -195,7 +203,7 @@ def _mirror(sketch_name, entities, mirror_line, component, others):
                      "sketch_get(include_entities=true) before going on.")
     copies = [made[i] for i in range(len(ents))]
     left = "They are in the sketch; sketch_delete_entity removes them."
-    for ref, source, was, copy in zip(refs, ents, before, copies):
+    for ref, source, was, copy, radius in zip(refs, ents, before, copies, radii):
         now = _key_points(source)
         if not _same_points(now[0], was[0]) or not _same_points(
                 [p for p in (now[1],) if p], [p for p in (was[1],) if p]):
@@ -203,9 +211,16 @@ def _mirror(sketch_name, entities, mirror_line, component, others):
         ends, centre = _key_points(copy)
         want_ends = [_reflect(p, a, b) for p in was[0]]
         want_centre = _reflect(was[1], a, b) if was[1] is not None else None
-        wrong = (not _same_points(ends, want_ends) or _in_plane(copy) is not True
+        wrong = (not _same_points(ends, want_ends)
+                 or _in_plane(copy, radius is not None) is not True
                  or (centre is None) != (want_centre is None))
-        if not wrong and want_centre is not None:
+        if radius is not None:
+            # A circle: the reflected centre and the same radius are the whole curve.
+            got = _common.measured(lambda copy=copy: copy.radius, 1.0, 9)
+            wrong = (wrong or not _same_points([centre], [want_centre]) or got is None
+                     or abs(got - radius) > _MIRROR_TOL_CM
+                     or _common.measured(lambda source=source: source.radius, 1.0, 9) != radius)
+        elif not wrong and want_centre is not None:
             # An arc: same centre and ends are shared by its complement, so the reflected middle
             # of the source has to lie on the copy's own sweep; that fixes the radius too.
             wrong = (not _same_points([centre], [want_centre])

@@ -41,6 +41,47 @@ def _payload(result):
     return json.loads(result["content"][0]["text"])
 
 
+@pytest.mark.parametrize("units,factor", [("mm", 10), ("in", 1 / 2.54)])
+def test_plastic_rules_preserve_scope_and_label_angles_and_lengths(units, factor):
+    import math
+    rule = SimpleNamespace(name="Local", isUsed=False, minimumThickness=.1,
+        maximumThickness=.5, minimumDraftAngle=math.pi / 180,
+        thickness=SimpleNamespace(expression="2 mm", value=.2),
+        nominalRadius=SimpleNamespace(expression="1 mm", value=.1),
+        draftAngle=SimpleNamespace(expression="2 deg", value=math.pi / 90))
+    design = SimpleNamespace(designPlasticRules=_NamedCollection([rule]),
+                             libraryPlasticRules=_NamedCollection([]))
+    out, refusal = dg._slice_plastic_rules(design, "design", "", 0, units)
+    assert refusal is None and out["walk_complete"] is True and out["returned"] == 1
+    row = out["rules"][0]
+    assert row["ref"] == {"scope": "design", "index": 0, "name": "Local"}
+    assert row["thickness"]["expression"] == "2 mm"
+    assert row["thickness"]["value"] == pytest.approx(.2 * factor, abs=5e-7)
+    assert row["minimum_draft_angle_deg"] == pytest.approx(1)
+    assert row["draft_angle"]["value_deg"] == pytest.approx(2)
+    library, refusal = dg._slice_plastic_rules(design, "library", "", 0, units)
+    assert refusal is None and library["total"] == 0 and library["rules"] == []
+
+
+def test_plastic_rule_cap_and_unread_entry_do_not_fabricate_a_complete_match_count():
+    rule = SimpleNamespace(name="Local")
+    design = SimpleNamespace(designPlasticRules=_NamedCollection([rule, None, rule]))
+    out, refusal = dg._slice_plastic_rules(design, "design", "loc", 1, "mm")
+    assert refusal is None and out["truncated"] is True and out["returned"] == 1
+    assert out["walk_complete"] is False and out["matching_count"] is None
+    assert out["unread_indices"] == [1] and out["rules"][0]["thickness"]["value"] is None
+    out, refusal = dg._slice_plastic_rules(SimpleNamespace(), "library", "", 0, "mm")
+    assert refusal is None and out["available"] is False and out["rules"] is None
+
+
+def test_plastic_rule_shared_page_size_clamps_like_other_slices():
+    rules = [SimpleNamespace(name=f"Rule {index}") for index in range(205)]
+    design = SimpleNamespace(designPlasticRules=_NamedCollection(rules))
+    out, refusal = dg._slice_plastic_rules(design, "design", "", 500, "mm")
+    assert refusal is None and out["returned"] == 200 and out["matching_count"] == 205
+    assert out["truncated"] is True and out["walk_complete"] is True
+
+
 @pytest.fixture
 def definition_scene():
     component = MakeComp(name="Cradle", entity_token="cradle")
@@ -450,6 +491,8 @@ def stub_slices(monkeypatch):
     monkeypatch.setattr(dg, "_slice_appearances", lambda d, library, name_filter, max_results: (
         {"kind": "appearances", "library": library, "document": {"count": 1}, "libraries": []}, None))
     monkeypatch.setattr(dg, "_slice_definition", lambda feature, units: ({"feature": feature}, None))
+    monkeypatch.setattr(dg, "_slice_plastic_rules", lambda d, scope, name_filter, max_results, units: (
+        {"scope": scope, "rules": [], "returned": 0}, None))
 
 
 # ── default orientation slice is DENSE + bounded (the core rich-read contract) ──────────────────────

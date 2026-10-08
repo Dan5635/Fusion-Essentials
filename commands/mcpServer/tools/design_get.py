@@ -8,6 +8,7 @@ fingerprint). include=['tree'|'timeline'|'mode'|'configurations'|'materials'|'ap
 """
 
 import json
+import math
 from itertools import islice
 
 import adsk.core
@@ -30,8 +31,8 @@ app = adsk.core.Application.get()
 
 # The deeper slices an agent can opt into (the default returns NONE of these in full - only summaries).
 _SLICES = ("mode", "tree", "timeline", "configurations", "materials", "appearances", "attributes",
-           "metadata", "definition", "datums")
-_FEATURE = _inputs.FeatureRef("feature", description="Hole/Thread/Loft/Extrude/Sweep.")
+           "metadata", "definition", "datums", "plastic_rules", "library_plastic_rules")
+_FEATURE = _inputs.FeatureRef("feature", description="Definition for supported feature types.")
 _DEFINITION_UNREAD = object()
 
 # The orientation slice's name in include=: any deep include omits that slice unless 'default' rides
@@ -1133,6 +1134,57 @@ def _definition_loft(feature):
             "guide_count": _common.counted(lambda: feature.centerLineOrRails.count)}
 
 
+def _plastic_rule_row(rule, scope, index, factor):
+    """Read one scoped plastic rule with explicit length and angle units."""
+    row = {"ref": {"scope": scope, "index": index, "name": safe(lambda: rule.name)},
+           "is_used": _common.read_flag(lambda: rule.isUsed),
+           "minimum_thickness": _common.measured(lambda: rule.minimumThickness, factor),
+           "maximum_thickness": _common.measured(lambda: rule.maximumThickness, factor),
+           "minimum_draft_angle_deg": _common.measured(lambda: math.degrees(rule.minimumDraftAngle))}
+    for key, member in (("thickness", "thickness"), ("nominal_radius", "nominalRadius"),
+                        ("draft_angle", "draftAngle")):
+        parameter = safe(lambda member=member: getattr(rule, member))
+        row[key] = {"expression": safe(lambda: parameter.expression),
+                    "value_deg" if key == "draft_angle" else "value":
+                        _common.measured(lambda: math.degrees(parameter.value)) if key == "draft_angle"
+                        else _common.measured(lambda: parameter.value, factor)}
+    return row
+
+
+def _slice_plastic_rules(design, scope, name_filter, max_results, units):
+    """Read bounded plastic-rule rows without copying, editing or assigning a rule."""
+    factor, reason = _inputs.UNITS.resolve(units)
+    if reason:
+        return None, error(reason)
+    max_results = _cam_common.clamp_rows(max_results, 50, 200)
+    collection = safe(lambda: design.designPlasticRules if scope == "design" else design.libraryPlasticRules)
+    count = _common.counted(lambda: collection.count)
+    if count is None:
+        return {"available": False, "rules": None, "total": None,
+                "note": "The plastic-rule collection did not read on this design."}, None
+    rows, missing = [], []
+    scanned = min(count, 2000)
+    matches = 0
+    wanted = (name_filter or "").lower()
+    for index in range(scanned):
+        rule = safe(lambda index=index: collection.item(index))
+        name = safe(lambda: rule.name)
+        if rule is None or not isinstance(name, str):
+            missing.append(index)
+            continue
+        if wanted and wanted not in name.lower():
+            continue
+        matches += 1
+        if len(rows) < max_results:
+            rows.append(_plastic_rule_row(rule, scope, index, 1 / factor))
+    complete = not missing and scanned == count
+    return {"available": True, "scope": scope, "rules": rows, "total": count,
+            "matching_count": matches if complete else None, "returned": len(rows),
+            "truncated": matches > max_results or scanned < count,
+            "unread_indices": missing, "walk_complete": complete, "units": units or "mm",
+            "note": "Length values use units; angle values use deg. Null fields are unreadable."}, None
+
+
 def _slice_definition(feature, units):
     """Read one typed feature definition without moving the timeline."""
     values, refusal = _inputs.resolve_inputs([_FEATURE, _inputs.UNITS],
@@ -1202,6 +1254,8 @@ def _slice_definition(feature, units):
                    "with find_geometry/model_inspect; full-length threads imply no numeric length.")
     if out.get("not_read"):
         out["note"] += " This Extrude definition is partial: not_read lists fields it omits."
+    if kind in ("adsk::fusion::HemFeature", "adsk::fusion::RipFeature") and out.get("unavailable"):
+        out["note"] += " If the definition is unreadable, roll before this feature; restore the end before editing."
     return out, None
 
 def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: bool = False,
@@ -1308,6 +1362,11 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
         out["datums"], daterr = _slice_datums(design, component, name_filter, max_results)
         if daterr:
             return daterr
+    for name, scope in (("plastic_rules", "design"), ("library_plastic_rules", "library")):
+        if name in inc:
+            out[name], rule_error = _slice_plastic_rules(design, scope, name_filter, max_results, units)
+            if rule_error:
+                return rule_error
 
     # advertise the slices NOT yet pulled (load-bearing: an un-named flag is invisible to the agent).
     remaining = [s for s in _SLICES if s not in inc]

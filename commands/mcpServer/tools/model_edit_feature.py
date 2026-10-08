@@ -11,7 +11,7 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from . import _common, _edit_feature_common as _edit, _inputs, _joints
+from . import _common, _edit_feature_common as _edit, _inputs, _joints, _sheet_edit
 from . import doc_insert_derive as _derive
 from ._common import counted, error, ok, safe
 
@@ -78,8 +78,11 @@ def _mode_value(row, mode):
 
 def _restore_value(feature, row, value, before_state=None):
     """Restore the original property value at the feature's edit row."""
+    if row.get("setter") == "hem_definition":
+        _sheet_edit.write_hem(feature, value)
+        return
     if row.get("reader") == "single_reference_collection":
-        setattr(feature, row["member"], value)
+        _edit.set_feature_path(feature, row["member"], value)
         return
     if row.get("setter") == "scale_mode":
         uniform, expressions = value
@@ -139,12 +142,15 @@ def _restore_value(feature, row, value, before_state=None):
     elif row.get("assignment") == "list" or row.get("reference") == "profiles":
         setattr(feature, row["member"], list(value))
     else:
-        setattr(feature, row["member"], value)
+        _edit.set_feature_path(feature, row["member"], value)
 
 
 
 def _apply_value(feature, row, resolved, mode, before_state=None):
     """Apply one row from the closed support table."""
+    if row.get("setter") == "hem_definition":
+        _sheet_edit.write_hem(feature, resolved)
+        return
     if row.get("reader") == "single_reference_collection":
         values = resolved if isinstance(resolved, list) else [resolved]
         setattr(feature, row["member"], _collection(values))
@@ -216,7 +222,7 @@ def _apply_value(feature, row, resolved, mode, before_state=None):
             value = getattr(adsk.fusion.FeatureOperations, _common.OPERATIONS[value])
         setattr(feature, row["member"], value)
     else:
-        setattr(feature, row["member"], resolved)
+        _edit.set_feature_path(feature, row["member"], resolved)
 
 
 
@@ -499,7 +505,7 @@ def _compensate(design, timeline, entity, row, original, label, action, before_s
 
 
 def handler(feature: str = "", action: str = "", references=None, mode: str = "",
-            set_index: int = None) -> dict:
+            set_index: int = None, hem=None) -> dict:
     """Edit one supported feature field and report definition, geometry, identity and marker reads."""
     raw = dict(locals())
     values, refusal = _inputs.resolve_inputs([_FEATURE, _ACTION], raw)
@@ -508,6 +514,14 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
     entity, label = values["feature"]
     action = values["action"]
     feature_type = safe(lambda: entity.objectType)
+    if hem is not None:
+        if feature_type != "adsk::fusion::HemFeature" or action != "mode":
+            return error("'hem' is only used on a Hem feature with action='mode'; remove it.")
+        if not isinstance(hem, dict):
+            return error("'hem' must be an object with type and the mode's dimensions.")
+        if mode not in (None, "", hem.get("type")):
+            return error(f"mode={mode!r} disagrees with hem.type={hem.get('type')!r}; remove mode.")
+        mode = raw["mode"] = hem.get("type")
     supported = _edit.FEATURE_EDIT_SUPPORT.get(feature_type)
     if supported is None:
         target = {"adsk::fusion::ExtrudeFeature": "model_edit_extrude",
@@ -618,7 +632,9 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
                     safe(lambda: _edit._feature_path(entity, row["member"]), _UNREAD))
         if original is _UNREAD or original is None:
             raise ValueError(f"'{label}.{row['member']} is unreadable at its edit row.")
-        if row.get("setter") == "shell_inputs":
+        if row.get("setter") == "hem_definition":
+            original = before_fields["hem"]
+        elif row.get("setter") == "shell_inputs":
             original_entities = _edit.collection_entities(original)
             if not original_entities:
                 raise ValueError(f"'{label}.{row['member']} is empty or unreadable at its edit row.")
@@ -644,6 +660,14 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
             if reason:
                 raise ValueError(reason + (f" Example: {_example(entity, action, row)}"
                                            if row.get("example") else ""))
+            if row.get("unwrap_single"):
+                if not isinstance(resolved, list) or len(resolved) != 1:
+                    raise ValueError("'references' must resolve to exactly one Rip operand.")
+                resolved = resolved[0]
+                old_body = _common.native_identity(safe(lambda: original.body))
+                new_body = _common.native_identity(safe(lambda: resolved.body))
+                if old_body is None or new_body is None or old_body != new_body:
+                    raise ValueError("'references'[0] must belong to the existing Rip body.")
             operands = (_edit.path_entities(resolved) if row["reference"] == "path" else
                         resolved if isinstance(resolved, list) else [resolved])
             later = _edit.later_operand_refusal(label, index, operands)
@@ -655,6 +679,9 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
                                       row["mode_field"]: mode}}
             else:
                 desired = {"field": row["field"], "value": desired_value}
+        elif row.get("setter") == "hem_definition":
+            resolved, desired_value = _sheet_edit.prepare_hem(raw["hem"], before_state["hem"], design)
+            desired = {"field": row["field"], "value": desired_value}
         else:
             desired_value = row["values"][mode]
             if row.get("setter") == "scale_mode" and before_state["is_uniform"] == desired_value:
@@ -789,6 +816,14 @@ tool = _inputs.apply_to_tool(
         "Edit one aspect; design_get lists typed inputs. Edits change the shared owner component definition. Dimensions: param_set.")),
     _SPEC)
 tool.add_input_property("set_index", {"type": "integer", "minimum": 0})
+tool.add_input_property("hem", {"type": "object", "properties": {
+    "type": {"type": "string", "enum": list(_sheet_edit.HEM_KINDS)},
+    "length": {"type": "string"}, "gap": {"type": "string"}, "radius": {"type": "string"},
+    "angle_deg": {"type": "number"}, "setback": {"type": "string"},
+    "flip": {"type": "boolean"},
+    "bend_position": {"type": "string", "enum": ["start_edge", "tangent_to_side"]}},
+    "additionalProperties": False, "required": ["type"],
+    "description": "Hem mode redefinition; dimensions depend on type, length expressions."})
 tool.strict_schema()
 item = Item.create_tool_item(
     tool=tool, write="write", handler=handler, run_on_main_thread=True,

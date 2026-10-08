@@ -22,6 +22,26 @@ MAP_BLURB = (
     "rolled_back_text/failed/identical_geometry_reply - outcomes")
 
 FEATURE_EDIT_SUPPORT = {
+    "adsk::fusion::HemFeature": {
+        "mode": {"member": "definition", "reader": "hem_definition", "setter": "hem_definition",
+                 "field": "hem", "choices": ("flat", "open", "rolled", "double"),
+                 "example": "hem={'type':'flat','length':'9 mm'}"},
+        "_preserve": {"hem_edge": {"member": "definition.hemEdge", "reader": "reference",
+                                    "reference": "edges", "field": "hem_edge"}}},
+    "adsk::fusion::RipFeature": {
+        "inputs": {"variants": {
+            "face": {"member": "definition.ripFace", "reference": "faces", "cardinality": "one",
+                     "reader": "reference", "field": "rip_face", "unwrap_single": True,
+                     "when_type": "adsk::fusion::FaceRipFeatureDefinition"},
+            "edge": {"member": "definition.ripEdge", "reference": "edges", "cardinality": "one",
+                     "reader": "reference", "field": "rip_edge", "unwrap_single": True,
+                     "when_type": "adsk::fusion::AlongEdgeRipFeatureDefinition",
+                     "preserve": {"gap": {"member": "definition.gapDistance.expression",
+                                            "reader": "value", "field": "gap"},
+                                  "rip_type": {"member": "definition.objectType", "reader": "text",
+                                               "field": "rip_type"}}}}},
+        "_preserve": {"rip_type": {"member": "definition.objectType", "reader": "text",
+                                    "field": "rip_type"}}},
     "adsk::fusion::PipeFeature": {
         "path": {"member": "path", "reference": "path", "cardinality": "many",
                  "reader": "path", "setter": "pipe_path", "field": "path"},
@@ -369,6 +389,18 @@ def feature_edit_rows(feature, definition=None):
             if row.get("set_collection") and args:
                 args.append("set_index=0")
         choices = list(row.get("choices", ()))
+        if row.get("setter") == "hem_definition":
+            value = (definition or {}).get("hem", {})
+            if not address or not value.get("dimensions"):
+                args = []
+            else:
+                payload = {"type": value["type"], "flip": value["flip"],
+                           "bend_position": value["bend_position"]}
+                for key, dimension in value["dimensions"].items():
+                    payload[key] = (math.degrees(dimension["value_rad"]) if key == "angle_deg"
+                                    else dimension["expression"])
+                args.append(f"hem={payload!r}")
+            choices = []
         if row.get("setter") == "scale_mode":
             uniform = (definition or {}).get("is_uniform")
             factors = (definition or {}).get("scale_expressions")
@@ -383,7 +415,7 @@ def feature_edit_rows(feature, definition=None):
             orientation = (definition or {}).get(row["field"])
             choices = (["along_path"] if orientation is False else
                        ["identical"] if orientation is True else [])
-        if row.get("choices") and not choices:
+        if row.get("choices") and not choices and row.get("setter") != "hem_definition":
             continue
         if choices:
             args.append(f"mode='{choices[0]}'")
@@ -397,6 +429,8 @@ def _row_applies(feature, row):
     """Whether a measured subtype discriminator selects this action row."""
     if "variants" in row:
         return _row_for(feature, row) is not None
+    if row.get("when_type"):
+        return safe(lambda: feature.definition.objectType) == row["when_type"]
     member, enum = row.get("when_member"), row.get("when_enum")
     if not member:
         return True
@@ -410,7 +444,8 @@ def _row_for(feature, row):
     variants = row.get("variants")
     if variants is None:
         return row if _row_applies(feature, row) else None
-    return next((variant for variant in variants.values() if _row_applies(feature, variant)), None)
+    matches = [variant for variant in variants.values() if _row_applies(feature, variant)]
+    return matches[0] if len(matches) == 1 else None
 
 
 PLANE_PAIR_ROLES = ("first_plane", "second_plane")
@@ -442,6 +477,12 @@ def _feature_path(entity, path):
     for member in path.split("."):
         entity = getattr(entity, member)
     return entity
+
+
+def set_feature_path(entity, path, value):
+    """Assign one native member reached through a dotted feature path."""
+    parent, _, member = path.rpartition(".")
+    setattr(_feature_path(entity, parent) if parent else entity, member, value)
 
 
 def _definition_participants(feature, unavailable, limit=None):
@@ -826,7 +867,10 @@ def feature_edit_state(feature):
         try:
             if gap:
                 raise RuntimeError(gap)
-            if reader == "plane_pair":
+            if reader == "hem_definition":
+                from . import _sheet_edit
+                state[field], definition[field] = _sheet_edit.hem_read(feature)
+            elif reader == "plane_pair":
                 source = getattr(feature, member)
                 records = [(entity, reference_descriptor(entity, row["reference"]))
                            for entity in (source.planarEntityOne, source.planarEntityTwo)]

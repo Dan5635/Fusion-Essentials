@@ -441,18 +441,30 @@ class TestToggleCheckedBeforeToolpath:
         assert out["has_toolpath"] is False and "no generated toolpath" in out["warning"]
         assert sa._activate_calls == 0 and sb.isActive is True
 
-    def test_a_pathless_additive_op_warns_by_construction_not_generate_it_first(self):
-        # an additive build op never has a toolpath to generate - "Generate it first" would send
-        # an agent to run a step that changes nothing.
+    def test_a_pathless_additive_op_is_not_told_to_generate_it_first(self):
+        # a valid arrange, orientation or support reads no toolpath - "Generate it first" would
+        # send an agent to run a step that changes nothing.
         import adsk.cam
         build = FakeOp("Body Preset1", has_toolpath=False)
+        build.strategy = "additive_buildstrategy"
         additive = FakeSetup("Build", [build], is_active=True,
                              operation_type=adsk.cam.OperationTypes.AdditiveOperation)
         _install([additive])
         out = _payload(st.handler(action="show", operation="Body Preset1"))
         assert out["has_toolpath"] is False
-        assert "by construction" in out["warning"]
+        assert "currently reads no toolpath" in out["warning"]
         assert "Generate it first" not in out["warning"]
+
+    def test_the_pathless_additive_slice_is_told_to_generate_it_first(self):
+        # the setup's Additive Toolpath reads hasToolpath true once generated (measured)
+        import adsk.cam
+        slice_op = FakeOp("Additive Toolpath1", has_toolpath=False)
+        slice_op.strategy = "additive_buildstyle"
+        additive = FakeSetup("Build", [slice_op], is_active=True,
+                             operation_type=adsk.cam.OperationTypes.AdditiveOperation)
+        _install([additive])
+        out = _payload(st.handler(action="show", operation="Additive Toolpath1"))
+        assert "Generate it first" in out["warning"] and "currently reads" not in out["warning"]
 
     def test_a_pathless_milling_op_keeps_the_generate_it_first_warning(self):
         # the milling arm of the SAME branch must stay untouched - the exclusion is additive-only.
@@ -460,7 +472,7 @@ class TestToggleCheckedBeforeToolpath:
         milling = FakeSetup("Mill", [drill], is_active=True)
         _install([milling])
         out = _payload(st.handler(action="show", operation="Drill"))
-        assert "Generate it first" in out["warning"] and "by construction" not in out["warning"]
+        assert "Generate it first" in out["warning"] and "currently reads" not in out["warning"]
 
 
 class TestActivateOwningSetup:

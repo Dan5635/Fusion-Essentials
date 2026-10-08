@@ -699,13 +699,146 @@ def test_chamfer_reader_refuses_a_non_equal_distance_set(scene):
     assert definition["edge_sets"] is None
 
 
-def test_wire_schema_keeps_the_six_approved_inputs():
+def test_wire_schema_adds_only_the_bounded_hem_payload():
     props = mod.tool.input_schema["properties"]
-    assert set(props) == {"feature", "action", "references", "mode", "set_index", "expect_document"}
+    assert set(props) == {"feature", "action", "references", "mode", "set_index", "hem", "expect_document"}
+    assert props["hem"]["properties"]["type"]["enum"] == ["flat", "open", "rolled", "double"]
     assert props["references"]["type"] == "array"
     assert props["references"]["items"]["type"] == ["string", "object"]
     assert props["set_index"]["type"] == "integer"
     assert props["set_index"]["minimum"] == 0
+
+
+@pytest.fixture
+def hem_scene(scene, monkeypatch):
+    from tests.fakes.design import FakeUnitsManager
+    feature, timeline, _new_edge, old_edge, design, _body = scene
+    feature.objectType = "adsk::fusion::HemFeature"
+    position = adsk.fusion.BendPositionTypes.StartEdgeBendPositionType
+    feature.definition = SimpleNamespace(objectType="adsk::fusion::FlatHemFeatureDefinition",
+        hemEdge=old_edge, isFlipped=False, bendPositionType=position,
+        length=SimpleNamespace(expression="8 mm", value=.8))
+    monkeypatch.setattr(design, "unitsManager", FakeUnitsManager(valid=("9 mm",), value=.9,
+                                                               dimensioned=("9 mm",)), raising=False)
+    monkeypatch.setattr(adsk.core.ValueInput, "createByString", lambda text: text)
+    calls = []
+
+    def redefine(length, flip, bend_position):
+        calls.append((length, flip, bend_position))
+        feature.definition = SimpleNamespace(objectType="adsk::fusion::FlatHemFeatureDefinition",
+            hemEdge=old_edge, isFlipped=flip, bendPositionType=bend_position,
+            length=SimpleNamespace(expression=length, value=float(length.split()[0]) / 10))
+        return True
+
+    feature.redefineAsFlatHem = redefine
+    return feature, timeline, design, calls
+
+
+def test_hem_rebuild_retains_edge_flip_position_and_reports_definition(hem_scene):
+    feature, timeline, _design, calls = hem_scene
+    out = payload(mod.handler(feature="Part/Revolve1@1", action="mode",
+                              hem={"type": "flat", "length": "9 mm"}))
+    assert out["definition_matches"] is True and out["marker_restored"] is True
+    assert out["definition_after"]["hem"]["dimensions"]["length"]["value_cm"] == .9
+    assert out["definition_before"]["hem_edge"] == out["definition_after"]["hem_edge"]
+    assert calls == [("9 mm", False, adsk.fusion.BendPositionTypes.StartEdgeBendPositionType)]
+    assert timeline.markerPosition == timeline.count
+
+
+@pytest.mark.parametrize("hem_request", [{"type": "flat", "length": "9"},
+    {"type": "flat", "length": "9 mm", "gap": "3 mm"},
+    {"type": "open", "length": "9 mm"}, {"type": "flat", "length": "9 mm", "flip": "false"},
+    {"type": "rolled", "radius": "9 mm", "angle_deg": float("nan")}])
+def test_invalid_hem_payload_never_attempts_rebuild(hem_scene, hem_request):
+    _feature, timeline, _design, calls = hem_scene
+    result = mod.handler(feature="Part/Revolve1@1", action="mode", hem=hem_request)
+    assert result["isError"] is True and not calls
+    assert timeline.markerPosition == timeline.count
+
+
+def test_false_hem_return_after_mutation_restores_original_definition(hem_scene):
+    feature, timeline, _design, calls = hem_scene
+    redefine = feature.redefineAsFlatHem
+    feature.redefineAsFlatHem = lambda *args: redefine(*args) and len(calls) > 1
+    result = mod.handler(feature="Part/Revolve1@1", action="mode",
+                         hem={"type": "flat", "length": "9 mm"})
+    assert result["isError"] is True
+    assert feature.definition.length.expression == "8 mm"
+    assert len(calls) == 2 and not result["details"]["restore_gaps"]
+    assert timeline.markerPosition == timeline.count
+
+
+def test_true_hem_return_without_changed_definition_is_not_success(hem_scene):
+    feature, timeline, _design, calls = hem_scene
+    feature.redefineAsFlatHem = lambda *args: calls.append(args) or True
+    result = mod.handler(feature="Part/Revolve1@1", action="mode",
+                         hem={"type": "flat", "length": "9 mm"})
+    assert result["isError"] is True and len(calls) == 2
+    assert feature.definition.length.value == .8 and timeline.markerPosition == timeline.count
+
+
+def test_hem_expression_loss_is_not_a_verified_restore_even_at_the_same_value(hem_scene):
+    feature, _timeline, _design, calls = hem_scene
+    feature.definition.length.expression = "HemLength"
+    def dropped_expression(length, flip, position):
+        calls.append(length)
+        feature.definition.length.expression = "8 mm"
+        feature.definition.length.value = .8
+        return len(calls) > 1
+    feature.redefineAsFlatHem = dropped_expression
+    result = mod.handler(feature="Part/Revolve1@1", action="mode",
+                         hem={"type": "flat", "length": "9 mm"})
+    assert result["isError"] is True and len(calls) == 2
+    assert result["details"]["restore_gaps"] == ["the definition re-read differs from before the edit"]
+
+
+@pytest.mark.parametrize("angle,text", [(123.456789, "123.456789 deg"),
+    (180.0, "180 deg"), (.00001, "0.00001 deg")])
+def test_hem_angle_expression_does_not_round_or_switch_to_exponent(hem_scene, angle, text):
+    _feature, _timeline, design, _calls = hem_scene
+    before = {"flip": False, "bend_position": "start_edge"}
+    requested, expected = mod._sheet_edit.prepare_hem(
+        {"type": "rolled", "radius": "9 mm", "angle_deg": angle}, before, design)
+    assert requested["dimensions"]["angle_deg"]["expression"] == text
+    assert expected["dimensions"]["angle_deg"] == round(math.radians(angle), 12)
+
+
+@pytest.mark.parametrize("kind,dimensions,args", [
+    ("flat", {"length": "9 mm"}, ["9 mm"]),
+    ("open", {"length": "9 mm", "gap": "3 mm"}, ["9 mm", "3 mm"]),
+    ("rolled", {"radius": "4 mm", "angle_deg": "180 deg"}, ["4 mm", "180 deg"]),
+    ("double", {"length": "12 mm", "gap": "3 mm", "setback": "4 mm"},
+     ["3 mm", "12 mm", "4 mm"]),
+])
+def test_hem_rebuild_uses_the_measured_mode_argument_order(hem_scene, kind, dimensions, args):
+    feature, _timeline, _design, _calls = hem_scene
+    calls = []
+    setattr(feature, "redefineAs" + kind.title() + "Hem", lambda *values: calls.append(values) or True)
+    mod._sheet_edit.write_hem(feature, {"type": kind, "flip": False,
+        "bend_position": "start_edge", "dimensions": {key: {"expression": value}
+                                                       for key, value in dimensions.items()}})
+    assert calls == [(*args, False, adsk.fusion.BendPositionTypes.StartEdgeBendPositionType)]
+
+
+def test_rip_face_edit_writes_native_definition_not_a_dotted_shadow(offset_scene):
+    feature, timeline, old_face, new_face, _calls = offset_scene
+    feature.objectType = "adsk::fusion::RipFeature"
+    feature.definition = SimpleNamespace(objectType="adsk::fusion::FaceRipFeatureDefinition",
+                                         ripFace=old_face)
+    out = payload(mod.handler(feature="Part/Offset1@1", action="inputs", references=["new-face"]))
+    assert feature.definition.ripFace is new_face
+    assert not hasattr(feature, "definition.ripFace")
+    assert out["definition_matches"] is True and timeline.markerPosition == timeline.count
+
+
+def test_point_rip_definition_is_not_offered_or_edited(offset_scene):
+    feature, timeline, old_face, _new_face, _calls = offset_scene
+    feature.objectType = "adsk::fusion::RipFeature"
+    feature.definition = SimpleNamespace(objectType="adsk::fusion::BetweenPointsRipFeatureDefinition",
+                                         ripFace=old_face)
+    result = mod.handler(feature="Part/Offset1@1", action="inputs", references=["new-face"])
+    assert result["isError"] is True and feature.definition.ripFace is old_face
+    assert mod._edit.feature_edit_rows(feature) == [] and timeline.markerPosition == timeline.count
 
 
 def test_feature_definition_emits_usable_handle_and_qualified_call(scene):
@@ -1465,6 +1598,13 @@ class TestDeriveEdits:
         assert [row["action"] for row in result["supported_edits"]] == [
             "inputs", "mode", "break_link"]
         assert result["type"] == "DeriveFeature" and self._unrolled(s)
+
+
+def test_feature_edit_variant_selection_refuses_an_ambiguous_table(monkeypatch):
+    monkeypatch.setattr(mod._edit, "_row_applies", lambda *_args: True)
+    assert mod._edit._row_for(object(), {"variants": {"a": {}, "b": {}}}) is None
+    only = {"attribute": "inputEntities"}
+    assert mod._edit._row_for(object(), {"variants": {"a": only}}) is only
 
 
 def test_mirror_body_descriptor_uses_parent_component_and_refuses_missing_owner(monkeypatch):
