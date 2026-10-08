@@ -35,17 +35,23 @@ def _moved(before, after):
     return any(abs(bv - av) > _MOVE_EPS_CM for b, a in pairs for bv, av in zip(b, a))
 
 
+def _lifted(position):
+    """True when any read sample of a position fingerprint sits off the sketch plane."""
+    return any(mark is not None and abs(mark[2]) > _MOVE_EPS_CM for mark in position)
+
+
 def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=None, dy=None,
             rotation_deg=None, center_x=None, center_y=None, scale_factor=None,
-            component: str = "") -> dict:
+            component: str = "", dz=None) -> dict:
     """See TOOL_DESCRIPTION."""
     design, sketch, ents, refs, coll, matrix, unit, err = _prepare(
         sketch_name, entities, units, dx, dy, rotation_deg, center_x, center_y, scale_factor,
-        component)
+        component, dz=dz)
     if err:
         return err
 
     name = safe(lambda: sketch.name)
+    profiles_before = _common.counted(lambda: sketch.profiles.count) if dz else None
     errors_before, _warn, _total = _common.timeline_health(design)
     before = [_assert.entity_position(e) for e in ents]
     try:
@@ -104,7 +110,20 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
                  "downstream of this sketch no longer compute.")
 
     out = {"moved": True, "sketch": name, "entities": refs, "moved_entities": moved,
-           "requested": _requested(unit, dx, dy, rotation_deg, scale_factor), "note": note}
+           "requested": _requested(unit, dx, dy, rotation_deg, scale_factor, dz), "note": note}
+    if dz:
+        # A loop moved off its plane as a whole keeps its profile; one that stops being planar
+        # loses it, so the count is published on both sides of the move.
+        flat = [r for r, pos in zip(refs, after) if pos is not None and not _lifted(pos)]
+        profiles_after = _common.counted(lambda: sketch.profiles.count)
+        out.update(profile_count_before=profiles_before, profile_count_after=profiles_after)
+        if flat:
+            out["note"] = (f"{', '.join(flat)} still read z = 0 on every point after a dz move. "
+                           + out["note"])
+            out["on_plane_entities"] = flat
+        if None not in (profiles_before, profiles_after) and profiles_after < profiles_before:
+            out["note"] += (f" The sketch went from {profiles_before} to {profiles_after} "
+                            "profile(s): a loop that is no longer planar bounds none.")
     if stayed:
         out["unmoved_entities"] = stayed
     if unread:

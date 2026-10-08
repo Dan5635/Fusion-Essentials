@@ -7,7 +7,7 @@ import time
 
 import adsk.core
 
-from ._common import error, safe
+from ._common import error, safe, finite_number
 from . import _write_guard
 from ._data_common import _urn_candidates
 
@@ -107,6 +107,67 @@ def wait_for_version_advance(application, lineage, before, deadline_s, poll_slee
 
     _settled, reading = _export.pump_until(probe, deadline_s, poll_sleep)
     return reading
+
+
+# cm and unit-vector cells of two placements that count as one placement.
+POSE_TOL = 1e-6
+
+
+def component_solids(component):
+    """(body count, total volume in cm3) of a component's own bodies; a part that did not read is None."""
+    bodies = safe(lambda: component.bRepBodies)
+    count = safe(lambda: bodies.count) if bodies is not None else None
+    if not isinstance(count, int) or isinstance(count, bool):
+        return None, None
+    volumes = [safe(lambda i=i: bodies.item(i).volume) for i in range(count)]
+    if not all(finite_number(v) is not None for v in volumes):
+        return count, None
+    return count, float(sum(volumes))
+
+
+def occurrence_pose(occ):
+    """An occurrence's sixteen placement cells, or None unless all sixteen read finite."""
+    cells = safe(lambda: list(occ.transform2.asArray()))
+    if not isinstance(cells, list) or len(cells) != 16 or not all(finite_number(v) is not None for v in cells):
+        return None
+    return [float(v) for v in cells]
+
+
+def same_pose(a, b):
+    """True only for two complete sixteen-cell placements equal within POSE_TOL."""
+    if not all(isinstance(p, list) and len(p) == 16 for p in (a, b)):
+        return False
+    return all(abs(x - y) <= POSE_TOL for x, y in zip(a, b))
+
+
+def path_count(design, wanted):
+    """How many occurrences read exactly this full path; None when any occurrence or path is unread."""
+    occs = safe(lambda: design.rootComponent.allOccurrences)
+    total = safe(lambda: occs.count) if occs is not None else None
+    if not isinstance(total, int) or isinstance(total, bool):
+        return None
+    hits = 0
+    for i in range(total):
+        path = safe(lambda i=i: occs.item(i).fullPathName)
+        if not isinstance(path, str) or not path:
+            return None
+        hits += path == wanted
+    return hits
+
+
+def path_fault(design, path):
+    """The fault for a path that is shared, or that the occurrence census could not show unique."""
+    count = path_count(design, path)
+    if count is None:
+        return (f"the path '{path}' could not be shown unique: an occurrence or its path did not "
+                "read")
+    return "" if count == 1 else f"the path '{path}' is not unique"
+
+
+def path_resolves(design, path):
+    """True / False / None: does any occurrence still read this path?"""
+    count = path_count(design, path)
+    return None if count is None else count > 0
 
 
 def _lineage_key(urn):

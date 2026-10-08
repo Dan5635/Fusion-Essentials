@@ -635,3 +635,62 @@ class TestAnOpenIndexMissListsTheAddressesThatDoReach:
         assert "Untitled (no lineage URN - open:0)" in msg
         assert "Untitled (no lineage URN - open:2)" in msg
         assert "(unreadable slot) (no handle - the document did not read)" in msg
+
+
+# -- occurrence snapshots: a count, a pose or a volume that did not read is never a verdict -----
+
+
+def _snap_occ(path, cells=None):
+    import types
+    cells = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0] if cells is None else cells
+    occ = types.SimpleNamespace(transform2=types.SimpleNamespace(asArray=lambda: cells))
+    if path is not None:
+        occ.fullPathName = path
+    return occ
+
+
+def _snap_design(*occs, raises_at=None):
+    import types
+
+    def item(i):
+        if i == raises_at:
+            raise RuntimeError("4 : An API Object refers to a deleted Object")
+        return occs[i]
+    return types.SimpleNamespace(rootComponent=types.SimpleNamespace(
+        allOccurrences=types.SimpleNamespace(count=len(occs), item=item)))
+
+
+class TestOccurrenceSnapshots:
+    def test_one_match_among_an_unreadable_occurrence_is_no_count(self):
+        design = _snap_design(_snap_occ("A:1"), _snap_occ("B:1"), raises_at=1)
+        assert dm.path_count(design, "A:1") is None
+        assert "could not be shown unique" in dm.path_fault(design, "A:1")
+        assert dm.path_resolves(design, "A:1") is None
+
+    def test_an_occurrence_whose_path_does_not_read_withholds_the_count(self):
+        assert dm.path_count(_snap_design(_snap_occ("A:1"), _snap_occ(None)), "A:1") is None
+
+    def test_a_complete_census_counts_and_names_a_shared_path(self):
+        design = _snap_design(_snap_occ("A:1"), _snap_occ("A:1"), _snap_occ("B:1"))
+        assert dm.path_count(design, "A:1") == 2 and dm.path_fault(design, "B:1") == ""
+        assert dm.path_fault(design, "A:1") == "the path 'A:1' is not unique"
+        assert dm.path_resolves(design, "C:1") is False
+
+    def test_a_pose_with_a_non_finite_or_missing_cell_is_no_pose(self):
+        good = dm.occurrence_pose(_snap_occ("A:1"))
+        assert len(good) == 16
+        assert dm.occurrence_pose(_snap_occ("A:1", [float("nan")] + [0.0] * 15)) is None
+        assert dm.occurrence_pose(_snap_occ("A:1", [0.0] * 15)) is None
+        assert dm.same_pose(good, good) is True
+        assert dm.same_pose(good, good[:15]) is False and dm.same_pose(None, None) is False
+
+    def test_a_non_finite_volume_is_no_volume(self):
+        import types
+
+        def comp(*volumes):
+            held = [types.SimpleNamespace(volume=v) for v in volumes]
+            return types.SimpleNamespace(bRepBodies=types.SimpleNamespace(
+                count=len(held), item=lambda i: held[i]))
+        assert dm.component_solids(comp(1.5, 2.5)) == (2, 4.0)
+        assert dm.component_solids(comp(1.5, float("inf"))) == (2, None)
+        assert dm.component_solids(types.SimpleNamespace()) == (None, None)

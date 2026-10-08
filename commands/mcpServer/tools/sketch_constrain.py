@@ -7,6 +7,7 @@ WRITES.
 """
 
 import json
+import math
 
 import adsk.core
 import adsk.fusion
@@ -52,6 +53,7 @@ _REQUIRES = {
     "line_parallel_to_surface": "a LINE as entity_one plus a planar 'surface'",
     "perpendicular_to_surface": ("a LINE or SPLINE as entity_one plus a 'surface' "
                                  "(curved faces allowed)"),
+    "perpendicular_to_curve": "a LINE as entity_one and an ARC or CIRCLE as entity_two",
     "polygon": ("lines in 'entities' that already close the shape - equal lengths, equal angles, "
                 "joined end to end"),
     "offset": "end-connected curves in 'entities' plus a 'distance'",
@@ -85,6 +87,7 @@ _CONSTRAINTS = {
     "line_on_surface": ("entity_surface", "addLineOnPlanarSurface"),
     "line_parallel_to_surface": ("entity_surface", "addLineParallelToPlanarSurface"),
     "perpendicular_to_surface": ("entity_surface", "addPerpendicularToSurface"),
+    "perpendicular_to_curve": ("two_curve", "addPerpendicular2"),
     "polygon": ("entity_list", "addPolygon"),
     "offset": ("offset", "addOffset2"),
     "offset_two_sides": ("offset", "addTwoSidesOffset"),
@@ -281,12 +284,28 @@ def _cm_value(value_cm):
     return adsk.core.ValueInput.createByString(f"{float(value_cm)} cm")
 
 
-def _apply_offset(gc, cname, curves, dist_cm):
+def _apply_offset(gc, cname, curves, dist_cm, match_topology=True):
     """addOffset2 (one side) or addTwoSidesOffset (both sides, linked so one parameter drives both)."""
     oin = gc.createOffsetInput(curves, _cm_value(dist_cm))
+    if not match_topology:
+        oin.isTopologyMatched = False
+        if oin.isTopologyMatched is not False:
+            raise RuntimeError("the offset input did not take isTopologyMatched = False")
     if cname == "offset_two_sides":
         return gc.addTwoSidesOffset(oin, True)
     return gc.addOffset2(oin)
+
+
+def _ref_kind(base_ref):
+    return base_ref.strip().lower().rpartition(":")[0]
+
+
+def _centre_off_line(line, curve):
+    """Distance (cm) from `curve`'s centre to the infinite line through `line`'s ends."""
+    a, b = line.startSketchPoint.geometry, line.endSketchPoint.geometry
+    c = curve.centerSketchPoint.geometry
+    length = math.hypot(b.x - a.x, b.y - a.y)
+    return abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / length
 
 
 def _enum_member(family, key, table):
@@ -563,7 +582,8 @@ def _length(kind, raw, k, cname, label):
 _ENTRY_FIELDS = ("constraint", "entity_one", "entity_two", "symmetry_line", "entities", "surface",
                  "distance", "distance_two", "quantity", "quantity_two", "angle", "distance_type",
                  "symmetric", "suppressed", "result_option", "dimension_strategy",
-                 "inter_loop_strategy", "symmetric_strategy", "linear_diameter_dims")
+                 "inter_loop_strategy", "symmetric_strategy", "linear_diameter_dims",
+                 "match_topology")
 
 
 def handler(constraints=None, sketch_name: str = "", component: str = "",
@@ -605,11 +625,15 @@ def _one(sketch, k, entry):
     angle = entry.get("angle", 360.0)
     symmetric = entry.get("symmetric", False)
     suppressed = entry.get("suppressed")
+    match_topology = entry.get("match_topology")
     refuse = _sketch_batch.refuse
     cname = (constraint or "").strip().lower()
     if cname not in _CONSTRAINTS:
         return refuse(f"Unknown constraint '{constraint}'. Valid: {', '.join(_CONSTRAINTS)}.")
     kind, method = _CONSTRAINTS[cname]
+    if match_topology is not None and cname != "offset":
+        return refuse(f"match_topology applies to constraint=offset only. Got it with '{cname}'.")
+    match_topology = match_topology is not False
     choices, cerr = _inputs.resolve_inputs(
         [_DISTANCE_TYPE, _RESULT_OPTION] + list(_STRATEGY_CHOICES),
         {name: entry.get(name) for name in ("distance_type", "result_option",
@@ -675,6 +699,13 @@ def _one(sketch, k, entry):
         if not e2:
             return refuse(f"'{cname}' needs 'entity_two' (a second '<type>:<index>'). "
                           f"Got '{entity_two}'.")
+    if cname == "perpendicular_to_curve":
+        if _ref_kind(base_one) != "line":
+            return refuse(f"perpendicular_to_curve needs a LINE as entity_one. Got '{entity_one}'.")
+        if _ref_kind(base_two) not in ("arc", "circle"):
+            return refuse("perpendicular_to_curve needs an ARC or CIRCLE as entity_two. Got "
+                          f"'{entity_two}'." + (" Two lines take constraint=perpendicular."
+                                                if _ref_kind(base_two) == "line" else ""))
     for slot, entity, anchor in (("entity_one", e1, anchor_one), ("entity_two", e2, anchor_two)):
         if anchor:
             _point, perr = _common.anchor_preflight(entity, anchor)
@@ -792,7 +823,7 @@ def _one(sketch, k, entry):
             d1, derr = _length(_DISTANCE, distance, k, cname, "distance")
             if derr:
                 return refuse(derr)
-            result_obj = _apply_offset(gc, cname, ents, d1)
+            result_obj = _apply_offset(gc, cname, ents, d1, match_topology)
         elif kind == "circ_pattern":
             result_obj, perr = _apply_circ_pattern(gc, ents, e1, int(quantity), float(angle),
                                                    bool(symmetric), flags)
@@ -834,6 +865,9 @@ def _one(sketch, k, entry):
     except Exception as e:
         # The API raises the same way for a wrong operand type and for an unsolvable sketch.
         req = _REQUIRES.get(cname)
+        if cname == "offset" and match_topology and "topology" in str(e):
+            return failed(f"Could not apply {cname}: {e} | Pass match_topology=false to build the "
+                          "offset without the curves this distance collapses.")
         if req:
             return failed(f"Could not apply {cname}: {e} | '{cname}' takes {req}.")
         return failed(f"Could not apply {cname}: {e}")
@@ -841,6 +875,20 @@ def _one(sketch, k, entry):
         return failed(f"Applying {cname} returned no constraint object.")
     if kind == "auto":
         return _auto_payload(sketch, result_obj, choices["result_option"], auto_before, strategies)
+
+    if cname == "perpendicular_to_curve":
+        # The effect is read off the geometry of the curve asked for: a line perpendicular to an
+        # arc or circle passes, extended, through that curve's centre.
+        try:
+            off = _centre_off_line(e1, e2)
+        except Exception as e:
+            return None, (f"perpendicular_to_curve was added but '{entity_one}' and '{entity_two}' "
+                          f"could not be re-read to check it: {e}.")
+        if off > 1e-6:
+            return None, (f"perpendicular_to_curve was added but '{entity_one}' extended passes "
+                          f"{off / k:g} from the centre of '{entity_two}', so it is not "
+                          "perpendicular to it. The constraint is left in the sketch - "
+                          "sketch_delete_entity(target='constraint:<index>') removes it.")
 
     created = _created_count(result_obj) if kind in _CREATOR_KINDS else None
     # MEASURED: a suppressed instance produces no curve (a 3x2 pattern with one flag set creates 4,
@@ -906,8 +954,13 @@ def _one(sketch, k, entry):
         curve_note = _coincident_curve_note(base_two)
         if curve_note:
             payload["note"] += curve_note
+    if cname == "perpendicular_to_curve":
+        payload["note"] = (f"'{entity_one}' extended now passes through the centre of "
+                           f"'{entity_two}'. sketch_get lists this constraint with the line only.")
     if kind in _CREATOR_KINDS or kind == "entity_list":
         payload["entities"] = entities
+    if not match_topology:
+        payload["match_topology"] = False
     if kind in _CREATOR_KINDS:
         payload["created_count"] = created
         payload["note"] = (f"{cname} applied, adding {created if created is not None else 'new'} "
@@ -969,6 +1022,7 @@ _ENTRY_SCHEMA = {
         "inter_loop_strategy": _STRATEGY_CHOICES[1].schema(),
         "symmetric_strategy": _STRATEGY_CHOICES[2].schema(),
         "linear_diameter_dims": _STRATEGY_CHOICES[3].schema(),
+        "match_topology": {"type": "boolean"},
     },
     "required": ["constraint"],
     "additionalProperties": False,

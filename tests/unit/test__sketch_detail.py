@@ -7,11 +7,23 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import (BRepBody, BRepFace, FakeBoundingBox3D, FakeMatrix3D, FakeOccurrence, FakePoint,
+                      FakeVector3D,
                       FakeSketchPoint as _SharedSketchPoint, FakeTimeline, FakeTimelineObject,
                       MakeComp, Profile, Sketch, SketchCurves, _NamedCollection, install, load_tool,
                       make_design, make_occurrence, make_timeline)
 
 sd = load_tool("_sketch_detail")
+
+
+def test_xyz_translation_preserves_xy_rotation_anchor(monkeypatch):
+    monkeypatch.setattr(sd.adsk.core.Matrix3D, "create", lambda: FakeMatrix3D())
+    monkeypatch.setattr(sd.adsk.core.Vector3D, "create", FakeVector3D)
+    monkeypatch.setattr(sd.adsk.core.Point3D, "create", FakePoint)
+    matrix, refusal = sd._transform(2, 3, 90, 1, 1, 2, dz_cm=-0.4)
+    assert refusal is None
+    assert (matrix.translation.x, matrix.translation.y, matrix.translation.z) == pytest.approx((5, 4, -0.4))
+    assert sd._requested("mm", 20, 30, 90, 1, dz=-4)["dz"] == -4
+    assert "dz" not in sd._requested("mm", 20, 30, 90, 1)
 
 
 # ── fakes ───────────────────────────────────────────────────────────────────

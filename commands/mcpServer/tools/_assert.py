@@ -885,6 +885,8 @@ class PatternElementsPlaced(Postcondition):
         return ""
 
     def verify(self, kwargs, payload, before):
+        if payload.get("entity_kind") in ("features", "faces"):
+            return "", {"pattern_elements_confirmed": False}
         feature = self._feature(payload, before)
         if feature is None:
             placed = None

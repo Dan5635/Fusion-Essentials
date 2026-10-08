@@ -3,6 +3,8 @@
 
 """Sweep a profile or solid tool body along a path."""
 
+import math
+
 import adsk.core
 import adsk.fusion
 
@@ -26,11 +28,17 @@ app = adsk.core.Application.get()
 # sketches per component from 1, so a name two components carry is refused, naming 'component'.
 _TARGET_BODIES = _inputs.BodyRefList("target_bodies", required=False)
 _SOLID_BODY = _inputs.BodyRef("solid_body", kind="solid")
+_SOLID_ALIGNED_AXIS = _inputs.AxisRef("solid_aligned_axis", entity_only=True)
 
 # orientation keyword -> adsk.fusion.SweepOrientationTypes attribute.
 _ORIENTATIONS = {
     "perpendicular": "PerpendicularOrientationType",
     "parallel": "ParallelOrientationType",
+}
+_SOLID_ORIENTATIONS = {
+    "perpendicular": "PerpendicularSolidOrientationType",
+    "rigid": "RigidSolidOrientationType",
+    "aligned": "AlignedSolidOrientationType",
 }
 
 RETURNS = [
@@ -64,12 +72,16 @@ def _host_body_keys(host):
 
 
 def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
-                 target_bodies, component):
+                 target_bodies, component, solid_aligned_axis):
     """Sweep one solid body on an owner-local path, retaining its source."""
     if op_key not in ("new", "new_body"):
         return error("'solid_body' supports operation='new' only.")
-    if orient_key != "perpendicular":
-        return error("'solid_body' uses perpendicular orientation; omit 'orientation'.")
+    if orient_key not in _SOLID_ORIENTATIONS:
+        return error("'solid_body' orientation must be perpendicular, rigid, or aligned.")
+    if orient_key == "aligned" and not solid_aligned_axis:
+        return error("'solid_aligned_axis' is required when 'solid_body' uses orientation='aligned'.")
+    if orient_key != "aligned" and solid_aligned_axis not in (None, "", []):
+        return error("'solid_aligned_axis' applies only when 'solid_body' uses orientation='aligned'.")
     if as_surface:
         return error("'solid_body' makes a solid; omit as_surface or set it false.")
     if target_bodies not in (None, "", []):
@@ -111,6 +123,21 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
                          "or omit component and pass a body handle.")
     if safe(lambda: source.isSolid) is not True:
         return error("'solid_body' is not a readable closed solid; choose a solid body handle.")
+    aligned_axis = None
+    aligned_axis_key = None
+    if orient_key == "aligned":
+        axis, aerr = _SOLID_ALIGNED_AXIS.resolve(solid_aligned_axis, component=host)
+        if aerr:
+            return error(aerr)
+        if not isinstance(axis, tuple) or len(axis) != 2 or axis[0] != "edge":
+            return error("'solid_aligned_axis' must resolve to a linear edge, sketch line, or construction axis.")
+        aligned_axis = axis[1]
+        axis_owner = _inputs.entity_component(aligned_axis)
+        if _common.same_component(axis_owner, host) is not True:
+            return error("'solid_aligned_axis' must belong to the solid body's owner component.")
+        aligned_axis_key = _common.native_identity(aligned_axis)
+        if aligned_axis_key is None:
+            return error("'solid_aligned_axis' identity is unreadable; reacquire the axis handle.")
     source_key = _common.native_identity(source)
     source_shape = _geom.body_shape(source)
     source_name = safe(lambda: source.name)
@@ -138,9 +165,28 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
         return error(f"Could not start solid-body sweep: {exc}")
     if sweep_input is None or _common.native_identity(safe(lambda: sweep_input.solidBody)) != source_key:
         return error("Solid sweep input did not retain the requested tool body; no sweep was made.")
-    perpendicular = adsk.fusion.SweepSolidOrientationTypes.PerpendicularSolidOrientationType
-    if safe(lambda: sweep_input.solidOrientation) != perpendicular:
+    setter_results = {}
+    want_orientation = safe(lambda: getattr(
+        adsk.fusion.SweepSolidOrientationTypes, _SOLID_ORIENTATIONS[orient_key]))
+    if want_orientation is None:
+        return error(f"Solid orientation '{orient_key}' is unavailable in this build; no sweep was made.")
+    if (orient_key == "perpendicular"
+            and safe(lambda: sweep_input.solidOrientation) != want_orientation):
         return error("Solid sweep input did not retain perpendicular orientation; no sweep was made.")
+    try:
+        if orient_key == "aligned":
+            setter_results["solidAlignedAxis"] = sweep_input._set_solidAlignedAxis(aligned_axis)
+            if setter_results["solidAlignedAxis"] is not True:
+                return error("Solid sweep input refused 'solid_aligned_axis'; no sweep was made.")
+            if _common.native_identity(safe(lambda: sweep_input.solidAlignedAxis)) != aligned_axis_key:
+                return error("Solid sweep input did not retain 'solid_aligned_axis'; no sweep was made.")
+        setter_results["solidOrientation"] = sweep_input._set_solidOrientation(want_orientation)
+        if setter_results["solidOrientation"] is not True:
+            return error(f"Solid sweep input refused orientation='{orient_key}'; no sweep was made.")
+    except Exception as exc:
+        return error(f"Could not configure solid orientation '{orient_key}': {exc}")
+    if safe(lambda: sweep_input.solidOrientation) != want_orientation:
+        return error(f"Solid sweep input did not retain '{orient_key}' orientation; no sweep was made.")
     before_timeline = _design_common.timeline_census(design)
     before_marker, _ = _common.timeline_marker(design)
     before_shapes = _edit_feature_common.all_shapes(design, components=[host])
@@ -182,9 +228,13 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     if health not in (states.HealthyFeatureHealthState, states.WarningFeatureHealthState):
         return error("Solid sweep was built, but feature health is unreadable or failed. "
                      + _common.failed_effect_remedy(design, feature))
-    if safe(lambda: feature.solidOrientation) != perpendicular:
-        return error("Solid sweep was built, but its perpendicular orientation did not persist. "
+    if safe(lambda: feature.solidOrientation) != want_orientation:
+        return error(f"Solid sweep was built, but its {orient_key} orientation did not persist. "
                      + _common.failed_effect_remedy(design, feature))
+    if orient_key == "aligned":
+        if _common.native_identity(safe(lambda: feature.solidAlignedAxis)) != aligned_axis_key:
+            return error("Solid sweep was built, but its aligned axis did not persist. "
+                         + _common.failed_effect_remedy(design, feature))
     result_name = safe(lambda: result.name)
     if not result_name:
         return error("Solid sweep was built, but the new result body has no readable name. "
@@ -198,22 +248,77 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     return ok({"swept": True, "feature": safe(lambda: feature.name),
                "operation": op_key, "component": safe(lambda: host.name),
                "path": path_label, "path_curves": path_curves,
-               "path_sketch_curves": sketch_curves, "orientation": "perpendicular",
+               "path_sketch_curves": sketch_curves, "orientation": orient_key,
                "as_surface": False, "open_profile": False, "is_solid": True,
                "solid_body": source_name, "source_retained": True,
-               "result_bodies": [result_name], "note": note})
+               "result_bodies": [result_name], "solid_input_setters": setter_results,
+               "note": note})
+
+
+def _finite_control(value, name):
+    """(finite float or None, error) for an optional numeric sweep control."""
+    if value is None:
+        return None, None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None, f"'{name}' must be a finite number - got {value!r}."
+    return float(value), None
+
+
+def _sweep_value_matches(value, expected, *, string=False):
+    """Whether a ValueInput readback retains the requested real or unit-bearing string."""
+    if value is None:
+        return False
+    if string:
+        return safe(lambda: value.stringValue) == expected
+    got = safe(lambda: value.realValue)
+    return isinstance(got, (int, float)) and not isinstance(got, bool) and abs(got - expected) <= 1e-12
+
+
+def _sweep_path_identity(path):
+    """Ordered native identities of a built Path's member entities, or None."""
+    count = _common.counted(lambda: path.count)
+    if count is None or count < 1:
+        return None
+    keys = [_common.native_identity(safe(lambda i=i: path.item(i).entity)) for i in range(count)]
+    return tuple(keys) if all(keys) else None
+
+
+def _feature_parameter_value(feature, name):
+    """(ModelParameter value, expression) for one sweep definition parameter."""
+    parameter = getattr(feature, name)
+    if parameter is None:
+        raise RuntimeError(f"the retained '{name}' parameter answered nothing")
+    value = parameter.value
+    expression = parameter.expression
+    if value is None or expression is None:
+        raise RuntimeError(f"the retained '{name}' value or expression answered nothing")
+    return value, expression
 
 
 def handler(profile=None, path=None, operation: str = "new", orientation: str = "perpendicular",
             as_surface: bool = False, target_bodies=None, component: str = "",
-            solid_body=None) -> dict:
+            solid_body=None, solid_aligned_axis=None, guide_path=None, twist_deg=None,
+            taper_deg=None, path_fraction=None) -> dict:
     """See TOOL_DESCRIPTION."""
     op_key = (operation or "new").strip().lower()
     if op_key not in _common.OPERATIONS:
         return error(f"Unknown operation '{operation}'. Use: new, join, cut, intersect.")
     orient_key = (orientation or "perpendicular").strip().lower()
-    if orient_key not in _ORIENTATIONS:
-        return error(f"Unknown orientation '{orientation}'. Use: perpendicular, parallel.")
+    if orient_key not in set(_ORIENTATIONS) | set(_SOLID_ORIENTATIONS):
+        return error(f"Unknown orientation '{orientation}'. Use: perpendicular, parallel, rigid, aligned.")
+
+    twist, err = _finite_control(twist_deg, "twist_deg")
+    if err:
+        return error(err)
+    taper, err = _finite_control(taper_deg, "taper_deg")
+    if err:
+        return error(err)
+    fraction, err = _finite_control(path_fraction, "path_fraction")
+    if err:
+        return error(err)
+    if fraction is not None and not 0.0 <= fraction <= 1.0:
+        return error(f"'path_fraction' must be from 0 through 1 - got {fraction}.")
+    controls_requested = any(v is not None for v in (twist, taper, fraction))
 
     design = _common.design()
     if not design:
@@ -221,8 +326,16 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
     if solid_body not in (None, "", []):
         if profile not in (None, "", []):
             return error("Choose 'profile' or 'solid_body', not both.")
+        if guide_path not in (None, "", []) or controls_requested:
+            return error("'guide_path', 'twist_deg', 'taper_deg', and 'path_fraction' are profile controls; omit them with 'solid_body'.")
         return _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
-                            target_bodies, component)
+                            target_bodies, component, solid_aligned_axis)
+    if orient_key not in _ORIENTATIONS:
+        return error(f"Profile orientation must be perpendicular or parallel - got '{orientation}'.")
+    if solid_aligned_axis not in (None, "", []):
+        return error("'solid_aligned_axis' applies only to 'solid_body' with orientation='aligned'.")
+    if guide_path not in (None, "", []) and controls_requested:
+        return error("'twist_deg', 'taper_deg', and 'path_fraction' exclude 'guide_path'. Omit them or sweep without a guide rail.")
     comp = target_component(design)
 
     profile_arg, want_solid, open_profile, host, _source_sketch, perr = _sweep_common.resolve_profile(
@@ -240,6 +353,19 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
     # curves and no others, so a chain that stopped short sweeps a stub of the intended run.
     path_curves = _common.counted(lambda: sweep_path.count)
     sketch_curves = _common.path_sketch_curve_count(host, path)
+    guide_sweep_path = None
+    guide_path_curves = None
+    guide_label = None
+    if guide_path not in (None, "", []):
+        guide_left = []
+        guide_sweep_path, guide_label, guide_err = build_path(host, guide_path, left_out=guide_left)
+        if guide_err:
+            return error(f"Could not build 'guide_path': {guide_err}")
+        guide_path_curves = _common.counted(lambda: guide_sweep_path.count)
+        if guide_path_curves is None or guide_path_curves < 1:
+            return error("'guide_path' has no readable curves; pass a connected path in the profile's owner component.")
+        if guide_left:
+            return error("'guide_path' contains curves Fusion left out; pass the complete connected guide chain.")
 
     op = getattr(adsk.fusion.FeatureOperations, _common.OPERATIONS[op_key])
     try:
@@ -248,9 +374,41 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
         return error(f"Could not start sweep: {e}. (The path must geometrically connect and the "
                      "profile should sit on/near the path start.)")
 
+    setter_results = {}
     try:
-        sweep_input.isSolid = bool(want_solid) # False -> open surface, no end caps
-        sweep_input.orientation = getattr(adsk.fusion.SweepOrientationTypes, _ORIENTATIONS[orient_key])
+        setter_results["isSolid"] = sweep_input._set_isSolid(bool(want_solid))
+        if setter_results["isSolid"] is not True:
+            return error(f"Sweep input refused isSolid={bool(want_solid)}; no sweep was made.")
+        orient_value = getattr(adsk.fusion.SweepOrientationTypes, _ORIENTATIONS[orient_key])
+        setter_results["orientation"] = sweep_input._set_orientation(orient_value)
+        if setter_results["orientation"] is not True:
+            return error(f"Sweep input refused orientation='{orient_key}'; no sweep was made.")
+        if safe(lambda: sweep_input.orientation) != orient_value:
+            return error(f"Sweep input did not retain orientation='{orient_key}'; no sweep was made.")
+        if guide_sweep_path is not None:
+            setter_results["guideRail"] = sweep_input._set_guideRail(guide_sweep_path)
+            if setter_results["guideRail"] is not True:
+                return error("Sweep input refused 'guide_path'; no sweep was made.")
+            if safe(lambda: sweep_input.guideRail) is None:
+                return error("Sweep input did not retain 'guide_path'; no sweep was made.")
+        for prop, value in (("twistAngle", twist), ("taperAngle", taper)):
+            if value is None:
+                continue
+            expression = f"{value!r} deg"
+            setter_results[prop] = getattr(sweep_input, "_set_" + prop)(
+                adsk.core.ValueInput.createByString(expression))
+            if setter_results[prop] is not True:
+                return error(f"Sweep input refused '{prop}'={expression}; no sweep was made.")
+            if not _sweep_value_matches(safe(lambda p=prop: getattr(sweep_input, p)), expression,
+                                        string=True):
+                return error(f"Sweep input did not retain '{prop}' as {expression}; no sweep was made.")
+        if fraction is not None:
+            setter_results["distanceOne"] = sweep_input._set_distanceOne(
+                adsk.core.ValueInput.createByReal(fraction))
+            if setter_results["distanceOne"] is not True:
+                return error(f"Sweep input refused 'path_fraction'={fraction}; no sweep was made.")
+            if not _sweep_value_matches(safe(lambda: sweep_input.distanceOne), fraction):
+                return error(f"Sweep input did not retain 'path_fraction' as {fraction}; no sweep was made.")
     except Exception as e:
         return error(f"Could not configure the sweep: {e}")
 
@@ -288,7 +446,76 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
     if not feature:
         return error(_common.no_feature_error(design, "Sweep"))
 
+    feature_identity = safe(lambda: feature.name) or safe(lambda: feature.entityToken)
     body_names = [f["name"] for f in _common.body_facts(_common.result_bodies(feature))]
+
+    requested_parameters = [("twistAngle", twist, True), ("taperAngle", taper, True),
+                            ("distanceOne", fraction, False)]
+    requested_parameters = [row for row in requested_parameters if row[1] is not None]
+    retained_parameters = {}
+    if requested_parameters:
+        parameter_read_error = []
+
+        def read_requested_parameters():
+            try:
+                return {prop: _feature_parameter_value(feature, prop)
+                        for prop, _, _ in requested_parameters}
+            except Exception as exc:
+                parameter_read_error.append(str(exc) or type(exc).__name__)
+                return None
+
+        try:
+            retained_parameters, marker_clause = _common.rolled_to(
+                design, feature, read_requested_parameters,
+                f"sweep feature '{feature_identity}' parameters")
+        except Exception as exc:
+            return error(f"Sweep '{feature_identity}' was built, but its retained parameters could "
+                         f"not be read: {exc}. "
+                         + _common.failed_effect_remedy(design, feature))
+        if marker_clause:
+            return error(f"Sweep '{feature_identity}' was built, but its retained parameters could "
+                         f"not be verified: {marker_clause}. "
+                         + _common.failed_effect_remedy(design, feature))
+        if parameter_read_error:
+            return error(f"Sweep '{feature_identity}' was built, but a requested retained parameter "
+                         f"could not be read: {parameter_read_error[0]}. "
+                         + _common.failed_effect_remedy(design, feature))
+        if retained_parameters is None:
+            return error(f"Sweep '{feature_identity}' was built, but its timeline row could not be "
+                         "read for parameter verification. "
+                         + _common.failed_effect_remedy(design, feature))
+
+    sweep_parameters = {}
+    for prop, requested_value, angle in requested_parameters:
+        got, expression = retained_parameters[prop]
+        wanted = math.radians(requested_value) if angle else requested_value
+        matches = (isinstance(got, (int, float)) and not isinstance(got, bool)
+                   and math.isfinite(got) and abs(got - wanted) <= 1e-8)
+        sweep_parameters[prop] = {"value": got, "value_units": "rad" if angle else "fraction",
+                                  "expression": expression,
+                                  "requested": requested_value,
+                                  "matches": matches if got is not None else None}
+        if got is not None and not matches:
+            return error(f"Sweep was built, but its '{prop}' parameter reads {got!r}; "
+                         f"requested {requested_value}. "
+                         + _common.failed_effect_remedy(design, feature))
+    guide_path_verified = None
+    if guide_sweep_path is not None:
+        got_path, marker_clause = _common.rolled_to(
+            design, feature, lambda: safe(lambda: feature.guideRail), "sweep guide rail")
+        want_members, got_members = (_sweep_path_identity(guide_sweep_path),
+                                     _sweep_path_identity(got_path) if got_path is not None else None)
+        if marker_clause:
+            detail = marker_clause
+            return error("Sweep was built, but its guideRail did not verify: " + detail + ". "
+                         + _common.failed_effect_remedy(design, feature))
+        if want_members is not None and got_members is not None:
+            if got_members != want_members:
+                return error("Sweep was built, but its guideRail member identities differ from the "
+                             "requested path. " + _common.failed_effect_remedy(design, feature))
+            guide_path_verified = True
+        else:
+            guide_path_verified = False
 
     # An operation that reports success but produced no body is a silent no-op - fail it honestly.
     if op_key == "new" and not body_names:
@@ -350,17 +577,23 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
         "component": safe(lambda: feature.parentComponent.name),
         "path": path_label,
         "path_curves": path_curves,
+        "guide_path": guide_label,
+        "guide_path_curves": guide_path_curves,
+        "sweep_input_setters": setter_results,
         "orientation": orient_key,
         "as_surface": bool(open_profile or is_solid is False),
         "open_profile": bool(open_profile),
         "is_solid": is_solid,
         "scoped_to_bodies": scoped_to,
         "result_bodies": body_names,
+        "sweep_parameters": sweep_parameters,
         "note": note,
     }
     # Only a 'sketch:<name>' path has a source curve count; a null would read as an unreadable sketch.
     if sketch_curves is not None:
         payload["path_sketch_curves"] = sketch_curves
+    if guide_sweep_path is not None:
+        payload["guide_path_verified"] = guide_path_verified
     # Absent, never null: a null would read as "no material moved".
     if volume_delta_cm3 is not None:
         payload["volume_delta_cm3"] = volume_delta_cm3
@@ -368,22 +601,30 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
 
 
 TOOL_DESCRIPTION = (
-"Sweep profile or solid body.\n"
-+ _outputs.produces_block(RETURNS)
+"Sweep. Solid rigid/aligned. Produces result_bodies, is_solid, path_curves."
 )
 
 sweep_tool = (
     Tool.create_simple(name="model_sweep", description=TOOL_DESCRIPTION)
     .add_input_property("profile", {"type": ["string", "object"]})
-    .add_input_property("solid_body", _SOLID_BODY.schema())
+    .add_input_property("solid_body", {**_SOLID_BODY.schema(), "description": "SOLID body handle/name."})
     .add_input_property("path", {"type": ["string", "array"], "items": {"type": "string"},
-            "description": "Edge handle: TANGENT connections only; 'path' count is the truth. "
-                           "Or 'sketch:<name>'."})
+            "description": "Edge handle: TANGENT connections only; 'path' count is the truth. Or 'sketch:<name>'."})
     .add_input_property(*_inputs.boolean_op(default="new", description="").as_property())
-    .add_input_property("orientation", {"type": "string", "enum": ["perpendicular", "parallel"]})
+    .add_input_property("orientation", {"type": "string", "enum": ["perpendicular", "parallel", "rigid", "aligned"],
+            "description": "Profile perpendicular/parallel; solid perpendicular/rigid/aligned.",
+            "default": "perpendicular"})
     .add_input_property("as_surface", {"type": "boolean"})
-    .add_input_property("target_bodies", _TARGET_BODIES.schema())
+    .add_input_property("target_bodies", {**_TARGET_BODIES.schema(), "description": "Body handles/names."})
     .add_input_property(*_sketch_detail.COMPONENT_SCOPE)
+    .add_input_property("solid_aligned_axis", {**_SOLID_ALIGNED_AXIS.schema(),
+            "description": "Aligned: linear edge, sketch line or construction axis handle."})
+    .add_input_property("guide_path", {"type": ["string", "array"], "items": {"type": "string"},
+            "description": "Connected edge handle/chain or sketch:<name>."})
+    .add_input_property("twist_deg", {"type": "number", "description": "Profile twist (deg)."})
+    .add_input_property("taper_deg", {"type": "number", "description": "Profile taper (deg): positive expands, negative contracts."})
+    .add_input_property("path_fraction", {"type": "number", "minimum": 0, "maximum": 1,
+            "description": "One-sided fraction; no guide/solid."})
     .strict_schema()
 )
 sweep_item = Item.create_tool_item(

@@ -3448,7 +3448,8 @@ def _curve_state_rows():
           _refused("'construction' needs 'state' (true or false)", "got None"))
     write("sketch_edit_curve", {"sketch_name": "CsSk", "action": "trim", "entity_one": "line:0",
                                 "x1": 5, "y1": 0, "state": True},
-          _refused("'state' applies to construction/centerline only", "'trim' takes none",
+          _refused("'state' applies to construction/centerline, the spline handles and close",
+                   "'trim' takes none",
                    "got True"))
     read("sketch_get", _xray("CsSk"), _curve_rows_read())
     read("sketch_get", _xray("CsCtl"), _unchanged("cs_ctl", _sketch_facts))
@@ -3826,3 +3827,621 @@ def _dimension_driving_rows():
 
 
 _SKETCHWORK += _dimension_driving_rows()
+
+
+def _one_profile(area_mm2, centroid=None, tol=0.02):
+    """sketch_get: exactly one profile, of this area and, when given, this (x, y) centroid in mm."""
+    def check(p):
+        rows = p.get("profiles") or []
+        at = (rows[0].get("centroid") or [None, None]) if rows else [None, None]
+        return _measured(f"one profile of {area_mm2:.3f} mm2", rows,
+                         p.get("truncated") is False and p.get("profile_count") == 1
+                         and len(rows) == 1 and _near(rows[0].get("area"), area_mm2, tol)
+                         and (centroid is None or (_near(at[0], centroid[0], tol)
+                                                   and _near(at[1], centroid[1], tol))))
+    return check
+
+
+def _round_row(ref, cx, cy, radius):
+    """sketch_get: the arc or circle `ref` reads this centre and radius in mm."""
+    def check(p):
+        row = _rows_by_id(p).get(ref) or {}
+        centre = row.get("center") or {}
+        return _measured(f"{ref} centre and radius", row,
+                         _near(centre.get("x"), cx, 0.001) and _near(centre.get("y"), cy, 0.001)
+                         and _near(row.get("radius"), radius, 0.001) and "z" not in centre)
+    return check
+
+
+def _line_corners(count, corners):
+    """sketch_get: `count` lines whose ends are exactly these (x, y) corners in mm, no constraint."""
+    def check(p):
+        lines = [r for r in p.get("entities") or [] if r.get("type") == "line"]
+        ends = [(r.get(end) or {}) for r in lines for end in ("start", "end")]
+        hit = [sum(1 for e in ends if _near(e.get("x"), x, 0.01) and _near(e.get("y"), y, 0.01))
+               for x, y in corners]
+        return _measured(f"{count} lines on {len(corners)} corners", [r.get("id") for r in lines],
+                         p.get("truncated") is False and len(lines) == count
+                         and len(ends) == 2 * len(corners) and all(n == 2 for n in hit))
+    return check
+
+
+def _drawn(kind, **facts):
+    """sketch_add_geometry: the one result row of this kind carrying these as-built facts."""
+    def check(p):
+        row = (p.get("results") or [{}])[0]
+        return _measured(f"{kind} as built", row,
+                         p.get("drawn") == 1 and row.get("kind") == kind
+                         and all(_alike(row.get(key), want, 0.001) for key, want in facts.items()))
+    return check
+
+
+def _exact_curve_rows():
+    """Arcs, circles, a rectangle and polygons drawn from points, each judged on the public read."""
+    from math import asin, pi, sin, sqrt
+    rows, write, read, close = _scratch_rows("xc_doc")
+
+    def sketch(name, *geometry_and_checks):
+        write("sketch_create", {"plane": "xy", "name": name})
+        for geometry, check in geometry_and_checks:
+            write("sketch_add_geometry", {"sketch_name": name, "geometry": [geometry]}, check)
+
+    # A clockwise three-point arc is stored counter-clockwise; its chord closes ONE region, and that
+    # region's area says which side of the chord the arc bulges to.
+    theta = 2 * asin(10 / 12.5)
+    sketch("XcArc3",
+           ({"kind": "three_point_arc", "points": [[0, 0], [10, 5], [20, 0]]},
+            _drawn("three_point_arc", start=[20.0, 0.0], end=[0.0, 0.0], center=[10.0, -7.5],
+                   radius=12.5, ends_exchanged=True, curves_added=1)),
+           ({"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0}, "ok"))
+    read("sketch_get", _xray("XcArc3"), _round_row("arc:0", 10, -7.5, 12.5))
+    read("sketch_get", _xray("XcArc3"), _one_profile(12.5 ** 2 / 2 * (theta - sin(theta))))
+    # A centre arc runs counter-clockwise from its start: the quarter disc, not the other three.
+    sketch("XcArcC",
+           ({"kind": "center_arc", "cx": 0, "cy": 0, "x1": 10, "y1": 0, "x2": 0, "y2": 10},
+            _drawn("center_arc", start=[10.0, 0.0], end=[0.0, 10.0], center=[0.0, 0.0],
+                   radius=10.0)),
+           ({"kind": "line", "x1": 0, "y1": 0, "x2": 10, "y2": 0}, "ok"),
+           ({"kind": "line", "x1": 0, "y1": 0, "x2": 0, "y2": 10}, "ok"))
+    quarter = 40 / (3 * pi)
+    read("sketch_get", _xray("XcArcC"), _one_profile(25 * pi, (quarter, quarter)))
+    sketch("XcCircle",
+           ({"kind": "two_point_circle", "x1": 0, "y1": 0, "x2": 20, "y2": 0},
+            _drawn("two_point_circle", center=[10.0, 0.0], radius=10.0)),
+           ({"kind": "three_point_circle", "points": [[40, 0], [50, 10], [60, 0]]},
+            _drawn("three_point_circle", center=[50.0, 0.0], radius=10.0)))
+    read("sketch_get", _xray("XcCircle"), _round_row("circle:0", 10, 0, 10))
+    read("sketch_get", _xray("XcCircle"), _round_row("circle:1", 50, 0, 10))
+    sketch("XcRect",
+           ({"kind": "three_point_rectangle", "points": [[0, 0], [30, 0], [10, 20]]},
+            lambda p: p["results"][0].get("curves_added") == 4
+            and p["results"][0].get("constraints_added") == 0))
+    read("sketch_get", _xray("XcRect"),
+         _line_corners(4, [(0, 0), (30, 0), (30, 20), (0, 20)]))
+    read("sketch_get", _xray("XcRect"),
+         lambda p: _one_profile(600.0, (15, 10))(p) and p.get("constraint_count") == 0)
+    # An edge polygon lies to the RIGHT of its first edge: below an edge drawn towards +X.
+    sketch("XcEdge",
+           ({"kind": "edge_polygon", "x1": 0, "y1": 0, "x2": 10, "y2": 0, "sides": 6},
+            lambda p: p["results"][0].get("curves_added") == 6))
+    read("sketch_get", _xray("XcEdge"), _one_profile(150 * sqrt(3), (5, -5 * sqrt(3))))
+    # A circumscribed radius is centre to EDGE; angle_deg directs its outward edge normal.
+    sketch("XcCircum",
+           ({"kind": "circumscribed_polygon", "cx": 50, "cy": 0, "radius": 10, "sides": 4,
+             "angle_deg": 45},
+            lambda p: p["results"][0].get("curves_added") == 4))
+    read("sketch_get", _xray("XcCircum"),
+         _line_corners(4, [(50, 10 * sqrt(2)), (50 - 10 * sqrt(2), 0),
+                          (50, -10 * sqrt(2)), (50 + 10 * sqrt(2), 0)]))
+    read("sketch_get", _xray("XcCircum"), _one_profile(400.0, (50, 0)))
+
+    write("sketch_create", {"plane": "xy", "name": "XcRefuse"})
+    for geometry, said in (
+            ({"kind": "three_point_arc", "points": [[0, 0], [5, 5], [10, 10]]},
+             ("three points that are not in a line", "collinear")),
+            ({"kind": "three_point_circle", "points": [[0, 0], [5, 5], [0, 0]]},
+             ("three distinct points", "coincide")),
+            ({"kind": "center_arc", "cx": 0, "cy": 0, "x1": 10, "y1": 0, "x2": 0, "y2": 12},
+             ("start is 10 from the centre and end is 12",)),
+            ({"kind": "two_point_circle", "x1": 3, "y1": 4, "x2": 3, "y2": 4},
+             ("two distinct points",)),
+            ({"kind": "edge_polygon", "x1": 0, "y1": 0, "x2": 10, "y2": 0, "sides": 2},
+             ("sides >= 3",))):
+        write("sketch_add_geometry", {"sketch_name": "XcRefuse", "geometry": [geometry]},
+              _refused(*said))
+    read("sketch_get", _xray("XcRefuse"),
+         lambda p: p.get("truncated") is False and p.get("profile_count") == 0
+         and all(p["counts"].get(kind) == 0 for kind in ("lines", "arcs", "circles")))
+    close()
+    return rows
+
+
+_SKETCHWORK += _exact_curve_rows()
+
+
+def _line_ends(ref, a, b):
+    """sketch_get: line `ref` runs between these two (x, y) mm points, in either order, in plane."""
+    def check(p):
+        row = _rows_by_id(p).get(ref) or {}
+        ends = [row.get("start") or {}, row.get("end") or {}]
+        got = sorted((e.get("x"), e.get("y")) for e in ends if _num(e.get("x")) and _num(e.get("y")))
+        return _measured(f"{ref} end points", row,
+                         len(got) == 2 and all("z" not in e for e in ends)
+                         and all(_near(g[0], w[0], 0.01) and _near(g[1], w[1], 0.01)
+                                 for g, w in zip(got, sorted([a, b]))))
+    return check
+
+
+def _mirror_rows():
+    """Mirror a line and an arc about a line; the images are read, then follow a moved source."""
+    from math import asin, sin
+    rows, write, read, close = _scratch_rows("mr_doc")
+    write("sketch_create", {"plane": "xy", "name": "MrSk"})
+    write("sketch_add_geometry", {"sketch_name": "MrSk", "geometry": [
+        {"kind": "line", "x1": 10, "y1": 0, "x2": 30, "y2": 10},
+        {"kind": "line", "x1": 0, "y1": -20, "x2": 0, "y2": 40},
+        {"kind": "three_point_arc", "points": [[10, 20], [20, 25], [30, 20]]}]})
+    write("sketch_copy", {"sketch_name": "MrSk", "entities": "line:0,arc:0", "mirror_line": "line:1",
+                          "dx": 5}, _refused("Drop: dx."))
+    write("sketch_copy", {"sketch_name": "MrSk", "entities": "circle:0", "mirror_line": "line:1"},
+          _refused("mirrors lines and arcs", "circle:0 is neither"))
+    write("sketch_copy", {"sketch_name": "MrSk", "entities": "line:0,line:1",
+                          "mirror_line": "line:1"}, _refused("also in 'entities'"))
+    read("sketch_get", _xray("MrSk"),
+         lambda p: p["counts"]["lines"] == 2 and p["counts"]["arcs"] == 1
+         and p.get("constraint_count") == 0)
+    write("sketch_copy", {"sketch_name": "MrSk", "entities": "line:0,arc:0", "mirror_line": "line:1"},
+          lambda p: p.get("mirrored") is True and p.get("new_curves") == ["line:2", "arc:1"]
+          and (p.get("curve_count_before"), p.get("curve_count_after")) == (3, 5)
+          and p.get("constraints_added", 0) > 0)
+    read("sketch_get", _xray("MrSk"), _line_ends("line:2", (-10, 0), (-30, 10)))
+    read("sketch_get", _xray("MrSk"), _line_ends("line:0", (10, 0), (30, 10)))
+    read("sketch_get", _xray("MrSk"), _round_row("arc:1", -20, 12.5, 12.5))
+    read("sketch_get", _xray("MrSk"),
+         lambda p: any(c.get("type") == "symmetry" for c in p.get("constraints") or []))
+    # A chord under the mirrored arc closes one region: the minor segment, bulging up as its source.
+    write("sketch_add_geometry", {"sketch_name": "MrSk", "geometry": [
+        {"kind": "line", "x1": -30, "y1": 20, "x2": -10, "y2": 20}]})
+    theta = 2 * asin(10 / 12.5)
+    read("sketch_get", _xray("MrSk"), _one_profile(12.5 ** 2 / 2 * (theta - sin(theta))))
+    read("sketch_get", _xray("MrSk"),
+         lambda p: p["profiles"][0]["centroid"][0] < -10 and p["profiles"][0]["centroid"][1] > 20)
+    # The image follows its source through the symmetry constraints.
+    write("sketch_move", {"sketch_name": "MrSk", "entities": "line:0", "dy": 5},
+          lambda p: p.get("moved_entities") == ["line:0"])
+    read("sketch_get", _xray("MrSk"), _line_ends("line:0", (10, 5), (30, 15)))
+    read("sketch_get", _xray("MrSk"), _line_ends("line:2", (-10, 5), (-30, 15)))
+    close()
+    return rows
+
+
+_SKETCHWORK += _mirror_rows()
+
+
+def _through(ref, x, y, wanted):
+    """sketch_get: whether line `ref`, extended, passes through (x, y) mm - `wanted` says which."""
+    def check(p):
+        row = _rows_by_id(p).get(ref) or {}
+        a, b = row.get("start") or {}, row.get("end") or {}
+        if not all(_num(v) for v in (a.get("x"), a.get("y"), b.get("x"), b.get("y"))):
+            return _measured(f"{ref} readable", row, False)
+        length = ((b["x"] - a["x"]) ** 2 + (b["y"] - a["y"]) ** 2) ** 0.5
+        off = abs((b["x"] - a["x"]) * (y - a["y"]) - (b["y"] - a["y"]) * (x - a["x"])) / length
+        return _measured(f"{ref} {'through' if wanted else 'clear of'} ({x}, {y})", off,
+                         (off < 0.001) is wanted and (wanted or off > 1.0))
+    return check
+
+
+def _perpendicular_to_curve_rows():
+    """A line made perpendicular to ONE arc: it passes through that arc's centre, not the other's."""
+    rows, write, read, close = _scratch_rows("pc_doc")
+    write("sketch_create", {"plane": "xy", "name": "PcSk"})
+    write("sketch_add_geometry", {"sketch_name": "PcSk", "geometry": [
+        {"kind": "center_arc", "cx": 0, "cy": 0, "x1": 20, "y1": 0, "x2": 0, "y2": 20},
+        {"kind": "center_arc", "cx": 60, "cy": 0, "x1": 80, "y1": 0, "x2": 60, "y2": 20},
+        {"kind": "line", "x1": 30, "y1": 30, "x2": 50, "y2": 45},
+        {"kind": "line", "x1": 0, "y1": 60, "x2": 40, "y2": 60}]})
+    read("sketch_get", _xray("PcSk"), _through("line:0", 0, 0, False))
+    read("sketch_get", _xray("PcSk"), _through("line:0", 60, 0, False))
+
+    def constrain(one, two, check):
+        write("sketch_constrain", {"sketch_name": "PcSk", "constraints": [
+            {"constraint": "perpendicular_to_curve", "entity_one": one, "entity_two": two}]}, check)
+    constrain("arc:0", "line:0", _refused("needs a LINE as entity_one", "'arc:0'"))
+    constrain("line:0", "line:1", _refused("needs an ARC or CIRCLE as entity_two",
+                                           "Two lines take constraint=perpendicular"))
+    read("sketch_get", _xray("PcSk"), lambda p: p.get("constraint_count") == 0)
+    constrain("line:0", "arc:0",
+              lambda p: p["results"][0].get("applied") == "perpendicular_to_curve"
+              and "line only" in p["results"][0].get("note", ""))
+    read("sketch_get", _xray("PcSk"), _through("line:0", 0, 0, True))
+    read("sketch_get", _xray("PcSk"), _through("line:0", 60, 0, False))
+    read("sketch_get", _xray("PcSk"), _round_row("arc:0", 0, 0, 20))
+    read("sketch_get", _xray("PcSk"),
+         lambda p: _round_row("arc:1", 60, 0, 20)(p) and p.get("constraint_count") == 1)
+    close()
+    return rows
+
+
+_SKETCHWORK += _perpendicular_to_curve_rows()
+
+
+def _offset_topology_rows():
+    """An offset that swallows a fillet is refused while topology is matched, and built without."""
+    rows, write, read, close = _scratch_rows("ot_doc")
+    write("sketch_create", {"plane": "xy", "name": "OtSk"})
+    write("sketch_add_geometry", {"sketch_name": "OtSk", "geometry": [
+        {"kind": "line", "x1": 0, "y1": 0, "x2": 40, "y2": 0},
+        {"kind": "line", "x1": 40, "y1": 0, "x2": 40, "y2": 30}]})
+    write("sketch_edit_curve", {"sketch_name": "OtSk", "action": "fillet", "entity_one": "line:0",
+                                "entity_two": "line:1", "x1": 35, "y1": 0, "x2": 40, "y2": 5,
+                                "radius": 3}, lambda p: _near(p.get("radius"), 3, .001))
+    counted = lambda lines, arcs: (lambda p: p.get("truncated") is False
+                                   and p["counts"]["lines"] == lines
+                                   and p["counts"]["arcs"] == arcs)
+    read("sketch_get", _xray("OtSk"), counted(2, 1))
+
+    def offset(check, **extra):
+        write("sketch_constrain", {"sketch_name": "OtSk", "constraints": [
+            {"constraint": "offset", "entities": "line:0,arc:0,line:1", "distance": -5, **extra}]},
+            check)
+    offset(_refused("topology of the offset curves does not match", "Pass match_topology=false"))
+    read("sketch_get", _xray("OtSk"), counted(2, 1))
+    write("sketch_constrain", {"sketch_name": "OtSk", "constraints": [
+        {"constraint": "parallel", "entity_one": "line:0", "entity_two": "line:1",
+         "match_topology": False}]}, _refused("match_topology applies to constraint=offset only"))
+    offset(lambda p: p["results"][0].get("match_topology") is False
+           and p["results"][0].get("created_count") == 2, match_topology=False)
+    read("sketch_get", _xray("OtSk"), counted(4, 1))
+    close()
+    return rows
+
+
+_SKETCHWORK += _offset_topology_rows()
+
+
+def _edge_at(length, y, z):
+    """A save slot's extractor: the handle of the one straight edge of this length on this y and z."""
+    def pick(p):
+        hits = [m for m in p.get("matches") or []
+                if m.get("kind") == "line_edge" and _near(m.get("length"), length, 1e-3)
+                and _vec3(m.get("position")) and _near(m["position"][1], y, 1e-4)
+                and _near(m["position"][2], z, 1e-4) and m.get("handle")]
+        if len(hits) != 1:
+            raise AssertionError(f"no single {length} mm edge at y {y}, z {z}: "
+                                 f"{[(m.get('length'), m.get('position')) for m in p.get('matches') or []]}")
+        return hits[0]["handle"]
+    return pick
+
+
+def _reference_lines(count, z=None):
+    """sketch_get: `count` lines, every one linked reference geometry, at sketch height `z` mm."""
+    def check(p):
+        lines = [r for r in p.get("entities") or [] if r.get("type") == "line"]
+        heights = [(r.get(end) or {}).get("z", 0.0) for r in lines for end in ("start", "end")]
+        return _measured(f"{count} reference lines at z {z}", lines,
+                         p.get("truncated") is False and len(lines) == count
+                         and all(r.get("reference") is True for r in lines)
+                         and (z is None or all(_near(h, z, 0.001) for h in heights)))
+    return check
+
+
+def _include_and_cut_rows():
+    """Include an edge where it is, off the sketch plane; cut a body with a sketch plane."""
+    rows, write, read, close = _scratch_rows("ic_doc")
+    _boxed(write, "IcBase", (0, 0, 20, 10), 8, "ic_body")
+    read("find_geometry", lambda c: {"target": _ctx_get(c, "ic_body", "the box"),
+                                     "kind": "line_edge", "max_results": 50},
+         lambda p: p.get("truncated") is not True,
+         ("ic_edge", _recall("ic_edge", _edge_at(20, 0, 8))))
+    write("sketch_create", {"plane": "xy", "name": "IcSk"})
+    write("sketch_project", lambda c: {"action": "include", "sketch_name": "IcSk",
+                                       "entities": [_ctx_get(c, "ic_edge", "the top edge")],
+                                       "bodies": [_ctx_get(c, "ic_body", "the box")]},
+          _refused("'bodies' applies only to"))
+    write("sketch_project", lambda c: {"action": "include", "sketch_name": "IcSk",
+                                       "entities": [_ctx_get(c, "ic_edge", "the top edge")]},
+          lambda p: p.get("action") == "include" and p.get("created_count", 0) >= 1
+          and p.get("off_plane_count") == 1
+          and p.get("entity_refs") == ["line:0", "point:1", "point:2"]
+          and "not flattened" in p.get("note", ""))
+    # The included line sits at the edge's own height, 8 mm above the XY sketch plane.
+    read("sketch_get", _xray("IcSk"), _reference_lines(1, 8.0))
+    read("sketch_get", _xray("IcSk"),
+         lambda p: _rows_by_id(p)["line:0"].get("linked") is True and p.get("profile_count") == 0)
+    for name, offset in (("IcMid", 4), ("IcHigh", 20)):
+        write("model_construction", {"kind": "plane", "plane": "xy", "offset": offset, "name": name})
+        write("sketch_create", {"plane": name, "name": name + "Sk"})
+
+    def cut(sketch, check):
+        write("sketch_project", lambda c: {"action": "cut_edges", "sketch_name": sketch,
+                                           "bodies": [_ctx_get(c, "ic_body", "the box")]}, check)
+    cut("IcHighSk", _refused("cuts none of"))
+    read("sketch_get", _xray("IcHighSk"), _reference_lines(0))
+    cut("IcMidSk", lambda p: p.get("action") == "cut_edges" and p.get("created_count") == 4
+        and p["per_source"][0].get("created") == 4)
+    read("sketch_get", _xray("IcMidSk"), _reference_lines(4, 0.0))
+    read("sketch_get", _xray("IcMidSk"), _one_profile(200.0))
+    close()
+    return rows
+
+
+_SKETCHWORK += _include_and_cut_rows()
+
+
+def _spline_row(fit_points, closed):
+    """sketch_get: spline:0 with this many fit points and this closed state."""
+    def check(p):
+        row = _rows_by_id(p).get("spline:0") or {}
+        return _measured(f"spline:0 {fit_points} fit points, closed {closed}", row,
+                         p.get("truncated") is False and row.get("fit_point_count") == fit_points
+                         and row.get("is_closed") is closed)
+    return check
+
+
+def _point_rows(p):
+    """sketch_get: {point id: (x, y)} for every point row."""
+    return {r["id"]: ((r.get("position") or {}).get("x"), (r.get("position") or {}).get("y"))
+            for r in p.get("entities") or [] if r.get("type") == "point"}
+
+
+def _spline_edit_rows():
+    """Add a fit point, raise and drive a tangent handle, add a curvature handle, close and reopen."""
+    rows, write, read, close = _scratch_rows("sp_doc")
+    write("sketch_create", {"plane": "xy", "name": "SpSk"})
+    write("sketch_add_geometry", {"sketch_name": "SpSk", "geometry": [
+        {"kind": "spline", "points": [[0, 0], [10, 10], [20, 0], [30, 10]]},
+        {"kind": "line", "x1": 0, "y1": 40, "x2": 30, "y2": 40}]})
+
+    def edit(check, save=None, **args):
+        write("sketch_edit_curve", {"sketch_name": "SpSk", "entity_one": "spline:0", **args},
+              check, save)
+    read("sketch_get", _xray("SpSk"), _spline_row(4, False))
+    write("sketch_edit_curve", {"sketch_name": "SpSk", "entity_one": "line:0",
+                                "action": "add_point", "x1": 15, "y1": 40},
+          _refused("applies to a fitted spline", "'line:0' is a line"))
+    edit(_refused("action='tangent_handle' with state=false"),
+         action="curvature_handle", x1=10, y1=10, state=False)
+    # The spline is point-symmetric about (15, 5), so it passes through that point.
+    edit(lambda p: (p.get("fit_point_count_before"), p.get("fit_point_count_after")) == (4, 5)
+         and _alike(p.get("point"), [15.0, 5.0], 0.01), action="add_point", x1=15, y1=5)
+    read("sketch_get", _xray("SpSk"), _spline_row(5, False))
+    _keep(read, "sketch_get", _xray("SpSk"), "sp_points", _point_rows,
+          lambda p: any(_near(x, 15, 0.01) and _near(y, 5, 0.01)
+                        for x, y in _point_rows(p).values()))
+    edit(lambda p: p.get("changed") is True and p.get("fit_point_index") == 1
+         and _alike(p.get("fit_point"), [10.0, 10.0], 0.001)
+         and len(p.get("handle_points") or []) == 2 and p.get("curve_changed") is True,
+         ("sp_handle", _recall("sp_handle", lambda p: p["handle_points"])),
+         action="tangent_handle", x1=10, y1=10)
+    # The handle's two end points are new point rows; sketch_get lists no line for the handle.
+    read("sketch_get", _xray("SpSk"),
+         lambda p: set(_RECALL["sp_handle"]) <= set(_point_rows(p))
+         and not set(_RECALL["sp_handle"]) & set(_RECALL["sp_points"])
+         and p["counts"]["lines"] == 1,
+         ("sp_handle_at", _recall("sp_handle_at", lambda p: _point_rows(p)[_RECALL["sp_handle"][1]])))
+    write("sketch_move", lambda c: {"sketch_name": "SpSk", "dx": 3, "dy": 3,
+                                    "entities": _ctx_get(c, "sp_handle", "the handle ends")[1]},
+          lambda p: bool(p.get("moved_entities")))
+    read("sketch_get", _xray("SpSk"),
+         lambda p: not _alike(list(_point_rows(p)[_RECALL["sp_handle"][1]]),
+                              list(_RECALL["sp_handle_at"]), 0.5)
+         and _spline_row(5, False)(p))
+    edit(lambda p: p.get("changed") is False, action="tangent_handle", x1=10, y1=10)
+    edit(lambda p: p.get("changed") is True and p.get("fit_point_index") == 3,
+         action="curvature_handle", x1=20, y1=0)
+    edit(lambda p: p.get("changed") is True, action="tangent_handle", x1=10, y1=10, state=False)
+    # The tangent handle's two points are gone; the curvature handle at fit point 3 keeps its five.
+    read("sketch_get", _xray("SpSk"),
+         lambda p: len(_point_rows(p)) == len(_RECALL["sp_points"]) + 5 and _spline_row(5, False)(p))
+    edit(lambda p: p.get("closed") is True and p.get("changed") is True, action="close", state=True)
+    read("sketch_get", _xray("SpSk"), _spline_row(5, True))
+    edit(lambda p: p.get("closed") is False, action="close", state=False)
+    read("sketch_get", _xray("SpSk"), _spline_row(5, False))
+    close()
+    return rows
+
+
+_SKETCHWORK += _spline_edit_rows()
+
+
+def _line_height(ref, z):
+    """sketch_get: both ends of line `ref` sit `z` mm off the sketch plane (0 = in it)."""
+    def check(p):
+        row = _rows_by_id(p).get(ref) or {}
+        heights = [(row.get(end) or {}).get("z", 0.0) for end in ("start", "end")]
+        return _measured(f"{ref} at sketch height {z}", row,
+                         bool(row) and all(_near(h, z, 0.001) for h in heights))
+    return check
+
+
+def _point_at(x, y):
+    """A save slot's extractor: the id of the one non-origin point row at (x, y) mm."""
+    def pick(p):
+        hits = [r["id"] for r in p.get("entities") or []
+                if r.get("type") == "point" and not r.get("origin")
+                and _near((r.get("position") or {}).get("x"), x, 0.001)
+                and _near((r.get("position") or {}).get("y"), y, 0.001)]
+        if len(hits) != 1:
+            raise AssertionError(f"no single point at ({x}, {y}): {hits}")
+        return hits[0]
+    return pick
+
+
+def _off_plane_rows():
+    """Lift a line off its sketch plane; lift one corner of a loop and watch its profile go and return."""
+    rows, write, read, close = _scratch_rows("dz_doc")
+    write("sketch_create", {"plane": "xy", "name": "DzSk"})
+    write("sketch_add_geometry", {"sketch_name": "DzSk", "geometry": [
+        {"kind": "three_point_rectangle", "points": [[0, 0], [20, 0], [20, 20]]},
+        {"kind": "line", "x1": 50, "y1": 0, "x2": 70, "y2": 0}]})
+    read("sketch_get", _xray("DzSk"), _one_profile(400.0, (10, 10)),
+         ("dz_corner", _recall("dz_corner", _point_at(20, 20))))
+
+    def lifted(before, after):
+        return lambda p: (p.get("profile_count_before"), p.get("profile_count_after")) == (
+            before, after) and bool(p.get("moved_entities")) and "on_plane_entities" not in p
+    write("sketch_move", {"sketch_name": "DzSk", "entities": "line:4", "dz": 5},
+          lambda p: lifted(1, 1)(p) and p["requested"].get("dz") == 5.0)
+    read("sketch_get", _xray("DzSk"), _line_height("line:4", 5.0))
+    read("sketch_get", _xray("DzSk"), _one_profile(400.0, (10, 10)))
+
+    def corner(dz, check):
+        write("sketch_move", lambda c: {"sketch_name": "DzSk", "dz": dz,
+                                        "entities": _ctx_get(c, "dz_corner", "the corner point")},
+              check)
+    corner(5, lambda p: lifted(1, 0)(p) and "from 1 to 0 profile(s)" in p.get("note", ""))
+    read("sketch_get", _xray("DzSk"),
+         lambda p: p.get("truncated") is False and p.get("profile_count") == 0
+         and _near((_rows_by_id(p)[_RECALL["dz_corner"]].get("position") or {}).get("z"), 5, .001))
+    corner(-5, lambda p: (p.get("profile_count_before"), p.get("profile_count_after")) == (0, 1)
+           and p.get("moved_entities") == [_RECALL["dz_corner"]]
+           and p.get("on_plane_entities") == [_RECALL["dz_corner"]])
+    read("sketch_get", _xray("DzSk"), _one_profile(400.0, (10, 10)))
+    write("sketch_copy", {"sketch_name": "DzSk", "entities": "line:4", "dz": 10},
+          lambda p: p.get("new_curves") == ["line:5"] and p["requested"].get("dz") == 10.0)
+    read("sketch_get", _xray("DzSk"), _line_height("line:5", 15.0))
+    read("sketch_get", _xray("DzSk"), _line_height("line:4", 5.0))
+    close()
+    return rows
+
+
+_SKETCHWORK += _off_plane_rows()
+
+
+_TEXT_OUTLINE_SCRIPT = (
+    "import adsk.core, adsk.fusion, json\n"
+    "def run(context):\n"
+    "    design=adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)\n"
+    "    text=design.rootComponent.sketches.itemByName('TxSk').sketchTexts.item(0)\n"
+    "    ends=[]; unread=0\n"
+    "    for curve in text.asCurves():\n"
+    "        got=curve.evaluator.getEndPoints()\n"
+    "        if got[0] is not True:\n"
+    "            unread+=1; continue\n"
+    "        ends += [[round(p.x,5),round(p.y,5)] for p in got[1:3]]\n"
+    "    ends.sort()\n"
+    "    lines=design.rootComponent.sketches.itemByName('TxSk').sketchCurves.sketchLines\n"
+    "    try:\n"
+    "        on=[text.definition.path==lines.item(i) for i in (0,1)]\n"
+    "    except Exception as exc:\n"
+    "        on=str(exc)[:120]\n"
+    "    print(json.dumps({'curves':len(ends)//2,'unread':unread,'ends':ends,'path_is':on,\n"
+    "        'flip_h':text.isHorizontalFlip,'flip_v':text.isVerticalFlip}))\n")
+
+
+def _script_reply(reply):
+    """A read-only script's one JSON object, whether the harness decoded its output or not."""
+    if isinstance(reply, dict):
+        return reply
+    found = None
+    for line in str(reply or "").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            if found is not None:
+                raise AssertionError("the script printed more than one JSON object")
+            found = row
+    if found is None:
+        raise AssertionError(f"the script printed no JSON object: {str(reply)[:300]}")
+    return found
+
+
+def _outline_read(flip_h, same_as_first):
+    """The read-only glyph outline of TxSk text 0: the flag, and whether it equals the first read."""
+    def check(p):
+        p = _script_reply(p)
+        first = _RECALL.get("tx_outline")
+        ends = p.get("ends")
+        return _measured(f"text outline with flip_h {flip_h}",
+                         {"curves": p.get("curves"), "unread": p.get("unread"),
+                          "flip_h": p.get("flip_h")},
+                         p.get("unread") == 0 and p.get("curves", 0) > 0
+                         and p.get("flip_h") is flip_h and first is not None
+                         and len(ends) == len(first) and (ends == first) is same_as_first)
+    return check
+
+
+def _text_box(key=None, x=None, y=None):
+    """sketch_get: text `key`'s box as [min x, min y, max x, max y] mm, inside the given spans."""
+    def check(p):
+        row = _rows_by_id(p).get(key or "text:0") or {}
+        box = row.get("bounding_box") or {}
+        got = [(box.get("min") or {}).get("x"), (box.get("min") or {}).get("y"),
+               (box.get("max") or {}).get("x"), (box.get("max") or {}).get("y")]
+        return _measured(f"{key or 'text:0'} box", got,
+                         all(_num(v) for v in got)
+                         and (x is None or (x[0] <= got[0] and got[2] <= x[1]))
+                         and (y is None or (y[0] <= got[1] and got[3] <= y[1])))
+    return check
+
+
+def _box_of(p):
+    box = (_rows_by_id(p).get("text:0") or {}).get("bounding_box") or {}
+    return [box.get("min"), box.get("max")] if box.get("min") and box.get("max") else None
+
+
+def _text_layout_rows():
+    """Flip, style, re-lay and explode EXISTING sketch text; the flip is judged on its glyph outline."""
+    rows, write, read, close = _scratch_rows("tx_doc")
+    write("sketch_create", {"plane": "xy", "name": "TxSk"})
+    write("sketch_add_geometry", {"sketch_name": "TxSk", "geometry": [
+        {"kind": "line", "x1": 0, "y1": -30, "x2": 60, "y2": -30},
+        {"kind": "line", "x1": 0, "y1": -60, "x2": 60, "y2": -60}]})
+    write("sketch_set_text", {"text": "AB", "sketch_name": "TxSk", "create": True, "height": 5,
+                              "mode": "along_path", "path": "line:0"},
+          lambda p: p.get("created") is True and p.get("mode_verified") is True)
+    write("sketch_set_text", {"text": "CD", "sketch_name": "TxSk", "create": True, "height": 5,
+                              "x": 0, "y": 20}, lambda p: p.get("sketch_text_count") == 2)
+    outline = {"script": _TEXT_OUTLINE_SCRIPT, "read_only": True}
+
+    def layout(check, index=0, **args):
+        write("sketch_set_text", {"sketch_name": "TxSk", "index": index, **args}, check)
+    # The text starts above line:0, at its start.
+    _keep(read, "sketch_get", _xray("TxSk"), "tx_box", _box_of,
+          _text_box(x=(-1, 20), y=(-30.5, -22)))
+    first = lambda p: _script_reply(p)
+    read("sys_execute_script", outline,
+         lambda p: first(p).get("unread") == 0 and first(p).get("curves", 0) > 0
+         and first(p).get("flip_h") is False and first(p).get("path_is") == [True, False],
+         ("tx_outline", _recall("tx_outline", lambda p: first(p)["ends"])))
+    layout(lambda p: p.get("flip_h") is True and p.get("flip_h_outline_changed") is True,
+           flip_h=True)
+    read("sys_execute_script", outline, _outline_read(True, False))
+    layout(lambda p: p.get("flip_h") is False, flip_h=False)
+    read("sys_execute_script", outline, _outline_read(False, True))
+    read("sketch_get", _xray("TxSk"), _unchanged("tx_box", _box_of, 0.001))
+    layout(lambda p: p.get("style") == ["bold"], style=["bold"])
+    read("sketch_get", _xray("TxSk"),
+         lambda p: _box_of(p) is not None and not _alike(_box_of(p), _RECALL["tx_box"], 0.001))
+    layout(lambda p: p.get("style") == [], style=[])
+    read("sketch_get", _xray("TxSk"), _unchanged("tx_box", _box_of, 0.001))
+    # Refused before anything is written: the flip must still read false afterwards.
+    layout(_refused("'path' did not resolve 'line:9'"), flip_h=True, mode="along_path",
+           path="line:9")
+    read("sys_execute_script", outline, _outline_read(False, True))
+    layout(_refused("multi-line box"), index=1, mode="along_path", path="line:1")
+    layout(lambda p: p.get("mode") == "along_path" and p.get("path") == "line:1"
+           and p.get("path_confirmed") is not False and p.get("placement_checked") is True,
+           mode="along_path", path="line:1")
+    read("sketch_get", _xray("TxSk"), _text_box(x=(-1, 20), y=(-60.5, -52)))
+    # The text's own definition names line:1 now, read apart from the tool that re-laid it.
+    read("sys_execute_script", outline,
+         lambda p: _measured("the definition's path after the re-lay", first(p).get("path_is"),
+                             first(p).get("path_is") == [False, True]))
+    read("sketch_get", _xray("TxSk"), lambda p: p["counts"]["texts"] == 2,
+         ("tx_counts", _recall("tx_counts", lambda p: dict(p["counts"]))))
+    layout(_refused("rides alone"), index=1, explode=True, flip_h=True)
+    layout(lambda p: p.get("exploded") is True and p.get("curve_count", 0) > 0
+           and p.get("sketch_text_count") == 1, index=1, explode=True)
+    read("sketch_get", _xray("TxSk"),
+         lambda p: p["counts"]["texts"] == 1
+         and sum(v for k, v in p["counts"].items() if k not in ("texts", "points"))
+         > sum(v for k, v in _RECALL["tx_counts"].items() if k not in ("texts", "points")))
+    close()
+    return rows
+
+
+_SKETCHWORK += _text_layout_rows()

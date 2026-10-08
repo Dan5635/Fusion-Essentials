@@ -30,11 +30,12 @@ RETURNS = [
                           "net face-count increase"),
 ]
 
-_SPLIT = _inputs.Choice("split", ["body", "face", "silhouette"], default="body")
+_SPLIT = _inputs.Choice("split", ["body", "face", "silhouette", "along_vector"], default="body")
 _TARGET = _inputs.BodyRef("target", kind="brep", description="A body 'handle' or name.")
 _SOLID = _inputs.BodyRef("target", kind="solid")
 _VIEW = _inputs.AxisRef("view_direction", entity_only=True, description="x/y/z or a construction axis.")
 _FACES = _inputs.GeometryHandleList("faces", require="face")
+_SPLIT_LINE = _inputs.SketchLineRef("split_line", required=False)
 # The cutter, supplied ONE of two ways: a plane (alias/name/planar-face handle) OR a body/surface.
 _PLANE = _inputs.PlaneRef("split_plane", description="xy/xz/yz, a construction plane or a planar face handle.")
 _TOOLBODY = _inputs.BodyRef("split_tool_body", kind="brep")
@@ -195,6 +196,114 @@ def _split_face(design, comp, faces, cutter, extend_tool):
     return ok(payload)
 
 
+def _split_along_vector(design, comp, faces, split_line, view_direction, extend_tool):
+    """Split faces by a sketch line projected along a typed linear direction entity."""
+    face_ents, ferr = _FACES.resolve(faces)
+    if ferr:
+        return error(ferr)
+    if not face_ents:
+        return error("'faces' is required for split='along_vector' (the faces to split).")
+    line, lerr = _SPLIT_LINE.resolve(split_line)
+    if lerr:
+        return error(lerr)
+    tagged, derr = _VIEW.resolve(view_direction, comp)
+    if derr:
+        return error(derr)
+    if tagged[0] == "world":
+        axis_key = next((key for key, vector in (("x", (1, 0, 0)), ("y", (0, 1, 0)),
+                                                  ("z", (0, 0, 1)))
+                         if tuple(tagged[1]) == vector), None)
+        direction = _inputs.world_construction_axis(comp, axis_key) if axis_key else None
+        if direction is None:
+            return error("'view_direction' world axis could not be resolved in the active component.")
+    else:
+        direction = tagged[1]
+
+    bodies = _geom.owning_bodies(face_ents)
+    before = _geom.face_counts(bodies)
+    coll = adsk.core.ObjectCollection.create()
+    for face in face_ents:
+        coll.add(face)
+    try:
+        features = comp.features.splitFaceFeatures
+        split_input = features.createInput(coll, line, bool(extend_tool))
+        if split_input is None:
+            return error("Fusion refused the along-vector split input; no split was attempted.")
+        set_result = split_input.setAlongVectorSplitType(direction)
+        if set_result is not True:
+            return error("Fusion refused split='along_vector' because its direction setter did not "
+                         "return true; no split was attempted.")
+        feature = features.add(split_input)
+        feature_name = safe(lambda: feature.name) if feature else None
+        feature_token = safe(lambda: feature.entityToken) if feature else None
+        feature_identity = feature_name or feature_token
+    except Exception as exc:
+        return error(f"Split along vector failed: {exc}. Check that the line and direction cross the target faces.")
+    direct_no_feature = _common.direct_feature_absence(design, feature)
+    if not feature and not direct_no_feature:
+        return error(_common.no_feature_error(design, "Along-vector split"))
+    readback_unverified = []
+    if feature:
+        try:
+            retained_definition, marker_err = _common.rolled_to(
+                design, feature,
+                lambda: (feature.splitType, feature.directionEntity),
+                f"along-vector split feature '{feature_identity}'")
+        except Exception as exc:
+            return error(f"Split feature '{feature_identity}' was created, but its retained split "
+                         f"definition could not be read: {exc}. Inspect it with design_get and "
+                         "remove it with design_delete_feature.")
+        if marker_err:
+            return error(f"Split feature '{feature_identity}' was created, but the timeline "
+                         f"marker could not be restored after reading its retained definition: "
+                         f"{marker_err}. Inspect it with design_get and remove it with "
+                         "design_delete_feature.")
+        if retained_definition is None:
+            return error(f"Split feature '{feature_identity}' was created, but its timeline row "
+                         "could not be read. Inspect it with design_get and remove it with "
+                         "design_delete_feature.")
+        actual_split_type, actual_direction = retained_definition
+        expected_split_type = safe(lambda: adsk.fusion.SplitFaceSplitTypes.alongVectorSplitType)
+        if actual_split_type is None or expected_split_type is None:
+            readback_unverified.append("split_type")
+        elif actual_split_type != expected_split_type:
+            return error(f"Split feature '{feature_identity}' did not retain the along-vector split type; "
+                         "inspect it with design_get and remove it with design_delete_feature.")
+        expected_identity = _common.native_identity(direction)
+        actual_identity = _common.native_identity(actual_direction) if actual_direction is not None else None
+        if expected_identity is None or actual_identity is None:
+            readback_unverified.append("split_direction")
+        elif actual_identity != expected_identity:
+            return error(f"Split feature '{feature_identity}' did not retain the selected view_direction; "
+                         "inspect it with design_get and remove it with design_delete_feature.")
+    else:
+        readback_unverified.extend(("split_type", "split_direction"))
+    herr = _health_error(design, feature)
+    if herr:
+        return herr
+    delta, readable = _geom.face_count_delta(bodies, before)
+    if not readable:
+        detail = (f"Feature '{feature_identity}' was created, but " if feature_identity else "")
+        remedy = (" Retire it with design_delete_feature." if feature_identity else "")
+        return error(detail + "Split along vector ran but the owning bodies' face count could not be "
+                     "read back; whether the faces were split is UNVERIFIED. Check with model_inspect / "
+                     "find_geometry." + remedy)
+    if delta <= 0:
+        return error("Split along vector produced no new faces; the projected sketch line did not "
+                     "split the target. Check its position and view_direction. "
+                     + _common.failed_effect_remedy(design, feature))
+    result = {"split": "along_vector", "faces_targeted": len(face_ents), "result_count": delta,
+              "note": "Faces split along the supplied direction; verify the partition with find_geometry."}
+    if readback_unverified:
+        result["unverified"] = readback_unverified
+    if direct_no_feature:
+        result["no_timeline_feature"] = True
+        result["note"] += " " + _common.DIRECT_FEATURE_NOTE
+    else:
+        result["feature"] = feature_identity
+    return ok(result)
+
+
 def _line_ends(body):
     """Each straight edge of `body` as a sorted pair of mm end points, or None when one does not read."""
     edges = safe(lambda: body.edges)
@@ -295,7 +404,8 @@ def _split_silhouette(design, target, view_direction):
 
 
 def handler(split: str = "body", target: str = "", faces=None, split_plane: str = "",
-            split_tool_body: str = "", extend_tool: bool = True, view_direction: str = "") -> dict:
+            split_tool_body: str = "", extend_tool: bool = True, view_direction: str = "",
+            split_line: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
     kind, kerr = _SPLIT.resolve(split)
     if kerr:
@@ -305,13 +415,26 @@ def handler(split: str = "body", target: str = "", faces=None, split_plane: str 
     if not design:
         return error("No active design. Create or open a document first (see doc_new).")
     comp = target_component(design)
+    if kind == "along_vector":
+        if target or split_plane or split_tool_body:
+            return error("split='along_vector' takes 'faces', 'split_line' and 'view_direction', "
+                         "not 'target', 'split_plane' or 'split_tool_body'.")
+        if not view_direction:
+            return error("split='along_vector' needs 'view_direction' (a world axis, construction "
+                         "axis, straight edge or sketch line).")
+        if not split_line:
+            return error("split='along_vector' needs 'split_line' as an exact '<sketch>/line:<index>' "
+                         "from sketch_get(include_entities=true).")
+        return _split_along_vector(design, comp, faces, split_line, view_direction, extend_tool)
     if kind == "silhouette":
-        if faces not in (None, "", []) or split_plane or split_tool_body:
+        if faces not in (None, "", []) or split_plane or split_tool_body or split_line:
             return error("split='silhouette' takes 'target' and 'view_direction', not 'faces', "
                          "'split_plane' or 'split_tool_body'.")
         return _split_silhouette(design, target, view_direction)
     if view_direction:
         return error(f"'view_direction' is used only by split='silhouette' (got split='{kind}').")
+    if split_line:
+        return error(f"'split_line' is used only by split='along_vector' (got split='{kind}').")
 
     cutter, cerr = _resolve_cutter(split_plane, split_tool_body)
     if cerr:
@@ -336,7 +459,10 @@ split_tool = (
     .add_input_property(_PLANE.name, _PLANE.schema(brief=True))
     .add_input_property(_TOOLBODY.name, _TOOLBODY.schema(brief=True))
     .add_input_property("extend_tool", {"type": "boolean"})
-    .add_input_property(*_VIEW.as_property(brief=True))
+    .add_input_property("view_direction", {"type": "string",
+            "description": "Silhouette/along_vector direction: x/y/z, axis name/handle or straight-edge/line handle."})
+    .add_input_property("split_line", {"type": "string",
+            "description": "For split=along_vector. An exact '<sketch>/line:<index>' from sketch_get(include_entities=true)."})
     .strict_schema()
 )
 split_item = Item.create_tool_item(tool=split_tool, write="write", handler=handler, run_on_main_thread=True,

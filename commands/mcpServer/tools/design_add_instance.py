@@ -20,6 +20,7 @@ from ._common import component_contains, error, occurrence_paths, ok, safe, scal
 from . import _common
 from . import _inputs
 from . import _outputs
+from ._doc_common import component_solids as _solids
 
 # collapse_ambiguous_occurrences is on because the target here IS the component: a name matching
 # several of its instances is not an ambiguity to refuse, since instancing a component that already
@@ -109,9 +110,46 @@ def _host_prefixes(paths, instance_name):
     return out
 
 
+def _is_external(design, entity, kind, comp):
+    """True / False / None: does the source component come from another file?"""
+    if kind == "occurrence":
+        return _common.read_flag(lambda: entity.isReferencedComponent)
+    occs = safe(lambda: design.rootComponent.allOccurrencesByComponent(comp))
+    if occs is None or not safe(lambda: occs.count):
+        return None
+    return _common.read_flag(lambda: occs.item(0).isReferencedComponent)
+
+
+def _copy_fault(design, comp, comp_name, occ, components_before, source_before):
+    """The error for a 'copy' that is not an independent copy of an unchanged source, or ''."""
+    made = safe(lambda: occ.component)
+    same = _common.same_component(made, comp) if made is not None else None
+    if same is not False:
+        return (f"No independent copy of '{comp_name}' was made: the new occurrence "
+                + ("is another instance of that same component." if same else
+                   "did not read its component, so it cannot be told from a shared instance."))
+    components_after = safe(lambda: design.allComponents.count)
+    if components_after != components_before + 1:
+        return (f"The copy of '{comp_name}' took the design from {components_before} to "
+                f"{components_after} components, not one more.")
+    copied, source_after = _solids(made), _solids(comp)
+    if source_after != source_before:
+        return (f"Copying '{comp_name}' changed the source: its bodies read "
+                f"{source_after[0]} / {source_after[1]} cm3 against {source_before[0]} / "
+                f"{source_before[1]} before.")
+    if copied[0] != source_before[0]:
+        return (f"The copy of '{comp_name}' holds {copied[0]} body(ies) against the source's "
+                f"{source_before[0]}.")
+    if copied[1] is None or (
+            abs(copied[1] - source_before[1]) > 1e-9 * max(1.0, abs(source_before[1]))):
+        return (f"The copy of '{comp_name}' reads a volume of {copied[1]} cm3 against the "
+                f"source's {source_before[1]}.")
+    return ""
+
+
 def handler(component: str = "", into_component: str = "", x: float = 0.0, y: float = 0.0,
             z: float = 0.0, units: str = "mm", rotate_deg: float = 0.0,
-            rotate_axis: str = "z") -> dict:
+            rotate_axis: str = "z", independent: bool = False) -> dict:
     """See TOOL_DESCRIPTION."""
     k = scale(units)
     if k is None:
@@ -161,6 +199,22 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
                      "itself. Check for unresolved external references with assembly_get, then "
                      "retry.")
 
+    if independent:
+        external = _is_external(design, entity, kind, comp)
+        if external is not False:
+            return error(
+                f"independent=true copies a LOCAL component; '{comp_name}' "
+                + ("is an external reference, and a copy of one is only another instance of the "
+                   "same file. Break its link first (doc_update_xref action='break_link'), then "
+                   "copy the local component that results." if external else
+                   "did not read whether it is an external reference, so no copy was made."))
+    components_before = safe(lambda: design.allComponents.count)
+    source_before = _solids(comp)
+    if independent and (None in source_before or not isinstance(components_before, int)
+                        or isinstance(components_before, bool)):
+        return error(f"The bodies of '{comp_name}' or the design's component count did not read, "
+                     "so a copy could not be checked against its source; no copy was made.")
+
     matrix = adsk.core.Matrix3D.create()
     if rotate_deg:
         axis_vec = _inputs._AXIS_VECS.get((rotate_axis or "z").strip().lower())
@@ -182,19 +236,28 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
     if occurrences is None:
         return error(f"Could not access the occurrences of {host_label} to instance into.")
     want = _cells(matrix)
-    passed, cells = matrix, want and _cells_to_pass(design, comp, nested_host, want)
+    # The shared-instance landing rule was measured on addExistingComponent only; a copy is given
+    # the requested matrix as it is and judged on where it reads afterwards.
+    passed = matrix
+    cells = want and not independent and _cells_to_pass(design, comp, nested_host, want)
     if cells and _off_request(want, cells):
         passed = adsk.core.Matrix3D.create()
         if not passed.setWithArray(cells):
             passed = matrix
     try:
         # The MUTATION - not safe-wrapped, so a refusal is reported instead of swallowed.
-        occ = occurrences.addExistingComponent(comp, passed)
+        occ = (occurrences.addNewComponentCopy(comp, passed) if independent
+               else occurrences.addExistingComponent(comp, passed))
     except Exception as e:
         return error(f"Could not instance '{comp_name}' into {host_label}: {e}")
     if not occ:
         return error(f"addExistingComponent returned nothing - no instance of '{comp_name}' was "
                      "created.")
+    if independent:
+        fault = _copy_fault(design, comp, comp_name, occ, components_before, source_before)
+        if fault:
+            return error(fault + f" The occurrence '{safe(lambda: occ.name)}' it returned is in "
+                         "the design; read it with design_get(include=['tree']).")
     # read_flag: the ONE unreadable-flag read - None is unknown, so only a real False refuses.
     if _common.read_flag(lambda: occ.isValid) is False:
         return error(f"addExistingComponent returned an occurrence for '{comp_name}' but it reads "
@@ -245,6 +308,11 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
             "name/full_path, not a predicted one. The instance SHARES the component's geometry - "
             "editing either shows in both. Position it with assembly_move / joint_create; re-parent "
             "it with design_move_occurrence.")
+    copy_name = safe(lambda: occ.component.name) if independent else None
+    if independent:
+        note = (f"Copied '{comp_name}' as the NEW component '{copy_name}' - it LANDED as "
+                f"'{landed}' at '{full_path}', with its own geometry. Joints on the source were "
+                "not copied. Position it with assembly_move / joint_create.")
     if children:
         note += (f" '{comp_name}' holds sub-components, so {len(children)} child path(s) came with "
                  f"it - a child KEEPS its own number ('{children[0].split('+')[-1]}').")
@@ -282,12 +350,15 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
     if frame is not None:
         # Read back off the instance, local to its host.
         out["position"], out["axes"] = frame
+    if independent:
+        out["independent"] = True
+        out["new_component"] = copy_name
     return ok(out)
 
 
 TOOL_DESCRIPTION = (
 "Place another INSTANCE of a component already in this design - it SHARES the original's "
-"geometry; placement coords in 'units', angles in degrees.\n"
+"geometry unless 'independent'; placement coords in 'units', angles in degrees.\n"
 + _outputs.produces_block(RETURNS)
 )
 
@@ -303,6 +374,8 @@ tool = (
             "description": "About 'rotate_axis'."})
     .add_input_property(*_inputs.frame_axis("rotate_axis", default="z",
             description="World axis.").as_property())
+    .add_input_property("independent", {"type": "boolean", "description": (
+        "true = a NEW local component; external references refused.")})
     .strict_schema()
 )
 item = Item.create_tool_item(

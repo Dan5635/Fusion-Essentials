@@ -62,8 +62,8 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `model_edit_loft` | Retarget, remove or reorder one Loft section |
 | ✎ | `model_edit_sweep` | Edit Sweep operands or Boolean scope; read model_inspect. |
 | ✎ | `model_emboss` | Stamp sketch profiles or text onto faces; a negative 'depth' engraves |
-| ✎ | `model_extrude` | Extrude profiles/curves to solids/surfaces; sketch_get handles. |
-| ✎ | `model_fillet` | Round (fillet) edges; model_chamfer bevels |
+| ✎ | `model_extrude` | Extrude sketch profiles/curves as solids or surfaces. |
+| ✎ | `model_fillet` | Fillet edges; model_chamfer bevels |
 | ✎ | `model_hole` | Drill a Hole feature; multiple points share one feature. |
 | · | `model_inspect` | Measure bounds or mesh stats; opt-in mass/material/appearance. |
 | ✎ | `model_loft` | Loft ordered sections; G1/G2: open surface edge to open sketch curve |
@@ -73,18 +73,18 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `model_mirror` | Mirror bodies or timeline features across a plane. |
 | ✎ | `model_move` | Move bodies as a timeline feature; assembly_move moves an occurrence |
 | ✎ | `model_offset_face` | Push faces along the normal; positive adds material |
-| ✎ | `model_pattern_circular` | Pattern occurrences or bodies evenly around an axis. |
-| ✎ | `model_pattern_path` | Pattern occurrences or bodies along a path |
-| ✎ | `model_pattern_rectangular` | Pattern occurrences or bodies in a rectangular grid. |
+| ✎ | `model_pattern_circular` | Pattern occurrences or bodies evenly around an axis |
+| ✎ | `model_pattern_path` | Pattern occurrences, bodies, faces or features along a path; one seed kind per call |
+| ✎ | `model_pattern_rectangular` | Pattern occurrences or bodies in a rectangular grid |
 | ✎ | `model_pipe` | Build a pipe along a path |
 | ✎ | `model_replace_face` | Replace body faces with an open surface (see surface_patch) |
-| ✎ | `model_revolve` | Revolve a sketch profile about an axis; sketch one half - the profile must not cross the axis. |
+| ✎ | `model_revolve` | Revolve a sketch profile about an axis; it must not cross the axis. |
 | ✎ | `model_scale` | Resize solid bodies about an anchor point that stays put |
 | ✎ | `model_set_material` | Assign a PHYSICAL material; appearance_set does color |
 | ✎ | `model_shell` | Hollow a solid; 'remove_faces' opens the shell |
 | ✎ | `model_split` | Split a body, or its faces by a cutter or silhouette |
 | ✎ | `model_stitch` | Stitch surface bodies into a solid; 'became_solid' reports whether they closed. |
-| ✎ | `model_sweep` | Sweep profile or solid body |
+| ✎ | `model_sweep` | Sweep |
 | ✎ | `model_thread` | Thread an existing cylindrical face; model_hole taps its holes |
 | ✎ | `model_unstitch` | Explode a body into per-face surface bodies - the inverse of model_stitch. |
 
@@ -98,7 +98,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `surface_extrude` | Extrude an open profile into a sheet body; model_extrude makes a capped solid. |
 | ✎ | `surface_fill` | Seal the volume enclosed by several surface and/or solid bodies into a solid |
 | ✎ | `surface_offset` | Offset faces into another surface body. |
-| ✎ | `surface_patch` | Fill closed edge or sketch boundaries with surface faces. |
+| ✎ | `surface_patch` | Patch closed loops; read per-edge conditions; compare seam normals at matching points. |
 | ✎ | `surface_reverse_normal` | Reverse the normals of open surface bodies; ALL faces of each are flipped |
 | ✎ | `surface_revolve` | Revolve an open profile into a sheet body; model_revolve makes a solid. |
 | ✎ | `surface_thicken` | Thicken faces into a solid wall. |
@@ -140,7 +140,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `sketch_add_3d_spline` | Draw a fitted or control-point 3D spline from 'points' or a 'helix'; model_pipe/model_sweep take path='sketch:<name>'. |
 | ✎ | `sketch_add_geometry` | Draw entities on a sketch; coords in 'units', angles in degrees. |
 | ✎ | `sketch_constrain` | Apply geometric constraints to one sketch, entities '<type>:<index>'. |
-| ✎ | `sketch_copy` | COPY sketch entities, transformed. |
+| ✎ | `sketch_copy` | COPY sketch entities, transformed or mirrored. |
 | ✎ | `sketch_create` | Create a sketch on a plane or a planar face; draw on it with sketch_add_geometry. |
 | ⚠ | `sketch_delete_entity` | Delete ONE sketch entity, constraint, dimension or text, named as '<type>:<index>'. |
 | ✎ | `sketch_dimension` | Add dimensions, or edit dimension/is_driving; sketch_get reads state. |
@@ -214,7 +214,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | | Tool | Summary |
 |---|---|---|
 | ✎ | `design_activate_component` | Make an existing component the active edit target - new features build into it. |
-| ✎ | `design_add_instance` | Place another INSTANCE of a component already in this design - it SHARES the original's geometry; placement coords in 'units', angles in degrees |
+| ✎ | `design_add_instance` | Place another INSTANCE of a component already in this design - it SHARES the original's geometry unless 'independent'; placement coords in 'units', angles in de... |
 | ✎ | `design_configure` | Build or switch a Configured Design; 'action' picks the verb |
 | ⚠ | `design_delete_feature` | Delete one timeline feature by name; a pattern/mirror delete takes every instance it created. |
 | ⚠ | `design_delete_occurrence` | Delete one component occurrence; if it was the last instance of its component, the component goes too. |
@@ -245,7 +245,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `doc_save` | Save the ACTIVE document in place as a new cloud version; a never-saved one needs doc_save_as. |
 | ✎ | `doc_save_as` | Save the ACTIVE document into a cloud project/folder under 'name' - including a design never saved before. |
 | ✎ | `doc_save_milestone` | Save the ACTIVE document as a NAMED MILESTONE - a new cloud version marked, findable by name |
-| ✎ | `doc_update_xref` | Refresh the active document's external references and derive links to their latest cloud version. |
+| ✎ | `doc_update_xref` | Refresh references and derive links to their latest cloud version, or replace / break ONE occurrence's link per 'action'. |
 
 ### data
 
@@ -325,7 +325,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 
 | | Tool | Summary |
 |---|---|---|
-| ✎ | `appearance_set` | Set the color and/or opacity of a face, body, occurrence or component as a revertible override. |
+| ✎ | `appearance_set` | Set color/opacity or a library appearance on a face, body, occurrence or component as a revertible override, or clear it. |
 
 ### save
 

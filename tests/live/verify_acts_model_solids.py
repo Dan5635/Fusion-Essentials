@@ -26,7 +26,8 @@ from verify_acts_model_precision import (
 from verify_acts_model_sweep import (
     _LATER_OPERAND, _LOFT_ALIGNMENT, _LOFT_EDITOR, _LOFT_PARTICIPANTS, _SOLID_TOOL,
     _SWEEP_EDIT_MODES, _TANGENT_PATH, _retire_compare, _retire_material_state, _sweep_mode_box_equal,
-    _retire_reads, _retire_design_state, _rolled_back_body)
+    _retire_reads, _retire_design_state, _rolled_back_body,
+    _retire_body_state as _symmetric_target_body_state)
 
 
 def _pattern_single_row_history(p):
@@ -1653,26 +1654,6 @@ def _symmetric_target_top(p):
     return _measured("one target top planar face at z=10", top, bool(valid))
 
 
-def _symmetric_target_body_state(p):
-    """Return a direct body's readable world bounds, connected lump and material without requiring subtree rows."""
-    mass = p.get("mass") or {}
-    bounds = {key: p.get(key) for key in ("min_point", "max_point", "center")}
-    values = [p.get(axis) for axis in "xyz"]
-    values += [(bounds[point] or {}).get(axis) for point in bounds for axis in "xyz"]
-    physical = [mass.get(key) for key in ("mass_kg", "volume", "area", "density_kg_per_cm3")]
-    if (p.get("kind") != "body" or p.get("units") != "mm"
-            or p.get("frame") != "world axes (axis-aligned)" or p.get("oriented") is not False
-            or not p.get("box_read") or type(p.get("lump_count")) is not int or p["lump_count"] != 1
-            or not isinstance(p.get("target"), str) or not p["target"].startswith("body ")
-            or mass.get("target") != p["target"] or mass.get("units") != "mm"
-            or mass.get("accuracy_used") != "very_high"
-            or not all(_num(v) and math.isfinite(v) for v in values)
-            or not all(_num(v) and math.isfinite(v) and v > 0 for v in physical)):
-        return None
-    return {"target": p["target"], "bounds": bounds, "size": [p[a] for a in "xyz"],
-            "lump_count": p["lump_count"], "material": {k: v for k, v in mass.items() if k != "note"}}
-
-
 def _symmetric_target_rows():
     """Verify target-symmetry refusals and independently read both legal extent controls."""
     from verify_acts_model_sweep import _retire_compare, _retire_reads
@@ -2236,3 +2217,497 @@ def _placed_extent_refusal_rows():
 
 _SOLIDS += _placed_extent_refusal_rows()
 _SOLIDS += _pattern_parameter_rows()
+
+
+def _feature_face_pattern_rows(family, seed_kind):
+    """Pattern one hole feature or wall face and independently measure every resulting hole."""
+    key = "w2_pattern_" + family + "_" + seed_kind
+    count = 2 if family == "rectangular" else 3
+    centers = {"rectangular": [(20, 0, 10), (60, 0, 10)],
+               "circular": [(-20, 0, 10), (0, 20, 10), (20, 0, 10)],
+               "path": [(20, 0, 10), (50, 0, 10), (80, 0, 10)]}[family]
+    rows = [("doc_get", {}, _home_document, (key + "_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, key + "_home", "pattern home")},
+             _new_document, (key + "_doc", lambda p: p["document_handle"]))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(c, key + "_doc",
+            args(c) if callable(args) else args), check, save))
+
+    def one_body(p):
+        names = p.get("result_bodies")
+        return _extruded(p) and isinstance(names, list) and len(names) == 1 and bool(names[0])
+    def inspect_args(c, role):
+        return {**_combine_inspect(_ctx_get(c, key + "_" + role, "pattern body")), "per_body": True}
+    def material(expected):
+        def check(p):
+            state = _symmetric_target_body_state(p)
+            return _measured("pattern stock volume and unchanged outer bounds", state,
+                state is not None and _near(state["material"]["volume"], expected, .01)
+                and all(_near(p.get(axis), size, .001) for axis, size in zip("xyz", (200, 200, 20))))
+        return check
+    def cylinders(expected):
+        def check(p):
+            matches = p.get("matches")
+            valid = (p.get("match_count") == len(expected) and p.get("returned") == len(expected)
+                     and isinstance(matches, list)
+                     and len(matches) == len(expected) and not p.get("truncated")
+                     and all(m.get("kind") == "cylinder_face" and isinstance(m.get("handle"), str)
+                             and m["handle"] and _near(m.get("radius"), 5, .0001)
+                             and isinstance(m.get("axis"), list) and len(m["axis"]) == 3
+                             and _near(m["axis"][0], 0, .0001)
+                             and _near(m["axis"][1], 0, .0001)
+                             and _near(abs(m["axis"][2]), 1, .0001)
+                             and isinstance(m.get("position"), list)
+                             and len(m["position"]) == 3 for m in matches))
+            positions = sorted(m["position"] for m in matches) if valid else []
+            valid = valid and all(all(_near(a, b, .001) for a, b in zip(actual, want))
+                                  for actual, want in zip(positions, sorted(expected)))
+            return _measured("distinct radius-5 cylindrical wall centers", positions, valid)
+        return check
+    def seed(c):
+        return {seed_kind: [_ctx_get(c, key + ("_cut" if seed_kind == "features" else "_face"), "pattern seed")]}
+    def patterned(p):
+        return _measured("new seed kind with independently checkable geometry", p,
+            p.get("patterned") is True and p.get("entity_kind") == seed_kind
+            and bool(p.get("feature")) and p.get("pattern_geometry_changed") is True
+            and p.get("pattern_elements_confirmed") is False
+            and p.get("total_instances" if family == "rectangular" else "quantity") == count)
+
+    write("design_activate_component", {"occurrence": "root"})
+    write("sketch_create", {"name": "W2Stock", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "W2Stock", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": -100, "y1": -100, "x2": 100, "y2": 100}]})
+    write("model_extrude", {"sketch_name": "W2Stock", "distance": 20, "units": "mm"},
+        one_body, (key + "_stock", lambda p: p["result_bodies"][0]))
+    write("sketch_create", {"name": "W2Hole", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "W2Hole", "units": "mm", "geometry": [
+        {"kind": "circle", "cx": 20, "cy": 0, "radius": 5}]})
+    write("model_extrude", lambda c: {"sketch_name": "W2Hole", "distance": 20,
+        "units": "mm", "operation": "cut", "target_bodies": [_ctx_get(c, key + "_stock", "stock")]},
+        _extruded, (key + "_cut", lambda p: p["feature"]))
+    write("sketch_create", {"name": "W2Control", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "W2Control", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 300, "y1": 0, "x2": 310, "y2": 10}]})
+    write("model_extrude", {"sketch_name": "W2Control", "distance": 10, "units": "mm"},
+        one_body, (key + "_control", lambda p: p["result_bodies"][0]))
+    if family == "path":
+        write("sketch_create", {"name": "W2Path", "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": "W2Path", "units": "mm", "geometry": [
+            {"kind": "line", "x1": 20, "y1": 0, "x2": 80, "y2": 0}]})
+    rows.extend([
+        ("model_inspect", lambda c: inspect_args(c, "stock"), material(800000 - 500 * math.pi), None),
+        ("model_inspect", lambda c: inspect_args(c, "control"),
+            _retire_compare(key + "_control_state", _symmetric_target_body_state, False), None),
+        ("find_geometry", lambda c: {"target": _ctx_get(c, key + "_stock", "stock"),
+            "kind": "cylinder_face", "radius": 5, "units": "mm", "max_results": 64},
+            cylinders([(20, 0, 10)]), (key + "_face", lambda p: p["matches"][0]["handle"])),
+    ])
+    args = {"rectangular": {"quantity_one": 2, "spacing_one": 40, "quantity_two": 1, "units": "mm"},
+            "circular": {"quantity": 3, "total_angle_deg": 180, "axis": "z"},
+            "path": {"path": "sketch:W2Path", "quantity": 3, "distance": 30, "units": "mm"}}[family]
+    write("model_pattern_" + family, lambda c: {**args, **seed(c),
+        "bodies": [_ctx_get(c, key + "_stock", "stock")]}, _refused("conflict", "Supply only one"))
+    rows.append(("model_inspect", lambda c: inspect_args(c, "stock"),
+        material(800000 - 500 * math.pi), None))
+    if seed_kind == "faces":
+        write("model_pattern_" + family, lambda c: {**args,
+            "faces": [_ctx_get(c, key + "_face", "face")] * 2},
+            _refused("repeated seed", "list each entity once"))
+        rows.append(("model_inspect", lambda c: inspect_args(c, "stock"),
+            material(800000 - 500 * math.pi), None))
+    write("model_pattern_" + family, lambda c: {**args, **seed(c)}, patterned)
+    rows.extend([
+        ("find_geometry", lambda c: {"target": _ctx_get(c, key + "_stock", "stock"),
+            "kind": "cylinder_face", "radius": 5, "units": "mm", "max_results": 64}, cylinders(centers), None),
+        ("model_inspect", lambda c: inspect_args(c, "stock"), material(800000 - count * 500 * math.pi), None),
+        ("model_inspect", lambda c: inspect_args(c, "control"),
+            _retire_compare(key + "_control_state", _symmetric_target_body_state, True), None),
+        ("design_get", {"include": ["timeline"], "max_results": 100},
+            lambda p: _measured("pattern history healthy at end", p.get("timeline"), _pattern_timeline_healthy(p)
+                and (p.get("timeline") or {}).get("marker_position") == (p.get("timeline") or {}).get("count")), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, key + "_home", "home"),
+            "expect_document": _ctx_get(c, key + "_doc", "scratch")}, "ok", None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, key + "_doc", "scratch"), "save_changes": False,
+            "expect_document": _ctx_get(c, key + "_home", "home")}, _document_closed, None),
+    ])
+    return rows
+
+
+for _w2_family in ("rectangular", "circular", "path"):
+    for _w2_kind in ("features", "faces"):
+        _SOLIDS += _feature_face_pattern_rows(_w2_family, _w2_kind)
+
+
+def _w2_extrude_extent_rows():
+    """Check mixed extents, body solutions, thin walls, starts, and second taper from fresh geometry."""
+    key = "w2_extents"
+    rows = [("doc_get", {}, _home_document, (key + "_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, key + "_home", "home")},
+             _new_document, (key + "_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(c, key + "_doc",
+            args(c) if callable(args) else args), check, save))
+
+    rows.append(("design_activate_component", lambda c: _combine_pin(c, key + "_doc",
+        {"occurrence": "root"}), "ok", None))
+    def rectangle(name, x, y, width, height, plane="xy"):
+        write("sketch_create", {"name": name, "plane": plane})
+        write("sketch_add_geometry", {"sketch_name": name, "units": "mm", "geometry": [{
+            "kind": "rectangle", "x1": x, "y1": y, "x2": x + width, "y2": y + height}]})
+
+    def box(name, x, y, z, width, height, depth):
+        write("model_construction", {"kind": "plane", "plane": "xy", "offset": z,
+                                     "units": "mm", "name": name + "Plane"})
+        rectangle(name + "S", x, y, width, height, name + "Plane")
+        write("model_extrude", {"sketch_name": name + "S", "distance": depth,
+                                "units": "mm", "operation": "new"}, _extruded,
+              (key + "_" + name, _recall(key + "_" + name, lambda p: p["result_bodies"][0])))
+
+    def retain_top_face(p, recall_key, z, area, label):
+        hits = [m for m in p.get("matches", []) if m.get("kind") == "planar_face"
+                and m.get("handle") and _near((m.get("position") or [0, 0, 0])[2], z, .001)
+                and _near((m.get("normal") or [0, 0, 0])[2], 1, .001)
+                and _near(m.get("area"), area, .001)]
+        if len(hits) == 1:
+            _RECALL[recall_key] = hits[0]["handle"]
+        return _measured(label, hits, len(hits) == 1)
+
+    # Separate target bodies make the two minimum-solution cases independent.
+    rectangle("W2NearProfile", 0, 0, 10, 8)
+    rectangle("W2FarProfile", 50, 0, 10, 8)
+    box("W2NearTarget", 0, 0, 4, 20, 16, 3)
+    box("W2FarTarget", 50, 0, 4, 20, 16, 3)
+
+    def retain_body_handles(p):
+        body_rows = (p.get("tree") or {}).get("root_bodies") or []
+        retained = {}
+        target_names = {"near": _RECALL.get(key + "_W2NearTarget"),
+                        "far": _RECALL.get(key + "_W2FarTarget")}
+        for role, body_name in target_names.items():
+            hits = [row for row in body_rows if isinstance(body_name, str)
+                    and row.get("name") == body_name
+                    and isinstance(row.get("handle"), str) and row["handle"]]
+            if len(hits) == 1:
+                retained[role] = hits[0]["handle"]
+                _RECALL[key + "_" + role + "_target_handle"] = hits[0]["handle"]
+        return _measured("unique exact root body handles for near/far stops",
+            {"target_names": target_names, "body_names": [row.get("name") for row in body_rows],
+             "retained": retained, "truncated": (p.get("tree") or {}).get("root_bodies_truncated")},
+            len(retained) == 2 and (p.get("tree") or {}).get("root_bodies_truncated") is not True)
+    rows.append(("design_get", {"include": ["tree"], "tree_bodies": True}, retain_body_handles, None))
+    rows += [
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_W2NearTarget", "near target")), "per_body": True},
+         _retire_compare(key + "_near_target_state", _symmetric_target_body_state, False), None),
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_W2FarTarget", "far target")), "per_body": True},
+         _retire_compare(key + "_far_target_state", _symmetric_target_body_state, False), None)]
+    rectangle("W2ControlS", 100, 0, 5, 5)
+    write("model_extrude", {"sketch_name": "W2ControlS", "distance": 2, "units": "mm"},
+          _extruded, (key + "_control", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_control", "control")), "per_body": True},
+                 _retire_compare(key + "_control_state", _symmetric_target_body_state, False), None))
+    write("model_extrude", lambda c: {"sketch_name": "W2NearProfile", "extent": "to_face",
+        "to_object": _ctx_get(_RECALL, key + "_near_target_handle", "near target body handle"),
+        "minimum_solution": True, "units": "mm"}, _extruded,
+        (key + "_near", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, key + "_near", "near result")),
+        _combine_body("near body stop", (0, 0, 0), (10, 8, 4), 320), None))
+    write("model_extrude", lambda c: {"sketch_name": "W2FarProfile", "extent": "to_face",
+        "to_object": _ctx_get(_RECALL, key + "_far_target_handle", "far target body handle"),
+        "minimum_solution": False, "units": "mm"}, _extruded,
+        (key + "_far", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, key + "_far", "far result")),
+        _combine_body("far body stop", (50, 0, 0), (60, 8, 7), 560), None))
+
+    # Mixed finite distance and face stop have zero offsets; 10x10x(8+4) mm = 1200 mm3.
+    rectangle("W2MixedProfile", 150, 0, 10, 10)
+    box("W2MixedTarget", 180, 0, 7, 20, 20, 1)
+    rows.append(("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_W2MixedTarget", "mixed target")), "per_body": True},
+                 _retire_compare(key + "_mixed_target_state", _symmetric_target_body_state, False), None))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_W2MixedTarget", "stop body"),
+        "kind": "planar_face", "nearest_to": [190, 10, 8], "units": "mm", "max_results": 12},
+        lambda p: (p.get("match_count") == len(p.get("matches") or [])
+                   and retain_top_face(p, key + "_mixed_face", 8, 400,
+                                       "unique mixed-side stop face at z=8 mm")), None))
+    write("model_extrude", lambda c: {"sketch_name": "W2MixedProfile", "extent": "two_side",
+        "extent_one": "to_face", "extent_two": "distance",
+        "to_object": _ctx_get(_RECALL, key + "_mixed_face", "z=8 stop face"),
+        "distance2": 4, "units": "mm"}, _extruded,
+        (key + "_mixed", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, key + "_mixed", "mixed result")),
+        _combine_body("mixed distance and to-face extents", (150, 0, -4), (160, 10, 8), 1200), None))
+
+    # Native EXT fixture: 10x8 mm rectangle, 5/3 mm extents, 1/2 mm wall settings -> 348 mm3.
+    rectangle("W2ThinProfile", 220, 0, 10, 8)
+    write("model_extrude", {"sketch_name": "W2ThinProfile", "extent": "two_side",
+        "distance": 5, "distance2": 3, "wall_thickness": 1, "wall_side": "center",
+        "wall_thickness_two": 2, "wall_side_two": "side_one", "units": "mm"}, _extruded,
+        (key + "_thin", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, key + "_thin", "thin result")),
+        _combine_body("two distinct thin wall sides", (219.5, -.5, -3), (230.5, 8.5, 5), 348), None))
+
+    # Native EXS placement: z=.1 start face, +1 mm offset, 5 mm depth, 80 mm2 profile.
+    rectangle("W2StartProfile", 260, 0, 10, 8)
+    box("W2StartTarget", 260, 0, 0, 20, 20, .1)
+    rows.append(("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_W2StartTarget", "start target")), "per_body": True},
+                 _retire_compare(key + "_start_target_state", _symmetric_target_body_state, False), None))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_W2StartTarget", "start body"),
+        "kind": "planar_face", "nearest_to": [270, 10, .1], "units": "mm", "max_results": 12},
+        lambda p: (p.get("match_count") == len(p.get("matches") or [])
+                   and retain_top_face(p, key + "_start_face", .1, 400,
+                                       "unique entity start face at z=.1 mm")), None))
+    write("model_extrude", lambda c: {"sketch_name": "W2StartProfile", "distance": 5,
+        "start_object": _ctx_get(_RECALL, key + "_start_face", "z=.1 start face"),
+        "start_offset": "1 mm", "units": "mm"},
+        lambda p: _extruded(p) and _near(p.get("start_offset"), 1, .001),
+        (key + "_entity_start", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, key + "_entity_start", "entity start")),
+        _combine_body("entity start and offset", (260, 0, 1.1), (270, 8, 6.1), 400), None))
+    rectangle("W2OffsetProfile", 300, 0, 10, 8)
+    write("model_extrude", {"sketch_name": "W2OffsetProfile", "distance": 3,
+        "start_offset": 2, "units": "mm"},
+        lambda p: _extruded(p) and _near(p.get("start_offset"), 2, .001),
+        (key + "_offset_start", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, key + "_offset_start", "offset start")),
+        _combine_body("profile-plane start offset", (300, 0, 2), (310, 8, 5), 240), None))
+
+    rectangle("W2TaperProfile", 340, 0, 10, 8)
+    write("model_extrude", {"sketch_name": "W2TaperProfile", "extent": "two_side",
+        "distance": 5, "distance2": 3, "taper_deg": 0, "taper_two_deg": 5, "units": "mm"},
+        lambda p: _measured("second-side taper is read from the feature", p,
+            _extruded(p) and _near(p.get("taper_deg"), 0, .001)
+            and _near(p.get("taper_two_deg"), 5, .001)),
+        (key + "_taper", lambda p: p["result_bodies"][0]))
+
+    def taper_faces(p):
+        upper, lower = [], []
+        for face in p.get("matches", []):
+            normal, position = face.get("normal"), face.get("position")
+            if (face.get("kind") == "planar_face" and isinstance(normal, list)
+                    and len(normal) == 3 and isinstance(position, list) and len(position) == 3):
+                side_norm = math.hypot(normal[0], normal[1])
+                if side_norm > .1:
+                    tilt = math.degrees(math.atan2(normal[2], side_norm))
+                    if position[2] > .001:
+                        upper.append(tilt)
+                    elif position[2] < -.001:
+                        lower.append(tilt)
+        return _measured("untapered upper walls and positive 5 degree lower-wall normal tilt",
+                         {"upper_signed_tilts": upper, "lower_signed_tilts": lower},
+                         p.get("match_count") == p.get("returned")
+                         and len(upper) == len(lower) == 4
+                         and all(_near(value, 0, .01) for value in upper)
+                         and all(_near(value, 5, .01) for value in lower))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_taper", "taper result"),
+        "kind": "planar_face", "max_results": 32, "units": "mm"},
+        taper_faces, None))
+    rows += [
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_W2NearTarget", "near target")), "per_body": True},
+         _retire_compare(key + "_near_target_state", _symmetric_target_body_state, True), None),
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_W2FarTarget", "far target")), "per_body": True},
+         _retire_compare(key + "_far_target_state", _symmetric_target_body_state, True), None),
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_W2MixedTarget", "mixed target")), "per_body": True},
+         _retire_compare(key + "_mixed_target_state", _symmetric_target_body_state, True), None),
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_W2StartTarget", "start target")), "per_body": True},
+         _retire_compare(key + "_start_target_state", _symmetric_target_body_state, True), None),
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_control", "control")), "per_body": True},
+         _retire_compare(key + "_control_state", _symmetric_target_body_state, True), None),
+        ("design_get", {"include": ["timeline"], "max_results": 100},
+         lambda p: _measured("extent history healthy at end marker", p,
+             _pattern_timeline_healthy(p) and (p.get("timeline") or {}).get("marker_position")
+             == (p.get("timeline") or {}).get("count")), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, key + "_home", "home"),
+            "expect_document": _ctx_get(c, key + "_doc", "scratch")}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, key + "_doc", "scratch"),
+            "save_changes": False, "expect_document": _ctx_get(c, key + "_home", "home")},
+         _document_closed, None)]
+    return rows
+
+
+_SOLIDS += _w2_extrude_extent_rows()
+
+
+def _w2_revolve_rows(two_sided):
+    """Verify one- or two-plane parametric revolve stops against the landed cap planes and sector."""
+    key = "w2_revolve_two" if two_sided else "w2_revolve_one"
+    rows = [("doc_get", {}, _home_document, (key + "_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, key + "_home", "home")},
+             _new_document, (key + "_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(c, key + "_doc",
+            args(c) if callable(args) else args), check, save))
+
+    rows.append(("design_activate_component", lambda c: _combine_pin(c, key + "_doc",
+        {"occurrence": "root"}), "ok", None))
+    # Revolve a 10..12 mm radial by 10 mm high rectangular profile around root Z.
+    write("model_construction", {"kind": "plane", "plane": "xy", "offset": -15,
+        "units": "mm", "name": "W2RevolveAxisBase"})
+    write("sketch_create", {"name": "W2RevolveAxis", "plane": "W2RevolveAxisBase"})
+    write("sketch_add_geometry", {"sketch_name": "W2RevolveAxis", "units": "mm", "geometry": [{
+        "kind": "rectangle", "x1": 0, "y1": 0, "x2": 1, "y2": 1}]})
+    write("model_extrude", {"sketch_name": "W2RevolveAxis", "distance": 30, "units": "mm"},
+        _extruded, (key + "_axis_body", lambda p: p["result_bodies"][0]))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_axis_body", "axis body"),
+        "kind": "line_edge", "nearest_to": [0, 0, 0], "max_results": 1, "units": "mm"},
+        lambda p: _matched(1, "line_edge")(p)
+            and _near(p["matches"][0].get("length"), 30, .001)
+            and all(_near(v, 0, .001) for v in p["matches"][0].get("position", []))
+            and len(p["matches"][0].get("position", [])) == 3,
+        _fg(key + "_axis_edge")))
+    write("sketch_create", {"name": "W2RevolveProfile", "plane": "xz"})
+    write("sketch_add_geometry", {"sketch_name": "W2RevolveProfile", "units": "mm", "geometry": [{
+        "kind": "rectangle", "x1": 10, "y1": 0, "x2": 12, "y2": 10}]})
+    for name, angle in (("W2RevolveStopOne", 60), ("W2RevolveStopTwo", -35)):
+        if name == "W2RevolveStopTwo" and not two_sided:
+            continue
+        write("model_construction", lambda c, name=name, angle=angle: {"kind": "plane", "mode": "at_angle", "plane": "xz",
+            "edges": [_ctx_get(c, key + "_axis_edge", "root Z edge")], "angle": angle, "name": name}, _datum("plane"),
+            (key + "_" + name, _recall(key + "_" + name,
+                lambda p: p.get("geometry"))))
+    write("sketch_create", {"name": "W2RevolveControlS", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "W2RevolveControlS", "units": "mm", "geometry": [{
+        "kind": "rectangle", "x1": 40, "y1": 40, "x2": 45, "y2": 45}]})
+    write("model_extrude", {"sketch_name": "W2RevolveControlS", "distance": 5, "units": "mm"},
+          _extruded, (key + "_control", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_control", "control")), "per_body": True},
+                 _retire_compare(key + "_control_state", _symmetric_target_body_state, False), None))
+    args = {"sketch_name": "W2RevolveProfile", "axis": "z"}
+    if two_sided:
+        args.update({"to_object": "W2RevolveStopOne", "to_object_two": "W2RevolveStopTwo"})
+        expected_volume = 364.773814
+        bounds = (-12, -10.392305, -10), (-5, 6.882917, 0)
+    else:
+        args["to_object"] = "W2RevolveStopOne"
+        expected_volume = 230.383461
+        bounds = (5, 0, -10), (12, 10.392305, 0)
+    write("model_revolve", args,
+        lambda p: _measured("plane-stopped revolve feature", p,
+            p.get("revolved") is True and p.get("operation") == "new"
+            and p.get("extent") == ("two_side_to_object" if two_sided else "to_object")
+            and bool(p.get("feature"))),
+        (key + "_body", lambda p: p["result_bodies"][0]))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, key + "_body", "revolve result")),
+        _combine_body("independently measured stopped sector", bounds[0], bounds[1], expected_volume), None))
+
+    def caps(p):
+        faces = [m for m in p.get("matches", []) if m.get("kind") == "planar_face"
+                 and isinstance(m.get("normal"), list) and isinstance(m.get("position"), list)]
+        expected = [key + "_W2RevolveStopOne"] + ([key + "_W2RevolveStopTwo"] if two_sided else [])
+        found = []
+        for ref in expected:
+            geometry = _RECALL.get(ref) or {}
+            normal, origin = geometry.get("normal"), geometry.get("origin")
+            origin = [origin.get(axis) for axis in "xyz"] if isinstance(origin, dict) else origin
+            hit = [f for f in faces if normal and origin
+                   and abs(sum(a * b for a, b in zip(f["normal"], normal))) > .999
+                   and abs(sum((f["position"][i] - origin[i]) * normal[i] for i in range(3))) < .01]
+            found.append(len(hit))
+        return _measured("each selected root construction plane has a planar result cap",
+                         {"cap_matches_per_stop": found}, all(n >= 1 for n in found))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_body", "revolve result"),
+        "kind": "planar_face", "units": "mm", "max_results": 64}, caps, None))
+    rows += [
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_control", "control")), "per_body": True},
+         _retire_compare(key + "_control_state", _symmetric_target_body_state, True), None),
+        ("design_get", {"include": ["timeline"], "max_results": 100},
+         lambda p: _measured("revolve timeline healthy at end marker", p,
+             _pattern_timeline_healthy(p) and (p.get("timeline") or {}).get("marker_position")
+             == (p.get("timeline") or {}).get("count")), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, key + "_home", "home"),
+            "expect_document": _ctx_get(c, key + "_doc", "scratch")}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, key + "_doc", "scratch"),
+            "save_changes": False, "expect_document": _ctx_get(c, key + "_home", "home")},
+         _document_closed, None)]
+    return rows
+
+
+_SOLIDS += _w2_revolve_rows(False)
+_SOLIDS += _w2_revolve_rows(True)
+
+
+def _w2_two_angle_draft_rows():
+    """Verify both draft slopes on opposite sides of the measured z=20 mm neutral plane."""
+    key = "w2_two_angle_draft"
+    rows = [("doc_get", {}, _home_document, (key + "_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, key + "_home", "home")},
+             _new_document, (key + "_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(c, key + "_doc",
+            args(c) if callable(args) else args), check, save))
+
+    rows.append(("design_activate_component", lambda c: _combine_pin(c, key + "_doc",
+        {"occurrence": "root"}), "ok", None))
+    write("sketch_create", {"name": "W2DraftBlock", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "W2DraftBlock", "units": "mm", "geometry": [{
+        "kind": "rectangle", "x1": 0, "y1": 0, "x2": 30, "y2": 40}]})
+    write("model_extrude", {"sketch_name": "W2DraftBlock", "distance": 40, "units": "mm"},
+          _extruded, (key + "_body", lambda p: p["result_bodies"][0]))
+    write("sketch_create", {"name": "W2DraftControlS", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "W2DraftControlS", "units": "mm", "geometry": [{
+        "kind": "rectangle", "x1": 60, "y1": 0, "x2": 80, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "W2DraftControlS", "distance": 20, "units": "mm"},
+          _extruded, (key + "_control", lambda p: p["result_bodies"][0]))
+    write("model_construction", {"kind": "plane", "plane": "xy", "offset": 20,
+        "units": "mm", "name": "W2DraftNeutral"}, _datum_plane("xy"))
+    rows.append(("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_body", "draft source")), "per_body": True},
+                 _retire_compare(key + "_source_state", _symmetric_target_body_state, False), None))
+    rows.append(("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_control", "control")), "per_body": True},
+                 _retire_compare(key + "_control_state", _symmetric_target_body_state, False), None))
+
+    def retain_draft_face(p):
+        hits = [m for m in p.get("matches", []) if m.get("kind") == "planar_face" and m.get("handle")
+                and _near(m.get("area"), 1600, .001)
+                and _near((m.get("position") or [None, None, None])[0], 0, .001)
+                and _near(abs((m.get("normal") or [0, 0, 0])[0]), 1, .001)]
+        if len(hits) == 1:
+            _RECALL[key + "_face"] = hits[0]["handle"]
+        return _measured("unique full side face crossing the pull plane", hits, len(hits) == 1)
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_body", "draft source"),
+        "kind": "planar_face", "nearest_to": [0, 20, 20], "units": "mm", "max_results": 16},
+        retain_draft_face, None))
+    write("model_draft", lambda c: {"faces": [_ctx_get(_RECALL, key + "_face", "side face")],
+        "pull_direction": "W2DraftNeutral", "angle_deg": 15, "angle_two_deg": 5,
+        "tangent_chain": False, "symmetric": True},
+        _refused("angle_two_deg", "symmetric=true"))
+    rows.append(("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_body", "draft source")), "per_body": True},
+                 _retire_compare(key + "_source_state", _symmetric_target_body_state, True), None))
+    write("model_draft", lambda c: {"faces": [_ctx_get(_RECALL, key + "_face", "side face")],
+        "pull_direction": "W2DraftNeutral", "angle_deg": 15, "angle_two_deg": 5,
+        "tangent_chain": False},
+        lambda p: _measured("two-angle draft feature", p,
+            p.get("drafted") is True and p.get("effect_unverified") is not True
+            and bool(p.get("feature"))))
+
+    def slopes(p):
+        faces = [m for m in p.get("matches", []) if m.get("kind") == "planar_face"
+                 and isinstance(m.get("normal"), list) and isinstance(m.get("position"), list)]
+        side_faces = [m for m in faces if abs(m["normal"][1]) < .01
+                      and abs(m["normal"][0]) > .5]
+        measured = sorted((round(math.degrees(math.atan2(abs(m["normal"][2]),
+                    abs(m["normal"][0]))), 3), m["position"][2]) for m in side_faces)
+        return _measured("independent 15 and 5 degree side slopes straddle z=20 mm",
+            measured, any(_near(a, 15, .2) and z > 20 for a, z in measured)
+            and any(_near(a, 5, .2) and z < 20 for a, z in measured))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_body", "drafted body"),
+        "kind": "planar_face", "units": "mm", "max_results": 64}, slopes, None))
+    rows.append(("model_inspect", lambda c: _combine_inspect(_ctx_get(c, key + "_body", "drafted body")),
+        lambda p: _measured("drafted body has the measured volume", p,
+            _near(((p.get("mass") or {}).get("volume")), 45156.497, .02)), None))
+    rows += [
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_control", "control")), "per_body": True},
+         _retire_compare(key + "_control_state", _symmetric_target_body_state, True), None),
+        ("design_get", {"include": ["timeline"], "max_results": 100},
+         lambda p: _measured("draft history healthy at end marker", p,
+            _pattern_timeline_healthy(p) and (p.get("timeline") or {}).get("marker_position")
+            == (p.get("timeline") or {}).get("count")), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, key + "_home", "home"),
+            "expect_document": _ctx_get(c, key + "_doc", "scratch")}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, key + "_doc", "scratch"),
+            "save_changes": False, "expect_document": _ctx_get(c, key + "_home", "home")},
+         _document_closed, None)]
+    return rows
+
+
+_SOLIDS += _w2_two_angle_draft_rows()

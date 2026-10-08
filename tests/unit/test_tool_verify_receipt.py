@@ -2794,6 +2794,28 @@ class TestOwnedFamilies:
         assert set(wire.documents) == {"session:home", "session:intruder"}
         assert wire.created == 2
 
+    def test_selected_sheet_family_reads_owned_design_beside_drawing_home(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        wire.documents["session:home"]["name"] = "Owner Drawing"
+        baseline = dict(wire.documents)
+        targets = []
+
+        def call(tool, args):
+            if tool == "design_get" and args.get("include") == ["tree", "timeline"]:
+                targets.append(wire.active)
+                if wire.active == "session:home":
+                    return True, "No active design"
+            return wire(tool, args)
+
+        acts = [("ACT 12e - SHEET METAL SELECTED BEND", None,
+                 [("design_get", {"include": ["tree", "timeline"]},
+                   lambda p: p.get("feature_count") == 3, None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, call, acts, acts_spec="ACT 12e")
+        assert code == 0 and not wrote and evidence["receipt_written"] is False
+        assert targets == ["session:new1"]
+        assert wire.active == "session:home" and wire.documents == baseline
+        assert [args["name"] for tool, args in wire.seen if tool == "doc_close"] == ["session:new1"]
+
     def test_full_run_uses_same_family_loop_and_stamps(self, monkeypatch, tmp_path):
         wire = _DocumentWire()
         acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], []),

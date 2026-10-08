@@ -7,6 +7,7 @@ verifier that a feature which computes with a health ERROR is reported as failur
 """
 
 import types
+import pytest
 
 from conftest import (BRepBody, BRepFace, load_tool, make_design, install, MakeComp, payload,
                       error_message, assert_names_retained, assert_no_active_design,
@@ -24,9 +25,14 @@ class FakeDraftInput:
         self.isTangentChain = tangent
         self.isDirectionFlipped = False
         self.single = None
+        self.two = None
 
     def setSingleAngle(self, symmetric, angle):
         self.single = (symmetric, angle)
+        return True
+
+    def setTwoAngles(self, angle_one, angle_two):
+        self.two = (angle_one, angle_two)
         return True
 
 
@@ -132,6 +138,17 @@ class TestDraft:
         feats = _wire(monkeypatch)
         payload(dr.handler(faces=["a"], pull_direction="xy", angle_deg=5))
         assert feats.last.single[0] is False
+
+    def test_two_angles_are_set_independently_in_radians(self, monkeypatch):
+        import adsk.core
+        feats = _wire(monkeypatch)
+        monkeypatch.setattr(adsk.core.ValueInput, "createByReal",
+                            staticmethod(lambda value: ("real", value)))
+        payload(dr.handler(faces=["a"], pull_direction="xy", angle_deg=15,
+                           angle_two_deg=5))
+        assert feats.last.two[0][0] == "real" and feats.last.two[1][0] == "real"
+        assert feats.last.two[0][1] == pytest.approx(15 * 3.141592653589793 / 180)
+        assert feats.last.two[1][1] == pytest.approx(5 * 3.141592653589793 / 180)
 
     def test_flip_sets_direction_flipped(self, monkeypatch):
         feats = _wire(monkeypatch)

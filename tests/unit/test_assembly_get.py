@@ -228,6 +228,9 @@ def kin_design():
                         all_occurrences=list(occs) if all_occs is None else list(all_occs),
                         joints=list(joints), as_built_joints=list(asbuilt),
                         assembly_constraints=constraints)
+        for joint in list(joints) + list(asbuilt):
+            if not hasattr(joint, "parentComponent"):
+                joint.parentComponent = root
         # marker below count = a rolled-back timeline; left None it sits at the end.
         design = make_design(comp=root,
                              timeline=FakeTimeline(list(timeline or []), marker=marker))
@@ -410,8 +413,9 @@ class TestProbe:
         assert inch["origin"] == [1.0, 0.0, 0.0]    # 2.54 cm -> 1 inch
 
     def test_occurrence_joint_cross_index(self, kin_design):
-        kin_design(occs=[_occ("Crank:1", "Crank"), _occ("Block:1", "Block")],
-                   joints=[_joint("CrankMain", _REVOLUTE, "Crank:1", "Block:1")])
+        crank, block = _occ("Crank:1", "Crank"), _occ("Block:1", "Block")
+        kin_design(occs=[crank, block],
+                   joints=[_joint("CrankMain", _REVOLUTE, crank, block)])
         out = _payload(ap.handler())
         by = {o["name"]: o for o in out["occurrences"]}
         assert by["Crank:1"]["joints"] == ["CrankMain"]
@@ -485,9 +489,10 @@ class TestProbe:
         # must read both, or a script-created as-built joint is invisible (joint_count undercounts and
         # the occurrence cross-index misses it). AsBuiltJoint exposes the same name/jointMotion/
         # occurrenceOne/Two surface, so the shared Joint fake stands in.
-        kin_design(occs=[_occ("Ring:1", "Ring"), _occ("Rotor:1", "Rotor")],
-                   joints=[_joint("RegularPin", _REVOLUTE, "Ring:1", "Rotor:1")],
-                   asbuilt=[_joint("AsBuiltSpin", _REVOLUTE, "Rotor:1", "Ring:1")])
+        ring, rotor = _occ("Ring:1", "Ring"), _occ("Rotor:1", "Rotor")
+        kin_design(occs=[ring, rotor],
+                   joints=[_joint("RegularPin", _REVOLUTE, ring, rotor)],
+                   asbuilt=[_joint("AsBuiltSpin", _REVOLUTE, rotor, ring)])
         out = _payload(ap.handler())
         by = {j["name"]: j for j in out["joints"]}
         assert "AsBuiltSpin" in by and by["AsBuiltSpin"]["type"] == "revolute"
@@ -2138,7 +2143,7 @@ class TestAllOccurrencesSlice:
     def test_the_slice_row_is_the_same_record_as_a_top_level_row(self, kin_design):
         occ = _occ("Tower:1", "Tower", origin=(1.0, 0.0, 0.0), body_bbox=((0, 0, 0), (2, 1, 1)),
                    grounded=True, ground_to_parent=True, body_count=3, rotation_deg=0.0)
-        kin_design(occs=[occ], joints=[_joint("J1", _REVOLUTE, "Tower:1", None)])
+        kin_design(occs=[occ], joints=[_joint("J1", _REVOLUTE, occ, None)])
         out = _payload(ap.handler(include=["all_occurrences", "poses"], units="mm"))
         top, nested = out["occurrences"][0], out["all_occurrences"][0]
         assert set(nested) - set(top) == {"full_path"}       # the ONE key the slice adds
@@ -2146,6 +2151,67 @@ class TestAllOccurrencesSlice:
         assert nested["grounded"] is True and nested["ground_to_parent"] is True
         assert nested["body_count"] == 3 and nested["joints"] == ["J1"]
         assert nested["bbox_size"] == [20.0, 10.0, 10.0] and nested["z_axis"] == [0.0, 0.0, 1.0]
+
+    def test_colliding_paths_keep_joint_membership_on_the_exact_occurrence(self, kin_design):
+        first = make_occurrence(path="PartA:1", component=MakeComp(name="PartA"),
+                                transform2=FakeMatrix3D(0.0, (0.0, 0.0, 0.0)),
+                                entity_token="Occurrence:first")
+        collision = make_occurrence(path="PartA:1", component=MakeComp(name="PartA"),
+                                    transform2=FakeMatrix3D(0.0, (5.0, 0.0, 0.0)),
+                                    entity_token="Occurrence:collision")
+        anchor = _occ("Anchor:1", "Anchor")
+        kin_design(occs=[first, collision, anchor], all_occs=[first, collision, anchor],
+                   joints=[_joint("OnlyFirst", _REVOLUTE, first, anchor)])
+        out = _payload(ap.handler(include=["all_occurrences", "poses"], units="mm"))
+
+        for rows in (out["occurrences"], out["all_occurrences"]):
+            parts = [row for row in rows if row.get("name") == "PartA:1"]
+            by_origin = {tuple(row["origin"]): row for row in parts}
+            assert by_origin[(0.0, 0.0, 0.0)]["joints"] == ["OnlyFirst"]
+            assert by_origin[(50.0, 0.0, 0.0)]["joints"] == []
+            assert all("joints_unverified" not in row for row in parts)
+
+    def test_unread_occurrence_equality_marks_membership_unverified(self, kin_design):
+        class UnreadEqualityOccurrence(FakeOccurrence):
+            def __eq__(self, other):
+                raise RuntimeError("occurrence equality unavailable")
+
+        member = _occ("Member:1", "Member")
+        unread = UnreadEqualityOccurrence(path="Member:1", component=member.component,
+                                          entity_token="Occurrence:unread")
+        anchor = _occ("Anchor:1", "Anchor")
+        kin_design(occs=[unread, anchor], all_occs=[unread, anchor],
+                   joints=[_joint("MemberJoint", _REVOLUTE, member, anchor)])
+        out = _payload(ap.handler(include=["all_occurrences"]))
+        row = next(row for row in out["occurrences"] if row["name"] == "Member:1")
+        assert row["joints"] == [] and row["joints_unverified"] is True
+        assert "joints list may be incomplete" in out["note"]
+
+    def test_unread_placed_joint_proxy_marks_membership_unverified(self, kin_design):
+        owner = MakeComp(name="Pin", entity_token="COMP:Pin")
+        first = _slice_occ("Pin:1", owner, transform2=_zrot(0.0, 0.0))
+        second = _slice_occ("Pin:2", owner, transform2=_zrot(90.0, 5.0))
+        anchor = _occ("Anchor:1", "Anchor")
+        joint = _joint("PinJoint", _REVOLUTE, first, anchor)
+        joint.parentComponent = owner
+
+        def proxy(occurrence):
+            if occurrence is second:
+                raise RuntimeError("diagnostic proxy refusal")
+            return SimpleNamespace(occurrenceOne=occurrence, occurrenceTwo=anchor)
+
+        joint.createForAssemblyContext = proxy
+        design = kin_design(occs=[first, second, anchor], all_occs=[first, second, anchor],
+                            joints=[joint])
+        design.rootComponent.allOccurrencesByComponent = (
+            lambda component: [first, second] if component is owner else [])
+        out = _payload(ap.handler(include=["poses", "all_occurrences"]))
+        rows = {tuple(row["origin"]): row for row in out["occurrences"]}
+        assert rows[(0.0, 0.0, 0.0)]["joints"] == ["PinJoint"]
+        assert rows[(0.0, 0.0, 0.0)]["joints_unverified"] is True
+        assert rows[(50.0, 0.0, 0.0)]["joints"] == []
+        assert rows[(50.0, 0.0, 0.0)]["joints_unverified"] is True
+        assert "joints list may be incomplete" in out["note"]
 
     def test_poses_reaches_the_nested_rows_too(self, kin_design):
         # the two arrays are built by two calls: a poses flag wired into only one of them leaves

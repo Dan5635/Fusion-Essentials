@@ -121,6 +121,27 @@ def _retire_design_state(p):
     return {"tree": tree, "timeline": tl}
 
 
+def _retire_body_state(p):
+    """Return a direct body's readable world bounds, connected lump and material without requiring subtree rows."""
+    mass = p.get("mass") or {}
+    bounds = {key: p.get(key) for key in ("min_point", "max_point", "center")}
+    values = [p.get(axis) for axis in "xyz"]
+    values += [(bounds[point] or {}).get(axis) for point in bounds for axis in "xyz"]
+    physical = [mass.get(key) for key in ("mass_kg", "volume", "area", "density_kg_per_cm3")]
+    if (p.get("kind") != "body" or p.get("units") != "mm"
+            or p.get("frame") != "world axes (axis-aligned)" or p.get("oriented") is not False
+            or not p.get("box_read") or type(p.get("lump_count")) is not int or p["lump_count"] != 1
+            or not isinstance(p.get("target"), str) or not p["target"].startswith("body ")
+            or mass.get("target") != p["target"] or mass.get("units") != "mm"
+            or mass.get("accuracy_used") != "very_high"
+            or not all(_num(v) and math.isfinite(v) for v in values)
+            or not all(_num(v) and math.isfinite(v) and v > 0 for v in physical)):
+        return None
+    return {"target": p["target"], "bounds": bounds, "size": [p[a] for a in "xyz"],
+            "lump_count": p["lump_count"], "material": {k: v for k, v in mass.items() if k != "note"}}
+
+
+
 def _retire_material_state(p):
     """Return independently counted body material, visibility and world bounds."""
     mass = p.get("mass") or {}

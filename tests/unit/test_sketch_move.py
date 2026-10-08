@@ -417,3 +417,48 @@ class TestPointsAreVerifiedToo:
         reason, evidence = kind.verify({"sketch_name": "Plate"}, {}, before)
         # the curve count is unchanged - only a POINT moved - and that is still a real change
         assert reason == "" and evidence == {"curve_count_after": 2}
+
+
+class TestOffThePlane:
+
+    def test_dz_alone_is_a_move_and_reaches_the_matrix_in_centimetres(self, mod, sketches):
+        plate, _ = sketches
+        calls = []
+        plate.move = _mover(calls, moves=None)
+        out = payload(mod.handler(entities="line:0", dz=5, units="mm"))
+        assert round(calls[0][1].translation.z, 6) == 0.5
+        assert out["moved_entities"] == ["line:0"] and out["requested"]["dz"] == 5.0
+        assert _lines(plate).item(0).startSketchPoint.geometry.z == 0.5
+        assert "on_plane_entities" not in out
+
+    def test_a_loop_that_loses_its_profile_is_reported_with_both_counts(self, mod, sketches):
+        import types
+        plate, _ = sketches
+        plate.profiles = types.SimpleNamespace(count=1)
+        lift = _mover([], moves=None)
+
+        def move(collection, matrix):
+            plate.profiles.count = 0
+            return lift(collection, matrix)
+        plate.move = move
+        out = payload(mod.handler(entities="line:0", dz=5))
+        assert (out["profile_count_before"], out["profile_count_after"]) == (1, 0)
+        assert "from 1 to 0 profile(s)" in out["note"]
+
+    def test_an_entity_that_moved_in_plane_but_kept_z_zero_is_named(self, mod, sketches):
+        plate, _ = sketches
+        shift = _mover([], moves=None)
+
+        def flat_move(collection, matrix):
+            matrix.translation.z = 0.0             # the platform drops the lift, keeps the slide
+            return shift(collection, matrix)
+        plate.move = flat_move
+        out = payload(mod.handler(entities="line:0", dx=10, dz=5))
+        assert out["on_plane_entities"] == ["line:0"]
+        assert out["note"].startswith("line:0 still read z = 0")
+
+    def test_a_move_without_dz_keeps_its_reply_shape(self, mod, sketches):
+        plate, _ = sketches
+        plate.move = _mover([], moves=None)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert "dz" not in out["requested"] and "profile_count_before" not in out

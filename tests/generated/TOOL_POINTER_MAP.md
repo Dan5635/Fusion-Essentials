@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 215  |  **description breadcrumbs:** 327  |  **note/error breadcrumbs:** 717
+**Tools:** 215  |  **description breadcrumbs:** 332  |  **note/error breadcrumbs:** 729
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,11 +17,11 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (8)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (58)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_edit`, `sketch_insert_svg`, `sketch_move`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (57)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_edit`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
-- **56x** across 55 module(s): "No active design. Create or open a document first (see doc_new)."
+- **57x** across 56 module(s): "No active design. Create or open a document first (see doc_new)."
 - **24x** across 24 module(s): "No active design. Open or create a document first (see doc_new)."
 - **8x** across 8 module(s): "No active design with components."
 - **7x** across 2 module(s): "' with design_delete_feature."
@@ -40,18 +40,18 @@ close orphans, factor duplicated guards into shared helpers.
 - **4x** across 1 module(s): "setMotionData reported success on '"
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
-- `doc_new`  <- 89  (desc 0, note 89)
-- `design_get`  <- 63  (desc 13, note 50)
-- `find_geometry`  <- 56  (desc 14, note 42)
-- `design_delete_feature`  <- 39  (desc 16, note 23)
+- `doc_new`  <- 90  (desc 0, note 90)
+- `design_get`  <- 66  (desc 15, note 51)
+- `find_geometry`  <- 59  (desc 17, note 42)
+- `design_delete_feature`  <- 40  (desc 16, note 24)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
 - `model_inspect`  <- 31  (desc 5, note 26)
-- `sketch_get`  <- 28  (desc 8, note 20)
-- `data_get`  <- 25  (desc 9, note 16)
+- `sketch_get`  <- 29  (desc 8, note 21)
+- `data_get`  <- 26  (desc 9, note 17)
+- `sketch_create`  <- 26  (desc 7, note 19)
 - `doc_open`  <- 25  (desc 5, note 20)
-- `sketch_create`  <- 25  (desc 7, note 18)
-- `doc_get`  <- 23  (desc 10, note 13)
+- `assembly_get`  <- 23  (desc 4, note 19)
 
 ## The detected guidance surface
 
@@ -86,6 +86,24 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Could not apply appearance to
 - body(ies) - each still reads a different appearance (
 - ). Color the bodies directly (target = the body name).
+- Library appearance applied as this target's own override; 'clear' removes it.
+- is a call of its own; drop
+- 'library' narrows 'appearance'; pass the appearance name too.
+- A library appearance or a clear takes a body, face or occurrence; '
+- Override cleared; the target shows what the level above gives it.
+- body(ies) keep their own appearance - see 'bodies_not_reached'.
+- The appearance source of
+- did not read, so nothing was cleared.
+- , so there is nothing to clear.
+- carries no override of its own
+- The clear was accepted but
+- still reads an override of its own.
+- did not read its appearance source afterwards, so it is unverified.
+- Could not apply appearance '
+- ' but its source reads
+- : the override is not its own.
+- body(ies); each still reads another appearance. Target the bodies.
+- Could not clear the appearance override of
 - No appearance named '' in '' - it is the base every color override is copied from. List that library with design_get(include=['appearances'], library='').
 - Could not copy '' into this document as '' - addByCopy declined and no appearance of that name is in the document. A name already taken RAISES 'appearance name already exists in document', so the n...
 - Could not create the appearance copy '' - addByCopy declined and no appearance of that name is in the document. A name already taken RAISES 'appearance name already exists in document', so the name...
@@ -95,6 +113,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Assignment to  reached NONE of its  body(ies) - each still reads a different appearance (). Color the bodies directly (target = the body name).
 - PARTIAL:  body(ies) of this occurrence do NOT carry the new appearance () - each still reads the one named in 'bodies_not_reached'; color those directly (target = the body).
 - The color was written to  but could not be compared with a read-back there, so the appearance's own color is UNCONFIRMED.
+- Set color/opacity or a library appearance on a face, body, occurrence or component as a revertible override, or clear it.
 
 ### `assembly_capture_position`
 - Latest captured position discarded - back to the last captured position that remains (or the joint-defined state when nothing else was ever captured).
@@ -337,6 +356,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - WARNING: broken_joints is non-empty but the TIMELINE shows no errored feature - the joint health likely LAGS an uncommitted edit. Run design_recompute, then re-probe; the timeline (design_get) is a...
 - Joint rows: value_now, and frame (WORLD) whose z_axis is the direction a joint OFFSET drives along (param_set it, or joint_edit). Headings: rotation_axis (revolute/cylindrical), slide_direction (sl...
 - NOTE: root_bodies lists geometry directly in the root component - these are NOT occurrences and can't be jointed/grounded; promote one to a component (model_create_component) to make it part of the...
+- joints_unverified=true means native occurrence membership could not be established; that row's joints list may be incomplete.
 
 ### `assembly_ground`
 - Parent lock set. isGroundToParent relocks to the TIMELINE placement and discards free moves. assembly_get's grounded_occurrences lists only the UI Ground/Fix flag (not settable here), so it stays e...
@@ -1308,6 +1328,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `design_add_instance`
 - '. Fusion numbers a new instance from a per-component counter across the whole design, so use the landed name/full_path, not a predicted one. The instance SHARES the component's geometry - editing ...
+- ' as the NEW component '
+- ', with its own geometry. Joints on the source were not copied. Position it with assembly_move / joint_create.
 - '. Use mm, cm, or in.
 - No active design. Open or create a document first (see doc_new).
 - Could not reach the component behind '
@@ -1315,6 +1337,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' itself or sits inside it, so the component would contain an instance of itself. Pick a target outside it (omit 'into_component' for root).
 - : whether that target already sits inside '
 - ' could not be determined - the subtree could not be searched to a verdict, so the instance could make the component contain itself. Check for unresolved external references with assembly_get, then...
+- ' or the design's component count did not read, so a copy could not be checked against its source; no copy was made.
 - Could not access the occurrences of
 - addExistingComponent returned nothing - no instance of '
 - addExistingComponent returned an occurrence for '
@@ -1327,24 +1350,44 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - . Its transform was not reset to the request. Move it with assembly_move, then read it with assembly_get.
 - ' has no component to instance into.
 - Could not reach the root component to instance into.
+- independent=true copies a LOCAL component; '
+- is an external reference, and a copy of one is only another instance of the same file. Break its link first (doc_update_xref action='break_link'), then copy the local component that results.
+- did not read whether it is an external reference, so no copy was made.
 - Unknown rotate_axis '
 - Could not build the placement rotation (
 - ') - the instance was not created.
+- ' it returned is in the design; read it with design_get(include=['tree']).
 - Refusing to instance '' into : that target is '' itself or sits inside it, so the component would contain an instance of itself. Pick a target outside it (omit 'into_component' for root).
 - Refusing to instance '' into : whether that target already sits inside '' could not be determined - the subtree could not be searched to a verdict, so the instance could make the component contain ...
+- The bodies of '' or the design's component count did not read, so a copy could not be checked against its source; no copy was made.
 - addExistingComponent returned an occurrence for '', but the assembly census that confirms it could not be read - the instance may or may not have landed. Re-read with design_get(include=['tree']).  **[hedge]**
 - The call reported an occurrence for '' but no new instance appeared in the assembly tree. Re-read with design_get(include=['tree']).
 - Instanced '' as '' at '' (kept), but not at the requested placement: its local origin in  reads (, , ) ,   from the requested one, local axes x  y  z . Its transform was not reset to the request. M...
 - Instanced '' - it LANDED as '' at ''. Fusion numbers a new instance from a per-component counter across the whole design, so use the landed name/full_path, not a predicted one. The instance SHARES ...
+- Copied '' as the NEW component '' - it LANDED as '' at '', with its own geometry. Joints on the source were not copied. Position it with assembly_move / joint_create.
 - The placement cannot be captured - it sets no pending-position flag, so assembly_capture_position refuses it. In a design that HOLDS captured position markers, a later joint creation can revert thi...
 
 ### `design_configure`
 - No active design. Open or create a document first.
+- 'occurrence' belongs to action='switch_occurrence', not '
 - The active design is not yet a configured design. Run action='create' first.
 - Save the document first (doc_save_as), THEN run create. Converting an unsaved document builds the table only in memory - it won't materialize as a configured design (no DataFile to carry it, and th...
 - createConfiguredDesign() returned no table.
 - Design converted to a configured design (one configuration so far). Add configurations and columns with the other actions. To see it in the UI: SAVE, then REOPEN by the URN that save reports - the ...
 - Design is already a configured design; reusing its configuration table. Add configurations with action='add_configuration' and columns with add_parameter / add_suppress / add_visibility / set_appea...
+- action='switch_occurrence' needs 'occurrence' - the inserted instance, by handle or full path (design_get(include=['tree'])).
+- is not an inserted configuration, so it has no row to switch.
+- did not read whether it is a configuration.
+- The configuration rows of '
+- ' did not read, so nothing was switched.
+- 'name' must be one row of the configuration '
+- ' was inserted from. Got '
+- ' is already on row '
+- '; nothing to switch.
+- switchConfiguration answered
+- '; re-read it with design_get(include=['tree']).
+- ' answered true but the occurrence could not be re-read afterwards; find it with design_get(include=['tree']).
+- The occurrence took the row's name: use 'occurrence' from here on. Its placement is unchanged. Not checked: joints on it and nested occurrences - read assembly_get.
 - Configuration switched + rebuilt. Pair with view_screenshot to view it, or design_get(include=['timeline']) / param_get to see what changed.
 - Provide 'name' - the configuration to activate (a configuration name or id).
 - No configuration matched '
@@ -1469,6 +1512,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Configuration '' moved to a new theme row, but column '' did not carry its material over - the material table is partially built; inspect it before retrying.
 - Configurations you did not name () keep the theme row they already reference, so this body's material in them is whatever that row holds - name them in 'materials' to set them.
 - '' is not a configured design - use a normal insert for a non-configured part. (Only configured parts get an insert column.)
+- The switch of '' answered true but the occurrence could not be re-read afterwards; find it with design_get(include=['tree']).
 
 ### `design_delete_feature`
 - Timeline feature deleted. Geometry it produced is removed; instances it created (pattern/mirror copies) go with it. Pair with design_get(include=['timeline']) / workspace_orient to confirm.
@@ -2142,9 +2186,29 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - This document has no external references (occurrence xrefs or derive links).
 - DIFFERENT source files referenced by this document:
 - . Fusion allows same-name files in different folders, so refreshing them all could pull a version you did not ask for - refusing. Omit 'name' to refresh every out-of-date reference, or inspect the ...
+- action='replace' needs 'file' - the replacement's lineage urn (data_get).
+- ' to a saved document. Tried:
+- ' resolved but its id did not read, so the replace could not be checked; nothing was changed.
+- ' already references that file; nothing to replace.
+- Occurrence.replace answered
+- '; re-read the assembly with design_get(include=['tree']) before going on.
+- . Close without saving to discard it, or repair and re-read with assembly_get.
+- The replace WAS made in the open document, but
+- Replaced in the open document only; nothing is saved. Each occurrence kept its placement and took a new name: use 'path'. Not checked: joints built on the replaced part's faces or edges - read asse...
+- action='break_link' needs 'new_name' - the name the now-local component takes, so its path cannot collide with a sibling still on that file.
+- ' already exists; pass a 'new_name' that is not in the design. Nothing was changed.
+- ' is a configuration (or did not read whether it is one); breaking that link is not offered. Nothing was changed.
+- Occurrence.breakLink answered
+- '; re-read the assembly with design_get(include=['tree']).
+- , but it could not be re-read as a local occurrence. Find it with design_get(include=['tree']) and rename its component so its path is unique.
+- The occurrence is a local component now, in the open document only; nothing is saved and the link cannot be restored. Its timeline item became a group.
+- Could not break the link of '
+- ', but its component could not be renamed to '
+- . Rename it with design_set_name.
 - References refreshed to their latest version. If a newly-added feature (e.g. a joint origin) was missing because the reference was stale, it is now available. Covers occurrence xrefs and derive lin...
 - Nothing to refresh - every reference already reads current. If the geometry still looks stale, that is the recompute, not the reference: design_recompute.
 - Fusion refused the refresh (: ) - delete and re-derive (design_delete_feature, then doc_insert_derive) to pick up the source's latest version.
+- The replace WAS made in the open document, but . Close without saving to discard it, or repair and re-read with assembly_get.
 - '' names  DIFFERENT source files referenced by this document: . Fusion allows same-name files in different folders, so refreshing them all could pull a version you did not ask for - refusing. Omit ...
 
 ### `drawing_add_sketch`
@@ -3127,12 +3191,16 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - mode='three_points': Fusion rejected these points (setByThreePoints returned false) - they must form a triangle (no two coincident, not all three collinear).
 - mode='midplane': Fusion rejected these planes (setByTwoPlanes returned false) - this fails when the two planes are co-planar (identical).
 - mode='two_edges': Fusion rejected these edges (setByTwoEdges returned false) - the two entities must be coplanar and linear.
+- mode='perpendicular_to_plane': Fusion reported success but the plane it created is not perpendicular to 'plane' (the unit normals' dot product reads , not 0).
+- mode='tangent': 'plane' is square to the cylinder's axis, so no angle can be measured from it. Pass a reference plane the axis lies along (one whose normal is perpendicular to the axis).
+- mode='tangent': Fusion reported success but the plane it created is not tangent to the cylinder: it sits   from the axis against a radius of  . The datum '' was added and is still in the design - r...
 - mode='two_planes': Fusion rejected these planes (setByTwoPlanes returned false) - this fails when the two planes are parallel.
 - mode='two_edges': Fusion rejected these edges (setByTwoEdges returned false) - the two linear edges/lines must actually intersect.
 - mode='three_planes': Fusion rejected these planes (setByThreePlanes returned false) - they must intersect at a single point.
 - mode='edge_plane': Fusion rejected these inputs (setByEdgePlane returned false) - the edge (extended if needed) must meet the plane.
 - mode='on_path' with kind='point': 'to_object' is plane-only - ConstructionPointInput has no setByPathToObject. Use kind='plane', or place the point with 'at' and distance_type='absolute'.
 - Fusion reported success but the datum '' reads component '', not '' where it was built. It is still in the design - remove it with design_delete_feature.
+- offset is null: the created plane's distance parameter did not read back, so 'offset_requested' was not compared with what landed.
 - angle_deg is null: the created plane's angle parameter did not read back, so the landed angle was not compared to the request.
 - The names in 'model_parameters' are this datum's own model parameters - param_set one to an expression to drive the datum parametrically.
 - 'operands' is where each input sat in WORLD space when it was used, with its owner and the occurrence it was read through.
@@ -3170,8 +3238,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Draft computed but tapered nothing - on
 - deg taper changed no geometry. Check 'pull_direction' is the plane the faces taper relative to, and try 'flip' or a face that is not already parallel to it.
 - 'angle_deg' must be a number (draft angle in degrees).
-- deg (setSingleAngle returned false), so nothing was drafted.
+- 'angle_two_deg' must be between -90 and 90 degrees and non-zero (got
+- 'angle_two_deg' cannot be combined with symmetric=true; set both side angles explicitly.
 - . (The pull direction may not suit these faces, or the angle undercuts the geometry - try a smaller angle or 'flip'.)
+- 'angle_two_deg' must be a number (second-side draft angle in degrees).
+- Fusion refused the two-angle draft (setTwoAngles did not return true), so nothing was drafted.
+- deg (setSingleAngle returned false), so nothing was drafted.
 - Draft failed: . (The pull direction may not suit these faces, or the angle undercuts the geometry - try a smaller angle or 'flip'.)
 - Draft computed but tapered nothing - on , , so the  deg taper changed no geometry. Check 'pull_direction' is the plane the faces taper relative to, and try 'flip' or a face that is not already para...
 - NONE of the bodies' volume, their face count or the requested faces' own normal/area could be read back, so there is no geometric proof the taper landed - re-read the faces with model_inspect befor...
@@ -3329,6 +3401,13 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - symmetric=true is not supported with extent=
 - and to_object. Use symmetric=false for a one-sided to-face extrude, or omit to_object and use extent='distance' with a non-zero distance for symmetry.
 - Provide a non-zero 'distance' to extrude, or 'to_object' to extrude up to a face.
+- 'to_object_two' is used only with extent='two_side'.
+- 'minimum_solution' requires a BRepBody 'to_object' or 'to_object_two' stop.
+- 'minimum_solution' must be a boolean, got
+- 'wall_thickness' and 'wall_side' must be supplied together.
+- 'wall_thickness_two' and 'wall_side_two' must be supplied together.
+- 'wall_thickness_two' requires the first 'wall_thickness' and 'wall_side'.
+- 'wall_thickness_two' and 'wall_side_two' require extent='two_side'.
 - '. Use: new, join, cut, intersect.
 - No active design. Create or open a document first (see doc_new).
 - profile_index mixes the sketch text '
@@ -3336,37 +3415,67 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ', and a separate call for the closed regions.
 - as_surface is not used with the sketch text '
 - ' - a text extrudes as a solid. Drop as_surface, or pass a closed profile / an open path.
+- Thin wall controls require a closed solid profile; they cannot be used with as_surface or sketch text.
 - Extrude reported success but this
 - changed nothing: no solid body lost material and none was consumed, so the scoped bodies (
 - ) are untouched. A cut/intersect can only affect bodies named in 'target_bodies' - check the profile overlaps them in the extrude direction (a negative 'distance' reverses it).
 - A surface was requested but '
 - ' reads back isSolid=true.
 - Closed profile extruded into a SURFACE wall (no end caps) - pair with model_stitch to close several surfaces into a solid.
-- extent='two_side' needs non-zero 'distance' and 'distance2' (one per side).
 - extent='two_side' does not use 'symmetric' - pass equal 'distance' and 'distance2' for a symmetric two-sided extrude, or use extent='distance' with symmetric=true.
+- 'extent_one', 'extent_two', 'to_object_two' and 'taper_two_deg' require extent='two_side'.
+- 'to_object' requires extent_one='to_face'.
+- 'to_object_two' requires extent_two='to_face'.
+- extent_one='to_face' needs 'to_object': find_geometry face handle or design_get(tree_bodies=true) body handle.
+- extent_two='to_face' needs 'to_object_two': find_geometry face handle or design_get(tree_bodies=true) body handle.
+- extent_one='distance' needs non-zero 'distance'.
+- extent_two='distance' needs non-zero 'distance2'.
 - profile_index resolved a profile whose parent sketch could not be read.
 - No sketch to extrude. Create one and draw a closed profile first.
 - Could not start extrude:
+- Fusion did not retain the requested start definition before feature creation:
 - Could not set extrude extent:
+- 'wall_thickness' must evaluate to a finite positive length.
+- Unknown 'wall_side'. Use: center, side_one, side_two.
+- Fusion refused the thin extrusion controls; setThinExtrude did not return true.
 - 'target_bodies' only applies to cut/join/intersect (a 'new' body has no participants). Remove it, or change the operation.
+- ' but isThinExtrude reads false. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- ' but taperAngleOne reads
+- deg, not the requested
+- deg. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- ' but taperAngleTwo reads
+- did not retain the selected stop entity. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- ' but its start definition did not verify:
+- . The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
 - extent=through_all, but its extent reads back the
 - Sketch text extruded into a solid. To stamp text onto an existing face instead, use model_emboss.
 - Profile extruded into a solid. Pair with view_screenshot (iso) to view it.
+- '. Use: distance, through_all, to_face.
 - Use sketch_get or sketch_create.
 - taper_deg is not supported with extent=to_object/to_face - a to-entity extrude takes no taper. Use a distance extent, or drop the taper.
 - Fusion refused the to_object extent (setOneSideExtent returned false), so nothing was extruded. Check the target face is reachable from the profile in the extrude direction.
+- 'wall_thickness_two' must evaluate to a finite positive length.
+- Unknown 'wall_side_two'. Use: center, side_one, side_two.
 - Could not scope to target_bodies:
+- did not retain the requested minimum_solution. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
 - Extrude reported success but extent=through_all removed no material from
 - . through_all follows the sketch-plane normal, which on an on-face sketch points away from the body - pass the opposite 'distance' sign. '
 - ' remains in the timeline (this check read only those bodies); remove it with design_delete_feature.
 - ' has no closed profile to extrude. Draw a closed region (e.g. a rectangle or circle) first, or pass as_surface=true to extrude an open path into a surface.
+- Could not set 'start_object' and 'start_offset':
+- Could not set 'start_offset':
 - taper_deg is not supported with extent=through_all (a through-all extent carries no taper).
+- thin-wall location did not retain the requested value. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- thin-wall thickness reads
+- cm. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
 - Fusion rejected a symmetric extent=through_all (setTwoSidesExtent returned false).
-- taper_deg is not supported with extent=two_side (setTwoSidesDistanceExtent takes no taper).
-- Fusion rejected extent=two_side (setTwoSidesDistanceExtent returned false).
+- 'taper_deg' applies only when extent_one='distance'.
+- 'taper_two_deg' applies only when extent_two='distance'.
 - Negative extent=through_all needs the retired setAllExtent compatibility setter, unavailable here; nothing was extruded.
 - Fusion rejected negative extent=through_all (retired setAllExtent returned false); nothing was extruded.
 - extent=through_all (setOneSideExtent returned false).
+- Fusion rejected the two-sided distances (setTwoSidesDistanceExtent returned false).
+- Fusion rejected the independent two-sided extents (setTwoSidesExtent returned false).
 - Fusion refused a symmetric tapered extent (
 - deg), so nothing was extruded.
 - Fusion refused a one-sided tapered extent (
@@ -3374,13 +3483,22 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - profile_index '' is not an int, list, 'all', or '0,1,2'. To target a specific region, pass a profile handle from sketch_get instead.
 - profile_index list holds the profile handle : a list takes integer indices. Pass one handle alone, or the regions' indices from sketch_get.
 - Extrude built '' but its  reads back  , not the requested . '' REMAINS in the timeline - inspect it with design_get and remove it with design_delete_feature.
-- extent=through_all follows the sketch-plane normal. If an on-face sketch points AWAY from the material, try a  'distance' for the other side. If this is a placed component, try extent='distance' wi...
+- If this is a placed component, try extent='distance' with a length spanning the body, keeping the same 'component' and 'target_bodies'; read model_inspect(include=['mass']) to confirm removal.
+- extent=through_all follows the sketch-plane normal. If an on-face sketch points AWAY from the material, try a  'distance' for the other side.
 - The extrude reached no body the way it went, and a sketch ON a body's face points its normal AWAY from the material. Pass a  'distance' to go the other way, or check the profile overlaps the body a...
 - symmetric=true is not supported with extent= and to_object. Use symmetric=false for a one-sided to-face extrude, or omit to_object and use extent='distance' with a non-zero distance for symmetry.
 - profile_index mixes the sketch text '' with other regions. A sketch text extrudes on its own - pass just '', and a separate call for the closed regions.
 - as_surface is not used with the sketch text '' - a text extrudes as a solid. Drop as_surface, or pass a closed profile / an open path.
 - Sketch '' has no closed profile to extrude. Draw a closed region (e.g. a rectangle or circle) first, or pass as_surface=true to extrude an open path into a surface.
 - Use model_measure_between to size a finite negative-distance cut, then use extent='distance' with that negative distance.
+- Extrude built '' but isThinExtrude reads false. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- Extrude built '' but its side- thin-wall location did not retain the requested value. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- Extrude built '' but its side- thin-wall thickness reads  cm, not  cm. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- Extrude built '' but taperAngleOne reads  deg, not the requested  deg. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- Extrude built '' but taperAngleTwo reads  deg, not the requested  deg. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- Extrude built '' but its extent did not retain the selected stop entity. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- Extrude built '' but its extent did not retain the requested minimum_solution. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
+- Extrude built '' but its start definition did not verify: . The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
 - Extrude reported success but extent=through_all removed no material from . through_all follows the sketch-plane normal, which on an on-face sketch points away from the body - pass the opposite 'dis...
 - Scoping to 'target_bodies' () makes Fusion build this failed feature instead of refusing a profile that reaches none of them, so check the profile overlaps those bodies in the extrude direction (a ...
 - '' is LEFT in the timeline - nothing is rolled back while an effect is unruled-out. Inspect it with design_get and remove it with design_delete_feature if it is unwanted.
@@ -3391,11 +3509,25 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - WARNING: this  DISCONNECTED the target - it created  additional disconnected body/bodies (the feature now yields : ). Reference each piece by name; a later op assuming one body may hit the wrong pi...
 
 ### `model_fillet`
-- A variable-radius fillet cannot take tangent_chain=false: the API's variable-radius edge set has no such argument, and it cuts the edges handed in. Drop 'tangent_chain', or use fillet_type='constant'.
+- 'flipped' must be true or false - got
+- A variable-radius fillet without continuity cannot take tangent_chain=false: the legacy API's variable-radius edge set has no such argument, and it cuts the edges handed in. Drop 'tangent_chain', o...
+- 'edge_sets' does not take top-level
+- ; put radius and tangent_chain in each set and omit the other inputs.
+- 'edge_sets' carries each set's own type and settings; omit fillet_type, continuity, and flipped.
+- 'continuity' and 'flipped' do not apply to fillet_type='
 - fillet selects FACES, so 'edges' cannot be passed with fillet_type='
 - '. Drop 'edges', or use fillet_type='constant' to round exactly those edge handles.
+- An asymmetric fillet does not take
+- ; omit them or choose the corresponding fillet_type.
+- An asymmetric fillet cannot take any explicit 'continuity' value, including tangent; omit continuity.
+- An asymmetric fillet needs 'end_radius' - the setback on the second side.
+- An asymmetric fillet needs explicit 'edges'; omit faces and edge_filter.
+- An asymmetric fillet needs 'edges' - pass edge handles for the corners to fillet.
 - A variable-radius fillet cannot take 'faces': its radius runs from the start of the edge chain to the far end, and a face set carries no such order. Pass 'edges' handles in chain order, or fillet_t...
 - A variable-radius fillet needs 'edges' - find_geometry edge handles for a single edge, or a tangentially connected chain listed in order from its start end. An edge_filter sweep has no such order, ...
+- '. Use tangent or curvature.
+- 'continuity' applies to constant or variable fillets, not '
+- 'flipped' applies only to asymmetric fillet sets.
 - A chord-length fillet needs 'chord_length' - the straight-line distance across the rounded corner. 'radius' does not drive this type.
 - Rule fillet created - the rounded edge set is defined by the selected FACES, not by individual edge handles. Pair with view_screenshot.
 - '. Use mm, cm, or in.
@@ -3420,6 +3552,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - A variable-radius fillet needs 'end_radius' - the radius at the far end of the edge chain, where 'radius' is the radius at the start.
 - 'positions' and 'radii' must be the same length - got  position(s) and  radius(es). Each position places the radius paired with it at the same index.
 - 'positions'[] is  - a position is the fraction along the edge chain where its radius applies, and must be between 0 and 1 exclusive. The chain's two ends take their radii from 'radius' and 'end_rad...
+- 'edge_sets'[] is asymmetric and cannot take an explicit continuity value, including tangent; omit continuity for this set.
 - Rule fillet reported success but rounded nothing. topology '' may exclude every edge of the selected faces ('rounds_only' takes convex edges, 'fillets_only' concave ones), or the faces meet smoothl...
 - Full round fillet reported success but did not build one: the created feature answers  full-round face set(s) (any other fillet answers none) and the body's measured volume changed by  cm3.
 - A  fillet selects FACES, so 'edges' cannot be passed with fillet_type=''. Drop 'edges', or use fillet_type='constant' to round exactly those edge handles.
@@ -3662,6 +3795,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - patterned around the axis.
 - quantity must be >= 2 for a circular pattern.
 - No active design. Open or create a document with components first.
+- Pattern seed owner did not read; reacquire its feature or face before retrying.
 - were requested. The feature is left in the timeline for inspection - design_delete_feature removes it.
 - Pair with view_screenshot to view.
 - No pattern was created.
@@ -3672,6 +3806,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Instances placed along the path. Copies keep the seed's orientation; they do not rotate to follow the path. Pair with view_screenshot to view.
 - quantity must be >= 2 for a path pattern (the original plus at least one copy).
 - No active design. Open or create a document with components first.
+- Pattern seed owner did not read; reacquire its feature or face before retrying.
 - is not available on this Fusion version.
 - Path pattern createInput returned nothing, so no pattern was created.
 - were requested - the path may be too short for the spacing asked for. The feature is left in the timeline for inspection - design_delete_feature removes it.
@@ -3688,6 +3823,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - spacing_one=0 would stack every instance exactly on the seed (coincident duplicates). Provide a non-zero spacing_one.
 - spacing_two=0 would stack the second-direction instances exactly on the first row (coincident duplicates). Provide a non-zero spacing_two.
 - No active design. Open or create a document with components first.
+- Pattern seed owner did not read; reacquire its feature or face before retrying.
 - ). The feature is left in the timeline for inspection - design_delete_feature removes it.
 - patterned in a grid. Pair with view_screenshot to view.
 - Fusion refused the second pattern direction (setDirectionTwo returned false), so no pattern was created.
@@ -3744,29 +3880,48 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Profile revolved into a solid. Pair with view_screenshot (iso) to view it.
 - '. Use: new, join, cut, intersect.
 - Provide a non-zero 'angle_deg' to revolve (e.g. 360 for a full revolve).
+- second_angle_deg must be finite.
+- 'to_object_two' requires the first-side 'to_object' construction-plane stop.
+- Construction-plane stops cannot be combined with symmetric or second_angle_deg.
+- Construction-plane stops currently require operation='new'; use angle_deg without a stop for join, cut or intersect.
 - No active design. Create or open a document first (see doc_new).
 - No sketch to revolve. Create one and draw a closed profile first.
 - Could not resolve axis '
 - use x | y | z, a straight-edge/sketch handle, or line:<index>.
 - angle_deg must be a number (degrees).
+- second_angle_deg must be a number (degrees).
 - Use sketch_get or sketch_create.
 - ' has no closed profile to revolve.
 - out of range - sketch has
+- 'to_object' must resolve to a ConstructionPlane handle/name for revolve extent.
 - 'target_bodies' only applies to cut/intersect operations.
 - Could not start revolve:
 - . (The axis must not pass through the profile in a way that self-intersects.)
 - Could not set revolve angle:
 - . (A 'cut'/'intersect' needs existing geometry to act on. An axis outside the profile's plane is projected onto it, so that is not the cause; a profile that CROSSES the axis is refused.)
+- ' was created, but its result bodies could not be read; the construction-plane stop effect is UNVERIFIED.
 - Revolve reported success but this
 - changed nothing - every solid body in '
 - ' measures the volume it had before and none was consumed, so the revolved shape does not overlap any of them. Check that the profile and axis put the swept solid inside the target body (an 'inters...
 - is not an integer index. Use an index from sketch_get or a profile handle.
+- 'to_object_two' must resolve to a ConstructionPlane handle/name for revolve extent.
+- 'to_object' and 'to_object_two' resolve to the same construction plane; provide two distinct stops.
+- Construction-plane stops require native root-component geometry; use angle extents for placed component geometry.
+- Could not establish the one-sided revolve direction hint:
+- Fusion refused the two construction-plane revolve stops; setTwoSideToExtent did not return true.
+- Could not set target_bodies before revolve:
+- ' was created, but planar result faces could not be read against stop '
+- '; the stop-plane face check is UNVERIFIED.
+- ' was created, but no planar result face lies on stop '
+- '; the requested stop effect is unverified. Retire it with design_delete_feature.
+- Fusion refused the construction-plane revolve stop; setOneSideToExtent did not return true.
 - Fusion refused a two-sided revolve extent (
 - deg), so nothing was revolved.
 - deg, so nothing was revolved.
-- Could not set target_bodies before revolve:
 - it could not be brought into the revolve's assembly context (). Pass a handle at geometry in the sketch's own component, or a world axis (x/y/z).
 - Revolve failed: . (A 'cut'/'intersect' needs existing geometry to act on. An axis outside the profile's plane is projected onto it, so that is not the cause; a profile that CROSSES the axis is refu...
+- Revolve '' was created, but planar result faces could not be read against stop ''; the stop-plane face check is UNVERIFIED.
+- Revolve '' was created, but no planar result face lies on stop ''; the requested stop effect is unverified. Retire it with design_delete_feature.
 - Revolve reported success but this  changed nothing - every solid body in '' measures the volume it had before and none was consumed, so the revolved shape does not overlap any of them. Check that t...
 
 ### `model_scale`
@@ -3813,6 +3968,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_split`
 - No active design. Create or open a document first (see doc_new).
 - 'view_direction' is used only by split='silhouette' (got split='
+- 'split_line' is used only by split='along_vector' (got split='
+- split='along_vector' takes 'faces', 'split_line' and 'view_direction', not 'target', 'split_plane' or 'split_tool_body'.
+- split='along_vector' needs 'view_direction' (a world axis, construction axis, straight edge or sketch line).
+- split='along_vector' needs 'split_line' as an exact '<sketch>/line:<index>' from sketch_get(include_entities=true).
 - split='silhouette' takes 'target' and 'view_direction', not 'faces', 'split_plane' or 'split_tool_body'.
 - Faces split; result_count is the net face-count increase. Pair with view_screenshot.
 - 'faces' is required for split=face (the faces to split).
@@ -3820,6 +3979,21 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - target face(s). It must intersect them; try extend_tool=true or a larger cutter.
 - . (The cutter must cross the faces - try extend_tool=true or a larger cutter.)
 - Split face ran in a DIRECT design, which returns no feature object, and the owning bodies' face count could not be read back - so whether the faces were split is UNVERIFIED. Check with model_inspec...
+- Faces split along the supplied direction; verify the partition with find_geometry.
+- 'faces' is required for split='along_vector' (the faces to split).
+- Split along vector ran but the owning bodies' face count could not be read back; whether the faces were split is UNVERIFIED. Check with model_inspect / find_geometry.
+- Split along vector produced no new faces; the projected sketch line did not split the target. Check its position and view_direction.
+- 'view_direction' world axis could not be resolved in the active component.
+- Fusion refused the along-vector split input; no split was attempted.
+- Fusion refused split='along_vector' because its direction setter did not return true; no split was attempted.
+- Split along vector failed:
+- . Check that the line and direction cross the target faces.
+- ' was created, but the timeline marker could not be restored after reading its retained definition:
+- . Inspect it with design_get and remove it with design_delete_feature.
+- ' was created, but its timeline row could not be read. Inspect it with design_get and remove it with design_delete_feature.
+- ' was created, but its retained split definition could not be read:
+- ' did not retain the along-vector split type; inspect it with design_get and remove it with design_delete_feature.
+- ' did not retain the selected view_direction; inspect it with design_get and remove it with design_delete_feature.
 - split='silhouette' needs 'target' (the solid to split).
 - ' is not a root-component body; split='silhouette' takes a solid in the root component.
 - The faces, volume or edges of '
@@ -3842,6 +4016,11 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Split feature was created but failed to compute: . The cutter may not fully cross the target - try extend_tool=true or a larger cutter.
 - Split produced  body - the cutter did not divide ''. It must fully intersect the body; try extend_tool=true or a cutter that crosses it.
 - Split produced no new faces - the cutter did not cross the  target face(s). It must intersect them; try extend_tool=true or a larger cutter.
+- Split feature '' was created, but its retained split definition could not be read: . Inspect it with design_get and remove it with design_delete_feature.
+- Split feature '' was created, but the timeline marker could not be restored after reading its retained definition: . Inspect it with design_get and remove it with design_delete_feature.
+- Split feature '' was created, but its timeline row could not be read. Inspect it with design_get and remove it with design_delete_feature.
+- Split feature '' did not retain the along-vector split type; inspect it with design_get and remove it with design_delete_feature.
+- Split feature '' did not retain the selected view_direction; inspect it with design_get and remove it with design_delete_feature.
 
 ### `model_stitch`
 - Surfaces closed into a SOLID within tolerance.
@@ -3862,25 +4041,52 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Profile swept into a solid along the path. Pair with view_screenshot (iso) to view it.
 - '. Use: new, join, cut, intersect.
 - Unknown orientation '
-- '. Use: perpendicular, parallel.
+- '. Use: perpendicular, parallel, rigid, aligned.
+- 'path_fraction' must be from 0 through 1 - got
 - No active design. Create or open a document first (see doc_new).
+- Profile orientation must be perpendicular or parallel - got '
+- 'solid_aligned_axis' applies only to 'solid_body' with orientation='aligned'.
+- 'twist_deg', 'taper_deg', and 'path_fraction' exclude 'guide_path'. Omit them or sweep without a guide rail.
 - Check that the profile sits on the path and the path forms a valid, connected sweep.
 - Sweep reported success but created no body.
 - Sweep reported success but its result bodies did not read.
 - Choose 'profile' or 'solid_body', not both.
+- 'guide_path', 'twist_deg', 'taper_deg', and 'path_fraction' are profile controls; omit them with 'solid_body'.
+- Could not build 'guide_path':
+- 'guide_path' has no readable curves; pass a connected path in the profile's owner component.
+- 'guide_path' contains curves Fusion left out; pass the complete connected guide chain.
 - Could not start sweep:
 - . (The path must geometrically connect and the profile should sit on/near the path start.)
+- Sweep input refused isSolid=
+- Sweep input refused orientation='
+- '; no sweep was made.
+- Sweep input did not retain orientation='
 - Could not configure the sweep:
 - 'target_bodies' only applies to cut/join/intersect (a 'new' body has no participants). Remove it, or change the operation.
 - . (A 'cut'/'intersect' needs existing geometry to act on; the profile and path must form a valid sweep.)
+- ' was built, but its retained parameters could not be verified:
+- ' was built, but a requested retained parameter could not be read:
+- ' was built, but its timeline row could not be read for parameter verification.
+- Sweep was built, but its '
+- Sweep was built, but its guideRail did not verify:
 - Sweep reported success but this
 - changed nothing - every solid body in '
 - ' measures the volume it had before and none was consumed, so the swept profile does not overlap any of them. Check the path runs through the target body (an 'intersect' whose target lies entirely ...
+- Sweep input refused 'guide_path'; no sweep was made.
+- Sweep input did not retain 'guide_path'; no sweep was made.
+- Sweep input refused '
+- Sweep input did not retain '
+- Sweep input refused 'path_fraction'=
+- Sweep input did not retain 'path_fraction' as
 - Could not scope to target_bodies:
+- ' was built, but its retained parameters could not be read:
+- Sweep was built, but its guideRail member identities differ from the requested path.
 - measure the volumes they had before and none was consumed, so the profile does not sweep through any of them. A cut/intersect can only affect bodies named in 'target_bodies' - check the path runs t...
 - Solid body swept into a new result; its source tool body retains its geometry.
 - 'solid_body' supports operation='new' only.
-- 'solid_body' uses perpendicular orientation; omit 'orientation'.
+- 'solid_body' orientation must be perpendicular, rigid, or aligned.
+- 'solid_aligned_axis' is required when 'solid_body' uses orientation='aligned'.
+- 'solid_aligned_axis' applies only when 'solid_body' uses orientation='aligned'.
 - 'solid_body' makes a solid; omit as_surface or set it false.
 - 'target_bodies' applies to profile cut/join/intersect, not solid_body new.
 - 'solid_body' needs an owner-local 'sketch:<name>' path; draw the path in the body's component.
@@ -3894,16 +4100,28 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' must name exactly one sketch in the solid body's component; found
 - The solid sweep path has no readable curves; draw one connected path.
 - Solid sweep input did not retain the requested tool body; no sweep was made.
+- ' is unavailable in this build; no sweep was made.
 - Solid sweep input did not retain perpendicular orientation; no sweep was made.
+- Solid sweep input did not retain '
+- ' orientation; no sweep was made.
 - Solid sweep was built, but its new result body could not be identified from created faces and the owner's body census.
 - Solid sweep was built, but its result is not a verified new solid body.
 - Solid sweep was built, but its source tool body's geometry was not retained.
 - Solid sweep was built, but feature health is unreadable or failed.
-- Solid sweep was built, but its perpendicular orientation did not persist.
+- Solid sweep was built, but its
+- orientation did not persist.
 - Solid sweep was built, but the new result body has no readable name.
 - ' does not own 'solid_body'. Use its owner or omit component and pass a body handle.
+- 'solid_aligned_axis' must resolve to a linear edge, sketch line, or construction axis.
+- 'solid_aligned_axis' must belong to the solid body's owner component.
+- 'solid_aligned_axis' identity is unreadable; reacquire the axis handle.
 - Could not start solid-body sweep:
+- Solid sweep input refused orientation='
+- Could not configure solid orientation '
 - Solid-body sweep failed:
+- Solid sweep was built, but its aligned axis did not persist.
+- Solid sweep input refused 'solid_aligned_axis'; no sweep was made.
+- Solid sweep input did not retain 'solid_aligned_axis'; no sweep was made.
 - Sweep reported success but this  changed nothing -  measure the volumes they had before and none was consumed, so the profile does not sweep through any of them. A cut/intersect can only affect bod...
 - Sweep reported success but this  changed nothing - every solid body in '' measures the volume it had before and none was consumed, so the swept profile does not overlap any of them. Check the path ...
 
@@ -4381,13 +4599,16 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Slot drawn from 2 solid SketchLines, 1 CONSTRUCTION SketchLine (the centre-to-centre line) and 2 SketchArc end caps - 5 curves, of which 'curves_added' counts the 3 lines. Address any of them as 'l...
 - Slot drawn - 'curves_added' counts its SketchLines: three, four when a length or angle is passed. Its two end caps are SketchArcs. Address either as 'line:<index>' / 'arc:<index>' for sketch_dimens...
 - Closed path drawn and a profile forms. The seam is WELDED - the closing segment ends on the first segment's start point, so the loop shares that point instead of carrying two at the same coordinate...
+- The ends read exchanged against the request: arcs are stored counter-clockwise.
+- The rectangle carries no constraints; its sides are held by coordinates only.
+- three_point_rectangle
 - drawn. Its centre is a sketch point of its own: center_point=
 - - address points by that ref rather than by counting the ones you drew.
 - Each row's center_point identifies its centre sketch point.
 - Built degree differs from degree_requested; add control points for a higher degree. Use sketch_get(include_entities=true) for cv_spline ids.
 - Conic drawn. Address it as 'conic:<index>' - sketch_get(include_entities=true) lists the index. Closed by a chord between its endpoints it forms a profile that extrudes to a solid.
 - Elliptical arc drawn. Address it as 'elliptical_arc:<index>' - sketch_get(include_entities=true) lists the index. A 180 deg arc closed by a line across its diameter forms a profile that extrudes to...
-- Roles: center_rectangle x2,y2 = half-extents. conic cx,cy = apex. overall_slot x1,y1/x2,y2 = tips, center_point_slot = centre and cap. slot radius = half-width.
+- Roles: center_rectangle x2,y2 = half-extents. conic cx,cy = apex. overall_slot x1,y1/x2,y2 = tips, center_point_slot = centre and cap. slot radius = half-width. center_arc: CCW from x1,y1. edge_pol...
 - The first  segment(s) DID land and are still in the sketch: . Delete them as 'line:<index>' with sketch_delete_entity (sketch_get lists the indexes) before retrying - a retry of the whole chain dra...
 - The sketch '' was left with compute DEFERRED - restoring it raised: . Until compute resumes, its profiles and geometry can read stale.
 - kind='slot' draws from two centres and radius alone, so  would be dropped. Pass a length or angle with kind='overall_slot' or 'center_point_slot'; size an arc with kind='center_point_arc_slot'.
@@ -4401,6 +4622,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - center_point_arc_slot  needs both 'arc_radius' and 'angle_deg' - the dimension flags sit after them in the API's argument list. Missing: .
 - is_construction does not apply to kind='point' - it is set on sketch curves only, so the point would land as a normal point. Omit it.
 - Drawing  returned an entity but the sketch's own  collection count did not change ( -> ) - nothing was added. Re-read sketch_get.
+- It IS in the sketch; remove it with sketch_delete_entity (sketch_get(include_entities=true) lists it last in its collection).
 - Rectangle drawn with  horizontal/vertical constraint(s) applied to its sides, as the UI does - the constructor itself lands none. Its corners already share points; what remains free is position and...
 - Degree  was requested but the spline was built at degree : the API silently clamps the degree to the control-point count minus one. Pass more 'points' to get the degree asked for.
 - drawn. Its centre is a sketch point of its own: center_point= - address points by that ref rather than by counting the ones you drew.
@@ -4413,6 +4635,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The sketch is still NOT fully constrained - other geometry holds the remaining freedom (sketch_get(include_entities=true) shows what).
 - The sketch's constrained state did not read back.
 - The line reads fixed, but its endpoints can still move under a later dimension - fix their point ids too to hold them.
+- ' extended now passes through the centre of '
+- '. sketch_get lists this constraint with the line only.
 - sketch entities - read their '<type>:<index>' refs with sketch_get.
 - applied with EVERY instance suppressed, so it created no curves - the pattern constraint itself is in the sketch. Re-run with fewer 'suppressed' flags set for a pattern that draws.
 - two curves, at least one of them a spline, meeting at a COINCIDENT point - when both operands already satisfy that, check the shared endpoint is still coincident (an earlier smooth can move it apart)
@@ -4431,6 +4655,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '' and '' resolve to ONE sketch point, so there is nothing to constrain. Name two different points, or drop the call; sketch_get(include_entities=true) lists them.
 - of  anchor lines took the  - the text's anchor is left partly locked. Re-read the sketch with sketch_get before relying on its constrained state.
 - '' needs BOTH direction lines -  did not resolve. A null direction is documented as the sketch X axis but the API refuses it ('invalid argument directionOneEntity').
+- perpendicular_to_curve was added but '' extended passes  from the centre of '', so it is not perpendicular to it. The constraint is left in the sketch - sketch_delete_entity(target='constraint:<ind...
 - '' returned a constraint but added no sketch geometry - nothing was created. Delete it with sketch_delete_entity(target='constraint:<index>').
 - '' was created with  =  but  was requested. The constraint is left in the sketch for inspection - sketch_delete_entity(target='constraint:<index>') removes it.
 - '' was created with  instance(s) suppressed, not the  requested, so the pattern is not what was asked for. The constraint is left in the sketch for inspection - sketch_delete_entity(target='constra...
@@ -4449,6 +4674,28 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - entity(ies) but sketch '
 - curve(s) - nothing landed in it.
 - ' for 'target_sketch'. Available:
+- Each copy follows its original through symmetry constraints; sketch_delete_entity on those constraints frees it.
+- mirror_line mirrors in place of a transform, in the same sketch. Drop:
+- No active design. Create or open a document first (see doc_new).
+- No sketch to mirror in. Draw one first with sketch_create.
+- mirror_line mirrors lines and arcs;
+- is neither. Mirror the lines and arcs, and draw the rest.
+- 'entities' is required - comma-separated '<type>:<index>' curve refs from sketch_get(include_entities=true).
+- mirror_line must be a 'line:<index>' of sketch '
+- ' is also in 'entities'; a line cannot be mirrored about itself.
+- ' has no readable length.
+- An end point of one of the entities did not read; nothing was mirrored.
+- entity(ies) and sketch '
+- asked - re-read sketch_get(include_entities=true) before going on.
+- Nothing was mirrored.
+- mirror_line works in the sketch plane; '
+- has an end off it (z is not 0).
+- did not read its end points.
+- ' did not read, so its mirror could not be checked; nothing was mirrored.
+- mirror moved its source '
+- The curve built for '
+- ' is not its reflection about '
+- mirror returned  entity(ies) and sketch '' went from  to  curve(s) for  asked - re-read sketch_get(include_entities=true) before going on.
 - The new curves' ids are in '', and an added curve APPENDS at the end of its kind, so the ids already in use keep their entities - re-read sketch_get(include_entities=true) for the new ones. 'return...
 - curve(s) landed in '' but NONE could be identified by entityToken - re-read sketch_get(include_entities=true) for their ids.
 
@@ -4542,7 +4789,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The whole curve was consumed: a trim on a curve with no intersections deletes it outright.
 - ' needs 'state' (true or false); got
 - break_link only breaks a link - this tool cannot re-establish one, so 'state' must be false or omitted (got
-- 'state' applies to construction/centerline only; '
+- 'close' needs 'state' (true closes, false opens); got
+- ' takes 'state' true (activate, the default) or false; got
+- A curvature handle is removed with its tangent handle: use action='tangent_handle' with state=false, which removes both.
+- 'state' applies to construction/centerline, the spline handles and close; '
 - '. Valid: mm, cm, in.
 - No active design. Create or open a document first (see doc_new).
 - No sketch to edit. Draw one first with sketch_create + sketch_add_geometry.
@@ -4578,6 +4828,28 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . The link IS broken - '
 - ' re-reads reference=False - and this tool cannot restore it.
 - . Its reference flag did not read back, so whether the link broke is not known. Read it with sketch_get(include_entities=true).
+- Handle active at fit point
+- . sketch_get does not list the handle curve; drive it by moving its end points with sketch_move.
+- ' applies to a fitted spline ('spline:<index>'); 'entity_one' = '
+- answered but fit point
+- ' reads no such handle.
+- close did not take - '
+- add_point answered but '
+- before. Read it with sketch_get(include_entities=true).
+- The handle state at fit point
+- ' did not read, so nothing was removed.
+- . Read the sketch with sketch_get(include_entities=true) and retry.
+- , the curvature handle
+- The handle at fit point
+- ' is not confirmed removed: deleteMe answered
+- Could not activate the handle at fit point
+- Could not set closed=
+- x1,y1 has no parameter on '
+- '; put the pick on the spline.
+- x1,y1 is nearest an END of '
+- ', where it already has a fit point; pick a point along the spline.
+- Could not add a fit point to '
+- Could not remove the handle at fit point
 - What the pick point selects - trim: the nearest segment. extend: the nearest end. break: the crossings either side. split: the point itself. fillet/chamfer: the corner between the two. offset: the ...
 - = was assigned to '' in sketch '' but the flag did not read back, so the change is unverified. Read it with sketch_get(include_entities=true).
 - '' in sketch '' did not read its reference flag, so break_link wrote nothing. Read it with sketch_get(include_entities=true).
@@ -4585,6 +4857,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Breaking the link of '' in sketch '' raised: . Its reference flag did not read back, so whether the link broke is not known. Read it with sketch_get(include_entities=true).
 - reference=False was assigned to '' in sketch '' but the flag did not read back, so the break is unverified. Read it with sketch_get(include_entities=true).
 - The link of '' in sketch '' broke (reference True -> False) AND the curve's geometry changed: length  ->  , position . This tool cannot restore the link; read the curve with sketch_get(include_enti...
+- The handle at fit point  of '' in sketch '' is not confirmed removed: deleteMe answered , the tangent handle , the curvature handle . Read the sketch with sketch_get(include_entities=true) and retry.
+- Handle active at fit point . sketch_get does not list the handle curve; drive it by moving its end points with sketch_move.
 - '' needs the pick point x1,y1 (in 'units') - it chooses which segment, end, quadrant or side of the curve the edit applies to.
 - '' needs a pick point on EACH curve: x1,y1 on entity_one and x2,y2 on entity_two - together they choose the quadrant to build in.
 - offset needs 'distance' > 0 (in 'units'); the SIDE comes from the pick point x1,y1, so the distance is a magnitude. Got .
@@ -4630,6 +4904,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Fusion declined the move in sketch '
 - ' (Sketch.move returned false) and none of
 - read the same coordinates afterwards, so nothing in the sketch changed. Either the transform is one this geometry is symmetric under (a circle rotated about its own centre), or a constraint refused...
+- still read z = 0 on every point after a dz move.
 - move returned  but  read the same coordinates afterwards, so nothing in the sketch changed. Either the transform is one this geometry is symmetric under (a circle rotated about its own centre), or ...
 - Partial:  read the same coordinates afterwards - an existing constraint or dimension refused the move for those, or the transform leaves them where they were.
 
@@ -4664,6 +4939,19 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Nothing you passed crosses the plane of sketch '
 - ), so no sketch geometry was created:
 - intersectWithSketchPlane failed in sketch '
+- Geometry included where its source is, not flattened onto the sketch plane.
+- An end point did not read, so which curves lie off the plane is not known.
+- curves have an end off the sketch plane; such a curve does not bound a profile - action='into_sketch' gives the flat projection.
+- action='include' needs 'entities': find_geometry handles at edges, faces or vertices.
+- include returned no sketch entities in '
+- entity(ies) but the entity counts of '
+- ' did not rise; re-read it with sketch_get.
+- Cut edges created where the sketch plane cuts the bodies.
+- the body it was cut from
+- The plane does not cut
+- action='cut_edges' needs 'bodies': the bodies the sketch plane cuts.
+- . No sketch geometry was created. Move the sketch plane through the body, or pass a body that spans it.
+- The plane of sketch '
 - '' lives in component '' but sketch '' is in '': intersectWithSketchPlane accepts only entities owned by the sketch's own component - an occurrence proxy is silently ignored and a foreign component...
 - 'direction': component '' has no  origin construction axis. Pass a find_geometry handle at a straight edge or sketch line instead.
 - 'curve_refs' needs 'source_sketch' - the sketch those ids are read against, which must not be the sketch being projected into.
@@ -4674,10 +4962,13 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - link= was requested, but all  curve(s) project2 created in sketch '' read back as . The curves WERE created and remain in the sketch - delete them with sketch_delete_entity if that linkage is wrong...
 - Nothing you passed crosses the plane of sketch '' (), so no sketch geometry was created: . Move the sketch plane through the geometry, or pass geometry that spans it. An occurrence proxy is also ig...
 - intersectWithSketchPlane returned no entities, so the  new sketch entities are reported from the collection census alone.
+- of the  curves have an end off the sketch plane; such a curve does not bound a profile - action='into_sketch' gives the flat projection.
+- The plane of sketch '' () cuts none of: . No sketch geometry was created. Move the sketch plane through the body, or pass a body that spans it.
 
 ### `sketch_set_text`
 - and design recomputed so any engraving/emboss that consumes it rebuilt
 - Provide 'text' or 'parameter' - the string to display or the Text parameter to bind.
+- 'explode' acts on an existing text; it cannot ride create=true.
 - No active design (open a document with sketch text).
 - '. Use mm, cm, or in.
 - No sketch text matched index
@@ -4694,6 +4985,17 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' before the resize was checked, so that one text carries the new string at its old size.
 - set the font of sketch text in '
 - ' before the resize was checked.
+- cannot ride a layout edit (flips, 'style', 'explode', or a path re-lay). Send them in a call of their own.
+- A layout edit acts on ONE text: pass 'sketch_name' and its 'index' (sketch_get(include_entities=true) lists 'text:<i>').
+- 'explode' replaces the text by curves, so it rides alone.
+- Already applied in this call:
+- explode answered with
+- text(s). Re-read sketch_get(include_entities=true).
+- An edit re-lays PATH text: pass mode='along_path' or 'fit_on_path' with 'path'. A text cannot be turned into a multi_line box.
+- is a multi-line box, which Fusion does not re-lay onto a path. Create a replacement with create=true.
+- 'above_path', 'align' and 'character_spacing' steer a path re-lay; pass 'mode' and 'path' with them.
+- Could not explode the sketch text in
+- 'character_spacing' must be a number.
 - Sketch text created (verified: sketchTexts
 - ). (x,y) are SKETCH-plane coordinates - on an on-face sketch use the 'frame' from sketch_create to keep the text on the face. Extrude/emboss the sketch to engrave it, or edit it later with sketch_s...
 - Sketch text created on '
@@ -4708,10 +5010,11 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ', so the font did not take. The text WAS created - remove it with sketch_delete_entity(sketch_name='
 - ' text placement (it returned false), so no text was placed.
 - Could not create sketch text in '
+- The text WAS created; its style is unconfirmed - read it with sketch_get(include_entities=true).
 - 'character_spacing' must be a number - the percent change from the default spacing (0 = default, 50 = half again as wide).
 - create sketch text in '
 - Read it back with sketch_get(sketch_name=..., include_entities=true): the 'text:<i>' entity carries the string, height, font and sketch-space bounding box.
-- shape NEW text only, so add create=true - editing changes the displayed string, its font and its 'height'. To change an existing text's layout or rotation, create a replacement.
+- shape NEW text only, so add create=true - an edit changes the string, font, 'height', 'style', the flips, or re-lays path text with 'mode' + 'path'. To move or rotate an existing text, create a rep...
 - Fusion named the font as the problem and no API lists the legal names - pass a font name that exists on this machine, spelled with its own capitals ('Arial', not 'arial'), or omit 'font_name' to ke...
 - '' belongs to mode 'along_path'/'fit_on_path'; mode is 'multi_line', which places the text in a box at (x,y). Set mode, or drop ''.
 - '' is not accepted in mode 'fit_on_path', which spaces the characters over the whole path by itself. Use mode 'along_path' to control ''.
@@ -4727,6 +5030,11 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Sketch text created (verified: sketchTexts  -> ). (x,y) are SKETCH-plane coordinates - on an on-face sketch use the 'frame' from sketch_create to keep the text on the face. Extrude/emboss the sketc...
 - Sketch text created on '' (verified: ). A CLOSED path such as a circle wraps the text right around it. Extrude/emboss the sketch to engrave it, or edit the string later with sketch_set_text (withou...
 - measured_width/measured_height are the x and y extents of the created text's own boundingBox, in , read off it after it landed - check them against the space the label has to fit before embossing.
+- The text is now outline curves and no longer a text; later 'text:<i>' indexes in this sketch moved down by one. sketch_get(include_entities=true) lists the curves.
+- The sketch text in  is a multi-line box, which Fusion does not re-lay onto a path. Create a replacement with create=true.
+- The sketch text in  WAS re-laid on '', but  (bounding box  ). Re-lay it with the opposite 'above_path' / 'align', or create a replacement.
+- path_confirmed is null: the definition's own path did not read, so that the text left its previous path is unconfirmed; compare 'bounding_box' with the path.
+- Which side of the path it landed on was not checked (that check reads a straight 'line:<i>' path); compare 'bounding_box' with the path.
 - '' is a  parameter, so binding the label to it would render a dimension as the string. Bind a  parameter (param_add takes unit='').
 - Binding the sketch text in '' to '' cannot be confirmed - its textParameter did not read back an expression after the write.
 - 'parameter' binds an EXISTING sketch text, so it cannot ride a create. Create the text with its starting string first, then call again with parameter='' to bind it.
@@ -4839,10 +5147,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Patch supports: new, new_component.
 - '. Use: connected, tangent, curvature.
 - No active design. Create or open a document first (see doc_new).
+- 'edge_conditions' maps one complete boundary; use 'boundary' and omit 'boundaries'.
 - 'interior_rails' fits ONE patch surface, so it goes with 'boundary' (a single loop). With 'boundaries' every loop would be handed the same rails.
 - Pass 'boundary' (one loop) or 'boundaries' (a list of loops, each an edge handle Fusion auto-completes - the way to patch every hole in one call).
 - interior_rails did not take - PatchFeatureInput.interiorRailsAndPoints reads back  entity(ies) after assigning , so the patch would run without them.
 - Closed boundary filled, but no result body's isSolid flag could be read back - whether the patch is an open surface is UNVERIFIED.
+- 'edge_conditions' needs a checked closed B-Rep edge loop; pass every boundary edge handle in loop order, not a sketch boundary or one auto-completed edge.
 - Sketch boundaries take continuity='connected', operation='new' and no interior_rails. Use a body-edge boundary for the other patch options.
 - Patch failed: .  Candidate causes, not a complete list: (1) a degenerate TANGENT saddle opening whose rim is two half-edges - pass both as the boundary list; (2) an edge loop SPLIT by a later featu...
 - Patch failed: . With interior_rails there are two candidate causes and this message asserts neither: the boundary does not form a CLOSED loop, or a rail edge does not lie on the surface the boundar...

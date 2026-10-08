@@ -1293,6 +1293,13 @@ def _celled(**cells):
 
 
 class TestPatternElementsPlaced:
+    def test_face_feature_pattern_does_not_certify_placement_from_one_result_body(self, monkeypatch):
+        post = kernel.PatternElementsPlaced()
+        monkeypatch.setattr(post, "_feature", lambda *_args: pytest.fail("generic placement read used"))
+        for kind in ("faces", "features"):
+            reason, evidence = post.verify({}, {"entity_kind": kind, "pattern_geometry_changed": True}, 0)
+            assert reason == "" and evidence == {"pattern_elements_confirmed": False}
+
     def _wire(self, monkeypatch, tl, **kw):
         p = kernel.PatternElementsPlaced(**kw)
         monkeypatch.setattr(p, "_timeline", lambda: tl)

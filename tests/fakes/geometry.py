@@ -60,11 +60,22 @@ def make_bbox(minp, maxp):
 
 @fusion_fake(live_type="ValueInput", facts=("shape-dump-document-world",))
 class FakeValueInput:
-    """What ValueInput.createByReal answers, and the class stands in for the factory itself
-    (monkeypatch createByReal to it): realValue is the number that went in, read back off the
-    input a feature was built from. There is no `real` - the live type carries none."""
-    def __init__(self, real):
-        self.realValue = real
+    """ValueInput with mutually exclusive realValue or stringValue getters."""
+    def __init__(self, real=None, string=None):
+        self._real = real
+        self._string = string
+
+    @property
+    def realValue(self):
+        if self._string is not None:
+            raise RuntimeError("Value does not contain a real")
+        return self._real
+
+    @property
+    def stringValue(self):
+        if self._string is None:
+            raise RuntimeError("Value does not contain a string")
+        return self._string
 
 
 # -- vectors / surfaces / curves for selection.py classification -----------

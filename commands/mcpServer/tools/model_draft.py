@@ -56,7 +56,8 @@ def _unchanged_detail(vol_readable: bool, count_readable: bool, compared_faces: 
 
 
 def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
-            symmetric: bool = False, tangent_chain: bool = True, flip: bool = False) -> dict:
+            symmetric: bool = False, tangent_chain: bool = True, flip: bool = False,
+            angle_two_deg=None) -> dict:
     """See TOOL_DESCRIPTION."""
     try:
         angle = float(angle_deg)
@@ -66,6 +67,16 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
         return error("'angle_deg' must be non-zero - a 0 deg draft tapers nothing.")
     if abs(angle) >= 90:
         return error(f"'angle_deg' must be between -90 and 90 degrees (got {angle}).")
+    angle_two = None
+    if angle_two_deg is not None:
+        try:
+            angle_two = float(angle_two_deg)
+        except Exception:
+            return error("'angle_two_deg' must be a number (second-side draft angle in degrees).")
+        if not math.isfinite(angle_two) or angle_two == 0 or abs(angle_two) >= 90:
+            return error(f"'angle_two_deg' must be between -90 and 90 degrees and non-zero (got {angle_two}).")
+        if symmetric:
+            return error("'angle_two_deg' cannot be combined with symmetric=true; set both side angles explicitly.")
 
     design = _common.design()
     if not design:
@@ -92,9 +103,13 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
     try:
         di = comp.features.draftFeatures.createInput(face_list, plane, bool(tangent_chain))
         di.isDirectionFlipped = bool(flip)
-        # A single angle for every drafted face; isSymmetric splits at the pull plane and tapers both
-        # sides by that angle. This is the setSingleAngle path (not setTwoAngles, which is per-side).
-        if not di.setSingleAngle(bool(symmetric), angle_val):
+        if angle_two is not None:
+            set_result = di.setTwoAngles(
+                angle_val, adsk.core.ValueInput.createByReal(math.radians(angle_two)))
+            if set_result is not True:
+                return error("Fusion refused the two-angle draft (setTwoAngles did not return true), "
+                             "so nothing was drafted.")
+        elif not di.setSingleAngle(bool(symmetric), angle_val):
             return error(f"Fusion refused a {'symmetric ' if symmetric else ''}draft angle of "
                          f"{angle_deg} deg (setSingleAngle returned false), so nothing was drafted.")
         feature = comp.features.draftFeatures.add(di)
@@ -189,6 +204,8 @@ draft_tool = (
     .add_input_property("symmetric", {"type": "boolean"})
     .add_input_property("tangent_chain", {"type": "boolean"})
     .add_input_property("flip", {"type": "boolean"})
+    .add_input_property("angle_two_deg", {"type": "number",
+            "description": "Second-side draft angle; excludes symmetric."})
     .strict_schema()
 )
 draft_item = Item.create_tool_item(tool=draft_tool, write="write", handler=handler, run_on_main_thread=True,

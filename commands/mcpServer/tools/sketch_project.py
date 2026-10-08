@@ -23,7 +23,7 @@ from . import _sketch_detail
 
 app = adsk.core.Application.get()
 
-_ACTIONS = ("into_sketch", "to_surface", "intersect")
+_ACTIONS = ("into_sketch", "to_surface", "intersect", "include", "cut_edges")
 _ACTION = _inputs.Choice("action", list(_ACTIONS), default="into_sketch")
 
 # The geometry to project: find_geometry handles at edges/faces/vertices (a face projects all its
@@ -61,7 +61,7 @@ _SHORTFALL_NOTE = (" Some created curves have no '<type>:<index>' ref - list the
 # it would put a value in the payload that never reached Fusion.
 _ACTION_ONLY = (
     ("link", ("into_sketch",)),
-    ("entities", ("into_sketch", "intersect")),
+    ("entities", ("into_sketch", "intersect", "include")),
     ("curves", ("into_sketch",)),
     ("target_faces", ("to_surface",)),
     ("source_sketch", ("into_sketch", "to_surface")),
@@ -70,7 +70,7 @@ _ACTION_ONLY = (
     ("curve_handles", ("to_surface",)),
     ("project_type", ("to_surface",)),
     ("direction", ("to_surface",)),
-    ("bodies", ("intersect",)),
+    ("bodies", ("intersect", "cut_edges")),
 )
 
 # What this tool RETURNS (declared once; drives the PRODUCES: prose + the assert-present contract test).
@@ -651,6 +651,118 @@ def _intersect(sketch, entities, bodies) -> dict:
     return ok(out)
 
 
+def _off_plane(items):
+    """How many created curves have an end off the sketch plane, or None when an end did not read."""
+    off = 0
+    for c in items:
+        zs = [safe(lambda c=c, n=n: getattr(c, n).geometry.z)
+              for n in ("startSketchPoint", "endSketchPoint")
+              if safe(lambda c=c, n=n: getattr(c, n)) is not None]
+        if any(z is None for z in zs):
+            return None
+        off += 1 if any(abs(z) > 1e-6 for z in zs) else 0
+    return off
+
+
+def _one_by_one(sketch, act, method, sources, labels):
+    """(items per source, error): `method` called once per source, each call's entities kept apart."""
+    per, landed = [], 0
+    for src, label in zip(sources, labels):
+        try:
+            items = _as_list(method(src))
+        except Exception as e:
+            done = (f" {landed} entity(ies) from the earlier source(s) ARE in the sketch."
+                    if landed else " Re-read the sketch with sketch_get for anything it left.")
+            return None, (f"action='{act}' failed on '{label}' in sketch "
+                          f"'{safe(lambda: sketch.name)}': {e}.{done}")
+        per.append(items)
+        landed += len(items)
+    return per, None
+
+
+def _include(sketch, entities) -> dict:
+    """Sketch.include per entity: linked reference geometry where the source is, not flattened."""
+    sources, eerr = _ENTITIES.resolve(entities)
+    if eerr:
+        return error(eerr)
+    if not sources:
+        return error("action='include' needs 'entities': find_geometry handles at edges, faces or "
+                     "vertices.")
+    labels = [_source_label(e) for e in sources]
+    before = _addressable_counts(sketch)
+    per, perr = _one_by_one(sketch, "include", sketch.include, sources, labels)
+    if perr:
+        return error(perr)
+    items = [c for group in per for c in group]
+    after = _addressable_counts(sketch)
+    if not items:
+        return error(f"include returned no sketch entities in '{safe(lambda: sketch.name)}' from "
+                     + ", ".join(labels) + ".")
+    if _delta(before, after) <= 0:
+        return error(f"include returned {len(items)} entity(ies) but the entity counts of "
+                     f"'{safe(lambda: sketch.name)}' did not rise; re-read it with sketch_get.")
+    refs = _new_refs(before, after)
+    ref_yes, ref_no, ref_unknown = _flag_tally(items, "isReference")
+    curves = [c for c in items if safe(lambda c=c: c.startSketchPoint) is not None]
+    off = _off_plane(curves)
+    note = " ".join(p for p in (
+        "Geometry included where its source is, not flattened onto the sketch plane.",
+        _linkage_note(len(items), ref_yes, ref_no, ref_unknown, "its source"),
+        (f"{off} of the {len(curves)} curves have an end off the sketch plane; such a curve does "
+         "not bound a profile - action='into_sketch' gives the flat projection." if off else ""),
+        ("An end point did not read, so which curves lie off the plane is not known."
+         if off is None else ""),
+        _REFS_NOTE) if p)
+    if len(items) > len(refs):
+        note += _SHORTFALL_NOTE
+    out = {"projected": True, "action": "include", "sketch": safe(lambda: sketch.name),
+           "source_count": len(sources), "created_count": len(items), "entity_refs": refs,
+           "per_source": [{"source": lab, "created": len(g)} for lab, g in zip(labels, per)],
+           "note": note}
+    if off is not None:
+        out["off_plane_count"] = off
+    return ok(out)
+
+
+def _cut_edges(sketch, bodies) -> dict:
+    """Sketch.projectCutEdges per body: the curves where the sketch plane cuts each body."""
+    sources, berr = _BODIES.resolve(bodies)
+    if berr:
+        return error(berr)
+    if not sources:
+        return error("action='cut_edges' needs 'bodies': the bodies the sketch plane cuts.")
+    labels = [_source_label(b) for b in sources]
+    before = _addressable_counts(sketch)
+    per, perr = _one_by_one(sketch, "cut_edges", sketch.projectCutEdges, sources, labels)
+    if perr:
+        return error(perr)
+    items = [c for group in per for c in group]
+    after = _addressable_counts(sketch)
+    if items and _delta(before, after) <= 0:
+        return error(f"cut_edges returned {len(items)} entity(ies) but the entity counts of "
+                     f"'{safe(lambda: sketch.name)}' did not rise; re-read it with sketch_get.")
+    if not items:
+        # A body the plane misses answers with an empty collection and no error.
+        return error(f"The plane of sketch '{safe(lambda: sketch.name)}' ({_plane_label(sketch)}) "
+                     "cuts none of: " + ", ".join(labels) + ". No sketch geometry was created. "
+                     "Move the sketch plane through the body, or pass a body that spans it.")
+    refs = _new_refs(before, after)
+    ref_yes, ref_no, ref_unknown = _flag_tally(items, "isReference")
+    missed = [lab for lab, g in zip(labels, per) if not g]
+    note = " ".join(p for p in (
+        "Cut edges created where the sketch plane cuts the bodies.",
+        _linkage_note(len(items), ref_yes, ref_no, ref_unknown, "the body it was cut from"),
+        (f"The plane does not cut {', '.join(missed)}; nothing came from "
+         + ("it." if len(missed) == 1 else "them.") if missed else ""),
+        _REFS_NOTE) if p)
+    if len(items) > len(refs):
+        note += _SHORTFALL_NOTE
+    return ok({"projected": True, "action": "cut_edges", "sketch": safe(lambda: sketch.name),
+               "source_count": len(sources), "created_count": len(items), "entity_refs": refs,
+               "per_source": [{"source": lab, "created": len(g)} for lab, g in zip(labels, per)],
+               "note": note})
+
+
 def handler(entities="", sketch_name: str = "", link: bool = None, action: str = "into_sketch",
             target_faces="", source_sketch: str = "", curve_refs="", curve_handles="",
             project_type: str = "", direction: str = "", bodies="", component: str = "",
@@ -687,6 +799,10 @@ def handler(entities="", sketch_name: str = "", link: bool = None, action: str =
                            project_type, direction, source_component)
     if act == "intersect":
         return _intersect(sk, entities, bodies)
+    if act == "include":
+        return _include(sk, entities)
+    if act == "cut_edges":
+        return _cut_edges(sk, bodies)
     return _into_sketch(design, sk, entities, link, source_sketch, curves)
 
 

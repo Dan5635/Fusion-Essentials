@@ -19,6 +19,9 @@ from ._common import ok, error, iter_collection, safe
 from . import _common
 from . import _data_common
 from . import _inputs
+from ._doc_common import component_solids as _solids, occurrence_pose as _pose
+from ._doc_common import path_fault as _path_fault, path_resolves as _resolves
+from ._doc_common import same_pose as _same_pose
 
 app = adsk.core.Application.get()
 
@@ -42,7 +45,8 @@ def _find_row(table, target):
 
 _ACTIONS = ("create", "activate", "add_configuration", "rename_configuration", "add_parameter",
             "add_suppress", "add_visibility", "set_appearance", "add_material", "add_insert",
-            "delete_configuration", "copy_configuration")
+            "delete_configuration", "copy_configuration", "switch_occurrence")
+_OCCURRENCE = _inputs.OccurrenceRef("occurrence")
 
 
 # ── resolvers (patched in tests; real lookups here) ─────────────────────────
@@ -1101,10 +1105,70 @@ def _as_map(val, field):
     return None, f"'{field}' must be a JSON object ({{name: value}}), got {type(val).__name__}."
 
 
+def _do_switch_occurrence(design, occurrence, name):
+    """Switch ONE inserted configured occurrence to another row of its own table."""
+    if not (occurrence or "").strip():
+        return error("action='switch_occurrence' needs 'occurrence' - the inserted instance, by "
+                     "handle or full path (design_get(include=['tree'])).")
+    occ, oerr = _OCCURRENCE.resolve(occurrence)
+    if oerr:
+        return error(oerr)
+    configured = _common.read_flag(lambda: occ.isConfiguration)
+    if configured is not True:
+        return error(f"'{occurrence}' " + ("is not an inserted configuration, so it has no row "
+                                           "to switch." if configured is False else
+                                           "did not read whether it is a configuration."))
+    row_now = safe(lambda: occ.configurationRow.name)
+    rows = safe(lambda: occ.configurationRow.parentTable.rows)
+    held = [rows.item(i) for i in range(safe(lambda: rows.count, 0) or 0)] if rows else []
+    names = [safe(lambda r=r: r.name) for r in held]
+    if row_now is None or not names:
+        return error(f"The configuration rows of '{occurrence}' did not read, so nothing was "
+                     "switched.")
+    wanted = (name or "").strip()
+    if names.count(wanted) != 1:
+        return error(f"'name' must be one row of the configuration '{occurrence}' was inserted "
+                     f"from. Got '{name}'. Rows: {', '.join(str(n) for n in names)}.")
+    if wanted == row_now:
+        return error(f"'{occurrence}' is already on row '{wanted}'; nothing to switch.")
+    path_before, pose_before = safe(lambda: occ.fullPathName), _pose(occ)
+    volume_before = _solids(safe(lambda: occ.component))[1]
+    try:
+        answer = occ.switchConfiguration(held[names.index(wanted)])
+    except Exception as e:
+        return error(f"Could not switch '{occurrence}' to row '{wanted}': {e}")
+    if answer is not True:
+        return error(f"switchConfiguration answered {answer!r} for '{occurrence}'; re-read it "
+                     "with design_get(include=['tree']).")
+    if _common.read_flag(lambda: occ.isValid) is not True:
+        return error(f"The switch of '{path_before}' answered true but the occurrence could not "
+                     "be re-read afterwards; find it with design_get(include=['tree']).")
+    path, landed = safe(lambda: occ.fullPathName), safe(lambda: occ.configurationRow.name)
+    faults = []
+    if landed != wanted:
+        faults.append(f"it reads row '{landed}', not '{wanted}'")
+    if not _same_pose(pose_before, _pose(occ)):
+        faults.append("it did not keep its placement")
+    if _path_fault(design, path):
+        faults.append(_path_fault(design, path))
+    if faults:
+        return error(f"The switch of '{path_before}' WAS made, but " + "; ".join(faults)
+                     + f". It now reads '{path}'.")
+    volume = _solids(safe(lambda: occ.component))[1]
+    return ok({"switched": True, "occurrence": path, "path_before": path_before,
+               "row": landed, "row_before": row_now,
+               "old_path_resolves": _resolves(design, path_before),
+               "volume_cm3_before": volume_before, "volume_cm3": volume,
+               "note": ("The occurrence took the row's name: use 'occurrence' from here on. Its "
+                        "placement is unchanged. Not checked: joints on it and nested "
+                        "occurrences - read assembly_get.")})
+
+
 def handler(action: str = "", name: str = "", new_name: str = "", parameter: str = "",
             feature: str = "", body: str = "", values: dict = None, suppressed_in: list = None,
             hidden_in: list = None, appearances: dict = None, materials: dict = None,
-            insert_part: str = "", insert_config: str = "", insert_map: dict = None) -> dict:
+            insert_part: str = "", insert_config: str = "", insert_map: dict = None,
+            occurrence: str = "") -> dict:
     """Build/extend a configured design - 'action' selects the verb, dispatched below. WRITES."""
     action = (action or "").strip()
     if action not in _ACTIONS:
@@ -1126,6 +1190,11 @@ def handler(action: str = "", name: str = "", new_name: str = "", parameter: str
 
     if action == "create":
         return _do_create(design)
+    # A host that carries an inserted configuration need not be a configured design itself.
+    if action == "switch_occurrence":
+        return _do_switch_occurrence(design, occurrence, name)
+    if (occurrence or "").strip():
+        return error(f"'occurrence' belongs to action='switch_occurrence', not '{action}'.")
 
     # all other actions need an existing configuration table
     table = _top_table(design)
@@ -1187,6 +1256,8 @@ tool = (
             "description": "add_insert; default the part's first."})
     .add_input_property("insert_map", {"type": "object",
             "description": "{assembly_config: part_config} (add_insert)."})
+    .add_input_property("occurrence", {"type": "string",
+            "description": "For switch_occurrence."})
     .strict_schema()
 )
 # enforce_timeout=False: add_insert's addFromConfiguration is a blocking, uninterruptible

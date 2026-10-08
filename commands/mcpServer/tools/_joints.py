@@ -627,18 +627,54 @@ def all_joints(design):
     return out
 
 
-def joint_placements(design, joint):
+def joint_placements(design, joint, diagnostics=None):
     """[(placement fullPathName, the joint read in that placement)] for a joint owned by a placed
     sub-component, else [] - its native halves answer the first placement's paths only."""
-    root = safe(lambda: design.rootComponent)
-    owner = safe(lambda: joint.parentComponent)
-    if root is None or owner is None or _common.same_component(owner, root) is True:
+    unread = object()
+
+    def report(problem):
+        if diagnostics is not None:
+            diagnostics.append(problem)
+
+    root = safe(lambda: design.rootComponent, unread)
+    if root is unread or root is None:
+        report("root component could not be read")
         return []
+    owner = safe(lambda: joint.parentComponent, unread)
+    if owner is unread or owner is None:
+        report("joint owner component could not be read")
+        return []
+    same_root = _common.same_component(owner, root)
+    if same_root is None:
+        report("joint owner could not be compared with the root component")
+        return []
+    if same_root is True:
+        return []
+
+    occurrences = safe(lambda: root.allOccurrencesByComponent(owner), unread)
+    if occurrences is unread or occurrences is None:
+        report("owner occurrence census could not be read")
+        return []
+    try:
+        occurrences = list(occurrences)
+    except Exception:
+        report("owner occurrence census could not be enumerated")
+        return []
+
     out = []
-    for occ in list(safe(lambda: root.allOccurrencesByComponent(owner)) or []):
-        proxy = safe(lambda o=occ: joint.createForAssemblyContext(o))
-        if proxy is not None:
-            out.append((safe(lambda o=occ: o.fullPathName), proxy))
+    for occ in occurrences:
+        if occ is None:
+            report("owner occurrence census contained a null occurrence")
+            continue
+        proxy = safe(lambda o=occ: joint.createForAssemblyContext(o), unread)
+        if proxy is unread or proxy is None:
+            report("joint proxy could not be created for an owner occurrence")
+            continue
+        placement = safe(lambda o=occ: o.fullPathName, unread)
+        if placement is unread or placement is None:
+            report("owner occurrence path could not be read")
+            placement = None
+        out.append((placement, proxy))
     return out
 
 

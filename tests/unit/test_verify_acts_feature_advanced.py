@@ -1,5 +1,6 @@
 """Unit checks for the measured advanced-feature live witness predicates."""
 
+import json
 import os
 import sys
 
@@ -13,6 +14,40 @@ import verify_acts_feature_advanced as witness  # noqa: E402
 @pytest.fixture(autouse=True)
 def _isolate_advanced_state(monkeypatch):
     monkeypatch.setattr(witness, "_ADVANCED_STATE", {})
+
+
+def test_two_seam_continuity_rejects_duplicate_edge_index():
+    rows = [{'edge': i, 'max_normal_angle_deg': 0, 'max_curvature_jump': 1,
+             'max_gap': 0, 'samples': 9, 'mode': 'one_body', 'off_face_samples': 0}
+            for i in (0, 1)]
+    assert witness._w2_g2_continuity({'units': 'mm', 'edges': rows}, 'constant', 'tangent')
+    rows[1]['edge'] = 0
+    with pytest.raises(AssertionError):
+        witness._w2_g2_continuity({'units': 'mm', 'edges': rows}, 'constant', 'tangent')
+
+
+@pytest.mark.parametrize("kind, edge_set", [
+    ("constant_tangent", {"kind": "constant", "radius_mm": 1}),
+    ("variable_tangent", {"kind": "variable", "start_radius_mm": 1, "end_radius_mm": 2}),
+])
+def test_fillet_census_compares_full_baseline_and_rejects_wrong_radius(kind, edge_set):
+    target = {"bounds_mm": [[0, 0, 0], [22, 20, 18]], "volume_mm3": 7920,
+              "area_mm2": 2392, "faces": ["baseline"], "vertices_mm": []}
+    control = {**target, "bounds_mm": [[30, 0, 0], [52, 20, 18]]}
+    before = {"case": kind, "feature_name": None, "target_identity": True,
+              "control_identity": True, "edge_a_identity": True, "edge_b_identity": True,
+              "timeline_count": 2, "marker_position": 2, "marker_before": 2,
+              "target": target, "control": control}
+    encode = lambda row: "W2F-CENSUS:" + json.dumps(row)
+    assert witness._w2_fillet_census(encode(before), kind, "before", kind)
+    after = {**before, "feature_name": "Fillet1", "feature_token_resolves": True,
+             "timeline_count": 3, "marker_position": 3, "health": [{"healthy": True}],
+             "feature_sets": [{**edge_set, "contains_edge_a": True, "edge_count": 1}],
+             "target": {**target, "volume_mm3": 7880, "faces": ["rounded"]}}
+    assert witness._w2_fillet_census(encode(after), kind, "result", kind)
+    after["feature_sets"][0].update(radius_mm=3, start_radius_mm=3)
+    with pytest.raises(AssertionError):
+        witness._w2_fillet_census(encode(after), kind, "result", kind)
 
 
 def _prime_feature_state():
@@ -46,6 +81,7 @@ def _prime_feature_state():
 
 def test_model_edit_rows_keep_each_feature_address_bound():
     rows = witness.advanced_feature_edit_rows()
+    rows = rows[:next(i for i, row in enumerate(rows) if row[0] == "doc_close") + 1]
     state = _prime_feature_state()
     state["adv_shell_side"] = "shell-side-handle"
     context = {"advanced_doc": "doc-handle", "adv_shell_side": "shell-side-handle"}
@@ -58,6 +94,23 @@ def test_model_edit_rows_keep_each_feature_address_bound():
         state["adv_pattern_address"], state["adv_pattern_address"],
         state["adv_shell_address"], state["adv_shell_address"],
     ]
+
+
+@pytest.mark.parametrize("mode, prior", [("along_path", "baseline"), ("identical", "along_path")])
+@pytest.mark.parametrize("missing", ["curved_census_stage", "curved_public_stage"])
+def test_curved_mode_edit_requires_both_prior_reads_and_uses_their_address(mode, prior, missing):
+    context = {"curved_doc": "curved-scratch"}
+    state = witness._ADVANCED_STATE
+    state.update(curved_census_stage=prior, curved_public_stage=prior,
+                 curved_feature_address="Root/Curved@3",
+                 curved_edit_stage=None if mode == "along_path" else "along_path")
+    state.pop(missing)
+    with pytest.raises(ValueError, match="preceding independent checks"):
+        witness._curved_mode_arguments(context, mode)
+    state[missing] = prior
+    args = witness._curved_mode_arguments(context, mode)
+    assert args == {"feature": "Root/Curved@3", "action": "mode", "mode": mode,
+                    "expect_document": "curved-scratch"}
 
 
 def test_feature_edit_reply_requires_measured_health_and_end_marker():

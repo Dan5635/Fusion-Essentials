@@ -24,7 +24,10 @@ from . import _sketch_detail
 app = adsk.core.Application.get()
 
 _ACTIONS = ("trim", "extend", "break", "split", "fillet", "chamfer", "offset", "construction",
-            "centerline", "break_link")
+            "centerline", "break_link", "add_point", "tangent_handle", "curvature_handle", "close")
+# The fitted-spline actions; each re-reads the spline itself, so none goes through the curve census.
+_SPLINE_ACTIONS = ("add_point", "tangent_handle", "curvature_handle", "close")
+_HANDLE_ACTIONS = ("tangent_handle", "curvature_handle")
 # The two actions that set a flag on entity_one from 'state' and take no pick point.
 _STATE_ACTIONS = ("construction", "centerline")
 _BREAK_LINK = "break_link"
@@ -34,7 +37,9 @@ _ACTION = _inputs.Choice("action", list(_ACTIONS), required=True,
                          description="What the pick point selects - trim: the nearest segment. "
                                      "extend: the nearest end. break: the crossings either side. "
                                      "split: the point itself. fillet/chamfer: the corner between "
-                                     "the two. offset: the chain and the side.")
+                                     "the two. offset: the chain and the side. Fitted-spline "
+                                     "picks: add_point inserts; *_handle: fit point, state=false "
+                                     "removes; close: state closes/opens.")
 
 _TWO_CURVE = ("fillet", "chamfer")
 
@@ -243,6 +248,176 @@ def _break_link(sketch, ref, curve, f, unit):
     return ok(out)
 
 
+def _xy_out(point, f):
+    g = safe(lambda: point.geometry)
+    return [round(g.x * f, 6), round(g.y * f, 6)] if g is not None else None
+
+
+def _fit_points(spline):
+    """The spline's fit points in order, or None when the list does not read."""
+    pts = safe(lambda: spline.fitPoints)
+    n = safe(lambda: pts.count) if pts is not None else None
+    return [pts.item(i) for i in range(n)] if n is not None else None
+
+
+def _picked_fit_point(points, p1):
+    """(index, error): the fit point nearest the pick, refused when two are equally near."""
+    gaps = []
+    for point in points:
+        g = safe(lambda point=point: point.geometry)
+        if g is None:
+            return None, "A fit point of the spline did not read its position."
+        gaps.append(((g.x - p1.x) ** 2 + (g.y - p1.y) ** 2) ** 0.5)
+    order = sorted(range(len(gaps)), key=gaps.__getitem__)
+    if len(order) > 1 and gaps[order[1]] - gaps[order[0]] <= _LENGTH_EPS_CM:
+        return None, ("x1,y1 is equally near two fit points of the spline; put it on the one "
+                      "meant.")
+    return order[0], None
+
+
+def _handle_points(sketch, handle):
+    """The '<type>:<index>' refs of a handle curve's end points, which sketch_move can drive."""
+    refs = []
+    for name in ("startSketchPoint", "endSketchPoint"):
+        point = safe(lambda name=name: getattr(handle, name))
+        ref = _sketch_detail.entity_id(sketch, point) if point is not None else None
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def _absent(getter):
+    """True when a handle getter answers no handle, False when it answers one, None when it raises."""
+    try:
+        return getter() is None
+    except Exception:
+        return None
+
+
+def _spline_edit(sketch, act, ref, spline, p1, state, f, unit):
+    """One fitted-spline action on entity_one, judged on the spline re-read afterwards."""
+    name = safe(lambda: sketch.name)
+    if _ref_kind(ref) != "spline":
+        return error(f"'{act}' applies to a fitted spline ('spline:<index>'); 'entity_one' = "
+                     f"'{ref}' is a {_ref_kind(ref) or 'malformed reference'}.")
+    out = {"action": act, "sketch": name, "entity_one": ref, "units": unit}
+    if act == "close":
+        before = _common.read_flag(lambda: spline.isClosed)
+        if before is state:
+            out.update(changed=False, closed=before,
+                       note=f"'{ref}' already reads closed={state}; nothing was written.")
+            return ok(out)
+        try:
+            spline.isClosed = state
+        except Exception as e:
+            return error(f"Could not set closed={state} on '{ref}' in sketch '{name}': {e}")
+        after = _common.read_flag(lambda: spline.isClosed)
+        if after is not state:
+            return error(f"close did not take - '{ref}' in sketch '{name}' reads closed={after} "
+                         f"after {state} was assigned.")
+        out.update(changed=True, closed=after,
+                   profile_count_after=_common.counted(lambda: sketch.profiles.count),
+                   note=f"'{ref}' closed {before} -> {after}.")
+        return ok(out)
+
+    points = _fit_points(spline)
+    if not points:
+        return error(f"The fit points of '{ref}' in sketch '{name}' did not read, so '{act}' "
+                     "wrote nothing.")
+    length_before = _common.measured(lambda: spline.length, 1.0, 7)
+    if act == "add_point":
+        try:
+            # The evaluator answers [ok, parameter of the nearest curve point] for ANY point; a
+            # pick beyond an end comes back as that end, where a fit point already is.
+            evaluator = spline.geometry.evaluator
+            answered = evaluator.getParameterAtPoint(p1)
+            span = evaluator.getParameterExtents()
+            if answered[0] is not True or span[0] is not True:
+                return error(f"x1,y1 has no parameter on '{ref}' in sketch '{name}'; put the pick "
+                             "on the spline.")
+            if not span[1] < answered[1] < span[2]:
+                return error(f"x1,y1 is nearest an END of '{ref}' in sketch '{name}', where it "
+                             "already has a fit point; pick a point along the spline.")
+            made = spline.addFitPoint(answered[1])
+        except Exception as e:
+            return error(f"Could not add a fit point to '{ref}' in sketch '{name}': {e}")
+        after = _fit_points(spline)
+        if made is None or after is None or len(after) != len(points) + 1:
+            return error(f"add_point answered but '{ref}' in sketch '{name}' reads "
+                         f"{len(after) if after is not None else 'no'} fit points after "
+                         f"{len(points)} before. Read it with sketch_get(include_entities=true).")
+        out.update(changed=True, fit_point_count_before=len(points),
+                   fit_point_count_after=len(after), point=_xy_out(made, f),
+                   point_ref=_sketch_detail.entity_id(sketch, made),
+                   note=f"'{ref}' gained a fit point; move it with sketch_move.")
+        return ok(out)
+
+    index, perr = _picked_fit_point(points, p1)
+    if perr:
+        return error(perr)
+    fit = points[index]
+    out.update(fit_point_index=index, fit_point=_xy_out(fit, f))
+    tangent = lambda: spline.getTangentHandle(fit)
+    curvature = lambda: spline.getCurvatureHandle(fit)
+    if state is False:
+        if _absent(tangent) is None:
+            return error(f"The handle state at fit point {index} of '{ref}' in sketch '{name}' "
+                         "did not read, so nothing was removed.")
+        handle = tangent()
+        if handle is None:
+            out.update(changed=False, note=f"Fit point {index} of '{ref}' has no handle; nothing "
+                                           "was written.")
+            return ok(out)
+        try:
+            deleted = handle.deleteMe()
+        except Exception as e:
+            return error(f"Could not remove the handle at fit point {index} of '{ref}' in sketch "
+                         f"'{name}': {e}")
+        gone = (_absent(tangent), _absent(curvature))
+        if deleted is not True or gone != (True, True):
+            return error(
+                f"The handle at fit point {index} of '{ref}' in sketch '{name}' is not confirmed "
+                f"removed: deleteMe answered {deleted!r}, the tangent handle "
+                + ("is gone" if gone[0] else "still reads" if gone[0] is False else "did not read")
+                + ", the curvature handle "
+                + ("is gone" if gone[1] else "still reads" if gone[1] is False else "did not read")
+                + ". Read the sketch with sketch_get(include_entities=true) and retry.")
+        out.update(changed=True, note=f"Fit point {index} of '{ref}' has no tangent or curvature "
+                                      "handle now; the curve relaxed to its fit points.")
+        return ok(out)
+
+    read = curvature if act == "curvature_handle" else tangent
+    existing = safe(read)
+    if existing is not None:
+        out.update(changed=False, handle_points=_handle_points(sketch, existing),
+                   note=f"Fit point {index} of '{ref}' already has that handle; nothing was "
+                        "written.")
+        return ok(out)
+    try:
+        made = (spline.activateCurvatureHandle(fit) if act == "curvature_handle"
+                else spline.activateTangentHandle(fit))
+    except Exception as e:
+        return error(f"Could not activate the handle at fit point {index} of '{ref}' in sketch "
+                     f"'{name}': {e}")
+    landed = safe(read)
+    if made is None or landed is None:
+        return error(f"{act} answered but fit point {index} of '{ref}' in sketch '{name}' reads "
+                     "no such handle.")
+    length_after = _common.measured(lambda: spline.length, 1.0, 7)
+    refs = _handle_points(sketch, landed)
+    note = (f"Handle active at fit point {index}. sketch_get does not list the handle curve; "
+            "drive it by moving its end points with sketch_move.")
+    if act == "curvature_handle":
+        note += " The fit point has a tangent handle too."
+    if None not in (length_before, length_after):
+        out["curve_changed"] = length_before != length_after
+    out.update(changed=True, handle_points=refs, note=note)
+    if len(refs) < 2:
+        out["note"] += (" Its end points could not be matched to point refs; read "
+                        "sketch_get(include_entities=true).")
+    return ok(out)
+
+
 def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entity_two: str = "",
             units: str = "mm", x1: float = None, y1: float = None, x2: float = None,
             y2: float = None, radius: float = None, distance: float = None,
@@ -257,9 +432,16 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
     if act == _BREAK_LINK and state is not None and state is not False:
         return error("break_link only breaks a link - this tool cannot re-establish one, so "
                      f"'state' must be false or omitted (got {state!r}).")
-    if act not in _FLAG_ACTIONS and state is not None:
-        return error(f"'state' applies to construction/centerline only; '{act}' takes none "
-                     f"(got {state!r}).")
+    if act == "close" and not isinstance(state, bool):
+        return error(f"'close' needs 'state' (true closes, false opens); got {state!r}.")
+    if act in _HANDLE_ACTIONS and state not in (None, True, False):
+        return error(f"'{act}' takes 'state' true (activate, the default) or false; got {state!r}.")
+    if act == "curvature_handle" and state is False:
+        return error("A curvature handle is removed with its tangent handle: use "
+                     "action='tangent_handle' with state=false, which removes both.")
+    if act not in _FLAG_ACTIONS + _SPLINE_ACTIONS[1:] and state is not None:
+        return error(f"'state' applies to construction/centerline, the spline handles and close; "
+                     f"'{act}' takes none (got {state!r}).")
 
     unit = (units or "mm").strip().lower()
     k = _common.scale(unit)
@@ -288,10 +470,14 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
         return _set_state(sketch, act, entity_one, e1, state)
     if act == _BREAK_LINK:
         return _break_link(sketch, entity_one, e1, f, unit)
+    if act == "close":
+        return _spline_edit(sketch, act, entity_one, e1, None, state, f, unit)
     if x1 is None or y1 is None:
         return error(f"'{act}' needs the pick point x1,y1 (in 'units') - it chooses which segment, "
                      "end, quadrant or side of the curve the edit applies to.")
     p1 = _pt(x1, y1, k)
+    if act in _SPLINE_ACTIONS:
+        return _spline_edit(sketch, act, entity_one, e1, p1, state, f, unit)
 
     e2 = None
     p2 = None
@@ -467,10 +653,10 @@ tool = (
 
 
 class _CurvesChangedUnlessFlag(_assert.SketchCurvesChanged):
-    """SketchCurvesChanged, not run for the flag actions: their handler re-reads the flag."""
+    """SketchCurvesChanged, not run for the flag and spline actions: their handler re-reads."""
 
     def verify(self, kwargs, payload, before):
-        if payload.get("action") in _FLAG_ACTIONS:
+        if payload.get("action") in _FLAG_ACTIONS + _SPLINE_ACTIONS:
             return "", {}
         return super().verify(kwargs, payload, before)
 

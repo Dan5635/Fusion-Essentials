@@ -22,7 +22,8 @@ from ._edge_common import (_BODY, _EDGES, _EDGE_FILTER_DESC, _FACES, _TANGENT_CH
 app = adsk.core.Application.get()
 
 _FILLET_TYPE = _inputs.Choice("fillet_type",
-                              ["constant", "variable", "chord_length", "rule", "full_round"],
+                              ["constant", "variable", "chord_length", "rule", "full_round",
+                               "asymmetric"],
                               default="constant")
 _TOPOLOGY = _inputs.Choice("topology", ["rounds_and_fillets", "rounds_only", "fillets_only"],
                            default="rounds_and_fillets")
@@ -95,6 +96,59 @@ def _cross_owner_refusal(edges):
                         "edges per call; no feature was created.")
         owners.append((owner, edge))
     return None
+
+
+def _edge_sets_spec(edge_sets):
+    """(resolved disjoint edge-set specs, error) for the bounded mixed-set route."""
+    if not isinstance(edge_sets, (list, tuple)) or not edge_sets:
+        return None, "'edge_sets' must contain at least one edge set."
+    specs, seen = [], set()
+    for i, raw in enumerate(edge_sets):
+        if not isinstance(raw, dict):
+            return None, f"'edge_sets'[{i}] must be an object."
+        kind = raw.get("fillet_type", "constant")
+        if kind not in ("constant", "asymmetric"):
+            return None, f"'edge_sets'[{i}].fillet_type must be constant or asymmetric - got {kind!r}."
+        if "continuity" in raw and kind == "asymmetric":
+            return None, (f"'edge_sets'[{i}] is asymmetric and cannot take an explicit continuity value, "
+                          "including tangent; omit continuity for this set.")
+        if "continuity" in raw and raw["continuity"] not in ("tangent", "curvature"):
+            return None, f"'edge_sets'[{i}].continuity must be tangent or curvature."
+        if kind == "asymmetric" and raw.get("end_radius") in (None, ""):
+            return None, f"'edge_sets'[{i}] asymmetric fillet needs 'end_radius'."
+        if kind == "constant" and any(k in raw for k in ("end_radius", "flipped")):
+            return None, f"'edge_sets'[{i}] end_radius/flipped apply only to asymmetric sets."
+        if raw.get("radius") in (None, ""):
+            return None, f"'edge_sets'[{i}] needs 'radius'."
+        if "tangent_chain" in raw and not isinstance(raw["tangent_chain"], bool):
+            return None, f"'edge_sets'[{i}].tangent_chain must be true or false."
+        if "flipped" in raw and not isinstance(raw["flipped"], bool):
+            return None, f"'edge_sets'[{i}].flipped must be true or false."
+        handles = raw.get("edges")
+        if not isinstance(handles, (list, tuple)) or not handles:
+            return None, f"'edge_sets'[{i}].edges must contain edge handles."
+        if any(not isinstance(handle, str) for handle in handles):
+            return None, f"'edge_sets'[{i}].edges must contain edge handle strings."
+        if len(handles) != len(set(handles)):
+            return None, f"'edge_sets'[{i}].edges contains a duplicate handle."
+        ents, err = _EDGES.resolve(handles)
+        if err:
+            return None, f"'edge_sets'[{i}]: {err}"
+        owner_error = _cross_owner_refusal(ents)
+        if owner_error:
+            return None, f"'edge_sets'[{i}]: {owner_error}"
+        keys = [_common.native_identity(edge) for edge in ents]
+        if None in keys or len(set(keys)) != len(keys):
+            return None, f"'edge_sets'[{i}] edge identity is unreadable or repeated; reacquire unique handles."
+        overlap = seen.intersection(keys)
+        if overlap:
+            return None, f"'edge_sets'[{i}] overlaps an earlier set; edge sets must be disjoint."
+        seen.update(keys)
+        specs.append({"edges": ents, "fillet_type": kind, "radius": raw["radius"],
+                      "end_radius": raw.get("end_radius"), "flipped": raw.get("flipped", False),
+                      "continuity": raw.get("continuity"),
+                      "tangent_chain": raw.get("tangent_chain", True)})
+    return specs, None
 
 
 def _topology_type(key):
@@ -299,13 +353,45 @@ def handler(body_name: str = "", radius: float = 1.0, units: str = "mm",
             edge_filter: str = "", edges=None, fillet_type: str = "constant",
             end_radius=None, positions=None, radii=None, chord_length=None,
             faces=None, second_faces=None, topology: str = "rounds_and_fillets",
-            center_face: str = "", tangent_chain: bool = True) -> dict:
+            center_face: str = "", tangent_chain: bool = True, flipped: bool = False,
+            continuity=None, edge_sets=None) -> dict:
     """Round edges (Fillet) - constant radius, variable radius along a tangent chain, chord length,
     or a rule fillet over the edges of whole faces."""
     ftype, terr = _FILLET_TYPE.resolve(fillet_type)
     if terr:
         return error(terr)
+    if not isinstance(flipped, bool):
+        return error(f"'flipped' must be true or false - got {flipped!r}.")
+    if edge_sets not in (None, "", []):
+        ignored = {"body_name": body_name, "edges": edges, "faces": faces,
+                   "edge_filter": edge_filter, "end_radius": end_radius,
+                   "positions": positions, "radii": radii, "chord_length": chord_length,
+                   "second_faces": second_faces, "center_face": center_face}
+        extras = [key for key, value in ignored.items() if value not in (None, "", [])]
+        if radius != 1.0:
+            extras.append("radius")
+        if not tangent_chain:
+            extras.append("tangent_chain")
+        if topology != "rounds_and_fillets":
+            extras.append("topology")
+        if extras:
+            return error(f"'edge_sets' does not take top-level {', '.join(extras)}; "
+                         "put radius and tangent_chain in each set and omit the other inputs.")
+        if ftype != "constant" or continuity is not None or flipped:
+            return error("'edge_sets' carries each set's own type and settings; omit fillet_type, continuity, and flipped.")
+        specs, serr = _edge_sets_spec(edge_sets)
+        if serr:
+            return error(serr)
+        all_edges = [edge for spec in specs for edge in spec["edges"]]
+        owner_error = _cross_owner_refusal(all_edges)
+        if owner_error:
+            return error(owner_error)
+        return _apply("fillet", body_name, radius, units, "", variant={"type": "edge_sets",
+                      "sets": specs}, edge_handles=None, tangent_chain=bool(tangent_chain),
+                      edge_sets=specs)
     if ftype in ("rule", "full_round"):
+        if continuity is not None or flipped:
+            return error(f"'continuity' and 'flipped' do not apply to fillet_type='{ftype}'.")
         if edges not in (None, "", []):
             return error(f"A {ftype} fillet selects FACES, so 'edges' cannot be passed with "
                          f"fillet_type='{ftype}'. Drop 'edges', or use fillet_type='constant' to "
@@ -313,12 +399,40 @@ def handler(body_name: str = "", radius: float = 1.0, units: str = "mm",
         if ftype == "full_round":
             return _full_round_fillet(center_face, faces, second_faces)
         return _rule_fillet(radius, units, faces, second_faces, topology)
-    if not tangent_chain and ftype == "variable":
-        return error("A variable-radius fillet cannot take tangent_chain=false: the API's "
+    if not tangent_chain and ftype == "variable" and continuity is None:
+        return error("A variable-radius fillet without continuity cannot take tangent_chain=false: the legacy API's "
                      "variable-radius edge set has no such argument, and it cuts the edges handed "
                      "in. Drop 'tangent_chain', or use fillet_type='constant'.")
 
     variant, size = None, radius
+    if ftype == "asymmetric":
+        ignored = {"positions": positions, "radii": radii, "chord_length": chord_length,
+                   "second_faces": second_faces, "center_face": center_face}
+        extras = [key for key, value in ignored.items() if value not in (None, "", [])]
+        if topology != "rounds_and_fillets":
+            extras.append("topology")
+        if extras:
+            return error(f"An asymmetric fillet does not take {', '.join(extras)}; "
+                         "omit them or choose the corresponding fillet_type.")
+        if continuity is not None:
+            return error("An asymmetric fillet cannot take any explicit 'continuity' value, including tangent; omit continuity.")
+        if end_radius in (None, ""):
+            return error("An asymmetric fillet needs 'end_radius' - the setback on the second side.")
+        if faces not in (None, "", []) or edge_filter:
+            return error("An asymmetric fillet needs explicit 'edges'; omit faces and edge_filter.")
+        if edges in (None, "", []):
+            return error("An asymmetric fillet needs 'edges' - pass edge handles for the corners to fillet.")
+        variant = {"type": "asymmetric", "end_radius": end_radius, "flipped": bool(flipped)}
+    elif continuity is not None:
+        if continuity not in ("tangent", "curvature"):
+            return error(f"Unknown continuity '{continuity}'. Use tangent or curvature.")
+        if ftype not in ("constant", "variable"):
+            return error(f"'continuity' applies to constant or variable fillets, not '{ftype}'.")
+        if flipped:
+            return error("'flipped' applies only to asymmetric fillet sets.")
+    elif flipped:
+        if ftype != "asymmetric":
+            return error("'flipped' applies only to asymmetric fillet sets.")
     if ftype == "variable":
         if faces not in (None, "", []):
             return error("A variable-radius fillet cannot take 'faces': its radius runs from the "
@@ -344,35 +458,61 @@ def handler(body_name: str = "", radius: float = 1.0, units: str = "mm",
             owner_error = _cross_owner_refusal(resolved_edges)
             if owner_error:
                 return error(owner_error)
+    if ftype == "asymmetric" or continuity is not None:
+        return _apply("fillet", body_name, size, units, edge_filter, edges, variant=variant,
+                      face_handles=faces, tangent_chain=bool(tangent_chain),
+                      continuity=continuity, flipped=bool(flipped))
     return _apply("fillet", body_name, size, units, edge_filter, edges, variant=variant,
                   face_handles=faces, tangent_chain=bool(tangent_chain))
 
 
 TOOL_DESCRIPTION = (
-    "Round (fillet) edges; model_chamfer bevels. An edge handle SEEDS a tangent chain - edges_cut "
-    "is what it cut."
+    "Fillet edges; model_chamfer bevels. Legacy edges_cut counts cuts; edge_sets reports seeds. "
+    "edge_sets: disjoint radii."
 )
 
 tool = (
     Tool.create_simple(name="model_fillet", description=TOOL_DESCRIPTION)
-    .add_input_property("edges", _EDGES.schema())
-    .add_input_property("body_name", _BODY.schema())
+    .add_input_property("edges", {**_EDGES.schema(),
+        "description": "find_geometry edge handles; overrides edge_filter."})
+    .add_input_property("body_name", {**_BODY.schema(),
+        "description": "SOLID body handle/name; omit for most recent."})
     .add_input_property("radius", {"type": ["number", "string"],
-        "description": "In 'units', or a parameter expression ('WallT/2')."})
+        "description": "Radius in units/expression; asymmetric: first setback.",
+        "default": 1.0})
     .add_input_property(*_inputs.UNITS.as_property())
     .add_input_property("edge_filter", {"type": "string", "enum": ["all", "convex", "concave"],
         "description": _EDGE_FILTER_DESC})
     .add_input_property(*_FILLET_TYPE.as_property())
-    .add_input_property("end_radius", {"type": "number"})
+    .add_input_property("end_radius", {"type": ["number", "string"],
+        "description": "End radius or asymmetric second setback, in units/expression."})
     .add_input_property("positions", {"type": "array", "items": {"type": "number"}})
     .add_input_property("radii", {"type": "array", "items": {"type": "number"}})
     .add_input_property("chord_length", {"type": "number"})
-    .add_input_property(*_FACES.as_property())
+    .add_input_property("faces", {**_FACES.schema(),
+        "description": "Face handles; fillet every edge, excluding edges."})
     .add_input_property(*_RULE_FACES_TWO.as_property(brief=True))
-    .add_input_property(*_CENTER_FACE.as_property())
+    .add_input_property("center_face", {**_CENTER_FACE.schema(),
+        "description": "full_round face handle; this face is replaced."})
     .add_input_property(*_TOPOLOGY.as_property())
     .add_input_property("tangent_chain", {"type": "boolean",
         "description": _TANGENT_CHAIN_DESC})
+    .add_input_property("flipped", {"type": "boolean", "description": "Asymmetric: swaps setback sides."})
+    .add_input_property("continuity", {"type": "string", "enum": ["tangent", "curvature"],
+        "description": "Tangent/curvature; asymmetric refuses explicit values."})
+    .add_input_property("edge_sets", {"type": "array", "minItems": 1,
+        "description": "Disjoint unique edge sets.", "items": {
+            "type": "object", "properties": {
+                "edges": {"type": "array", "minItems": 1, "uniqueItems": True,
+                           "items": {"type": "string"}, "description": "Unique edge handles from find_geometry."},
+                "fillet_type": {"type": "string", "enum": ["constant", "asymmetric"], "default": "constant"},
+                "radius": {"type": ["number", "string"], "description": "Radius; asymmetric: first setback in units/expression.", "default": 1.0},
+                "end_radius": {"type": ["number", "string"], "description": "Asymmetric second setback, in 'units'/expression."},
+                "flipped": {"type": "boolean", "description": "Asymmetric: swap radius/end_radius sides."},
+                "continuity": {"type": "string", "enum": ["tangent", "curvature"], "description": "Constant only; omit for asymmetric."},
+                "tangent_chain": {"type": "boolean", "description": "Expand each edge to its tangent-connected chain.", "default": True},
+            }, "required": ["edges", "radius"], "additionalProperties": False,
+        }})
     .strict_schema()
 )
 item = Item.create_tool_item(tool=tool, write="write", handler=handler, run_on_main_thread=True,

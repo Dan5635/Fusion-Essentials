@@ -7,6 +7,7 @@ no design), and the honesty contract (an API no-op that creates no body must rep
 swallowed configure/add failure must surface).
 """
 
+import math
 import types
 
 import adsk.fusion
@@ -60,7 +61,9 @@ def _solid_tool_world(*, result_same_shape=False, ignored_orientation=False, wro
 
     def create(source_body, path, operation):
         sf.last = types.SimpleNamespace(solidBody=source_body, solidOrientation=perpendicular,
-                                        path=path, operation=operation)
+                                        solidAlignedAxis=None, path=path, operation=operation)
+        sf.last._set_solidAlignedAxis = lambda value: setattr(sf.last, "solidAlignedAxis", value) or True
+        sf.last._set_solidOrientation = lambda value: setattr(sf.last, "solidOrientation", value) or True
         if input_field:
             setattr(sf.last, *input_field)
         return sf.last
@@ -75,7 +78,8 @@ def _solid_tool_world(*, result_same_shape=False, ignored_orientation=False, wro
             faces=_NamedCollection([types.SimpleNamespace(body=source if faces_of_source else b)
                                     for b in new]),
             healthState=getattr(adsk.fusion.FeatureHealthStates, health) if health else None,
-            solidOrientation=(-1 if ignored_orientation else perpendicular))
+            solidOrientation=(-1 if ignored_orientation else inp.solidOrientation),
+            solidAlignedAxis=inp.solidAlignedAxis)
 
     sf.createInputForSolid = create
     sf.add = add
@@ -176,6 +180,40 @@ class TestSolidTool:
                        {"orientation": "parallel", "path": "sketch:ToolPath"},
                        {"as_surface": True, "path": "sketch:ToolPath"}):
             assert sw.handler(solid_body="PX", **kwargs)["isError"] is True
+        assert sf.last is None and host.bRepBodies.count == 1
+
+    def test_rigid_solid_orientation_reaches_input_and_feature(self):
+        sf, _, _, _ = _solid_tool_world()
+        out = _payload(sw.handler(solid_body="PX", path="sketch:ToolPath", orientation="rigid"))
+        assert sf.last.solidOrientation == adsk.fusion.SweepSolidOrientationTypes.RigidSolidOrientationType
+        assert out["orientation"] == "rigid" and out["source_retained"] is True
+
+    def test_aligned_solid_requires_and_reads_the_resolved_owner_axis(self, monkeypatch):
+        sf, host, source, _ = _solid_tool_world()
+        axis = types.SimpleNamespace(entityToken="axis-token", component=host)
+        monkeypatch.setattr(sw._SOLID_ALIGNED_AXIS, "resolve",
+                            lambda _raw, component=None: (("edge", axis), None))
+        out = _payload(sw.handler(solid_body="PX", path="sketch:ToolPath", orientation="aligned",
+                                  solid_aligned_axis="AXIS"))
+        assert sf.last.solidAlignedAxis is axis
+        assert sf.last.solidOrientation == adsk.fusion.SweepSolidOrientationTypes.AlignedSolidOrientationType
+        assert out["orientation"] == "aligned" and host.bRepBodies.count == 2
+
+    def test_aligned_solid_refuses_component_only_axis_from_another_owner(self, monkeypatch):
+        sf, host, _, _ = _solid_tool_world()
+        foreign = MakeComp("Foreign", entity_token="foreign-token")
+        axis = types.SimpleNamespace(entityToken="foreign-axis-token", component=foreign)
+        monkeypatch.setattr(sw._SOLID_ALIGNED_AXIS, "resolve",
+                            lambda _raw, component=None: (("edge", axis), None))
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath", orientation="aligned",
+                         solid_aligned_axis="AXIS")
+        assert res["isError"] is True and "owner component" in error_message(res)
+        assert sf.last is None and host.bRepBodies.count == 1
+
+    def test_aligned_solid_refuses_without_axis_before_input(self):
+        sf, host, _, _ = _solid_tool_world()
+        res = sw.handler(solid_body="PX", path="sketch:ToolPath", orientation="aligned")
+        assert res["isError"] is True and "solid_aligned_axis" in res["message"]
         assert sf.last is None and host.bRepBodies.count == 1
 
     def test_refuses_wrong_proxy_context_and_unchanged_result(self):
@@ -324,13 +362,71 @@ class FakeSweepInput:
         self.isSolid = True
         self.orientation = None
         self.participantBodies = None
+        self.guideRail = None
+
+    def _set_isSolid(self, value):
+        self.isSolid = value
+        return True
+
+    def _set_orientation(self, value):
+        self.orientation = value
+        return True
+
+    def _set_guideRail(self, value):
+        self.guideRail = value
+        return True
+
+    def _set_twistAngle(self, value):
+        self.twistAngle = value
+        return True
+
+    def _set_taperAngle(self, value):
+        self.taperAngle = value
+        return True
+
+    def _set_distanceOne(self, value):
+        self.distanceOne = value
+        return True
 
 
 class FakeSweepFeature:
-    def __init__(self, bodies_names=("Body1",), is_solid=True):
+    def __init__(self, bodies_names=("Body1",), is_solid=True, inp=None):
         self.name = "Sweep1"
         self.isSolid = is_solid
         self.bodies = _NamedCollection([BRepBody(n) for n in bodies_names])
+        self.guideRail = getattr(inp, "guideRail", None)
+        self.twistAngle = types.SimpleNamespace(value=0.0, expression="0 deg")
+        self.taperAngle = types.SimpleNamespace(value=0.0, expression="0 deg")
+        self.distanceOne = types.SimpleNamespace(value=1.0, expression="1")
+        for name, default in (("twistAngle", "0 deg"), ("taperAngle", "0 deg")):
+            value = getattr(inp, name, None) if inp is not None else None
+            if value is not None:
+                degrees = float(value.stringValue.split()[0])
+                setattr(self, name, types.SimpleNamespace(value=math.radians(degrees),
+                                                          expression=value.stringValue))
+        value = getattr(inp, "distanceOne", None) if inp is not None else None
+        if value is not None:
+            self.distanceOne = types.SimpleNamespace(value=value.realValue, expression=str(value.realValue))
+
+
+class MarkerRequiredSweepFeature(FakeSweepFeature):
+    def __init__(self, bodies_names, inp, timeline_object, fraction=None):
+        super().__init__(bodies_names=bodies_names, is_solid=inp.isSolid, inp=inp)
+        self.timelineObject = timeline_object
+        self.parameter_reads = []
+        self._require_rolled_read = True
+        if fraction is not None:
+            self.distanceOne = types.SimpleNamespace(value=fraction, expression=str(fraction))
+
+    def __getattribute__(self, name):
+        if name in ("twistAngle", "taperAngle", "distanceOne"):
+            state = object.__getattribute__(self, "__dict__")
+            if state.get("_require_rolled_read"):
+                rolled = state["timelineObject"].isRolledBack
+                state["parameter_reads"].append((name, rolled))
+                if not rolled:
+                    raise RuntimeError("Didn't roll editing feature back")
+        return super().__getattribute__(name)
 
 
 class FakeSweepFeatures:
@@ -353,13 +449,15 @@ class FakeSweepFeatures:
         if self.add_returns_none:
             return None
         # Echo the requested isSolid back off the feature, as the live API does.
-        return FakeSweepFeature(bodies_names=self.body_names, is_solid=inp.isSolid)
+        return FakeSweepFeature(bodies_names=self.body_names, is_solid=inp.isSolid, inp=inp)
 
 
-def _built_path(count):
+def _built_path(count, entities=None):
     """A built adsk.fusion.Path: `count` is the number of edges the path ACTUALLY holds, which is
     not derivable from how many handles were passed in."""
-    return types.SimpleNamespace(count=count)
+    entities = list(entities or [object() for _ in range(count)])
+    return types.SimpleNamespace(count=count,
+                                 item=lambda i: types.SimpleNamespace(entity=entities[i]))
 
 
 def _two_of_three(comp, name):
@@ -407,6 +505,67 @@ def _install(*, closed_profiles=1, open_curves=0, body_names=("Body1",), tokens=
     design = make_design(comp=comp, tokens=tokens or {})
     install(sw, design)
     return sf, design
+
+
+def _attach_feature_timeline(sf, design):
+    timeline = FakeTimeline([FakeTimelineObject("Seed", 0)], marker=1)
+    design.timeline = timeline
+    add = sf.add
+
+    def add_with_timeline(inp):
+        feature = add(inp)
+        feature.timelineObject = FakeTimelineObject(feature.name, 1, feature)
+        return feature
+
+    sf.add = add_with_timeline
+    return timeline
+
+
+def _install_rolled_parameter_feature(monkeypatch, *, fraction=None, restore_failure=False):
+    monkeypatch.setattr(adsk.core.ValueInput, "createByString",
+                        staticmethod(lambda value: types.SimpleNamespace(stringValue=value)),
+                        raising=False)
+    monkeypatch.setattr(adsk.core.ValueInput, "createByReal",
+                        staticmethod(lambda value: types.SimpleNamespace(realValue=value)),
+                        raising=False)
+    sf, design = _install()
+    timeline = FakeTimeline([FakeTimelineObject("Seed", 0)], marker=1)
+    if restore_failure:
+        class RestoreRaisingTimeline(FakeTimeline):
+            @property
+            def markerPosition(self):
+                return self._read(self._marker)
+
+            @markerPosition.setter
+            def markerPosition(self, value):
+                if value == 1:
+                    raise RuntimeError("restore refused")
+                self._marker = value
+
+        timeline = RestoreRaisingTimeline(items=timeline._items, marker=1)
+
+        class MovingTimelineObject(FakeTimelineObject):
+            def rollTo(self, roll_before):
+                result = super().rollTo(roll_before)
+                if result and roll_before:
+                    timeline._marker = 0
+                return result
+
+        row_type = MovingTimelineObject
+    else:
+        row_type = FakeTimelineObject
+    design.timeline = timeline
+    made = []
+
+    def add(inp):
+        row = row_type("Sweep1", 1)
+        feature = MarkerRequiredSweepFeature(sf.body_names, inp, row, fraction=fraction)
+        row.entity = feature
+        made.append(feature)
+        return feature
+
+    sf.add = add
+    return sf, design, timeline, made
 
 
 # ── the solid happy path ────────────────────────────────────────────────────
@@ -523,6 +682,90 @@ class TestOptions:
                                   orientation="parallel"))
         assert out["orientation"] == "parallel"
         assert sf.last.orientation == adsk.fusion.SweepOrientationTypes.ParallelOrientationType
+
+    def test_plain_profile_controls_reach_the_native_value_inputs(self, monkeypatch):
+        monkeypatch.setattr(adsk.core.ValueInput, "createByString",
+                            staticmethod(lambda value: types.SimpleNamespace(stringValue=value)),
+                            raising=False)
+        monkeypatch.setattr(adsk.core.ValueInput, "createByReal",
+                            staticmethod(lambda value: types.SimpleNamespace(realValue=value)),
+                            raising=False)
+        sf, design = _install()
+        _attach_feature_timeline(sf, design)
+        out = _payload(sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch",
+                                  twist_deg=45, taper_deg=8, path_fraction=0.5))
+        assert sf.last.twistAngle.stringValue == "45.0 deg"
+        assert sf.last.taperAngle.stringValue == "8.0 deg"
+        assert sf.last.distanceOne.realValue == 0.5
+        assert out["sweep_input_setters"] == {
+            "isSolid": True, "orientation": True, "twistAngle": True,
+            "taperAngle": True, "distanceOne": True}
+        assert all(row["matches"] for row in out["sweep_parameters"].values())
+
+    def test_requested_parameters_are_read_only_while_feature_is_rolled_back(self, monkeypatch):
+        _sf, _design, timeline, made = _install_rolled_parameter_feature(monkeypatch)
+        out = _payload(sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch",
+                                  twist_deg=45, taper_deg=8, path_fraction=0.5))
+        assert all(row["matches"] for row in out["sweep_parameters"].values())
+        assert [name for name, rolled in made[0].parameter_reads] == [
+            "twistAngle", "taperAngle", "distanceOne"]
+        assert all(rolled for _name, rolled in made[0].parameter_reads)
+        assert timeline.markerPosition == 1
+
+    def test_parameter_read_marker_restore_failure_is_an_error(self, monkeypatch):
+        _sf, _design, timeline, made = _install_rolled_parameter_feature(
+            monkeypatch, restore_failure=True)
+        result = sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch",
+                            path_fraction=0.5)
+        assert result["isError"] is True
+        assert "timeline marker" in result["message"]
+        assert "Sweep1" in result["message"] and "design_delete_feature" in result["message"]
+        assert made[0].parameter_reads == [("distanceOne", True)]
+        assert timeline.markerPosition == 0
+
+    def test_retained_parameter_mismatch_stays_an_error_after_rollback(self, monkeypatch):
+        _sf, _design, timeline, made = _install_rolled_parameter_feature(
+            monkeypatch, fraction=0.75)
+        result = sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch",
+                            path_fraction=0.5)
+        assert result["isError"] is True
+        assert "parameter reads 0.75" in result["message"]
+        assert made[0].parameter_reads == [("distanceOne", True)]
+        assert timeline.markerPosition == 1
+
+    def test_plain_profile_angle_expression_keeps_requested_precision(self, monkeypatch):
+        monkeypatch.setattr(adsk.core.ValueInput, "createByString",
+                            staticmethod(lambda value: types.SimpleNamespace(stringValue=value)),
+                            raising=False)
+        sf, design = _install()
+        _attach_feature_timeline(sf, design)
+        _payload(sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch",
+                            twist_deg=33.3333333, taper_deg=-12.3456789))
+        assert sf.last.twistAngle.stringValue == "33.3333333 deg"
+        assert sf.last.taperAngle.stringValue == "-12.3456789 deg"
+
+    def test_guide_path_is_created_but_plain_profile_controls_refuse_before_build(self, monkeypatch):
+        guide = _sketch("GuideSketch", curves=2)
+        sf, design = _install(extra_sketches=[guide])
+        refused = sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch",
+                             guide_path="sketch:GuideSketch", twist_deg=45)
+        assert refused["isError"] is True and "exclude 'guide_path'" in refused["message"]
+        assert sf.last is None
+        monkeypatch.setattr(sw._common, "rolled_to",
+                            lambda design, feature, read, subject: (read(), None))
+        monkeypatch.setattr(sw, "_sweep_path_identity", lambda path: ("guide-member",))
+        out = _payload(sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch",
+                                  guide_path="sketch:GuideSketch"))
+        assert sf.last.guideRail is design.rootComponent.features.path_returns
+        assert out["guide_path"] == "sketch:GuideSketch" and out["guide_path_curves"] == 1
+        assert out["guide_path_verified"] is True
+
+    def test_path_fraction_rejects_nonfinite_or_out_of_range_values(self):
+        _install()
+        for value in (float("nan"), -0.01, 1.01):
+            res = sw.handler(profile={"sketch": "Prof"}, path="sketch:PathSketch",
+                             path_fraction=value)
+            assert res["isError"] is True and "path_fraction" in res["message"]
 
     def test_a_join_landing_a_new_body_names_model_combine(self):
         _install(bodies=[BRepBody("Bar")])

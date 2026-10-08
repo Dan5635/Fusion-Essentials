@@ -1516,3 +1516,93 @@ class TestRuleFilletRadiusTakesAnExpression:
         out = _payload(fl.handler(fillet_type="rule", faces=["F1"], radius="Odd",
                                           units="mm"))
         assert out["radius"] == 6.5 and out["radius_expression"] == "Odd"
+
+
+class TestWave2BlendRoutes:
+
+    @pytest.mark.parametrize("extra", [
+        {"end_radius": 2}, {"positions": [0.5]}, {"radii": [1]},
+        {"chord_length": 1}, {"second_faces": ["F1"]}, {"center_face": "F1"},
+        {"radius": 2}, {"topology": "rounds_only"}, {"tangent_chain": False},
+        {"body_name": "Unrelated"},
+    ])
+    def test_mixed_sets_refuse_top_level_controls_before_resolving(self, monkeypatch, extra):
+        captured = self._route(monkeypatch)
+        result = fl.handler(edge_sets=[{"edges": ["E1"], "radius": 0.1}], **extra)
+        assert result["isError"] is True and next(iter(extra)) in result["message"]
+        assert captured == {}
+
+    @pytest.mark.parametrize("extra", [
+        {"positions": [0.5]}, {"radii": [1]}, {"chord_length": 1},
+        {"second_faces": ["F1"]}, {"center_face": "F1"}, {"topology": "rounds_only"},
+    ])
+    def test_asymmetric_refuses_other_variant_controls(self, monkeypatch, extra):
+        captured = self._route(monkeypatch)
+        result = fl.handler(fillet_type="asymmetric", edges=["E1"],
+                            radius=0.1, end_radius=0.2, **extra)
+        assert result["isError"] is True and next(iter(extra)) in result["message"]
+        assert captured == {}
+
+    def _route(self, monkeypatch):
+        edges = {name: _edge_ent("Bracket", token=f"native:{name}") for name in ("E1", "E2")}
+        monkeypatch.setattr(fl._EDGES, "resolve",
+                            lambda handles: ([edges[h] for h in handles], None))
+        monkeypatch.setattr(fl._common, "native_identity", lambda edge: edge.entityToken)
+        captured = {}
+        monkeypatch.setattr(fl, "_apply", lambda *args, **kwargs: captured.update(
+            args=args, kwargs=kwargs) or {"ok": True})
+        return captured
+
+    def test_asymmetric_refuses_every_explicit_continuity_before_apply(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        for mode in ("tangent", "curvature"):
+            result = fl.handler(fillet_type="asymmetric", edges=["E1"], radius=0.1,
+                                end_radius=0.2, continuity=mode)
+            assert result["isError"] is True and "including tangent" in result["message"]
+        assert captured == {}
+
+    def test_asymmetric_omitted_continuity_and_flip_reach_native_route(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(fillet_type="asymmetric", edges=["E1"], radius=0.1,
+                            end_radius=0.2, flipped=True)
+        assert result == {"ok": True}
+        assert captured["kwargs"]["variant"] == {
+            "type": "asymmetric", "end_radius": 0.2, "flipped": True}
+        assert captured["kwargs"]["continuity"] is None
+
+    def test_constant_curvature_request_reaches_native_route(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(fillet_type="constant", edges=["E1"], radius=0.1,
+                            continuity="curvature")
+        assert result == {"ok": True}
+        assert captured["kwargs"]["continuity"] == "curvature"
+
+    def test_variable_continuity_passes_tangent_false_to_the_typed_edge_set(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(fillet_type="variable", edges=["E1"], radius=0.1,
+                            end_radius=0.2, continuity="curvature", tangent_chain=False)
+        assert result == {"ok": True}
+        assert captured["kwargs"]["continuity"] == "curvature"
+        assert captured["kwargs"]["tangent_chain"] is False
+
+    def test_mixed_sets_reach_route_with_resolved_disjoint_edges(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(edge_sets=[
+            {"edges": ["E1"], "radius": 0.1, "continuity": "tangent"},
+            {"edges": ["E2"], "fillet_type": "asymmetric", "radius": 0.1,
+             "end_radius": 0.2, "flipped": True},
+        ])
+        assert result == {"ok": True}
+        specs = captured["kwargs"]["edge_sets"]
+        assert [spec["fillet_type"] for spec in specs] == ["constant", "asymmetric"]
+        assert specs[1]["flipped"] is True
+        assert specs[0]["continuity"] == "tangent"
+
+    def test_mixed_asymmetric_set_refuses_explicit_tangent(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(edge_sets=[
+            {"edges": ["E1"], "fillet_type": "asymmetric", "radius": 0.1,
+             "end_radius": 0.2, "continuity": "tangent"},
+        ])
+        assert result["isError"] is True and "including tangent" in result["message"]
+        assert captured == {}

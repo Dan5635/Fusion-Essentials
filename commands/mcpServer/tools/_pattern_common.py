@@ -6,9 +6,10 @@ component the feature must be built in, and the direction/axis entity resolved i
 """
 
 import adsk.core
+import adsk.fusion
 
 from ._common import safe
-from . import _inputs
+from . import _inputs, _common
 
 MAP_BLURB = (
     "the pattern substrate: _resolve_input_entities - the ObjectCollection a pattern seeds from, "
@@ -22,10 +23,61 @@ _BODIES = _inputs.BodyRefList("bodies", required=False)
 _OCCURRENCES = _inputs.OccurrenceRefList("occurrences", required=False,
                                          description="Or 'bodies'.")
 
+_FEATURES = _inputs.FeatureRefList("features", description=
+    "Unique timeline PartFeature selectors; use only this seed kind.")
+_FACES = _inputs.GeometryHandleList("faces", require="face", json_array=True, description=
+    "Unique BRepFace handles from find_geometry; use only this seed kind.")
 
-def _resolve_input_entities(design, occurrences, bodies):
-    """Build the ObjectCollection to pattern: 'bodies' (BodyRefList) takes precedence, else
-    'occurrences' (OccurrenceRefList). Returns (collection, resolved_names, error)."""
+
+def _seed_property(kind):
+    """Return the strict list property for one new pattern seed kind."""
+    schema = kind.schema(brief=True)
+    schema.update(minItems=1, uniqueItems=True)
+    return kind.name, schema
+
+
+def _seed_kind(occurrences, bodies, features=None, faces=None):
+    """Return the selected seed family, preserving legacy body precedence."""
+    if features not in (None, "", []):
+        return "features"
+    if faces not in (None, "", []):
+        return "faces"
+    return "bodies" if bodies not in (None, "", []) else "occurrences"
+
+
+def _resolve_input_entities(design, occurrences, bodies, features=None, faces=None):
+    """Return a homogeneous pattern seed collection, labels and refusal."""
+    if features not in (None, "", []) or faces not in (None, "", []):
+        supplied = [key for key, value in (("features", features), ("faces", faces),
+                    ("bodies", bodies), ("occurrences", occurrences)) if value not in (None, "", [])]
+        if len(supplied) != 1:
+            return None, None, (f"Pattern seed inputs {', '.join(supplied)} conflict. "
+                                "Supply only one of features, faces, bodies or occurrences.")
+        key = supplied[0]
+        raw = features if key == "features" else faces
+        if not isinstance(raw, list) or not raw or any(not isinstance(v, str) or not v.strip() for v in raw):
+            return None, None, f"'{key}' must be a nonempty JSON array of unique selectors."
+        found, err = (_FEATURES if key == "features" else _FACES).resolve(raw)
+        if err:
+            return None, None, err
+        ents, labels = found if key == "features" else (found, list(raw))
+        native = [_common._native_of(e) for e in ents]
+        owners = [safe(lambda e=e: e.parentComponent) if key == "features"
+                  else safe(lambda e=e: e.body.parentComponent) for e in native]
+        for i, ent in enumerate(native):
+            if key == "features" and not _inputs._isinstance(ent, adsk.fusion.Feature):
+                return None, None, (f"'features'[{i}] '{raw[i]}' is not a modeling feature. "
+                                    "Use a PartFeature from design_get(include=['timeline']).")
+            if any(ent == prior for prior in native[:i]):
+                return None, None, f"'{key}'[{i}] '{raw[i]}' resolves to a repeated seed; list each entity once."
+            if owners[i] is None or _common.same_component(owners[0], owners[i]) is not True:
+                return None, None, f"'{key}'[{i}] '{raw[i]}' must have the same readable owning component as the first seed."
+            if key == "features" and safe(lambda e=ent: e.bodies.count) in (None, 0):
+                return None, None, f"'features'[{i}] '{raw[i]}' has no readable result bodies to pattern; use a body or face seed."
+        coll = adsk.core.ObjectCollection.create()
+        for ent in native:
+            coll.add(ent)
+        return coll, labels, None
     if bodies not in (None, "", []):
         ents, berr = _BODIES.resolve(bodies)
         if berr:
@@ -97,13 +149,48 @@ def _direction_label(kind, raw, ent):
     return name if isinstance(name, str) and name else type(ent).__name__
 
 
-def _owning_component(design, coll, bodies):
-    """The component the pattern feature must be built in - the bodies' parent for a body pattern,
-    else root. Falls back to root if a parent can't be read."""
+def _owning_component(design, coll, bodies, features=None, faces=None):
+    """Return the seed owner, refusing unreadable feature/face ownership."""
     root = safe(lambda: design.rootComponent)
-    if bodies not in (None, "", []):
+    if any(raw not in (None, "", []) for raw in (bodies, features, faces)):
         first = safe(lambda: coll.item(0))
-        parent = safe(lambda: first.parentComponent) if first is not None else None
+        parent = (safe(lambda: first.body.parentComponent) if faces not in (None, "", [])
+                  else safe(lambda: first.parentComponent)) if first is not None else None
         if parent is not None:
             return parent
+        if features not in (None, "", []) or faces not in (None, "", []):
+            return None
     return root
+
+
+def _seed_shapes(coll, kind):
+    """Return the owner and strict body-shape baseline for feature/face patterns."""
+    if kind not in ("features", "faces"):
+        return None, None
+    from . import _edit_feature_common
+    first = safe(lambda: coll.item(0))
+    owner = (safe(lambda: first.body.parentComponent) if kind == "faces"
+             else safe(lambda: first.parentComponent))
+    if owner is None:
+        return None, "Pattern seed owner did not read; reacquire its feature or face before retrying."
+    shapes = _edit_feature_common.all_shapes(_common.design(), components=[owner])
+    if not shapes:
+        return None, "Pattern seed body geometry did not read; inspect it with model_inspect before retrying."
+    return (owner, shapes), None
+
+
+def _seed_effect(feature, before):
+    """Return the observed body-shape change or a post-write refusal."""
+    if before is None:
+        return {}, None
+    from . import _edit_feature_common
+    owner, shapes = before
+    after = _edit_feature_common.all_shapes(_common.design(), components=[owner])
+    if after is None:
+        reason = "result geometry did not read"
+    elif after == shapes:
+        reason = "body geometry did not change"
+    else:
+        return {"pattern_geometry_changed": True}, None
+    return None, (f"Pattern '{safe(lambda: feature.name)}' was created, but {reason}. "
+                  "Inspect with model_inspect; design_delete_feature removes the retained feature.")

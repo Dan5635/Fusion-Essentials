@@ -25,7 +25,22 @@ MAP_BLURB = (
     "_contact_rows - the rest")
 
 
-def _occ_record(occ, inv_k, occ_joints, include_joints, full_path=False, with_pose=False):
+def _occurrence_joint_names(occ, memberships, membership_unread=False):
+    """Return exact joint names held by this occurrence and whether any comparison was unread."""
+    names, unverified = [], membership_unread
+    unread = object()
+    for member, name in memberships:
+        same = safe(lambda member=member: occ == member, unread)
+        if same is True:
+            if name not in names:
+                names.append(name)
+        elif same is not False:
+            unverified = True
+    return names, unverified
+
+
+def _occ_record(occ, inv_k, joint_memberships, include_joints, full_path=False, with_pose=False,
+                membership_unread=False):
     """ONE occurrence row: identity + ground flags + body count + the joints it takes part in.
     with_pose adds its world placement (_geom.occ_world_frame - origin, basis axes, bbox), the
     ~40-line half of the row; full_path adds the fullPathName two same-named instances differ by."""
@@ -42,7 +57,10 @@ def _occ_record(occ, inv_k, occ_joints, include_joints, full_path=False, with_po
     if with_pose:
         rec.update(_geom.occ_world_frame(occ, inv_k))
     if include_joints:
-        rec["joints"] = occ_joints.get(safe(lambda: occ.fullPathName), [])
+        rec["joints"], unverified = _occurrence_joint_names(
+            occ, joint_memberships, membership_unread)
+        if unverified:
+            rec["joints_unverified"] = True
     return rec
 
 
@@ -53,10 +71,12 @@ def _unresolved_row(broken):
             "detail": broken["detail"]}
 
 
-def _all_occurrence_rows(walk, inv_k, cap, occ_joints, include_joints, with_pose=False):
+def _all_occurrence_rows(walk, inv_k, cap, joint_memberships, include_joints, with_pose=False,
+                         membership_unread=False):
     """The all_occurrences slice: rows for the usable occurrences, then one flagged row per
     unresolved reference, bounded by cap. Returns (rows, walk)."""
-    rows = [_occ_record(o, inv_k, occ_joints, include_joints, full_path=True, with_pose=with_pose)
+    rows = [_occ_record(o, inv_k, joint_memberships, include_joints, full_path=True,
+                        with_pose=with_pose, membership_unread=membership_unread)
             for o in walk.occurrences[:cap]]
     for b in walk.broken[:max(0, cap - len(rows))]:
         rows.append(_unresolved_row(b))

@@ -939,6 +939,8 @@ _DX = _inputs.Distance("dx", allow_zero=True, default=0.0,
                        description="Translation along sketch X.")
 _DY = _inputs.Distance("dy", allow_zero=True, default=0.0,
                        description="Translation along sketch Y.")
+_DZ = _inputs.Distance("dz", allow_zero=True, default=0.0,
+                       description="Translation along sketch Z, off the plane.")
 _CENTER_X = _inputs.Distance("center_x", allow_zero=True, default=0.0,
                              description="Rotate/scale anchor X.")
 _CENTER_Y = _inputs.Distance("center_y", allow_zero=True, default=0.0,
@@ -961,11 +963,8 @@ def _object_collection(ents, refs):
     return coll, None
 
 
-def _transform(dx_cm, dy_cm, angle_deg, factor, cx_cm, cy_cm):
-    """(Matrix3D, error) for a sketch-space uniform SCALE by `factor` and ROTATION by `angle_deg`
-    about (cx, cy), followed by a TRANSLATION of (dx, dy). Assembled as ONE matrix - linear part
-    factor*R, translation column c + d - factor*R*c - so the result never depends on which way round
-    Matrix3D.transformBy composes."""
+def _transform(dx_cm, dy_cm, angle_deg, factor, cx_cm, cy_cm, dz_cm=0.0):
+    """Return a sketch-space scale/rotation about (cx, cy), then XYZ translation, or an error."""
     theta = math.radians(float(angle_deg or 0.0))
     cos_t, sin_t = math.cos(theta), math.sin(theta)
     m = adsk.core.Matrix3D.create()
@@ -978,7 +977,7 @@ def _transform(dx_cm, dy_cm, angle_deg, factor, cx_cm, cy_cm):
                     for r in range(3) for c in range(3)]
     m.translation = adsk.core.Vector3D.create(
         cx_cm + dx_cm - factor * (cos_t * cx_cm - sin_t * cy_cm),
-        cy_cm + dy_cm - factor * (sin_t * cx_cm + cos_t * cy_cm), 0.0)
+        cy_cm + dy_cm - factor * (sin_t * cx_cm + cos_t * cy_cm), dz_cm)
     if not all(applied):
         return None, "Fusion refused a cell of the transform matrix, so nothing was transformed."
     return m, None
@@ -998,10 +997,8 @@ def _identity_still_copies(design, sketch, target_sketch, target_component):
 
 
 def _prepare(sketch_name, entities, units, dx, dy, rotation_deg, center_x, center_y, scale_factor,
-             component="", target_sketch="", target_component=""):
-    """Everything both tools need before the mutation: (design, sketch, ents, refs, coll, matrix,
-    unit, error_result). target_sketch/target_component let a same-sketch identity refusal stand
-    aside for a copy landing in a genuinely different sketch."""
+             component="", target_sketch="", target_component="", dz=None):
+    """Return resolved transform operands and matrix, or a refusal before mutation."""
     blank = (None,) * 7
     k, uerr = _inputs.UNITS.resolve(units)
     if uerr:
@@ -1034,38 +1031,43 @@ def _prepare(sketch_name, entities, units, dx, dy, rotation_deg, center_x, cente
         return blank + (error(f"'scale_factor' must be a number, got {scale_factor!r}."),)
     if factor <= 0:
         return blank + (error(f"'scale_factor' must be greater than 0, got {factor}. A uniform "
-                              "scale cannot mirror geometry - draw the mirrored curves instead."),)
+                              "scale cannot mirror geometry; use sketch_copy with mirror_line."),)
     try:
         angle = float(rotation_deg if rotation_deg is not None else 0.0)
     except (TypeError, ValueError):
         return blank + (error(f"'rotation_deg' must be a number, got {rotation_deg!r}."),)
 
     lengths = {}
-    for kind, raw in ((_DX, dx), (_DY, dy), (_CENTER_X, center_x), (_CENTER_Y, center_y)):
+    for kind, raw in ((_DX, dx), (_DY, dy), (_DZ, dz), (_CENTER_X, center_x),
+                      (_CENTER_Y, center_y)):
         value, lerr = kind.resolve_scaled(raw, k)
         if lerr:
             return blank + (error(lerr),)
         lengths[kind.name] = float(value or 0.0)
-    if not (lengths["dx"] or lengths["dy"] or angle or factor != 1.0) and not _identity_still_copies(
+    if not (lengths["dx"] or lengths["dy"] or lengths["dz"] or angle
+            or factor != 1.0) and not _identity_still_copies(
             design, sketch, target_sketch, target_component):
-        return blank + (error("Nothing to apply: give a 'dx'/'dy' translation, a 'rotation_deg', "
+        return blank + (error("Nothing to apply: give a 'dx'/'dy'/'dz' translation, a 'rotation_deg', "
                               "or a 'scale_factor' other than 1."),)
 
     coll, cerr = _object_collection(ents, refs)
     if cerr:
         return blank + (error(cerr),)
     matrix, merr = _transform(lengths["dx"], lengths["dy"], angle, factor,
-                              lengths["center_x"], lengths["center_y"])
+                              lengths["center_x"], lengths["center_y"], lengths["dz"])
     if merr:
         return blank + (error(merr),)
     return design, sketch, ents, refs, coll, matrix, unit, None
 
 
-def _requested(unit, dx, dy, rotation_deg, scale_factor):
-    """The transform the caller asked for, echoed in the caller's own units."""
-    return {"units": unit, "dx": float(dx or 0.0), "dy": float(dy or 0.0),
-            "rotation_deg": float(rotation_deg or 0.0),
-            "scale_factor": float(scale_factor if scale_factor is not None else 1.0)}
+def _requested(unit, dx, dy, rotation_deg, scale_factor, dz=None):
+    """Return requested transform values in caller units, including nonzero dz."""
+    out = {"units": unit, "dx": float(dx or 0.0), "dy": float(dy or 0.0),
+           "rotation_deg": float(rotation_deg or 0.0),
+           "scale_factor": float(scale_factor if scale_factor is not None else 1.0)}
+    if dz:
+        out["dz"] = float(dz)
+    return out
 
 
 def _transform_wire(tool):
@@ -1074,6 +1076,7 @@ def _transform_wire(tool):
                 .add_required_input("entities")
                 .add_input_property(*_DX.as_property())
                 .add_input_property(*_DY.as_property())
+                .add_input_property(*_DZ.as_property())
                 .add_input_property(*_CENTER_X.as_property())
                 .add_input_property(*_CENTER_Y.as_property()))
     for name, schema in _TRANSFORM_INPUTS:

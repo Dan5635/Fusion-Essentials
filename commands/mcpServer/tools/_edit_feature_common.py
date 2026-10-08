@@ -669,11 +669,13 @@ def _reference_kind(entity, role):
         return _inputs.edge_kind(safe(lambda: native.geometry))
     if role in ("faces", "joint_geometry") and _inputs._isinstance(native, adsk.fusion.BRepFace):
         return "face"
-    if role == "edges":
+    if role in ("edges", "path"):
         if _inputs._isinstance(native, adsk.fusion.BRepEdge):
             return _inputs.edge_kind(safe(lambda: native.geometry))
         if _inputs._isinstance(native, adsk.fusion.SketchLine):
             return "line_edge"
+        if role == "path" and _inputs._isinstance(native, adsk.fusion.SketchArc):
+            return "sketch_arc"
     if role == "surface_bodies" and _inputs._is_brep(native):
         return "entity"
     if role == "boundary_curve":
@@ -700,8 +702,27 @@ def _reference_geometry(entity, role):
             geometry = {"frame": "world", "origin_cm": origin, "direction": direction}
         else:
             geometry["ends_cm"] = _inputs.placed_ends(entity)
-    elif role == "edges":
+    elif role in ("edges", "path"):
         geometry = {"frame": "world", "ends_cm": _inputs.placed_ends(entity)}
+        if role == "path" and _inputs._isinstance(native, adsk.fusion.SketchArc):
+            arc = native.geometry
+            center = _geom._coords(arc.center)
+            normal = _geom._coords(arc.normal)
+            reference = _geom._coords(arc.referenceVector)
+            radius = _common.finite_number(arc.radius)
+            start = _common.finite_number(arc.startAngle)
+            end = _common.finite_number(arc.endAngle)
+            if any(value is None for value in (center, normal, reference, radius, start, end)):
+                raise RuntimeError("bounded arc geometry is unreadable")
+            if radius <= 0 or not all(math.isfinite(v) for v in (*center, *normal, *reference)):
+                raise RuntimeError("bounded arc geometry is nonfinite or degenerate")
+            tangent = _geom.cross(normal, reference)
+            middle = (start + end) / 2
+            interior = [center[i] + radius * (reference[i] * math.cos(middle)
+                        + tangent[i] * math.sin(middle)) for i in range(3)]
+            geometry.update(arc_frame="sketch", center_cm=center, normal=normal,
+                            reference_vector=reference, radius_cm=radius,
+                            start_angle_rad=start, end_angle_rad=end, interior_cm=interior)
     elif role in ("plane", "plane_pair"):
         if is_plane:
             origin, normal = _inputs.placed_datum_frame(entity, "construction_plane")
@@ -883,7 +904,7 @@ def feature_edit_state(feature):
                 entities = path_entities(getattr(feature, member))
                 if not entities:
                     raise RuntimeError("path is unreadable, empty or exceeds 64 members")
-                records = [(entity, reference_descriptor(entity, "edges")) for entity in entities]
+                records = [(entity, reference_descriptor(entity, "path")) for entity in entities]
                 references = _path_public_references(feature, entities, records)
                 if not references:
                     raise RuntimeError("path members have no exact usable typed input")
@@ -1115,7 +1136,7 @@ def feature_reference_state(entities, role):
         values = path_entities(entities)
         if not values:
             raise RuntimeError("resolved path has no readable members")
-        return [(entity, reference_descriptor(entity, "edges")) for entity in values]
+        return [(entity, reference_descriptor(entity, "path")) for entity in values]
     if role == "profiles":
         values = entities if isinstance(entities, list) else [entities]
         records = []

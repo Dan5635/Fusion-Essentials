@@ -27,7 +27,8 @@ app = adsk.core.Application.get()
 
 # ── the mode vocabulary, grouped by kind ──────────────────────────────────────────────────────────
 _PLANE_MODES = ("offset", "at_angle", "at_angle_on_face", "three_points", "midplane",
-                "tangent_at_point", "offset_through_point", "on_path", "two_edges")
+                "tangent_at_point", "offset_through_point", "on_path", "two_edges",
+                "perpendicular_to_plane", "tangent")
 _AXIS_MODES = ("edge", "world", "circular_face", "two_points", "two_planes", "perpendicular_at_point")
 _POINT_MODES = ("coordinate", "at_point", "circle_center", "two_edges", "three_planes", "edge_plane",
                 "on_path")
@@ -861,6 +862,140 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
                                 "returned false) - the two entities must be coplanar and linear.")
         return comp.constructionPlanes.add(cpi), {}, None
 
+    if m == "perpendicular_to_plane":
+        base, err = _PLANE.resolve(plane_raw)
+        if err:
+            return None, None, err
+        through = points_raw not in (None, "", [])
+        offset_given = _inputs.looks_like_expression(offset) or bool(offset)
+        if through and offset_given:
+            return None, None, ("mode='perpendicular_to_plane' is placed by 'offset' OR through "
+                                "one of 'points', not both. Drop one.")
+        cpi = comp.constructionPlanes.createInput()
+        offset_cm = None
+        if through:
+            pts, err = _point_operands(points_raw, 1, m, comp, design, ops)
+            if err:
+                return None, None, err
+            done = cpi.setByPerpendicularToPlane(base, None, pts[0])
+        elif offset_given:
+            val, offset_cm, verr = _inputs.length_value_input(offset, k, design, "offset")
+            if verr:
+                return None, None, verr
+            done = cpi.setByPerpendicularToPlane(base, val)
+        else:
+            done = cpi.setByPerpendicularToPlane(base)
+        if not done:
+            return None, None, ("mode='perpendicular_to_plane': Fusion rejected these inputs "
+                                "(setByPerpendicularToPlane returned false).")
+        obj = comp.constructionPlanes.add(cpi)
+        left = (f" The datum '{safe(lambda: obj.name)}' was added and is still in the design - "
+                "remove it with design_delete_feature.")
+        g = _datum_geometry(design, obj)
+        dot = _geom.dot(
+            _geom.unit_vector(safe(lambda: _datum_geometry(design, base).normal),
+                              decimals=_GATE_DECIMALS),
+            _geom.unit_vector(safe(lambda: g.normal), decimals=_GATE_DECIMALS))
+        if dot is not None and abs(dot) > _COINCIDENT_REL_TOL:
+            return None, None, ("mode='perpendicular_to_plane': Fusion reported success but the "
+                                f"plane it created is not perpendicular to 'plane' (the unit "
+                                f"normals' dot product reads {dot:.9f}, not 0)." + left)
+        extra = {"perpendicular_to": _inputs.surface_ref_label(base),
+                 "perpendicular": True if dot is not None else None}
+        if dot is None and (_space_unread(design, base) or _space_unread(design, obj)):
+            extra["space_unread"] = True
+        if through:
+            dist, lever = _point_plane_offset(g, ops[-1].get("world_cm"))
+            on = _on_plane(dist, lever)
+            if on is False:
+                return None, None, ("mode='perpendicular_to_plane': Fusion reported success but "
+                                    f"the plane it created misses the point by {abs(dist):.6f} cm."
+                                    + left)
+            extra["passes_through_point"] = on
+        if offset_cm is not None:
+            landed = safe(lambda: obj.definition.distance.value)
+            if isinstance(landed, (int, float)) and not isinstance(landed, bool):
+                if abs(landed - offset_cm) > _common.EXTENT_MATCH_TOL_CM:
+                    return None, None, ("mode='perpendicular_to_plane': Fusion reported success "
+                                        f"but the plane reads back an offset of "
+                                        f"{round(landed / k, 6)} {units}, not the requested "
+                                        f"{round(offset_cm / k, 6)} {units}." + left)
+                extra["offset"] = round(landed / k, 6)
+                pname = safe(lambda: obj.definition.distance.name)
+                if pname:
+                    extra["model_parameters"] = {"offset": pname}
+            else:
+                extra["offset"] = None
+                extra["offset_requested"] = _inputs.expression_report(offset)
+        return obj, extra, None
+
+    if m == "tangent":
+        face, err = _FACE.resolve(face_raw)
+        if err:
+            return None, None, err
+        cerr = _need_val(face, "face", m)
+        if cerr:
+            return None, None, cerr
+        if safe(lambda: face.geometry.surfaceType) != adsk.core.SurfaceTypes.CylinderSurfaceType:
+            return None, None, ("mode='tangent' needs a CYLINDRICAL 'face' (got a "
+                                f"{_surface_label(face)} face). plane mode 'tangent_at_point' takes "
+                                "a cone, at a point on it.")
+        base, err = _PLANE.resolve(plane_raw)
+        if err:
+            return None, None, err
+        axis = _geom.unit_vector(safe(lambda: face.geometry.axis), decimals=_GATE_DECIMALS)
+        base_normal = _geom.unit_vector(safe(lambda: _datum_geometry(design, base).normal),
+                                        decimals=_GATE_DECIMALS)
+        lined_up = _geom.dot(axis, base_normal)
+        # The square-to-the-axis refusal is established for a face read in its own component; on
+        # a face placed through an occurrence Fusion's own answer is passed on below.
+        placed = safe(lambda: face.assemblyContext) is not None
+        if (not placed and lined_up is not None
+                and abs(abs(lined_up) - 1.0) <= _COINCIDENT_REL_TOL):
+            return None, None, ("mode='tangent': 'plane' is square to the cylinder's axis, so no "
+                                "angle can be measured from it. Pass a reference plane the axis "
+                                "lies along (one whose normal is perpendicular to the axis).")
+        val, want_rad, verr = _angle_value_input(angle, design)
+        if verr:
+            return None, None, verr
+        cpi = comp.constructionPlanes.createInput()
+        if not cpi.setByTangent(face, val, base):
+            return None, None, ("mode='tangent': Fusion rejected these inputs (setByTangent "
+                                "returned false).")
+        try:
+            obj = comp.constructionPlanes.add(cpi)
+        except Exception as e:
+            return None, None, (f"mode='tangent': Fusion refused this face and reference plane "
+                                f"({e}). Nothing was created. Try another reference 'plane'"
+                                + ("; for a cylinder in a placed component the accepted planes "
+                                   "differ from those of an unplaced one." if placed else "."))
+        extra, merr = _landed_angle(obj, want_rad, angle, m)
+        if merr:
+            return None, None, merr
+        extra["angle_from"] = _inputs.surface_ref_label(base)
+        # Tangent to a cylinder: the plane's normal is square to the axis and the plane sits one
+        # radius from a point on the axis (Cylinder.origin).
+        g = _datum_geometry(design, obj)
+        square = _geom.dot(_geom.unit_vector(safe(lambda: g.normal), decimals=_GATE_DECIMALS), axis)
+        dist, _lever = _plane_offset(safe(lambda: g.normal), safe(lambda: g.origin),
+                                     safe(lambda: face.geometry.origin))
+        radius = safe(lambda: face.geometry.radius)
+        if None in (square, dist, radius):
+            extra["tangent_to_face"] = None
+            if _space_unread(design, obj):
+                extra["space_unread"] = True
+            return obj, extra, None
+        gap = abs(abs(dist) - radius)
+        if abs(square) > _COINCIDENT_REL_TOL or gap > _INCIDENCE_TOL_CM:
+            return None, None, ("mode='tangent': Fusion reported success but the plane it created "
+                                f"is not tangent to the cylinder: it sits {round(abs(dist) / k, 6)} "
+                                f"{units} from the axis against a radius of "
+                                f"{round(radius / k, 6)} {units}. The datum "
+                                f"'{safe(lambda: obj.name)}' was added and is still in the design "
+                                "- remove it with design_delete_feature.")
+        extra["tangent_to_face"] = True
+        return obj, extra, None
+
     return None, None, f"Unhandled plane mode '{m}'."
 
 
@@ -1217,6 +1352,9 @@ def handler(kind: str = "point", mode: str = "", x: float = 0.0, y: float = 0.0,
         out["note"] += _UNREAD_SPACE_NOTE
     if out.pop("axis_frame_unresolved", False):
         out["note"] += _AXIS_FRAME_UNRESOLVED_NOTE
+    if "offset_requested" in out:
+        out["note"] += (" offset is null: the created plane's distance parameter did not read "
+                        "back, so 'offset_requested' was not compared with what landed.")
     if out.pop("angle_unread", False):
         out["note"] += (" angle_deg is null: the created plane's angle parameter did not read back, "
                         "so the landed angle was not compared to the request.")

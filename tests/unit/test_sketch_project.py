@@ -1134,3 +1134,107 @@ class TestSourceComponentScope:
         res = sp.handler(action="into_sketch", sketch_name="Target", source_component="Beta",
                          entities="F1")
         assert res["isError"] is True and "'source_component' applies only to" in res["message"]
+
+
+# -- include and cut_edges: one Sketch call per source ----------------------------------------
+
+
+def _end(z):
+    return types.SimpleNamespace(geometry=types.SimpleNamespace(x=0.0, y=0.0, z=z))
+
+
+class _PerSourceSketch(FakeSketch):
+    """include / projectCutEdges called once per source. `makes` maps a source's name to the z of
+    each curve it yields (an empty list is a body the plane misses); `raises_on` names a source
+    whose call raises."""
+
+    def __init__(self, makes, raises_on=None, **kw):
+        super().__init__(**kw)
+        self.makes, self.raises_on, self.per_source_calls = makes, raises_on, []
+
+    def _per_source(self, source):
+        self.per_source_calls.append(source)
+        if source.name == self.raises_on:
+            raise RuntimeError("3 : invalid argument entity")
+        made = []
+        for z in self.makes.get(source.name, []):
+            curve = _Created()
+            curve.startSketchPoint, curve.endSketchPoint = _end(0.0), _end(z)
+            made.append(curve)
+        self._grow({"line": len(made)})
+        return made
+
+    include = projectCutEdges = _per_source
+
+
+def _named(*names):
+    return [BRepBody(name=n, entity_token="tok-" + n) for n in names]
+
+
+class TestInclude:
+    def test_each_entity_is_included_by_its_own_call_and_off_plane_curves_are_counted(self, run):
+        sk = _PerSourceSketch({"EdgeA": [1.0], "FaceB": [0.0, 0.0, 2.0, 2.0]})
+        sources = _named("EdgeA", "FaceB")
+        out, _ = run("include", sketch=sk, entities_out=sources, entities="h1,h2")
+        assert sk.per_source_calls == sources
+        assert out["created_count"] == 5 and out["off_plane_count"] == 3
+        assert out["per_source"] == [{"source": "EdgeA", "created": 1},
+                                     {"source": "FaceB", "created": 4}]
+        assert "not flattened" in out["note"] and "action='into_sketch'" in out["note"]
+
+    def test_a_failure_on_a_later_entity_says_what_already_landed(self, run):
+        sk = _PerSourceSketch({"EdgeA": [1.0]}, raises_on="FaceB")
+        out, _ = run("include", raw=True, sketch=sk, entities_out=_named("EdgeA", "FaceB"),
+                     entities="h1,h2")
+        assert out["isError"] is True and "failed on 'FaceB'" in out["message"]
+        assert "1 entity(ies) from the earlier source(s) ARE in the sketch" in out["message"]
+
+    def test_an_include_that_creates_nothing_is_an_error(self, run):
+        sk = _PerSourceSketch({})
+        out, _ = run("include", raw=True, sketch=sk, entities_out=_named("EdgeA"), entities="h1")
+        assert out["isError"] is True and "returned no sketch entities" in out["message"]
+
+    def test_bodies_are_refused_for_include(self, run):
+        out, sk = run("include", raw=True, entities="h1", bodies="Body1")
+        assert out["isError"] is True and "'bodies' applies only to" in out["message"]
+
+
+class TestCutEdges:
+    def test_a_missed_body_is_named_beside_the_one_that_was_cut(self, run):
+        sk = _PerSourceSketch({"Cut": [0.0] * 4, "Missed": []})
+        out, _ = run("cut_edges", sketch=sk, bodies_out=_named("Cut", "Missed"),
+                     bodies="Cut,Missed")
+        assert [c.name for c in sk.per_source_calls] == ["Cut", "Missed"]
+        assert out["created_count"] == 4
+        assert out["per_source"][1] == {"source": "Missed", "created": 0}
+        assert "The plane does not cut Missed" in out["note"]
+
+    def test_a_plane_that_cuts_no_body_is_an_error_naming_them(self, run):
+        sk = _PerSourceSketch({"Missed": []}, plane="XZ")
+        out, _ = run("cut_edges", raw=True, sketch=sk, bodies_out=_named("Missed"),
+                     bodies="Missed")
+        assert out["isError"] is True
+        assert "(XZ) cuts none of: Missed" in out["message"]
+
+    def test_no_bodies_is_refused(self, run):
+        out, sk = run("cut_edges", raw=True)
+        assert out["isError"] is True and "needs 'bodies'" in out["message"]
+
+    def test_entities_are_refused_for_cut_edges(self, run):
+        out, sk = run("cut_edges", raw=True, entities="h1", bodies="Body1")
+        assert out["isError"] is True and "'entities' applies only to" in out["message"]
+
+
+class TestPerSourceFailureWording:
+    def test_a_failure_on_the_first_source_does_not_claim_nothing_was_added(self, run):
+        sk = _PerSourceSketch({}, raises_on="EdgeA")
+        out, _ = run("include", raw=True, sketch=sk, entities_out=_named("EdgeA"), entities="h1")
+        assert out["isError"] is True and "Nothing was added" not in out["message"]
+        assert "Re-read the sketch with sketch_get" in out["message"]
+
+    def test_returned_entities_without_a_census_rise_are_not_called_nothing(self, run):
+        sk = _PerSourceSketch({"EdgeA": [1.0]})
+        sk._grow = lambda counts: 0
+        out, _ = run("include", raw=True, sketch=sk, entities_out=_named("EdgeA"), entities="h1")
+        assert out["isError"] is True
+        assert "returned 1 entity(ies) but the entity counts" in out["message"]

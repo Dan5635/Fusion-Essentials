@@ -4,10 +4,12 @@ One call draws a LIST: the sketch/component/units scope stays top-level and ever
 rides in a 'geometry' entry, so a single-entity test reads its payload off results[0].
 """
 
+import math
 from types import SimpleNamespace
 import pytest
 from conftest import SketchCurves, load_tool
-from _sketch_fakes import FakeSketch, _Curve, _payload, draw_installer, scoped_installer
+from _sketch_fakes import (FakeSketch, _Curve, _SketchPoint, _payload, draw_installer,
+                           scoped_installer)
 
 sk = load_tool("sketch_add_geometry")
 _install_draw = draw_installer(sk)
@@ -52,10 +54,11 @@ def _first(res):
 class TestKindDescription:
     def test_the_kind_description_names_every_kinds_inputs_from_the_guard_table(self):
         desc = sk._ENTRY_SCHEMA["properties"]["kind"]["description"]
-        for kind, keys in sk._REQUIRED.items():
-            clause = f"{kind} {','.join(keys) or 'points'}"
-            assert clause in desc, clause
-        assert desc.count(";") == len(sk._REQUIRED) - 1
+        clauses = dict(clause.rsplit(" ", 1) for clause in
+                       desc.split("(other kinds: points): ")[1].split(". Roles:")[0].split("; "))
+        named = {kind: keys for kinds, keys in clauses.items() for kind in kinds.split("/")}
+        assert named == {kind: ",".join(keys) for kind, keys in sk._REQUIRED.items() if keys}
+        assert {kind for kind, keys in sk._REQUIRED.items() if not keys} == set(sk._POINT_LIST_KINDS)
 
 
 class TestScaleWiring:
@@ -1480,3 +1483,254 @@ class TestBatch:
         s = FakeSketch(); _install_draw(monkeypatch, s)
         res = sk.handler(geometry=[])
         assert res["isError"] is True and "non-empty list" in res["message"]
+
+
+def _at(x, y):
+    return _SketchPoint(geometry=SimpleNamespace(x=x, y=y, z=0.0))
+
+
+class _ExactSketch(FakeSketch):
+    """A FakeSketch whose exact-curve constructors land entities carrying REAL geometry (cm), so the
+    handler's re-read has something to disagree with. `wrong` names the lie the platform tells:
+    'complement' (the arc's other half), 'radius' (a circle of another size), 'left' (the polygon
+    on the other side of its edge), 'inscribed' (the radius taken as centre-to-vertex), 'near'
+    (the rectangle's far side short of the point asked for)."""
+
+    def __init__(self, wrong=None):
+        super().__init__()
+        self.wrong = wrong
+        self.calls = []
+        arcs, circles, lines = self.sketchArcs, self.sketchCircles, self.sketchLines
+        arcs.addByThreePoints = self._arc3
+        arcs.addByCenterStartEnd = self._arc_cse
+        circles.addByTwoPoints = self._circle2
+        circles.addByThreePoints = self._circle3
+        lines.addThreePointRectangle = self._rect3
+        lines.addEdgePolygon = self._edge_polygon
+        lines.addScribedPolygon = self._scribed
+
+    @staticmethod
+    def _circumcentre(a, b, c):
+        d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y))
+        ux = ((a.x**2 + a.y**2) * (b.y - c.y) + (b.x**2 + b.y**2) * (c.y - a.y)
+              + (c.x**2 + c.y**2) * (a.y - b.y)) / d
+        uy = ((a.x**2 + a.y**2) * (c.x - b.x) + (b.x**2 + b.y**2) * (a.x - c.x)
+              + (c.x**2 + c.y**2) * (b.x - a.x)) / d
+        return ux, uy
+
+    def _arc(self, centre, start, end):
+        if self.wrong == "complement":
+            start, end = end, start
+        arc = self.sketchArcs._make("arc")
+        arc.startSketchPoint, arc.endSketchPoint = _at(*start), _at(*end)
+        arc.centerSketchPoint = _at(*centre)
+        arc.radius = math.hypot(start[0] - centre[0], start[1] - centre[1])
+        return arc
+
+    def _arc3(self, a, b, c):
+        self.calls.append(("arc3", a, b, c))
+        centre = self._circumcentre(a, b, c)
+        ccw = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) > 0
+        first, last = ((a.x, a.y), (c.x, c.y)) if ccw else ((c.x, c.y), (a.x, a.y))
+        return self._arc(centre, first, last)
+
+    def _arc_cse(self, centre, start, end):
+        self.calls.append(("arc_cse", centre, start, end))
+        return self._arc((centre.x, centre.y), (start.x, start.y), (end.x, end.y))
+
+    def _circle(self, centre, radius):
+        circle = self.sketchCircles._make("circle")
+        circle.centerSketchPoint = _at(*centre)
+        circle.radius = radius * (2.0 if self.wrong == "radius" else 1.0)
+        return circle
+
+    def _circle2(self, a, b):
+        self.calls.append(("circle2", a, b))
+        return self._circle(((a.x + b.x) / 2, (a.y + b.y) / 2), math.hypot(b.x - a.x, b.y - a.y) / 2)
+
+    def _circle3(self, a, b, c):
+        self.calls.append(("circle3", a, b, c))
+        centre = self._circumcentre(a, b, c)
+        return self._circle(centre, math.hypot(a.x - centre[0], a.y - centre[1]))
+
+    def _loop(self, corners):
+        points = [_at(*corner) for corner in corners]
+        made = []
+        for i in range(len(points)):
+            line = self.sketchLines._make("side")
+            line.startSketchPoint, line.endSketchPoint = points[i], points[(i + 1) % len(points)]
+            made.append(line)
+        return made
+
+    def _rect3(self, a, b, c):
+        self.calls.append(("rect3", a, b, c))
+        ex, ey = b.x - a.x, b.y - a.y
+        length = math.hypot(ex, ey)
+        nx, ny = -ey / length, ex / length
+        height = (c.x - a.x) * nx + (c.y - a.y) * ny
+        if self.wrong == "near":
+            height /= 2.0
+        return self._loop([(a.x, a.y), (b.x, b.y), (b.x + nx * height, b.y + ny * height),
+                           (a.x + nx * height, a.y + ny * height)])
+
+    def _edge_polygon(self, a, b, is_right, sides):
+        self.calls.append(("edge_polygon", a, b, is_right, sides))
+        ex, ey = b.x - a.x, b.y - a.y
+        length = math.hypot(ex, ey)
+        to_right = (is_right is True) != (self.wrong == "left")
+        nx, ny = (ey / length, -ex / length) if to_right else (-ey / length, ex / length)
+        apothem = length / (2 * math.tan(math.pi / sides))
+        centre = ((a.x + b.x) / 2 + nx * apothem, (a.y + b.y) / 2 + ny * apothem)
+        first = math.atan2(a.y - centre[1], a.x - centre[0])
+        turn = math.atan2(b.y - centre[1], b.x - centre[0]) - first
+        step = 1 if math.sin(turn) > 0 else -1
+        radius = length / (2 * math.sin(math.pi / sides))
+        return self._loop([(centre[0] + radius * math.cos(first + step * i * 2 * math.pi / sides),
+                            centre[1] + radius * math.sin(first + step * i * 2 * math.pi / sides))
+                           for i in range(sides)])
+
+    def _scribed(self, centre, sides, angle, radius, is_inscribed):
+        self.calls.append(("scribed", centre, sides, angle, radius, is_inscribed))
+        sides = int(sides)
+        if not is_inscribed and self.wrong != "inscribed":
+            radius = radius / math.cos(math.pi / sides)
+        return self._loop([(centre.x + radius * math.cos(angle + i * 2 * math.pi / sides),
+                            centre.y + radius * math.sin(angle + i * 2 * math.pi / sides))
+                           for i in range(sides)])
+
+
+def _exact(monkeypatch, entry, wrong=None, units="cm"):
+    s = _ExactSketch(wrong); _install_draw(monkeypatch, s)
+    return s, sk.handler(geometry=[entry], units=units)
+
+
+class TestExactCurveKinds:
+    """The exact-curve kinds: each guard refuses before the constructor runs, and each draw is judged
+    on the entity re-read from the sketch, not on the constructor having answered."""
+
+    _CW_ARC = {"kind": "three_point_arc", "points": [[0, 0], [1, 1], [2, 0]]}
+
+    def test_a_clockwise_three_point_arc_reports_its_ends_exchanged(self, monkeypatch):
+        s, res = _exact(monkeypatch, self._CW_ARC)
+        out = _first(res)
+        assert (out["start"], out["end"], out["ends_exchanged"]) == ([2.0, 0.0], [0.0, 0.0], True)
+        assert out["center"] == [1.0, 0.0] and abs(out["radius"] - 1.0) < 1e-9
+        assert "exchanged" in out["note"] and out["curves_added"] == 1
+
+    def test_a_three_point_arc_built_as_the_other_half_is_an_error(self, monkeypatch):
+        s, res = _exact(monkeypatch, self._CW_ARC, wrong="complement")
+        assert res["isError"] is True
+        assert "does not pass through the requested middle point [1.0, 1.0]" in res["message"]
+        assert "sketch_delete_entity" in res["message"]
+
+    @pytest.mark.parametrize("kind", ["three_point_arc", "three_point_circle",
+                                      "three_point_rectangle"])
+    def test_collinear_points_are_refused_before_the_constructor(self, monkeypatch, kind):
+        s, res = _exact(monkeypatch, {"kind": kind, "points": [[0, 0], [1, 1], [2, 2]]})
+        assert res["isError"] is True and "collinear" in res["message"]
+        assert s.calls == []
+
+    def test_a_three_point_kind_refuses_two_coincident_points_by_value(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "three_point_circle",
+                                      "points": [[0, 0], [3, 4], [0, 0]]})
+        assert res["isError"] is True and "[0.0, 0.0]" in res["message"] and "coincide" in res["message"]
+        assert s.calls == []
+
+    def test_a_three_point_kind_refuses_four_points(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "three_point_arc",
+                                      "points": [[0, 0], [1, 1], [2, 0], [3, 1]]})
+        assert res["isError"] is True and "exactly 3 points. Got 4" in res["message"]
+        assert s.calls == []
+
+    def test_center_arc_scales_its_points_and_reads_back_in_the_callers_units(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "center_arc", "cx": 0, "cy": 0, "x1": 10, "y1": 0,
+                                      "x2": 0, "y2": 10}, units="mm")
+        out = _first(res)
+        tag, centre, start, end = s.calls[0]
+        assert (start.x, end.y) == (1.0, 1.0)                 # 10 mm -> 1 cm
+        assert out["start"] == [10.0, 0.0] and out["end"] == [0.0, 10.0]
+        assert abs(out["radius"] - 10.0) < 1e-9 and "ends_exchanged" not in out
+
+    def test_center_arc_refuses_an_end_off_the_starts_radius_naming_both(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "center_arc", "cx": 0, "cy": 0, "x1": 2, "y1": 0,
+                                      "x2": 0, "y2": 3})
+        assert res["isError"] is True
+        assert "start is 2 from the centre and end is 3" in res["message"]
+        assert s.calls == []
+
+    def test_a_center_arc_built_the_other_way_round_is_an_error(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "center_arc", "cx": 0, "cy": 0, "x1": 1, "y1": 0,
+                                      "x2": 0, "y2": 1}, wrong="complement")
+        assert res["isError"] is True and "not the requested centre, start and end" in res["message"]
+
+    def test_two_point_circle_takes_the_points_as_a_diameter(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "two_point_circle", "x1": 0, "y1": 0, "x2": 4, "y2": 0})
+        out = _first(res)
+        assert out["center"] == [2.0, 0.0] and abs(out["radius"] - 2.0) < 1e-9
+
+    def test_two_point_circle_refuses_one_point_given_twice(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "two_point_circle", "x1": 1, "y1": 2, "x2": 1, "y2": 2})
+        assert res["isError"] is True and "two distinct points; both are [1, 2]" in res["message"]
+        assert s.calls == []
+
+    @pytest.mark.parametrize("entry", [
+        {"kind": "two_point_circle", "x1": 0, "y1": 0, "x2": 4, "y2": 0},
+        {"kind": "three_point_circle", "points": [[0, 0], [2, 2], [4, 0]]}])
+    def test_a_circle_of_another_size_is_an_error(self, monkeypatch, entry):
+        s, res = _exact(monkeypatch, entry, wrong="radius")
+        assert res["isError"] is True
+        assert "does not pass through the requested points" in res["message"]
+
+    def test_three_point_rectangle_reports_four_corners_and_no_constraints(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "three_point_rectangle",
+                                      "points": [[0, 0], [4, 0], [1, 3]]})
+        out = _first(res)
+        assert sorted(map(tuple, out["corners"])) == [(0.0, 0.0), (0.0, 3.0), (4.0, 0.0), (4.0, 3.0)]
+        assert out["curves_added"] == 4 and out["constraints_added"] == 0
+        assert "no constraints" in out["note"]
+
+    def test_a_rectangle_whose_far_side_misses_the_third_point_is_an_error(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "three_point_rectangle",
+                                      "points": [[0, 0], [4, 0], [1, 3]]}, wrong="near")
+        assert res["isError"] is True and "far side through [1.0, 3.0]" in res["message"]
+
+    def test_edge_polygon_asks_for_the_right_hand_side_and_lands_there(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "edge_polygon", "x1": 0, "y1": 0, "x2": 2, "y2": 0,
+                                      "sides": 4})
+        out = _first(res)
+        assert s.calls[0][3] is True and s.calls[0][4] == 4
+        assert min(c[1] for c in out["corners"]) < -1.9          # right of +X travel is -Y
+        assert out["curves_added"] == 4
+
+    def test_an_edge_polygon_built_on_the_left_is_an_error(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "edge_polygon", "x1": 0, "y1": 0, "x2": 2, "y2": 0,
+                                      "sides": 4}, wrong="left")
+        assert res["isError"] is True and "to its right" in res["message"]
+
+    def test_circumscribed_polygon_sends_not_inscribed_and_the_angle_in_radians(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "circumscribed_polygon", "cx": 0, "cy": 0,
+                                      "radius": 2, "sides": 6, "angle_deg": 30})
+        out = _first(res)
+        tag, centre, sides, angle, radius, is_inscribed = s.calls[0]
+        assert is_inscribed is False and abs(angle - math.pi / 6) < 1e-12 and radius == 2
+        assert len(out["corners"]) == 6
+
+    def test_a_circumscribed_polygon_built_inscribed_is_an_error(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "circumscribed_polygon", "cx": 0, "cy": 0,
+                                      "radius": 2, "sides": 6}, wrong="inscribed")
+        assert res["isError"] is True and "not the requested 2" in res["message"]
+
+    def test_the_inscribed_polygon_honours_angle_deg(self, monkeypatch):
+        s, res = _exact(monkeypatch, {"kind": "polygon", "cx": 0, "cy": 0, "radius": 2,
+                                      "sides": 5, "angle_deg": 90})
+        _first(res)
+        assert s.calls[0][5] is True and abs(s.calls[0][3] - math.pi / 2) < 1e-12
+
+    @pytest.mark.parametrize("entry, text", [
+        ({"kind": "edge_polygon", "x1": 0, "y1": 0, "x2": 2, "y2": 0, "sides": 2}, "sides >= 3"),
+        ({"kind": "circumscribed_polygon", "cx": 0, "cy": 0, "radius": 0, "sides": 5},
+         "radius must be > 0")])
+    def test_polygon_guards_refuse_before_the_constructor(self, monkeypatch, entry, text):
+        s, res = _exact(monkeypatch, entry)
+        assert res["isError"] is True and text in res["message"]
+        assert s.calls == []

@@ -452,4 +452,68 @@ def _origin_rows():
     return close()
 
 
-_DATUM_EDITS = _plane_rows() + _axis_rows() + _point_rows() + _origin_rows()
+def _plane_read(check, park=None):
+    """find_geometry on one named construction plane: `check(position, normal)` on its own row."""
+    def judge(p):
+        row = _datum_row(p)
+        position, normal = row.get("position"), row.get("normal")
+        good = (isinstance(position, list) and isinstance(normal, list) and len(position) == 3
+                and len(normal) == 3 and _near(sum(v * v for v in normal), 1, 0.0001))
+        if good and park:
+            _RECALL[park] = (position, normal)
+        return _measured("construction plane position and normal", row,
+                         _matched(1, "construction_plane")(p) and good and check(position, normal))
+    return judge
+
+
+def _perpendicular_and_tangent_rows():
+    """A plane perpendicular to XY, one offset from it, and a plane tangent to a cylinder."""
+    _rows, write, read, close = _story("pt")
+    plane = lambda name: {"kind": "construction_plane", "name": name}
+    # A cylinder of radius 5 about the vertical through (30, 0), 10 tall.
+    write("sketch_create", {"name": "PtCyl", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "PtCyl", "geometry": [
+        {"kind": "circle", "cx": 30, "cy": 0, "radius": 5}]})
+    write("model_extrude", {"sketch_name": "PtCyl", "distance": 10})
+    read("find_geometry", {"kind": "cylinder_face", "radius": 5, "max_results": 5},
+         _matched(1, "cylinder_face"), _fg("pt_wall"))
+    write("model_construction", {"kind": "plane", "mode": "perpendicular_to_plane", "plane": "xy",
+                                 "offset": 4, "points": ["anything"], "name": "PtBoth"},
+          _refused("'offset' OR through one of 'points', not both"))
+    write("model_construction", {"kind": "plane", "mode": "perpendicular_to_plane", "plane": "xy",
+                                 "name": "PtUp"},
+          lambda p: _built("plane")(p) and p.get("perpendicular") is True)
+    read("find_geometry", plane("PtUp"),
+         _plane_read(lambda position, normal: abs(normal[2]) < 0.0001, park="pt_up"))
+    write("model_construction", {"kind": "plane", "mode": "perpendicular_to_plane", "plane": "xy",
+                                 "offset": 12, "name": "PtUpOff"},
+          lambda p: _built("plane")(p) and p.get("perpendicular") is True
+          and p.get("offset") in (12.0, None))
+    # The offset plane is the first one moved 12 mm along its own normal, either way.
+    read("find_geometry", plane("PtUpOff"), _plane_read(
+        lambda position, normal: abs(normal[2]) < 0.0001 and _near(abs(sum(
+            n * (a - b) for n, a, b in zip(_RECALL["pt_up"][1], position, _RECALL["pt_up"][0]))),
+            12, 0.001)))
+    tangent = lambda c, reference, name: {
+        "kind": "plane", "mode": "tangent", "face": _ctx_get(c, "pt_wall", "the cylinder wall"),
+        "plane": reference, "angle": 0, "name": name}
+    write("model_construction", lambda c: tangent(c, "xy", "PtFlat"),
+          _refused("square to the cylinder's axis"))
+    write("model_construction", lambda c: tangent(c, "xz", "PtTan"),
+          lambda p: _built("plane")(p) and p.get("tangent_to_face") is True)
+    # Tangent: the plane stands upright and sits one radius, 5 mm, from the axis through (30, 0).
+    read("find_geometry", plane("PtTan"), _plane_read(
+        lambda position, normal: abs(normal[2]) < 0.0001 and _near(
+            abs(normal[0] * (position[0] - 30) + normal[1] * position[1]), 5, 0.001)))
+    read("find_geometry", {"kind": "construction_plane", "max_results": 20},
+         lambda p: {"PtTan", "PtUp", "PtUpOff"} <= {m.get("name") for m in p.get("matches") or []}
+         and not {"PtBoth", "PtFlat"} & {m.get("name") for m in p.get("matches") or []})
+    for name in ("PtUp", "PtTan"):
+        read("design_get", {"include": ["definition"], "feature": name},
+             lambda p: isinstance(p.get("definition"), dict))
+    read("design_get", {"include": ["timeline"], "max_results": 200}, _healthy_at_end)
+    return close()
+
+
+_DATUM_EDITS = (_plane_rows() + _axis_rows() + _point_rows() + _origin_rows()
+                + _perpendicular_and_tangent_rows())

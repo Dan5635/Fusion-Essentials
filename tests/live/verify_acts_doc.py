@@ -1483,6 +1483,105 @@ _SMALL_EDITS = [
 ]
 
 
+# --- a library appearance and its clear, on a body and on one face ------------------------------
+
+_AP_LIBRARY, _AP_NAME = "Fusion Additive Material Library", "Aluminum - Satin"
+
+
+def _ap_body_reads(appearance=None, source=None, recall=None):
+    """model_inspect: the one body's appearance and source, or the pair recalled under `recall`."""
+    def check(p):
+        scope = p.get("appearance") or {}
+        rows = scope.get("bodies") or []
+        got = (rows[0].get("appearance"), rows[0].get("appearance_source")) if len(rows) == 1 else None
+        want = (_RECALL.get(recall) if recall else
+                None if appearance is None and source is None else (appearance, source))
+        return _measured("body appearance and its source", got,
+                         scope.get("scope_complete") is True and scope.get("truncated") is False
+                         and got is not None and None not in got
+                         and (recall is None or want is not None)
+                         and (want is None or tuple(want) == got))
+    return check
+
+
+def _ap_faces_args(ctx):
+    """A read-only native read of the two saved faces' appearance and appearance source."""
+    tokens = [str(ctx.get(key) or "").partition("|@")[0] for key in ("ap_top", "ap_side")]
+    if not all(tokens):
+        raise ValueError("the two face handles are not both readable")
+    script = (
+        "import adsk.core, adsk.fusion, json\n"
+        "def run(context):\n"
+        "    design=adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)\n"
+        "    kinds=adsk.core.AppearanceSourceTypes\n"
+        "    names={getattr(kinds,n):n for n in dir(kinds) if n.endswith('AppearanceSource')}\n"
+        "    rows=[]\n"
+        "    for token in " + repr(tokens) + ":\n"
+        "        found=list(design.findEntityByToken(token))\n"
+        "        face=adsk.fusion.BRepFace.cast(found[0]) if len(found)==1 else None\n"
+        "        rows.append(None if face is None else\n"
+        "            [face.appearance.name, names.get(face.appearanceSourceType)])\n"
+        "    print(json.dumps({'faces':rows}))\n")
+    return {"script": script, "read_only": True}
+
+
+def _appearance_library_rows():
+    """Assign a library appearance to a body and to one face, and clear each override again."""
+    from verify_acts_sketch import _boxed, _scratch_rows, _script_reply
+    rows, write, read, close = _scratch_rows("ap_doc")
+    _boxed(write, "ApBase", (0, 0, 20, 10), 8, "ap_body")
+    body = lambda c: _ctx_get(c, "ap_body", "the box")
+    inspect = lambda c: {"target": body(c), "include": ["appearance"]}
+    for key, at in (("ap_top", [10, 5, 8]), ("ap_side", [10, 0, 4])):
+        read("find_geometry", lambda c, at=at: {"target": body(c), "kind": "planar_face",
+                                                "nearest_to": at, "max_results": 1},
+             lambda p: len(p.get("matches") or []) == 1, _fg(key))
+    aluminium = (_AP_NAME, "BodyAppearanceSource")
+    read("model_inspect", inspect,
+         lambda p: _ap_body_reads()(p)
+         and p["appearance"]["bodies"][0]["appearance_source"] == "MaterialAppearanceSource",
+         ("ap_plain", _recall("ap_plain", lambda p: (
+             p["appearance"]["bodies"][0]["appearance"],
+             p["appearance"]["bodies"][0]["appearance_source"]))))
+    read("design_get", {"include": ["appearances"], "library": _AP_LIBRARY, "name_filter": _AP_NAME},
+         lambda p: [e.get("name") for e in p["appearances"].get("entries") or []] == [_AP_NAME])
+
+    def paint(target, check, **args):
+        write("appearance_set", lambda c: {"target": target(c), **args}, check)
+    library = {"appearance": _AP_NAME, "library": _AP_LIBRARY}
+    paint(body, _refused("'appearance' is a call of its own", "'color'"), color="#FF0000", **library)
+    paint(body, _refused("carries no override of its own", "MaterialAppearanceSource"), clear=True)
+    read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    paint(body, lambda p: p.get("applied") is True and p.get("appearance") == _AP_NAME
+          and p.get("library") == _AP_LIBRARY
+          and p.get("appearance_source") == "BodyAppearanceSource", **library)
+    read("model_inspect", inspect, _ap_body_reads(*aluminium))
+    paint(body, lambda p: p.get("cleared") is True and p.get("appearance_before") == _AP_NAME
+          and p.get("appearance_source") == "MaterialAppearanceSource", clear=True)
+    read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    # A face has no public appearance read, so the two faces are read natively and read-only.
+    top = lambda c: _ctx_get(c, "ap_top", "the top face")
+    plain = lambda p: ([[_RECALL["ap_plain"][0], "MaterialAppearanceSource"]] * 2
+                       == _script_reply(p).get("faces"))
+    read("sys_execute_script", _ap_faces_args, plain)
+    paint(top, lambda p: p.get("kind") == "face"
+          and p.get("appearance_source") == "FaceAppearanceSource", **library)
+    read("sys_execute_script", _ap_faces_args,
+         lambda p: _script_reply(p).get("faces") == [
+             [_AP_NAME, "FaceAppearanceSource"],
+             [_RECALL["ap_plain"][0], "MaterialAppearanceSource"]])
+    read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    paint(top, lambda p: p.get("cleared") is True
+          and p.get("appearance_source") == "MaterialAppearanceSource", clear=True)
+    read("sys_execute_script", _ap_faces_args, plain)
+    read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    close()
+    return rows
+
+
+_SMALL_EDITS += _appearance_library_rows()
+
+
 # --- ACT 0: OVERTURE - orient, then open the first family document -----------------------------
 _OVERTURE = [
     ("doc_new", {}, _new_document, None),

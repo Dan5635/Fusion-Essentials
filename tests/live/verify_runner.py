@@ -1184,12 +1184,12 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                 members = [a[0] for a in ACTS if families[a[0]] == family
                            and (selected is None or a[0] in selected)]
                 if any(met(ACT_NEEDS.get(member)) for member in members):
-                    if family not in ("sketch", "sheet_coupon", "sheet_selected",
+                    if family not in ("sketch", "sheet_coupon",
                                       "sheet_positions", "sheet_flange") and not fixture(
                             [("doc_new", {}, "ok", None)], family, "open"):
                         stopped = True
                         break
-                    if family not in ("sketch", "sheet_coupon", "sheet_selected",
+                    if family not in ("sketch", "sheet_coupon",
                                       "sheet_positions", "sheet_flange"):
                         if not fixture([("view_switch_workspace", {"workspace": "design"},
                                          "ok", None)], family, "workspace"):

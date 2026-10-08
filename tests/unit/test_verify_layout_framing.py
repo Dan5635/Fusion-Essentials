@@ -288,6 +288,11 @@ def test_saved_configuration_scene_keeps_owned_local_geometry_refusals_and_close
     authored = verify_acts_cloud._CLOUD_CONFIGURE
     compiled = next(rows for name, _pre, rows, _fallback in verify_program.ACTS
                     if name == "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS")
+    def configuration_scenes(rows):
+        end = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "cr_home")
+        return rows[:end]
+    authored = configuration_scenes(authored)
+    compiled = configuration_scenes(compiled)
     def requests(rows):
         return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in rows
                 if tool in {"sketch_create", "sketch_add_geometry", "model_extrude", "design_configure",
@@ -307,6 +312,66 @@ def test_saved_configuration_scene_keeps_owned_local_geometry_refusals_and_close
     assert next(args for tool, args in requests(compiled) if tool == "doc_close") == {
         "name": "session:coupon", "save_changes": False, "expect_document": "session:coupon"}
     assert verify_program.ACT_NEEDS["ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS"] == verify_program.CLOUD_TIER
+
+
+def test_extent_story_consumes_the_names_and_handles_its_reads_retained(monkeypatch):
+    retained = {}
+    monkeypatch.setattr(verify_core, "_RECALL", retained)
+    monkeypatch.setattr(verify_acts_model_solids, "_RECALL", retained)
+    rows = verify_acts_model_solids._w2_extrude_extent_rows()
+    context = {"w2_extents_doc": "session:scratch"}
+    for role, name in (("Near", "Body1"), ("Far", "Body2"), ("Mixed", "Body3"), ("Start", "Body4")):
+        key = "w2_extents_W2" + role + "Target"
+        save = next(row[3] for row in rows if row[3] and row[3][0] == key)
+        context[key] = save[1]({"result_bodies": [name]})
+    body_read = next(row for row in rows if row[0] == "design_get"
+                     and isinstance(row[1], dict) and row[1].get("tree_bodies") is True)
+    assert body_read[2]({"tree": {"root_bodies": [
+        {"name": "Body1", "handle": "near-body"}, {"name": "Body2", "handle": "far-body"}]}})
+    stop_calls = [next(row[1](context) for row in rows if row[3]
+                      and row[3][0] == "w2_extents_" + role) for role in ("near", "far")]
+    assert [args["to_object"] for args in stop_calls] == ["near-body", "far-body"]
+    for role, z, profile, field in (("Mixed", 8, "W2MixedProfile", "to_object"),
+                                   ("Start", .1, "W2StartProfile", "start_object")):
+        body = context["w2_extents_W2" + role + "Target"]
+        read = next(row for row in rows if row[0] == "find_geometry"
+                    and row[1](context).get("target") == body)
+        assert read[2]({"match_count": 1, "matches": [{"kind": "planar_face", "handle": role,
+                         "position": [0, 0, z], "normal": [0, 0, 1], "area": 400}]})
+        output_key = "mixed" if role == "Mixed" else "entity_start"
+        arguments = next(row[1](context) for row in rows if row[3]
+                         and row[3][0] == "w2_extents_" + output_key)
+        assert arguments["sketch_name"] == profile and arguments[field] == role
+        assert arguments["expect_document"] == "session:scratch"
+
+
+def test_w2_draft_and_split_writes_consume_the_retained_face_handles(monkeypatch):
+    retained = {}
+    monkeypatch.setattr(verify_core, "_RECALL", retained)
+    monkeypatch.setattr(verify_acts_model_solids, "_RECALL", retained)
+    monkeypatch.setattr(organization, "_RECALL", retained)
+
+    split = organization._w2_directional_split_rows()
+    split_context = {"w2_vector_split_doc": "session:split",
+                     "w2_vector_split_target": "body split-target"}
+    split_read = next(row for row in split if row[0] == "find_geometry"
+                      and row[1](split_context).get("nearest_to") == [20, 20, 20])
+    assert split_read[2]({"matches": [{"kind": "planar_face", "handle": "split-top",
+        "area": 1600, "position": [20, 20, 20], "normal": [0, 0, 1]}]})
+    split_write = next(row for row in split if row[0] == "model_split")
+    assert split_write[1](split_context)["faces"] == ["split-top"]
+    assert split_write[1](split_context)["expect_document"] == "session:split"
+
+    draft = verify_acts_model_solids._w2_two_angle_draft_rows()
+    draft_context = {"w2_two_angle_draft_doc": "session:draft",
+                     "w2_two_angle_draft_body": "body draft-source"}
+    draft_read = next(row for row in draft if row[0] == "find_geometry"
+                      and row[1](draft_context).get("nearest_to") == [0, 20, 20])
+    assert draft_read[2]({"matches": [{"kind": "planar_face", "handle": "draft-side",
+        "area": 1600, "position": [0, 20, 20], "normal": [1, 0, 0]}]})
+    draft_write = next(row for row in draft if row[0] == "model_draft")
+    assert draft_write[1](draft_context)["faces"] == ["draft-side"]
+    assert draft_write[1](draft_context)["expect_document"] == "session:draft"
 
 
 @pytest.fixture

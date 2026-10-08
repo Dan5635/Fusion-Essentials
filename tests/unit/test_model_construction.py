@@ -99,6 +99,12 @@ class _CollOut:
             def setByAngleOnCurvedFace(self, curved, angle_val, planar):
                 outer.captured["angle_on_face"] = (curved, angle_val, planar)
                 return outer.next_result
+            def setByPerpendicularToPlane(self, *args):
+                outer.captured["perpendicular_to_plane"] = args
+                return outer.next_result
+            def setByTangent(self, face, angle_val, planar):
+                outer.captured["tangent"] = (face, angle_val, planar)
+                return outer.next_result
             def setByOffsetThroughPoint(self, planar, pt):
                 outer.captured["offset_through_point"] = (planar, pt)
                 return outer.next_result
@@ -2153,3 +2159,148 @@ def test_the_path_description_states_the_tangent_continuity_rule():
     assert "'path' count is the truth" in desc
     assert "auto-chain" not in desc.lower()
     assert "closed loop" not in desc.lower() and "seed edge alone" not in desc
+
+
+class TestPlanePerpendicularToPlane:
+    """setByPerpendicularToPlane(planarEntity[, distance[, referenceEntity]]): the created plane is
+    judged on its own normal against the base, and on the point or offset that placed it."""
+
+    def _base(self, monkeypatch):
+        base = _planar_face((0, 0, 1))
+        _stub_resolve(monkeypatch, cn._PLANE, base)
+        return base
+
+    def test_the_bare_form_passes_the_plane_alone_and_checks_the_normals(self, monkeypatch):
+        comp = _install()
+        base = self._base(monkeypatch)
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(1, 0, 0), FakePoint(0, 0, 0))
+        out = _payload(cn.handler(kind="plane", mode="perpendicular_to_plane"))
+        assert comp.constructionPlanes.captured["perpendicular_to_plane"] == (base,)
+        assert out["perpendicular"] is True and out["perpendicular_to"] == "BRepFace"
+
+    def test_a_plane_that_is_not_perpendicular_is_an_error(self, monkeypatch):
+        comp = _install()
+        self._base(monkeypatch)
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(0, 0.6, 0.8), FakePoint(0, 0, 0))
+        res = cn.handler(kind="plane", mode="perpendicular_to_plane")
+        assert res["isError"] is True and "not perpendicular to 'plane'" in res["message"]
+        assert "0.800000000" in res["message"] and "still in the design" in res["message"]
+
+    def test_through_a_point_sends_no_distance_and_checks_the_point(self, monkeypatch):
+        comp = _install()
+        base = self._base(monkeypatch)
+        v = _root_vertex(comp, 2, 5, 1)
+        _stub_resolve(monkeypatch, cn._POINTS, [v])
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(1, 0, 0), FakePoint(2, 0, 0))
+        out = _payload(cn.handler(kind="plane", mode="perpendicular_to_plane", points=["v"]))
+        assert comp.constructionPlanes.captured["perpendicular_to_plane"] == (base, None, v)
+        assert out["passes_through_point"] is True
+
+    def test_a_plane_that_misses_its_point_is_an_error(self, monkeypatch):
+        comp = _install()
+        self._base(monkeypatch)
+        _stub_resolve(monkeypatch, cn._POINTS, [_root_vertex(comp, 2, 5, 1)])
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(1, 0, 0), FakePoint(0, 0, 0))
+        res = cn.handler(kind="plane", mode="perpendicular_to_plane", points=["v"])
+        assert res["isError"] is True and "misses the point by 2.000000 cm" in res["message"]
+
+    def test_an_offset_is_compared_with_the_distance_the_plane_reports(self, monkeypatch):
+        comp = _install()
+        self._base(monkeypatch)
+        param = type("MP", (), {"name": "d7", "value": 0.75})()
+        comp.constructionPlanes.result_definition = type("Def", (), {"distance": param})()
+        res = cn.handler(kind="plane", mode="perpendicular_to_plane", offset=15, units="mm")
+        assert len(comp.constructionPlanes.captured["perpendicular_to_plane"]) == 2
+        assert res["isError"] is True and "7.5 mm, not the requested 15.0 mm" in res["message"]
+
+    def test_an_offset_whose_parameter_does_not_read_is_disclosed(self, monkeypatch):
+        comp = _install()
+        self._base(monkeypatch)
+        out = _payload(cn.handler(kind="plane", mode="perpendicular_to_plane", offset=15))
+        assert out["offset"] is None and "offset is null" in out["note"]
+
+    def test_offset_and_a_point_together_are_refused_before_the_call(self, monkeypatch):
+        comp = _install()
+        self._base(monkeypatch)
+        res = cn.handler(kind="plane", mode="perpendicular_to_plane", offset=5, points=["v"])
+        assert res["isError"] is True and "not both" in res["message"]
+        assert comp.constructionPlanes.captured is None
+
+
+class TestPlaneTangent:
+    """setByTangent(tangentFace, angle, planarEntity): cylinders only, a reference plane that is
+    not square to the axis, and the created plane one radius from the axis."""
+
+    def _wire(self, monkeypatch, face=None, base_normal=(0, 1, 0)):
+        base = _planar_face(base_normal)
+        _stub_resolve(monkeypatch, cn._PLANE, base)
+        face = face or _cylinder_face((0, 0, 1), (0, 0, 0))
+        face.geometry.radius = 2.0
+        _stub_resolve(monkeypatch, cn._FACE, face)
+        return face, base
+
+    def test_face_angle_plane_in_that_order_and_tangency_is_measured(self, monkeypatch):
+        comp = _install()
+        face, base = self._wire(monkeypatch)
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(1, 0, 0), FakePoint(2, 0, 7))
+        out = _payload(cn.handler(kind="plane", mode="tangent", face="h", plane="xz", angle=30))
+        assert comp.constructionPlanes.captured["tangent"] == (face, ("str", "30.0 deg"), base)
+        assert out["tangent_to_face"] is True and out["angle_from"] == "BRepFace"
+
+    def test_a_plane_off_the_surface_is_an_error_with_both_distances(self, monkeypatch):
+        comp = _install()
+        self._wire(monkeypatch)
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(1, 0, 0), FakePoint(3, 0, 0))
+        res = cn.handler(kind="plane", mode="tangent", face="h", angle=0, units="cm")
+        assert res["isError"] is True
+        assert "sits 3.0 cm from the axis against a radius of 2.0 cm" in res["message"]
+
+    def test_a_plane_cutting_across_the_axis_is_an_error(self, monkeypatch):
+        comp = _install()
+        self._wire(monkeypatch)
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 2))
+        res = cn.handler(kind="plane", mode="tangent", face="h", angle=0)
+        assert res["isError"] is True and "not tangent to the cylinder" in res["message"]
+
+    def test_a_cone_is_refused_and_pointed_at_the_mode_that_takes_one(self, monkeypatch):
+        comp = _install()
+        self._wire(monkeypatch, face=_cone_face())
+        res = cn.handler(kind="plane", mode="tangent", face="h")
+        assert res["isError"] is True and "got a conical face" in res["message"]
+        assert "tangent_at_point" in res["message"] and comp.constructionPlanes.captured is None
+
+    def test_a_reference_plane_square_to_the_axis_is_refused_before_the_call(self, monkeypatch):
+        comp = _install()
+        self._wire(monkeypatch, base_normal=(0, 0, 1))
+        res = cn.handler(kind="plane", mode="tangent", face="h")
+        assert res["isError"] is True and "square to the cylinder's axis" in res["message"]
+        assert comp.constructionPlanes.captured is None
+
+
+class TestPlaneTangentOnAPlacedFace:
+    def _placed(self, monkeypatch):
+        base = _planar_face((0, 0, 1))
+        _stub_resolve(monkeypatch, cn._PLANE, base)
+        face = _cylinder_face((0, 0, 1), (0, 0, 0))
+        face.geometry.radius = 2.0
+        face.assemblyContext = object()
+        _stub_resolve(monkeypatch, cn._FACE, face)
+
+    def test_the_square_plane_guard_does_not_run_for_a_placed_face(self, monkeypatch):
+        comp = _install()
+        self._placed(monkeypatch)
+        comp.constructionPlanes.result_geometry = Plane(FakeVector3D(1, 0, 0), FakePoint(2, 0, 0))
+        out = _payload(cn.handler(kind="plane", mode="tangent", face="h"))
+        assert comp.constructionPlanes.captured["tangent"] is not None
+        assert out["tangent_to_face"] is True
+
+    def test_a_refused_add_names_the_refusal_and_claims_no_cause(self, monkeypatch):
+        comp = _install()
+        self._placed(monkeypatch)
+
+        def refuse(inp):
+            raise RuntimeError("2 : InternalValidationError : data_->execute(&obj, apiName) && obj")
+        comp.constructionPlanes.add = refuse
+        res = cn.handler(kind="plane", mode="tangent", face="h")
+        assert res["isError"] is True and "Fusion refused this face and reference plane" in res["message"]
+        assert "Nothing was created" in res["message"] and "square to" not in res["message"]

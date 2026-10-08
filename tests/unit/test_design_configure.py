@@ -2406,3 +2406,105 @@ class TestAddSuppressGroup:
                                "configurations (present in the others)."}
         col = _top(col_design).columns.added[0]
         assert col.feature is col_design._features["Fillet1"]
+
+
+# -- switch_occurrence: one inserted configured occurrence, followed through its wrapper -------
+
+from types import SimpleNamespace
+
+
+class _SwitchOcc:
+    """An inserted configuration: named after its row (measured), switched through its own
+    table. `lies`: 'stays' (answers true, keeps the row), 'moves', 'twin' (a second occurrence
+    already carries the row switched to, so the new path is not unique), 'refuses' (false)."""
+
+    def __init__(self, lies=()):
+        self.lies, self.isConfiguration, self.isValid, self.x = lies, True, True, 3.0
+        self.switched = []
+        self.rows = [SimpleNamespace(name=n, volume=v) for n, v in (("Narrow", 4.0), ("Wide", 8.0))]
+        for row in self.rows:
+            row.parentTable = SimpleNamespace(rows=_NamedCollection(self.rows))
+        self.configurationRow = self.rows[0]
+
+    @property
+    def fullPathName(self):
+        return f"{self.configurationRow.name}:1"
+
+    @property
+    def component(self):
+        body = SimpleNamespace(volume=self.configurationRow.volume)
+        return SimpleNamespace(bRepBodies=SimpleNamespace(count=1, item=lambda i: body))
+
+    @property
+    def transform2(self):
+        return SimpleNamespace(asArray=lambda: [1.0, 0, 0, self.x, 0, 1.0, 0, 0, 0, 0, 1.0, 0,
+                                                0, 0, 0, 1.0])
+
+    def switchConfiguration(self, row):
+        self.switched.append(row.name)
+        if "refuses" in self.lies:
+            return False
+        if "stays" not in self.lies:
+            self.configurationRow = row
+        if "moves" in self.lies:
+            self.x += 1.0
+        return True
+
+
+def _switch_world(monkeypatch, lies=(), configured=True):
+    occ = _SwitchOcc(lies)
+    occ.isConfiguration = configured
+    others = [SimpleNamespace(fullPathName="Wide:1")] if "twin" in lies else []
+    design = _Design()
+    design.rootComponent.allOccurrences = _NamedCollection([occ] + others)
+    _install(monkeypatch, design)
+    monkeypatch.setattr(dc._OCCURRENCE, "resolve", lambda raw: (occ, None))
+    return occ
+
+
+class TestSwitchOccurrence:
+    def test_a_host_that_is_not_configured_can_switch_an_inserted_row(self, monkeypatch):
+        occ = _switch_world(monkeypatch)
+        out = _payload(dc.handler(action="switch_occurrence", occurrence="Narrow:1", name="Wide"))
+        assert occ.switched == ["Wide"]
+        assert (out["occurrence"], out["path_before"]) == ("Wide:1", "Narrow:1")
+        assert (out["row"], out["row_before"]) == ("Wide", "Narrow")
+        assert (out["volume_cm3_before"], out["volume_cm3"]) == (4.0, 8.0)
+        assert out["old_path_resolves"] is False
+
+    @pytest.mark.parametrize("lie, text", [
+        ("stays", "it reads row 'Narrow', not 'Wide'"),
+        ("moves", "it did not keep its placement"),
+        ("twin", "the path 'Wide:1' is not unique")])
+    def test_a_switch_that_went_wrong_says_it_was_made(self, monkeypatch, lie, text):
+        _switch_world(monkeypatch, lies=(lie,))
+        res = dc.handler(action="switch_occurrence", occurrence="Narrow:1", name="Wide")
+        assert res["isError"] is True and text in res["message"]
+        assert "WAS made" in res["message"]
+
+    def test_a_false_answer_is_an_error(self, monkeypatch):
+        _switch_world(monkeypatch, lies=("refuses",))
+        res = dc.handler(action="switch_occurrence", occurrence="Narrow:1", name="Wide")
+        assert res["isError"] is True and "answered False" in res["message"]
+
+    @pytest.mark.parametrize("args, text", [
+        ({"occurrence": "Narrow:1", "name": "Tall"}, "Got 'Tall'. Rows: Narrow, Wide."),
+        ({"occurrence": "Narrow:1", "name": "Narrow"}, "already on row 'Narrow'"),
+        ({"name": "Wide"}, "needs 'occurrence'")])
+    def test_switch_guards_refuse_before_the_call(self, monkeypatch, args, text):
+        occ = _switch_world(monkeypatch)
+        res = dc.handler(action="switch_occurrence", **args)
+        assert res["isError"] is True and text in res["message"]
+        assert occ.switched == []
+
+    def test_an_occurrence_that_is_not_a_configuration_is_refused(self, monkeypatch):
+        occ = _switch_world(monkeypatch, configured=False)
+        res = dc.handler(action="switch_occurrence", occurrence="Narrow:1", name="Wide")
+        assert res["isError"] is True and "is not an inserted configuration" in res["message"]
+        assert occ.switched == []
+
+    def test_occurrence_on_another_action_is_refused(self, monkeypatch):
+        _install(monkeypatch, _Design(configured=True))
+        res = dc.handler(action="add_configuration", name="X", occurrence="Narrow:1")
+        assert res["isError"] is True
+        assert "'occurrence' belongs to action='switch_occurrence'" in res["message"]

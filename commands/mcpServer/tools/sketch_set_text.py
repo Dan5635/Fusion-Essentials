@@ -29,7 +29,10 @@ _MAX = 500
 
 _PATH_MODES = ("along_path", "fit_on_path")
 _MODE = _inputs.Choice("mode", ["multi_line"] + list(_PATH_MODES),
-                       description="NEW text: a box at (x,y), or along 'path'.")
+                       description="NEW text: a box at (x,y), or along 'path'. An edit re-lays "
+                                   "PATH text only.")
+# TextStyleUnderline is not offered: the setter accepts it and the bit does not read back.
+_STYLE_MEMBERS = {"bold": "TextStyleBold", "italic": "TextStyleItalic"}
 _ALIGN = _inputs.Choice("align", ["left", "center", "right"])
 
 _ALIGN_MEMBERS = {"left": "LeftHorizontalAlignment", "center": "CenterHorizontalAlignment",
@@ -57,8 +60,7 @@ _DEFINITION_READBACKS = {
 # Inputs that only shape NEW text; passing one with create=false is REFUSED. 'height' is NOT one of
 # them - SketchText.heightParameter takes a write on an existing text and the glyphs follow it - and
 # 'units' is exempt because its non-None default cannot be told apart from a supplied value.
-_CREATE_ONLY = ("mode", "path", "above_path", "align", "character_spacing", "angle_deg",
-                "flip_h", "flip_v", "x", "y")
+_CREATE_ONLY = ("above_path", "align", "character_spacing", "angle_deg", "x", "y")
 
 # The height a create uses when the caller names none, in 'units'. The input itself defaults to
 # None so a supplied height is detectable at edit time; the create path applies this instead.
@@ -82,8 +84,8 @@ def _refuse_create_only(supplied):
     if not named:
         return ""
     return (", ".join(f"'{n}'" for n in named) + " shape NEW text only, so add create=true - "
-            "editing changes the displayed string, its font and its 'height'. To change an "
-            "existing text's layout or rotation, create a replacement.")
+            "an edit changes the string, font, 'height', 'style', the flips, or re-lays path text "
+            "with 'mode' + 'path'. To move or rotate an existing text, create a replacement.")
 
 
 def _font_failure(exc, font_name, what):
@@ -306,7 +308,8 @@ def _apply_height(st, want_cm, sk_name, k, units):
 
 
 def _create_text(design, text, sketch_name, height, x, y, units, mode, path, above_path,
-                 align, character_spacing, angle_deg, flip_h, flip_v, font_name, component=""):
+                 align, character_spacing, angle_deg, flip_h, flip_v, font_name, component="",
+                 style=None):
     """Create a new SketchText in the named sketch, in one of the three layout modes. WRITES."""
     if not (sketch_name or "").strip():
         return error("create=true needs 'sketch_name' - the sketch to add the text to (create one "
@@ -426,6 +429,14 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
                      f"sketch_delete_entity(sketch_name='{sketch_name}', "
                      f"target='text:{after - 1}'), then retry.")
 
+    landed_style = None
+    if style is not None:
+        # The style goes on the LANDED text, the one place the setter was measured.
+        landed_style, serr = _apply_style(st, style, f"'{sketch_name}' (text:{after - 1})")
+        if serr:
+            return error(serr + " The text WAS created; its style is unconfirmed - read it "
+                         "with sketch_get(include_entities=true).")
+
     if mode == "multi_line":
         note = (f"Sketch text created (verified: sketchTexts {before} -> {after}). (x,y) are "
                 "SKETCH-plane coordinates - on an on-face sketch use the 'frame' from sketch_create "
@@ -472,12 +483,264 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
         out["font"] = landed_font
         if landed_font is None:
             requested["font"] = font_name
+    if landed_style is not None:
+        out["style"] = landed_style
     if requested:
         out["requested"] = requested
         note += (" " + ", ".join(f"{n}={v}" for n, v in requested.items()) + " are the REQUESTED "
                  "values - they were not read back off the created text, so confirm them with "
                  "view_screenshot.")
     out["note"] = note
+    return ok(out)
+
+
+def _style_value(style):
+    """(TextStyles bit value, error) for a list of style names; an empty list is plain text."""
+    value = 0
+    for raw in style:
+        member = _STYLE_MEMBERS.get(str(raw).strip().lower())
+        if member is None:
+            return None, (f"'style' takes {', '.join(_STYLE_MEMBERS)}; got '{raw}'.")
+        value |= int(getattr(adsk.fusion.TextStyles, member))
+    return value, ""
+
+
+def _apply_style(st, style, where):
+    """Set a landed text's style bits and re-read them, as (style names read back, error)."""
+    want, serr = _style_value(style)
+    if serr:
+        return None, serr
+    try:
+        st.textStyle = want
+    except Exception as e:
+        return None, f"Could not set the style of the sketch text in {where}: {e}."
+    got = safe(lambda: int(st.textStyle))
+    if got != want:
+        return None, (f"Setting the style of the sketch text in {where} did not take - textStyle "
+                      f"reads back {got}, not {want}.")
+    return [n for n, m in _STYLE_MEMBERS.items()
+            if got & int(getattr(adsk.fusion.TextStyles, m))], ""
+
+
+def _outline(st):
+    """The glyph outline as sorted (x, y) curve end points in cm, or None when it does not read."""
+    try:
+        ends = []
+        for curve in st.asCurves():
+            answered = curve.evaluator.getEndPoints()
+            if answered[0] is not True:
+                return None
+            ends += [(round(p.x, 5), round(p.y, 5)) for p in answered[1:3]]
+        return sorted(ends) or None
+    except Exception:
+        return None
+
+
+def _box_cm(st):
+    """[[min x, min y], [max x, max y]] of a text's bounding box in cm, or None."""
+    bb = safe(lambda: st.boundingBox)
+    lo = safe(lambda: bb.minPoint) if bb is not None else None
+    hi = safe(lambda: bb.maxPoint) if bb is not None else None
+    if lo is None or hi is None:
+        return None
+    return [[lo.x, lo.y], [hi.x, hi.y]]
+
+
+def _same_entity(getter, entity):
+    """True when the getter answers `entity`, False when it answers another, None when unread."""
+    try:
+        got = getter()
+    except Exception:
+        return None
+    if got is None:
+        return None
+    same = safe(lambda: got == entity)
+    return same if isinstance(same, bool) else None
+
+
+def _line_placement(curve, box, width):
+    """(above, align) of a text box against a straight path line; each None when it cannot be told."""
+    # Left of the line's direction is above; the centre nearer the start is left, nearer the end right.
+    a = safe(lambda: curve.startSketchPoint.geometry)
+    b = safe(lambda: curve.endSketchPoint.geometry)
+    if a is None or b is None or box is None:
+        return None, None
+    cx, cy = (box[0][0] + box[1][0]) / 2.0, (box[0][1] + box[1][1]) / 2.0
+    ux, uy = b.x - a.x, b.y - a.y
+    length = math.hypot(ux, uy)
+    if not length:
+        return None, None
+    side = ux * (cy - a.y) - uy * (cx - a.x)
+    along = ((cx - a.x) * ux + (cy - a.y) * uy) / length
+    align = None
+    if width is not None and width < length / 2.0 and along != length / 2.0:
+        align = "left" if along < length / 2.0 else "right"
+    return (side > 0 if side else None), align
+
+
+def _edit_layout(design, sketch_name, component, index, units, mode, path, above_path, align,
+                 character_spacing, flip_h, flip_v, style, explode, strays):
+    """Flip, style, re-lay or explode ONE existing sketch text, each judged on a re-read."""
+    named = [n for n, v in strays if _given(v)]
+    if named:
+        return error(", ".join(f"'{n}'" for n in named) + " cannot ride a layout edit (flips, "
+                     "'style', 'explode', or a path re-lay). Send them in a call of their own.")
+    k = scale(units)
+    if k is None:
+        return error(f"Unknown units '{units}'. Use mm, cm, or in.")
+    want = (sketch_name or "").strip()
+    if not want or index is None or int(index) < 0:
+        return error("A layout edit acts on ONE text: pass 'sketch_name' and its 'index' "
+                     "(sketch_get(include_entities=true) lists 'text:<i>').")
+    sk, refusal = _sketch_detail.scoped_sketch(design, want, component)
+    if refusal:
+        return error(refusal)
+    texts = safe(lambda: sk.sketchTexts) if sk is not None else None
+    count = safe(lambda: texts.count, 0) if texts is not None else 0
+    if sk is None or int(index) >= count:
+        return error(f"No sketch text {index} in a sketch named '{want}' (it holds {count}).")
+    st = safe(lambda: texts.item(int(index)))
+    if st is None:
+        return error(f"Sketch text {index} in '{want}' could not be read.")
+    where = f"'{want}' (text:{int(index)})"
+    relay = _given(mode) or _given(path)
+    if explode and (relay or style is not None or _given(flip_h) or _given(flip_v)):
+        return error("'explode' replaces the text by curves, so it rides alone.")
+    out = {"set": True, "sketch": safe(lambda: sk.name), "index": int(index), "units": units}
+    notes = []
+
+    if explode:
+        try:
+            made = st.explode()
+        except Exception as e:
+            return error(f"Could not explode the sketch text in {where}: {e}.")
+        curves = safe(lambda: len(made), 0) if made is not None else 0
+        after = safe(lambda: texts.count, 0)
+        if not curves or after != count - 1:
+            return error(f"explode answered with {curves} curve(s) and {where} went from {count} "
+                         f"to {after} text(s). Re-read sketch_get(include_entities=true).")
+        out.update(exploded=True, curve_count=curves, sketch_text_count=after,
+                   note="The text is now outline curves and no longer a text; later 'text:<i>' "
+                        "indexes in this sketch moved down by one. "
+                        "sketch_get(include_entities=true) lists the curves.")
+        return ok(out)
+
+    # Every input is judged BEFORE the first write, so a refusal here leaves the text untouched.
+    if style is not None:
+        _value, serr = _style_value(style)
+        if serr:
+            return error(serr)
+    plan = None
+    if relay:
+        mode_key, merr = _MODE.resolve(mode or "")
+        if merr or mode_key not in _PATH_MODES:
+            return error("An edit re-lays PATH text: pass mode='along_path' or 'fit_on_path' with "
+                         "'path'. A text cannot be turned into a multi_line box.")
+        now = safe(lambda: st.definition.objectType) or ""
+        if not any(now.endswith(_DEFINITION_TOKENS[m]) for m in _PATH_MODES):
+            return error(f"The sketch text in {where} is a multi-line box, which Fusion does not "
+                         "re-lay onto a path. Create a replacement with create=true.")
+        merr = _refuse_wrong_mode_inputs(mode_key, path, above_path, align, character_spacing,
+                                         None, None)
+        if merr:
+            return error(merr)
+        curve, perr = _resolve_path_curve(sk, path)
+        if perr:
+            return error(perr)
+        align_key, aerr = _ALIGN.resolve(align or "left")
+        if aerr:
+            return error(aerr)
+        try:
+            spacing = 0.0 if character_spacing is None else float(character_spacing)
+        except Exception:
+            return error("'character_spacing' must be a number.")
+        plan = (mode_key, curve, align_key, spacing,
+                True if above_path is None else bool(above_path))
+    elif any(_given(v) for v in (above_path, align, character_spacing)):
+        return error("'above_path', 'align' and 'character_spacing' steer a path re-lay; pass "
+                     "'mode' and 'path' with them.")
+
+    applied = []
+
+    def failed(text):
+        return error(text + (" Already applied in this call: " + ", ".join(applied) + "."
+                             if applied else ""))
+
+    for value, prop, label in ((flip_h, "isHorizontalFlip", "flip_h"),
+                               (flip_v, "isVerticalFlip", "flip_v")):
+        if not _given(value):
+            continue
+        before = _outline(st)
+        try:
+            setattr(st, prop, bool(value))
+        except Exception as e:
+            return failed(f"Could not set {label} on the sketch text in {where}: {e}.")
+        if _common.read_flag(lambda prop=prop: getattr(st, prop)) is not bool(value):
+            return failed(f"{label}={bool(value)} did not take on the sketch text in {where}.")
+        after = _outline(st)
+        out[label] = bool(value)
+        applied.append(f"{label}={bool(value)}")
+        if before is None or after is None:
+            notes.append(f"{label} reads {bool(value)}; the glyph outline did not read, so the "
+                         "flipped shape is unconfirmed.")
+        else:
+            out[label + "_outline_changed"] = before != after
+            if before == after:
+                notes.append(f"{label} reads {bool(value)} and the glyph outline reads the same as "
+                             "before.")
+
+    if style is not None:
+        landed, serr = _apply_style(st, style, where)
+        if serr:
+            return failed(serr)
+        out["style"] = landed
+        applied.append("style")
+
+    if plan:
+        mode_key, curve, align_key, spacing, above = plan
+        halign = getattr(adsk.core.HorizontalAlignments, _ALIGN_MEMBERS[align_key], None)
+        try:
+            did = (st.redefineAsFitOnPath(curve, above) if mode_key == "fit_on_path"
+                   else st.redefineAsAlongPath(curve, above, halign, spacing))
+        except Exception as e:
+            return failed(f"Could not re-lay the sketch text in {where} on '{path}': {e}.")
+        facts, _derr = _definition_facts(st, mode_key, int(index), want)
+        box = _box_cm(st)
+        if not did or not facts["mode_verified"]:
+            return failed(f"The re-lay of the sketch text in {where} answered {bool(did)} and its "
+                          f"definition reads {facts['definition_type']}, not '{mode_key}'.")
+        # The path that landed is read off the text's own definition; an answer of true does not
+        # say the text left its previous path.
+        on_path = _same_entity(lambda: st.definition.path, curve)
+        if on_path is False:
+            return failed(f"The re-lay of the sketch text in {where} answered true, but its "
+                          f"definition still reads another path, not '{path}'.")
+        width, _h = _measured_extents(st, 1.0)
+        is_line = (path or "").strip().lower().startswith("line:")
+        side, end = _line_placement(curve, box, width) if is_line else (None, None)
+        shown = None if box is None else [[round(v / k, 4) for v in corner] for corner in box]
+        wrong = []
+        if side is not None and side is not above:
+            wrong.append(f"it sits {'above' if side else 'below'} the path, not "
+                         f"{'above' if above else 'below'}")
+        if mode_key == "along_path" and end and align_key in ("left", "right") and end != align_key:
+            wrong.append(f"it sits at the path's {'start' if end == 'left' else 'end'}, not "
+                         f"align='{align_key}'")
+        if wrong:
+            return failed(f"The sketch text in {where} WAS re-laid on '{path}', but "
+                          + " and ".join(wrong) + f" (bounding box {shown} {units}). Re-lay it "
+                          "with the opposite 'above_path' / 'align', or create a replacement.")
+        out.update(mode=mode_key, path=(path or "").strip(), bounding_box=shown,
+                   definition_type=facts["definition_type"], path_confirmed=on_path,
+                   placement_checked=side is not None)
+        if on_path is None:
+            notes.append("path_confirmed is null: the definition's own path did not read, so "
+                         "that the text left its previous path is unconfirmed; compare "
+                         "'bounding_box' with the path.")
+        if side is None:
+            notes.append("Which side of the path it landed on was not checked (that check reads a "
+                         "straight 'line:<i>' path); compare 'bounding_box' with the path.")
+    out["note"] = " ".join(notes + ["Layout edit applied." + _READ_BACK_POINTER])
     return ok(out)
 
 
@@ -562,15 +825,29 @@ def handler(text: str = None, sketch_name: str = "", index: int = -1,
             units: str = "mm", mode: str = "", path: str = "", above_path: bool = None,
             align: str = "", character_spacing: float = None, angle_deg: float = None,
             flip_h: bool = None, flip_v: bool = None, font_name: str = "",
-            component: str = "", parameter: str = "") -> dict:
+            component: str = "", parameter: str = "", style=None, explode: bool = None) -> dict:
     """See TOOL_DESCRIPTION."""
     bind_to = (parameter or "").strip()
-    if text is None and not bind_to:
+    layout = not create and (bool(explode) or style is not None or any(
+        _given(v) for v in (mode, path, flip_h, flip_v)))
+    if text is None and not bind_to and not layout:
         return error("Provide 'text' or 'parameter' - the string to display or the Text parameter to bind.")
+    if create and explode:
+        return error("'explode' acts on an existing text; it cannot ride create=true.")
+    if create and style is not None:
+        _value, serr = _style_value(style)
+        if serr:
+            return error(serr)
 
     design = _common.design()
     if not design:
         return error("No active design (open a document with sketch text).")
+    if layout:
+        return _edit_layout(design, sketch_name, component, index, units, mode, path, above_path,
+                            align, character_spacing, flip_h, flip_v, style, explode,
+                            (("text", text), ("parameter", parameter), ("height", height),
+                             ("font_name", font_name), ("angle_deg", angle_deg), ("x", x),
+                             ("y", y)))
 
     if bind_to:
         if create:
@@ -595,11 +872,10 @@ def handler(text: str = None, sketch_name: str = "", index: int = -1,
                             _DEFAULT_HEIGHT if height is None else height,
                             x, y, units, mode_key, path,
                             above_path, align, character_spacing, angle_deg, flip_h, flip_v,
-                            font_name, component)
+                            font_name, component, style)
 
-    cerr = _refuse_create_only(zip(_CREATE_ONLY, (mode, path, above_path, align,
-                                                  character_spacing, angle_deg, flip_h, flip_v,
-                                                  x, y)))
+    cerr = _refuse_create_only(zip(_CREATE_ONLY, (above_path, align, character_spacing,
+                                                  angle_deg, x, y)))
     if cerr:
         return error(cerr)
 
@@ -820,6 +1096,10 @@ tool = (
             "description": "Degrees from the sketch x-axis."})
     .add_input_property("flip_h", {"type": "boolean"})
     .add_input_property("flip_v", {"type": "boolean"})
+    .add_input_property("style", {"type": "array", "items": {
+        "type": "string", "enum": list(_STYLE_MEMBERS)}})
+    .add_input_property("explode", {"type": "boolean",
+            "description": "Replace the text by its outline curves."})
     .add_input_property("parameter", {"type": "string",
             "description": "Bind the string to this user parameter; param_set then restrings it."})
     .add_input_property("font_name", {"type": "string",

@@ -1253,7 +1253,7 @@ class TestCreateOnlyGuard:
         _install([FakeComp("Root", [FakeSketch("S", [FakeText("'a'")])])])
         res = st.handler(text="X", mode="along_path")
         assert res["isError"] is True
-        assert "'mode'" in res["message"] and "create=true" in res["message"]
+        assert "'text' cannot ride a layout edit" in res["message"]
 
     def test_angle_without_create_is_refused_rather_than_ignored(self):
         _install([FakeComp("Root", [FakeSketch("S", [FakeText("'a'")])])])
@@ -1263,7 +1263,7 @@ class TestCreateOnlyGuard:
     def test_flip_false_still_counts_as_supplied(self):
         _install([FakeComp("Root", [FakeSketch("S", [FakeText("'a'")])])])
         res = st.handler(text="X", flip_h=False)
-        assert res["isError"] is True and "'flip_h'" in res["message"]
+        assert res["isError"] is True and "'text' cannot ride a layout edit" in res["message"]
 
     def test_position_without_create_is_refused_like_the_other_create_inputs(self):
         # x/y default to None, so a supplied one is detectable - refusing flip_h but silently
@@ -1889,3 +1889,227 @@ class TestParameterBinding:
         self._one_text()
         res = st.handler(text="LBL", create=True, sketch_name="Plate", parameter="weight_text")
         assert res["isError"] is True and "cannot ride a create" in res["message"]
+
+
+# -- layout edits on ONE existing text: flips, style, path re-lay, explode --------------------
+
+
+class _OutlineCurve:
+    def __init__(self, a, b):
+        ends = [types.SimpleNamespace(x=p[0], y=p[1]) for p in (a, b)]
+        self.evaluator = types.SimpleNamespace(getEndPoints=lambda: [True] + ends)
+
+
+class _LayoutText:
+    """An existing text with a real outline. `lies`: 'flag_only' (a flip reads back, the glyphs
+    stay), 'sticky_flip', 'sticky_style', 'other_side' (a re-lay lands below and at the far end,
+    as measured after a trip through fit-on-path), 'keeps_class', 'explode_keeps'."""
+
+    def __init__(self, definition="along_path", lies=(), owner=None):
+        self.lies, self.owner = lies, owner
+        self._flips = {"isHorizontalFlip": False, "isVerticalFlip": False}
+        self._style = 0
+        self.definition = types.SimpleNamespace(objectType=_DEFINITION_TYPES[definition])
+        self.relaid = None
+        self._box(0.0, 0.0)
+
+    def _box(self, x, y):
+        self.boundingBox = types.SimpleNamespace(minPoint=types.SimpleNamespace(x=x, y=y),
+                                                 maxPoint=types.SimpleNamespace(x=x + 1.0, y=y + 0.5))
+
+    def asCurves(self):
+        sx = -1.0 if self._flips["isHorizontalFlip"] and "flag_only" not in self.lies else 1.0
+        sy = -1.0 if self._flips["isVerticalFlip"] and "flag_only" not in self.lies else 1.0
+        return [_OutlineCurve((0.0, 0.0), (sx * 1.0, sy * 0.5)),
+                _OutlineCurve((sx * 1.0, sy * 0.5), (sx * 0.2, sy * 0.4))]
+
+    def _relay(self, mode, curve, above):
+        self.relaid = (mode, curve, above)
+        if "keeps_class" not in self.lies:
+            self.definition = types.SimpleNamespace(objectType=_DEFINITION_TYPES[mode],
+                                                    isAbovePath=above)
+            if "no_path" not in self.lies:
+                self.definition.path = object() if "old_path" in self.lies else curve
+        wrong = "other_side" in self.lies
+        self._box(5.0 if wrong else 0.0, (-0.5 if above else 0.0) if wrong
+                  else (0.0 if above else -0.5))
+        return True
+
+    def redefineAsAlongPath(self, curve, above, halign, spacing):
+        return self._relay("along_path", curve, above)
+
+    def redefineAsFitOnPath(self, curve, above):
+        return self._relay("fit_on_path", curve, above)
+
+    def explode(self):
+        if "explode_keeps" not in self.lies:
+            self.owner._items.remove(self)
+        return [object()] * 44
+
+
+def _flip_property(name):
+    def _get(self):
+        return self._flips[name]
+
+    def _set(self, value):
+        if "sticky_flip" not in self.lies:
+            self._flips[name] = value
+    return property(_get, _set)
+
+
+def _style_property():
+    def _set(self, value):
+        if "sticky_style" not in self.lies:
+            self._style = value
+    return property(lambda self: self._style, _set)
+
+
+_LayoutText.isHorizontalFlip = _flip_property("isHorizontalFlip")
+_LayoutText.isVerticalFlip = _flip_property("isVerticalFlip")
+_LayoutText.textStyle = _style_property()
+
+
+def _layout(monkeypatch, definition="along_path", lies=()):
+    """A sketch 'S' holding one layout text and line:0 from (0,0) to (6,0) cm, with bold=1,
+    italic=2, underline=4 as the style bits."""
+    text = _LayoutText(definition, lies)
+    sketch = FakeSketch("S", [text])
+    text.owner = sketch.sketchTexts
+    line = types.SimpleNamespace(
+        startSketchPoint=types.SimpleNamespace(geometry=types.SimpleNamespace(x=0.0, y=0.0)),
+        endSketchPoint=types.SimpleNamespace(geometry=types.SimpleNamespace(x=6.0, y=0.0)))
+    _install([FakeComp("Root", [sketch])])
+    monkeypatch.setattr(st._common, "resolve_entity_ref",
+                        lambda sk, ref: line if ref == "line:0" else None)
+    monkeypatch.setattr(st.adsk.fusion, "TextStyles", types.SimpleNamespace(
+        TextStyleBold=1, TextStyleItalic=2, TextStyleUnderline=4), raising=False)
+    return text, sketch, line
+
+
+class TestLayoutEdit:
+    def test_a_flip_needs_no_string_and_reports_the_outline_changing(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, flip_h=True))
+        assert text.isHorizontalFlip is True
+        assert out["flip_h"] is True and out["flip_h_outline_changed"] is True
+
+    def test_a_flip_whose_glyphs_stay_put_says_so(self, monkeypatch):
+        _layout(monkeypatch, lies=("flag_only",))
+        out = _payload(st.handler(sketch_name="S", index=0, flip_v=True))
+        assert out["flip_v_outline_changed"] is False
+        assert "glyph outline reads the same" in out["note"]
+
+    def test_a_flip_that_does_not_read_back_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("sticky_flip",))
+        res = st.handler(sketch_name="S", index=0, flip_h=True)
+        assert res["isError"] is True and "flip_h=True did not take" in res["message"]
+
+    def test_style_sets_the_bits_and_reads_them_back_as_names(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, style=["bold", "italic"]))
+        assert text.textStyle == 3 and out["style"] == ["bold", "italic"]
+
+    def test_a_style_that_does_not_land_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("sticky_style",))
+        res = st.handler(sketch_name="S", index=0, style=["italic"])
+        assert res["isError"] is True and "reads back 0, not 2" in res["message"]
+
+    def test_a_relay_onto_a_line_checks_the_side_it_landed_on(self, monkeypatch):
+        text, _sk, line = _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, mode="along_path", path="line:0",
+                                  above_path=False, units="cm"))
+        assert text.relaid == ("along_path", line, False)
+        assert out["placement_checked"] is True
+        assert out["bounding_box"] == [[0.0, -0.5], [1.0, 0.0]]
+
+    def test_a_relay_that_lands_on_the_other_side_and_end_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("other_side",))
+        res = st.handler(sketch_name="S", index=0, mode="along_path", path="line:0")
+        assert res["isError"] is True
+        assert "sits below the path, not above" in res["message"]
+        assert "at the path's end, not align='left'" in res["message"]
+
+    def test_a_relay_that_keeps_the_old_definition_class_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("keeps_class",))
+        res = st.handler(sketch_name="S", index=0, mode="fit_on_path", path="line:0")
+        assert res["isError"] is True and "not 'fit_on_path'" in res["message"]
+
+    def test_a_multi_line_text_is_refused_before_the_relay(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch, definition="multi_line")
+        res = st.handler(sketch_name="S", index=0, mode="along_path", path="line:0")
+        assert res["isError"] is True and "multi-line box" in res["message"]
+        assert text.relaid is None
+
+    def test_explode_checks_the_text_is_gone(self, monkeypatch):
+        _text, sketch, _line = _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, explode=True))
+        assert out["curve_count"] == 44 and out["sketch_text_count"] == 0
+        assert sketch.sketchTexts.count == 0
+
+    def test_an_explode_that_leaves_the_text_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("explode_keeps",))
+        res = st.handler(sketch_name="S", index=0, explode=True)
+        assert res["isError"] is True and "went from 1 to 1 text(s)" in res["message"]
+
+    @pytest.mark.parametrize("args, text", [
+        ({"flip_h": True}, "pass 'sketch_name' and its 'index'"),
+        ({"sketch_name": "S", "index": 3, "flip_h": True}, "No sketch text 3"),
+        ({"sketch_name": "S", "index": 0, "explode": True, "flip_h": True}, "rides alone"),
+        ({"sketch_name": "S", "index": 0, "style": ["heavy"]}, "got 'heavy'"),
+        ({"sketch_name": "S", "index": 0, "flip_h": True, "height": 3},
+         "'height' cannot ride a layout edit"),
+        ({"sketch_name": "S", "index": 0, "mode": "multi_line", "path": "line:0"},
+         "cannot be turned into a multi_line box")])
+    def test_layout_guards(self, monkeypatch, args, text):
+        target, _sk, _line = _layout(monkeypatch)
+        res = st.handler(**args)
+        assert res["isError"] is True and text in res["message"]
+        assert target.isHorizontalFlip is False and target.relaid is None
+
+
+class TestLayoutEditOrderAndPath:
+    def test_the_definition_naming_the_requested_path_confirms_it(self, monkeypatch):
+        _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, mode="along_path", path="line:0"))
+        assert out["path_confirmed"] is True and "path_confirmed is null" not in out["note"]
+
+    def test_a_relay_that_answers_true_and_keeps_the_previous_path_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("old_path",))
+        res = st.handler(sketch_name="S", index=0, mode="along_path", path="line:0")
+        assert res["isError"] is True and "still reads another path, not 'line:0'" in res["message"]
+
+    def test_an_unreadable_definition_path_is_published_as_unconfirmed(self, monkeypatch):
+        _layout(monkeypatch, lies=("no_path",))
+        out = _payload(st.handler(sketch_name="S", index=0, mode="along_path", path="line:0"))
+        assert out["path_confirmed"] is None and "path_confirmed is null" in out["note"]
+
+    def test_a_bad_relay_is_refused_before_the_flip_lands(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        res = st.handler(sketch_name="S", index=0, flip_h=True, style=["bold"],
+                         mode="along_path", path="line:9")
+        assert res["isError"] is True and "'path' did not resolve 'line:9'" in res["message"]
+        assert text.isHorizontalFlip is False and text.textStyle == 0
+
+    def test_a_native_relay_failure_names_the_edits_already_applied(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch, lies=("keeps_class",))
+        res = st.handler(sketch_name="S", index=0, flip_h=True, style=["bold"],
+                         mode="fit_on_path", path="line:0")
+        assert res["isError"] is True
+        assert "Already applied in this call: flip_h=True, style." in res["message"]
+        assert text.isHorizontalFlip is True
+
+    def test_relay_steering_without_a_relay_is_refused(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        res = st.handler(sketch_name="S", index=0, flip_h=True, above_path=False)
+        assert res["isError"] is True and "pass 'mode' and 'path' with them" in res["message"]
+        assert text.isHorizontalFlip is False
+
+
+class TestUnderlineIsNotOffered:
+    def test_underline_is_refused_by_name_before_any_write(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        res = st.handler(sketch_name="S", index=0, flip_h=True, style=["underline"])
+        assert res["isError"] is True and "'style' takes bold, italic; got 'underline'" in res["message"]
+        assert text.isHorizontalFlip is False
+        assert st.tool.to_dict()["inputSchema"]["properties"]["style"]["items"]["enum"] == [
+            "bold", "italic"]

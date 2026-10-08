@@ -1,10 +1,54 @@
 """Checks the measured feature editor's typed operands, retained controls and restore proof."""
 
 from types import SimpleNamespace
+import math
 
 import adsk.core
 import adsk.fusion
 import pytest
+
+
+@pytest.fixture
+def bounded_arc_operand(scene, monkeypatch):
+    feature, _timeline, _new_axis, _old_axis, _design, body = scene
+    class _ArcOperand(SimpleNamespace):
+        pass
+    sketch = SimpleNamespace(name="ArcPath", parentComponent=feature.parentComponent)
+    arc = _ArcOperand(entityToken="arc-token", parentSketch=sketch, assemblyContext=None,
+        geometry=SimpleNamespace(center=FakePoint(0, 0, 0), normal=FakeVector3D(0, 0, 1),
+            referenceVector=FakeVector3D(1, 0, 0), radius=1.0, startAngle=0.0, endAngle=math.pi / 2))
+    monkeypatch.setattr(adsk.fusion, "SketchArc", _ArcOperand)
+    monkeypatch.setattr(adsk.fusion, "SketchCurve", _ArcOperand)
+    monkeypatch.setattr(mod._inputs, "placed_ends", lambda *_args: [[1, 0, 0], [0, 1, 0]])
+    monkeypatch.setattr(mod._inputs, "placed_handle", lambda *_args: "arc-token")
+    monkeypatch.setattr(mod._inputs, "sketch_entity_address", lambda _entity: "ArcPath/arc:0")
+    original = mod._edit.reference_descriptor
+    monkeypatch.setattr(mod._edit, "reference_descriptor", lambda entity, role:
+        ({"handle": "body-token", "kind": "entity", "owner": {"component": "Part"},
+          "geometry": {"volume": 1.0}} if role == "entities" else original(entity, role)))
+    path = SimpleNamespace(count=1, item=lambda _i: SimpleNamespace(entity=arc))
+    pattern = SimpleNamespace(objectType="adsk::fusion::PathPatternFeature", name="Pattern1",
+        parentComponent=feature.parentComponent, path=path, inputEntities=[body],
+        patternElements=SimpleNamespace(count=3), suppressedElementsIds=[],
+        quantity=SimpleNamespace(expression="3"), isOrientationAlongPath=False,
+        timelineObject=FakeTimelineObject("Pattern1", 2))
+    return pattern, arc, path
+
+
+def test_curved_path_descriptor_reads_both_callers_and_distinguishes_complements(bounded_arc_operand):
+    pattern, arc, path = bounded_arc_operand
+    state, definition, unavailable = mod._edit.feature_edit_state(pattern)
+    assert unavailable == {} and definition["path"]["references"][0]["handle"] == "ArcPath/arc:0"
+    resolved = mod._edit.feature_reference_state(path, "path")
+    assert mod._edit._same_reference(state["path"][0], resolved[0]) is True
+    geometry = resolved[0][1]["geometry"]
+    assert geometry["radius_cm"] == 1.0
+    assert geometry["interior_cm"] == pytest.approx([math.sqrt(.5), math.sqrt(.5), 0])
+    arc.geometry.endAngle += 2 * math.pi
+    changed = mod._edit.feature_reference_state(path, "path")
+    assert mod._edit._same_reference(resolved[0], changed[0]) is False
+    assert mod._edit._reference_kind(arc, "edges") is None
+    assert mod._edit._reference_kind(arc, "axis") is None
 
 from _datum_fakes import datum_scene
 import test_doc_insert_derive as derive_fakes

@@ -36,6 +36,7 @@ class FakeRevInput:
         self.participant_error = participant_error
         self.angle_extent = None
         self.two_sides = None
+        self.stop_extent = None
         self._participant_bodies = None
         self.participant_set_after_extent = None
     @property
@@ -55,6 +56,12 @@ class FakeRevInput:
     # exist on the real RevolveFeatureInput; here the wrong name raises AttributeError.
     def setTwoSideAngleExtent(self, a, b):
         self.two_sides = (a, b)
+        return True
+    def setOneSideToExtent(self, entity, hint):
+        self.stop_extent = (entity, hint)
+        return True
+    def setTwoSideToExtent(self, one, two):
+        self.stop_extent = (one, two)
         return True
 
 
@@ -116,6 +123,69 @@ class TestGuards:
                          target_bodies=["Body1"])
         assert res["isError"] is True
         assert "only applies to cut/intersect" in res["message"]
+
+
+class TestConstructionPlaneStops:
+    @pytest.mark.parametrize("operation", ["join", "cut", "intersect"])
+    def test_plane_stops_refuse_boolean_operations_before_input(self, operation):
+        rf = _install([_sketch("S")])
+        result = rv.handler(sketch_name="S", to_object="Stop", operation=operation)
+        assert result["isError"] is True and "operation='new'" in result["message"]
+        assert rf.last_input is None and rf.add_calls == 0
+
+    def test_two_stop_proxy_frame_refused_before_input(self, monkeypatch):
+        sketch = _sketch("S")
+        rf = _install([sketch])
+        root = rv.app.activeProduct.rootComponent
+        sketch.parentComponent = root
+        class StopPlane:
+            def __init__(self, context):
+                self.component, self.assemblyContext = root, context
+        one, two = StopPlane(None), StopPlane(object())
+        monkeypatch.setattr(adsk.fusion, "ConstructionPlane", StopPlane, raising=False)
+        monkeypatch.setattr(rv._TO_OBJECT, "resolve", lambda raw, comp: (one, None))
+        monkeypatch.setattr(rv._TO_OBJECT_TWO, "resolve", lambda raw, comp: (two, None))
+        monkeypatch.setattr(rv._inputs, "entity_component", lambda entity: root)
+        result = rv.handler(sketch_name="S", to_object="One", to_object_two="Two")
+        assert result["isError"] is True and "native root-component" in result["message"]
+        assert rf.last_input is None and rf.add_calls == 0
+
+    def test_one_side_stop_uses_plane_and_geometry_derived_hint(self, monkeypatch):
+        import adsk.fusion
+        rf = _install([_sketch("S")])
+
+        class StopPlane:
+            name = "Stop60"
+
+        plane, hint = StopPlane(), FakeVector3D(0, 1, 0)
+        monkeypatch.setattr(adsk.fusion, "ConstructionPlane", StopPlane, raising=False)
+        monkeypatch.setattr(rv._TO_OBJECT, "resolve", lambda raw, comp: (plane, None))
+        monkeypatch.setattr(rv, "_stop_direction_hint", lambda sketch, profile, axis, target, design: (hint, None))
+        monkeypatch.setattr(rv, "_stop_plane_face_count", lambda bodies, target: 1)
+        out = payload(rv.handler(sketch_name="S", angle_deg=60, to_object="Stop60"))
+        assert rf.last_input.stop_extent == (plane, hint)
+        assert out["extent"] == "to_object" and out["stop_plane_result_face_counts"] == [1]
+        assert "angle_deg" not in out
+
+    def test_second_stop_uses_two_side_setter(self, monkeypatch):
+        import adsk.fusion
+        rf = _install([_sketch("S")])
+
+        class StopPlane:
+            def __init__(self, name):
+                self.name = name
+
+        one, two = StopPlane("One"), StopPlane("Two")
+        monkeypatch.setattr(adsk.fusion, "ConstructionPlane", StopPlane, raising=False)
+        monkeypatch.setattr(rv._TO_OBJECT, "resolve", lambda raw, comp: (one, None))
+        monkeypatch.setattr(rv._TO_OBJECT_TWO, "resolve", lambda raw, comp: (two, None))
+        monkeypatch.setattr(rv, "_stop_plane_face_count", lambda bodies, target: 1)
+        root = rv.app.activeProduct.rootComponent
+        root.sketches.item(0).parentComponent = root
+        monkeypatch.setattr(rv._inputs, "entity_component", lambda entity: root)
+        out = payload(rv.handler(sketch_name="S", to_object="One", to_object_two="Two"))
+        assert rf.last_input.stop_extent == (one, two)
+        assert out["extent"] == "two_side_to_object" and len(out["stops"]) == 2
 
     def test_unknown_operation(self):
         _install([_sketch("S")])

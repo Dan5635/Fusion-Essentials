@@ -82,9 +82,22 @@ class FakePatternConstraint:
 
 
 class FakeOffsetInput:
+    """isTopologyMatched defaults to True, as measured; `sticky` is an input that ignores the set."""
+    sticky = False
+
     def __init__(self, curves, offset):
         self.curves = list(curves)
         self.offset = offset
+        self._matched = True
+
+    @property
+    def isTopologyMatched(self):
+        return self._matched
+
+    @isTopologyMatched.setter
+    def isTopologyMatched(self, value):
+        if not self.sticky:
+            self._matched = value
 
 
 class _SuppressionInput:
@@ -140,6 +153,8 @@ class FakeConstraints:
         # different count than requested, which the tool has to catch instead of echoing the request.
         self.pattern_quantity_is = None
         self.offset_curves_created = None
+        self.offset_collapses = False      # the offset distance swallows a corner of the source
+        self.perpendicular2_solves = True  # False: the constraint is handed back, the line stays
         self.count = 0                 # constraints the sketch holds, as the live collection reports
         # what the CREATED pattern reports for the two settings the input asked for - the platform
         # can decline a symmetry or land a different distance type than the one it was handed.
@@ -261,7 +276,20 @@ class FakeConstraints:
         for c in curves:
             self._require(c, *_CURVE_KINDS)
         return FakeOffsetInput(curves, offset)
+    def addPerpendicular2(self, line, curve):
+        # measured: the order is strict and a spline is refused "3 : invalid argument curve"
+        self._require(line, "line")
+        if getattr(curve, "kind", None) not in ("line", "arc", "circle"):
+            raise RuntimeError("3 : invalid argument curve")
+        if self.perpendicular2_solves:
+            centre = curve.centerSketchPoint.geometry
+            line.endSketchPoint.geometry.x, line.endSketchPoint.geometry.y = centre.x, centre.y
+        return self._rec("perpendicular_to_curve", line, curve)
     def addOffset2(self, oin):
+        if self.offset_collapses and oin.isTopologyMatched:
+            raise RuntimeError(
+                "3 : Failed to create constraint: Offset creation failed as the topology of the "
+                "offset curves does not match the topology of the original curves.")
         self._rec("offset", oin)
         return FakeOffsetConstraint(self.offset_curves_created
                                     if self.offset_curves_created is not None else len(oin.curves))
@@ -2556,3 +2584,91 @@ class TestEntrySchemaDefaults:
         for field, prop in sc._ENTRY_SCHEMA["properties"].items():
             if "default" in prop:
                 assert prop["default"] in (applied.get(field), kinds.get(field)), field
+
+
+
+# -- perpendicular_to_curve and the offset topology flag ---------------------------------------
+
+
+def _geo(x, y):
+    return types.SimpleNamespace(geometry=types.SimpleNamespace(x=x, y=y, z=0.0))
+
+
+def _spoke_sketch():
+    """line:0 from (0,0) to (1,0); arc:0 centred (3,4); circle:0 centred (-2,5); line:1; spline:0."""
+    spoke, other = FakeCurve("L0", "line"), FakeCurve("L1", "line")
+    spoke.startSketchPoint, spoke.endSketchPoint = _geo(0.0, 0.0), _geo(1.0, 0.0)
+    arc, circle = FakeCurve("A0", "arc"), FakeCurve("C0", "circle")
+    arc.centerSketchPoint, circle.centerSketchPoint = _geo(3.0, 4.0), _geo(-2.0, 5.0)
+    return FakeSketch("S", lines=[spoke, other], arcs=[arc], circles=[circle],
+                      splines=[FakeCurve("SP0", "spline")])
+
+
+class TestPerpendicularToCurve:
+    def test_the_line_goes_first_and_the_reply_names_the_read_gap(self, install):
+        s = _spoke_sketch(); install(s)
+        out = _one_row(_constrain(constraint="perpendicular_to_curve", entity_one="line:0",
+                                  entity_two="arc:0"))
+        name, args = s.geometricConstraints.calls[0]
+        assert name == "perpendicular_to_curve" and (args[0].name, args[1].name) == ("L0", "A0")
+        assert "centre of 'arc:0'" in out["note"] and "line only" in out["note"]
+
+    def test_a_constraint_that_leaves_the_line_off_the_centre_is_an_error(self, install):
+        s = _spoke_sketch(); install(s)
+        s.geometricConstraints.perpendicular2_solves = False
+        res = _constrain(constraint="perpendicular_to_curve", entity_one="line:0",
+                         entity_two="arc:0", units="mm")
+        assert res["isError"] is True
+        # the centre (3,4) cm sits 4 cm = 40 mm off the X axis the line lies on
+        assert "passes 40 from the centre of 'arc:0'" in res["message"]
+        assert "constraint:<index>" in res["message"]
+
+    @pytest.mark.parametrize("one, two, text", [
+        ("arc:0", "line:0", "needs a LINE as entity_one. Got 'arc:0'"),
+        ("line:0", "spline:0", "needs an ARC or CIRCLE as entity_two. Got 'spline:0'"),
+        ("line:0", "line:1", "Two lines take constraint=perpendicular")])
+    def test_operands_of_the_wrong_kind_are_refused_before_the_call(self, install, one, two, text):
+        s = _spoke_sketch(); install(s)
+        res = _constrain(constraint="perpendicular_to_curve", entity_one=one, entity_two=two)
+        assert res["isError"] is True and text in res["message"]
+        assert s.geometricConstraints.calls == []
+
+
+class TestOffsetTopology:
+    def test_the_default_leaves_the_input_matched(self, install):
+        s = _two_line_sketch(); install(s)
+        out = _one_row(_constrain(constraint="offset", entities="line:0", distance=5))
+        assert s.geometricConstraints.calls[0][1][0].isTopologyMatched is True
+        assert "match_topology" not in out
+
+    def test_false_reaches_the_input_and_is_reported(self, install):
+        s = _two_line_sketch(); install(s)
+        s.geometricConstraints.offset_collapses = True
+        out = _one_row(_constrain(constraint="offset", entities="line:0", distance=5,
+                                  match_topology=False))
+        assert s.geometricConstraints.calls[0][1][0].isTopologyMatched is False
+        assert out["match_topology"] is False
+
+    def test_a_collapsing_offset_names_the_flag_as_the_remedy(self, install):
+        s = _two_line_sketch(); install(s)
+        s.geometricConstraints.offset_collapses = True
+        res = _constrain(constraint="offset", entities="line:0", distance=5)
+        assert res["isError"] is True and "Pass match_topology=false" in res["message"]
+
+    def test_an_input_that_ignores_the_flag_is_an_error_not_a_matched_offset(self, install,
+                                                                           monkeypatch):
+        s = _two_line_sketch(); install(s)
+        monkeypatch.setattr(FakeOffsetInput, "sticky", True)
+        res = _constrain(constraint="offset", entities="line:0", distance=5, match_topology=False)
+        assert res["isError"] is True and "did not take isTopologyMatched" in res["message"]
+        assert s.geometricConstraints.calls == []
+
+    @pytest.mark.parametrize("constraint", ["offset_two_sides", "parallel"])
+    def test_the_flag_is_refused_on_any_other_constraint(self, install, constraint):
+        s = _two_line_sketch(); install(s)
+        res = _constrain(constraint=constraint, entities="line:0", entity_one="line:0",
+                         entity_two="line:1", distance=5, match_topology=False)
+        assert res["isError"] is True
+        assert f"match_topology applies to constraint=offset only. Got it with '{constraint}'" \
+            in res["message"]
+        assert s.geometricConstraints.calls == []

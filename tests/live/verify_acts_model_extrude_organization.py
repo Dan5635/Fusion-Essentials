@@ -6,7 +6,7 @@
 import math
 
 from verify_core import (
-    _RECALL, _ctx_get, _document_closed, _extruded, _fg, _home_address, _home_document, _made_component, _made_component_inactive, _matched, _measured, _moved, _near, _num, _new_document, _recall, _refused)
+    _RECALL, _activated, _ctx_get, _datum, _document_closed, _extruded, _fg, _home_address, _home_document, _made_component, _made_component_inactive, _matched, _measured, _moved, _near, _num, _new_document, _recall, _refused)
 
 
 
@@ -14,6 +14,7 @@ from verify_core import (
 
 from verify_acts_model_combine_revolve import (
     _combine_body, _combine_inspect, _combine_pin)
+from verify_acts_model_sweep import _retire_compare, _retire_material_state, _retire_body_state
 
 
 def _extrude_definition(extent, distance, distance2=None, units="mm", side_count=None):
@@ -1768,6 +1769,122 @@ def _d_merge_new_doc(p):
 
 _BODY_ORGANIZATION = _body_organization_rows()
 _BODY_ORGANIZATION += _merge_face_rows()
+
+
+def _w2_directional_split_rows():
+    """Prove the tilted split lands at x=30 mm and preserves stock and control solids."""
+    key = "w2_vector_split"
+    rows = [("doc_get", {}, _home_document, (key + "_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, key + "_home", "home")},
+             _new_document, (key + "_doc", lambda p: p["document_handle"]))]
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: _combine_pin(c, key + "_doc",
+            args(c) if callable(args) else args), check, save))
+
+    rows.append(("design_activate_component", lambda c: _combine_pin(c, key + "_doc",
+        {"occurrence": "root"}), "ok", None))
+
+    def rectangle(name, x, y, width, height):
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "units": "mm", "geometry": [{
+            "kind": "rectangle", "x1": x, "y1": y, "x2": x + width, "y2": y + height}]})
+
+    def retain_face(p):
+        hits = [m for m in p.get("matches", []) if m.get("kind") == "planar_face"
+                and m.get("handle") and _near(m.get("area"), 1600, .001)
+                and _near((m.get("position") or [0, 0, 0])[2], 20, .001)
+                and _near((m.get("normal") or [0, 0, 0])[2], 1, .001)]
+        if len(hits) == 1:
+            _RECALL[key + "_face"] = hits[0]["handle"]
+        return _measured("unique 1600 mm2 top face", hits, len(hits) == 1)
+
+    rectangle("W2SplitTargetS", 0, 0, 40, 40)
+    write("model_extrude", {"sketch_name": "W2SplitTargetS", "distance": 20, "units": "mm"},
+          _extruded, (key + "_target", lambda p: p["result_bodies"][0]))
+    rectangle("W2SplitControlS", 60, 0, 20, 20)
+    write("model_extrude", {"sketch_name": "W2SplitControlS", "distance": 20, "units": "mm"},
+          _extruded, (key + "_control", lambda p: p["result_bodies"][0]))
+    rows += [
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_target", "target")), "per_body": True},
+         _retire_compare(key + "_target_state", _retire_body_state, False), None),
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_control", "control")), "per_body": True},
+         _retire_compare(key + "_control_state", _retire_body_state, False), None),
+        ("find_geometry", lambda c: {"target": _ctx_get(c, key + "_target", "target"),
+            "kind": "planar_face", "nearest_to": [20, 20, 20], "units": "mm", "max_results": 12},
+         retain_face, None)]
+    write("model_construction", {"kind": "plane", "plane": "xy", "offset": 10,
+                                 "units": "mm", "name": "W2SplitToolPlane"})
+    # The tilted projection from z=10 mm lands at x=30 mm on the top at z=20 mm.
+    write("sketch_create", {"name": "W2SplitToolAtTop", "plane": "W2SplitToolPlane"})
+    write("sketch_add_geometry", {"sketch_name": "W2SplitToolAtTop", "units": "mm",
+        "geometry": [{"kind": "line", "x1": 20, "y1": -10, "x2": 20, "y2": 50}]})
+    write("sketch_create", {"name": "W2SplitDirection", "plane": "xz"})
+    write("sketch_add_geometry", {"sketch_name": "W2SplitDirection", "units": "mm",
+        "geometry": [{"kind": "line", "x1": 0, "y1": 0, "x2": 10, "y2": -10}]})
+    write("model_construction", {"kind": "axis", "mode": "edge",
+        "axis": "W2SplitDirection/line:0", "name": "W2SplitVector"}, _datum("axis"))
+    write("model_split", lambda c: {"split": "along_vector",
+        "faces": [_ctx_get(_RECALL, key + "_face", "target top face")],
+        "split_line": "W2SplitToolAtTop/line:0", "view_direction": "W2SplitVector"},
+        lambda p: _measured("along-vector split feature", p,
+            p.get("split") == "along_vector" and p.get("result_count", 0) > 0
+            and bool(p.get("feature")) and not p.get("unverified")))
+
+    def top_halves(p):
+        matches = p.get("matches") or []
+        tops = [m for m in matches if m.get("kind") == "planar_face"
+                and _near((m.get("position") or [0, 0, 0])[2], 20, .001)
+                and _near((m.get("normal") or [0, 0, 0])[2], 1, .001)]
+        areas = sorted(m.get("area") for m in tops if _num(m.get("area")))
+        centers = sorted(m["position"][0] for m in tops
+                         if isinstance(m.get("position"), list) and len(m["position"]) == 3)
+        return _measured("partition at x=30 mm with 1200/400 mm2 top halves",
+            {"areas": areas, "x_centers": centers},
+            len(tops) == 2 and len(areas) == 2 and _near(areas[0], 400, .001)
+            and _near(areas[1], 1200, .001) and len(centers) == 2
+            and _near(centers[0], 15, .001) and _near(centers[1], 35, .001))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_target", "split target"),
+        "kind": "planar_face", "nearest_to": [20, 20, 20], "units": "mm", "max_results": 32},
+        top_halves, None))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_target", "split target"),
+        "kind": "line_edge", "nearest_to": [30, 20, 20], "units": "mm", "max_results": 32},
+        lambda p: _measured("new cut edge spans the measured partition", p,
+            any(_near(m.get("length"), 40, .001)
+                and isinstance(m.get("position"), list) and len(m["position"]) == 3
+                and all(_near(v, expected, .001)
+                        for v, expected in zip(m["position"], [30, 20, 20]))
+                for m in p.get("matches", []))), None))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, key + "_target", "split target"),
+        "kind": "line_edge", "nearest_to": [20, 20, 20], "units": "mm", "max_results": 32},
+        lambda p: _measured("no competing x=20 mm partition edge", p,
+            p.get("match_count") == p.get("returned") == len(p.get("matches", []))
+            and p.get("truncated") is not True
+            and not any(_near(m.get("length"), 40, .001)
+                    and isinstance(m.get("position"), list) and len(m["position"]) == 3
+                    and all(_near(v, expected, .001)
+                            for v, expected in zip(m["position"], [20, 20, 20]))
+                    for m in p.get("matches", []))), None))
+    rows += [
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_target", "split target")), "per_body": True},
+         _retire_compare(key + "_target_state", _retire_body_state, True), None),
+        ("model_inspect", lambda c: {**_combine_inspect(_ctx_get(c, key + "_control", "control")), "per_body": True},
+         _retire_compare(key + "_control_state", _retire_body_state, True), None),
+        ("design_get", {"include": ["timeline"], "max_results": 100},
+         lambda p: _measured("split history healthy at end marker", p,
+            bool((p.get("timeline") or {}).get("timeline"))
+            and (p.get("timeline") or {}).get("marker_position") == (p.get("timeline") or {}).get("count")
+            and all(not r.get("error") and not r.get("warning")
+                    for r in (p.get("timeline") or {}).get("timeline", []))), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, key + "_home", "home"),
+            "expect_document": _ctx_get(c, key + "_doc", "scratch")}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, key + "_doc", "scratch"),
+            "save_changes": False, "expect_document": _ctx_get(c, key + "_home", "home")},
+         _document_closed, None)]
+    return rows
+
+
+_BODY_ORGANIZATION += _w2_directional_split_rows()
 
 
 _EXTRUDE_EDITS = _extrude_edit_rows()

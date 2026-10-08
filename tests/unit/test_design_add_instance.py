@@ -685,3 +685,100 @@ class TestHostPrefixes:
         assert ai._host_prefixes(
             ["Frame:1+Bolt:2", "Frame:2+Bolt:2", "Frame:1+Bolt:2+Washer:1"], "Bolt:2") == {
             "Frame:1", "Frame:2"}
+
+
+# -- independent=true: copy as a NEW component --------------------------------------------------
+
+
+def _bodies(*volumes):
+    held = [SimpleNamespace(volume=v) for v in volumes]
+    return SimpleNamespace(count=len(held), item=lambda i: held[i])
+
+
+def _copy_design(monkeypatch, external=False, lie=None):
+    """'Bolt' (one 2 cm3 body, one instance) with addNewComponentCopy wired on the root. `lie`:
+    'same' (another instance of Bolt comes back, as measured on an external reference), 'empty'
+    (the copy has no body), 'thin' (half the volume), 'source' (the source loses its body)."""
+    des = _make(names=("Bolt",))
+    bolt, root = des.comps["Bolt"], des.rootComponent
+    bolt.bRepBodies = _bodies(2.0)
+    source = des.tree[0]
+    source.isReferencedComponent = external
+    des.copied = []
+
+    def add_copy(component, transform):
+        des.copied.append((component, transform))
+        made = component
+        if lie != "same":
+            made = _comp("Bolt (1)")
+            made.bRepBodies = _bodies(*{"empty": (), "thin": (1.0,)}.get(lie, (2.0,)))
+            des.comps[made.name] = made
+            des._all_components.append(made)
+        if lie == "source":
+            component.bRepBodies = _bodies()
+        node = _instance(des, made)
+        return SimpleNamespace(name=node.name, fullPathName=node.name, isValid=True, component=made,
+                               transform=SimpleNamespace(asArray=lambda: transform.asArray()))
+    root.occurrences.addNewComponentCopy = add_copy
+    install(ai, des)
+    monkeypatch.setattr(ai._COMPONENT, "resolve", lambda raw: ((source, "occurrence"), None))
+    return des
+
+
+class TestIndependentCopy:
+    def test_a_local_component_is_copied_and_the_copy_is_named_from_a_read(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        out = payload(ai.handler(component="Bolt:1", independent=True, x=10))
+        assert des.copied[0][0] is des.comps["Bolt"]
+        assert out["independent"] is True and out["new_component"] == "Bolt (1)"
+        assert out["full_path"] == "Bolt (1):1" and out["position"]["x"] == 10.0
+        assert "Joints on the source were not copied" in out["note"]
+        assert "SHARES" not in out["note"]
+
+    def test_an_external_reference_is_refused_with_the_one_remedy(self, monkeypatch):
+        des = _copy_design(monkeypatch, external=True)
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert "'Bolt' is an external reference" in msg
+        assert "doc_update_xref action='break_link'" in msg and des.copied == []
+
+    def test_an_unreadable_reference_flag_makes_no_copy(self, monkeypatch):
+        des = _copy_design(monkeypatch, external=None)
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert "did not read whether it is an external reference" in msg and des.copied == []
+
+    @pytest.mark.parametrize("lie, text", [
+        ("same", "is another instance of that same component"),
+        ("empty", "holds 0 body(ies) against the source's 1"),
+        ("thin", "reads a volume of 1.0 cm3 against the source's 2.0"),
+        ("source", "changed the source")])
+    def test_a_copy_that_is_not_one_is_an_error_that_says_what_is_in_the_design(
+            self, monkeypatch, lie, text):
+        _copy_design(monkeypatch, lie=lie)
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert text in msg and "is in the design" in msg
+
+    def test_a_shared_instance_still_goes_through_add_existing(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        out = payload(ai.handler(component="Bolt:1"))
+        assert des.copied == [] and des.added == ("Root", "Bolt")
+        assert "independent" not in out and "SHARES" in out["note"]
+
+
+class TestCopyNeedsReadableEvidence:
+    def test_a_source_whose_volume_does_not_read_is_not_copied(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        des.comps["Bolt"].bRepBodies = _bodies(float("nan"))
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert "did not read" in msg and "no copy was made" in msg and des.copied == []
+
+    def test_a_copy_whose_volume_does_not_read_is_not_a_verified_copy(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        root_copy = des.rootComponent.occurrences.addNewComponentCopy
+
+        def unread_copy(component, transform):
+            occ = root_copy(component, transform)
+            occ.component.bRepBodies = _bodies(float("inf"))
+            return occ
+        des.rootComponent.occurrences.addNewComponentCopy = unread_copy
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert "reads a volume of None cm3 against the source's 2.0" in msg

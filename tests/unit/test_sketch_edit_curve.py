@@ -703,7 +703,7 @@ class TestFlagActions:
         _lines(sketch).item(0).trim = lambda point, constraints=True: trimmed.append(point)
         msg = error_message(mod.handler(action="trim", entity_one="line:0", x1=1, y1=1,
                                         state=False))
-        assert "'state' applies to construction/centerline only; 'trim' takes none" in msg
+        assert "'state' applies to construction/centerline, the spline handles and close; 'trim' takes none" in msg
         assert trimmed == []
 
     def test_a_flag_that_does_not_take_is_an_error(self, mod):
@@ -863,3 +863,217 @@ class TestBreakLink:
         out = payload(mod.item.handler.__wrapped__(action="break_link", sketch_name="Proj",
                                                    entity_one="line:0"))
         assert out["changed"] is True and line.isReference is False
+
+
+# -- fitted-spline actions: add_point, the two handles, close ---------------------------------
+
+
+class _FakeSpline:
+    """A fitted spline through (0,0) (1,1) (2,0) cm. Handles live per fit point; `lies` names what
+    the platform does wrong: 'no_point' (addFitPoint answers, the list does not grow), 'no_handle'
+    (activate answers, get reads none), 'sticky_handle' (deleteMe leaves it), 'sticky_closed'."""
+
+    def __init__(self, sketch_points, lies=()):
+        self.entityToken, self.length, self.isConstruction = "SP0", 3.0, False
+        self._points = [_spline_point(x, y) for x, y in ((0.0, 0.0), (1.0, 1.0), (2.0, 0.0))]
+        self._sketch_points, self.lies = sketch_points, lies
+        self._closed, self.tangent, self.curvature, self.calls = False, {}, {}, []
+        self.fitPoints = _FitList(self._points)
+        self.geometry = SimpleNamespace(evaluator=SimpleNamespace(
+            getParameterAtPoint=lambda p: [p.x >= 0, min(p.x / 2.0, 1.0)],
+            getParameterExtents=lambda: [True, 0.0, 1.0]))
+
+    @property
+    def isClosed(self):
+        return self._closed
+
+    @isClosed.setter
+    def isClosed(self, value):
+        if "sticky_closed" not in self.lies:
+            self._closed = value
+
+    def addFitPoint(self, parameter):
+        self.calls.append(("addFitPoint", parameter))
+        made = _spline_point(2.0 * parameter, 0.5)
+        if "no_point" not in self.lies:
+            self._points.insert(1, made)
+        self._sketch_points._items.append(made)
+        return made
+
+    def _handle(self, store, fit):
+        handle = SimpleNamespace(startSketchPoint=_spline_point(0.0, 9.0),
+                                 endSketchPoint=_spline_point(1.0, 9.0))
+        self._sketch_points._items += [handle.startSketchPoint, handle.endSketchPoint]
+
+        def delete():
+            if "sticky_handle" not in self.lies:
+                self.tangent.pop(id(fit), None)
+                self.curvature.pop(id(fit), None)
+            return True
+        handle.deleteMe = delete
+        if "no_handle" not in self.lies:
+            store[id(fit)] = handle
+        self.length += 0.25                       # measured: activating a handle changes the curve
+        return handle
+
+    def activateTangentHandle(self, fit):
+        self.calls.append(("tangent", fit))
+        return self._handle(self.tangent, fit)
+
+    def activateCurvatureHandle(self, fit):
+        self.calls.append(("curvature", fit))
+        if id(fit) not in self.tangent:
+            self._handle(self.tangent, fit)
+        return self._handle(self.curvature, fit)
+
+    def getTangentHandle(self, fit):
+        return self.tangent.get(id(fit))
+
+    def getCurvatureHandle(self, fit):
+        return self.curvature.get(id(fit))
+
+
+class _FitList:
+    def __init__(self, points):
+        self._points = points
+
+    @property
+    def count(self):
+        return len(self._points)
+
+    def item(self, i):
+        return self._points[i]
+
+
+def _spline_point(x, y):
+    return SimpleNamespace(geometry=FakePoint(x, y, 0.0))
+
+
+@pytest.fixture
+def spline_sketch(mod, monkeypatch):
+    def _make(lies=()):
+        sk = make_sketch("Plate", lines=[make_sketch_curve("L0")])
+        spline = _FakeSpline(sk.sketchPoints, lies)
+        sketch_curves_edit(sk.sketchCurves.sketchFittedSplines, add=[spline])
+        install(mod, make_design(sketches=[sk]))
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
+        return sk, spline
+    return _make
+
+
+class TestSplineActions:
+    def test_add_point_asks_the_curve_for_the_parameter_at_the_pick(self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        out = payload(mod.handler(action="add_point", entity_one="spline:0", x1=10, y1=5))
+        assert spline.calls == [("addFitPoint", 0.5)]          # 10 mm = 1 cm of a 2 cm span
+        assert (out["fit_point_count_before"], out["fit_point_count_after"]) == (3, 4)
+        assert out["point"] == [10.0, 5.0] and out["point_ref"] == "point:0"
+
+    def test_add_point_that_leaves_the_fit_list_alone_is_an_error(self, mod, spline_sketch):
+        spline_sketch(lies=("no_point",))
+        msg = error_message(mod.handler(action="add_point", entity_one="spline:0", x1=10, y1=5))
+        assert "reads 3 fit points after 3 before" in msg
+
+    def test_a_pick_with_no_parameter_is_refused(self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        msg = error_message(mod.handler(action="add_point", entity_one="spline:0", x1=-5, y1=0))
+        assert "no parameter on 'spline:0'" in msg and spline.calls == []
+
+    def test_a_tangent_handle_goes_on_the_nearest_fit_point_and_hands_back_its_ends(
+            self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        out = payload(mod.handler(action="tangent_handle", entity_one="spline:0", x1=9, y1=9))
+        assert spline.calls == [("tangent", spline._points[1])]
+        assert out["fit_point_index"] == 1 and out["fit_point"] == [10.0, 10.0]
+        assert out["handle_points"] == ["point:0", "point:1"] and out["curve_changed"] is True
+        assert "sketch_move" in out["note"]
+
+    def test_a_handle_that_does_not_read_back_is_an_error(self, mod, spline_sketch):
+        spline_sketch(lies=("no_handle",))
+        msg = error_message(mod.handler(action="curvature_handle", entity_one="spline:0",
+                                        x1=10, y1=10))
+        assert "reads no such handle" in msg
+
+    def test_an_existing_handle_is_not_activated_twice(self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        mod.handler(action="tangent_handle", entity_one="spline:0", x1=10, y1=10)
+        out = payload(mod.handler(action="tangent_handle", entity_one="spline:0", x1=10, y1=10))
+        assert out["changed"] is False and len(spline.calls) == 1
+
+    def test_state_false_removes_both_handles_and_checks_they_are_gone(self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        mod.handler(action="curvature_handle", entity_one="spline:0", x1=10, y1=10)
+        out = payload(mod.handler(action="tangent_handle", entity_one="spline:0", x1=10, y1=10,
+                                  state=False))
+        assert out["changed"] is True and spline.tangent == {} and spline.curvature == {}
+
+    def test_a_handle_that_survives_its_removal_is_an_error(self, mod, spline_sketch):
+        sk, spline = spline_sketch(lies=("sticky_handle",))
+        mod.handler(action="tangent_handle", entity_one="spline:0", x1=10, y1=10)
+        msg = error_message(mod.handler(action="tangent_handle", entity_one="spline:0",
+                                        x1=10, y1=10, state=False))
+        assert "the tangent handle still reads" in msg
+
+    def test_a_pick_midway_between_two_fit_points_is_refused(self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        msg = error_message(mod.handler(action="tangent_handle", entity_one="spline:0",
+                                        x1=10, y1=-50))
+        assert "equally near two fit points" in msg and spline.calls == []
+
+    def test_close_sets_and_rereads_the_flag(self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        out = payload(mod.handler(action="close", entity_one="spline:0", state=True))
+        assert out["closed"] is True and out["changed"] is True and spline.isClosed is True
+
+    def test_a_close_that_does_not_take_is_an_error(self, mod, spline_sketch):
+        spline_sketch(lies=("sticky_closed",))
+        msg = error_message(mod.handler(action="close", entity_one="spline:0", state=True))
+        assert "close did not take" in msg and "closed=False" in msg
+
+    @pytest.mark.parametrize("args, text", [
+        ({"action": "close", "entity_one": "spline:0"}, "'close' needs 'state'"),
+        ({"action": "curvature_handle", "entity_one": "spline:0", "x1": 1, "y1": 1,
+          "state": False}, "action='tangent_handle' with state=false"),
+        ({"action": "add_point", "entity_one": "spline:0", "x1": 1, "y1": 1, "state": True},
+         "'add_point' takes none"),
+        ({"action": "add_point", "entity_one": "line:0", "x1": 1, "y1": 1},
+         "applies to a fitted spline ('spline:<index>'); 'entity_one' = 'line:0' is a line"),
+        ({"action": "tangent_handle", "entity_one": "spline:0"}, "needs the pick point x1,y1")])
+    def test_spline_action_guards(self, mod, spline_sketch, args, text):
+        sk, spline = spline_sketch()
+        assert text in error_message(mod.handler(**args))
+        assert spline.calls == []
+
+
+class TestHandleRemovalIsConfirmed:
+    def test_a_delete_that_answers_false_is_an_error(self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        mod.handler(action="tangent_handle", entity_one="spline:0", x1=10, y1=10)
+        handle = spline.tangent[id(spline._points[1])]
+        handle.deleteMe = lambda: False
+        msg = error_message(mod.handler(action="tangent_handle", entity_one="spline:0",
+                                        x1=10, y1=10, state=False))
+        assert "deleteMe answered False" in msg and "the tangent handle still reads" in msg
+
+    def test_a_getter_that_raises_after_the_delete_is_not_a_removal(self, mod, spline_sketch):
+        sk, spline = spline_sketch()
+        mod.handler(action="tangent_handle", entity_one="spline:0", x1=10, y1=10)
+        handle = spline.tangent[id(spline._points[1])]
+
+        def delete_then_break():
+            def unread(fit):
+                raise RuntimeError("4 : An API Object refers to a deleted Object")
+            spline.getTangentHandle = unread
+            return True
+        handle.deleteMe = delete_then_break
+        msg = error_message(mod.handler(action="tangent_handle", entity_one="spline:0",
+                                        x1=10, y1=10, state=False))
+        assert "is not confirmed removed" in msg and "the tangent handle did not read" in msg
+
+
+class TestAddPointAtAnEnd:
+    @pytest.mark.parametrize("x", [0, 90])
+    def test_a_pick_nearest_an_end_of_the_spline_is_refused(self, mod, spline_sketch, x):
+        sk, spline = spline_sketch()
+        msg = error_message(mod.handler(action="add_point", entity_one="spline:0", x1=x, y1=0))
+        assert "nearest an END of 'spline:0'" in msg and spline.calls == []

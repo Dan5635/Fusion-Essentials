@@ -23,6 +23,7 @@ from verify_acts_cam import (
 from verify_acts_model_precision import _section_camera
 from verify_acts_model_solids import _edge_extent_geometry, _symmetric_target_body_state
 from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_material_state
+from verify_acts_sketch import _script_reply
 from verify_core import (
     EXPORT_DIR, MARKER_PNG, NOTE_MAX, _RECALL, _Refusal, _activated, _ctx_get, _document_closed,
     _driven_slide, _dwell, _extruded, _face_up_at, _fg, _home_address, _home_document, _jointed,
@@ -2894,8 +2895,10 @@ def _named_derive_rows():
               lambda p: _extruded(p) and len(p.get("result_bodies") or []) == 1,
               ("named_" + key, _recall("named_" + key, lambda p: p["result_bodies"][0])))
     write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
-          lambda p: _saved_as(name, FOLDER)(p) and p.get("cloud_processing_complete") is True)
+          _saved_as(name, FOLDER))
     rows += _settled(name, "named_urn")
+    rows.append(("data_get", lambda c: {"file": c["named_urn"]},
+                 _file_settled(FOLDER, file_key="named_urn", file_name=name), None))
     controls = [("design_get", _SELECTOR_DESIGN_ARGS, "named_tree",
                  lambda p: _named_derive_tree(p, 2, 4)),
                 ("doc_get", {}, "named_session", _selector_session)]
@@ -3200,8 +3203,10 @@ def _fit_refusal_rows():
     write("design_add_instance", lambda c: {"component": _ctx_get(c, "fit_first", "first placement"), "x": 30},
           lambda p: bool(p.get("full_path")), ("fit_second", _recall("fit_second", lambda p: p["full_path"])))
     write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
-          lambda p: _saved_as(name, FOLDER)(p) and p.get("cloud_processing_complete") is True)
+          _saved_as(name, FOLDER))
     rows += _settled(name, "fit_urn")
+    rows.append(("data_get", lambda c: {"file": c["fit_urn"]},
+                 _file_settled(FOLDER, file_key="fit_urn", file_name=name), None))
     controls = [
         ("workspace_orient", {}, "fit_camera", _section_camera),
         ("design_get", {"include": ["tree"], "tree_bodies": True}, "fit_visibility", _fit_refusal_visibility),
@@ -3261,8 +3266,10 @@ def _sketch_roll_dirty_rows():
     write("sketch_add_geometry", {"sketch_name": "RollPlaneS", "geometry": [
           {"kind": "line", "x1": 0, "y1": -30, "x2": 40, "y2": -30}]})
     write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
-          lambda p: _saved_as(name, FOLDER)(p) and p.get("cloud_processing_complete") is True)
+          _saved_as(name, FOLDER))
     rows += _settled(name, "roll_urn")
+    rows.append(("data_get", lambda c: {"file": c["roll_urn"]},
+                 _file_settled(FOLDER, file_key="roll_urn", file_name=name), None))
     rows.append(("doc_get", {}, _modified_reads(name, False), None))
     rows.append(("sketch_get", {"sketch_name": "RollPlaneS"},
                  lambda p: _measured("plane read publishes no dirty flag", p.get("plane"),
@@ -5750,3 +5757,461 @@ def _configure_group_rows():
 
 
 _CLOUD_CONFIGURE += _configure_group_rows()
+
+
+def _cr_tree(p):
+    """design_get tree: {full path: row} over the root's children, or None when cut or paths repeat."""
+    tree = p.get("tree") or {}
+    rows = tree.get("children")
+    if not isinstance(rows, list) or tree.get("truncated") or tree.get("children_truncated"):
+        return None
+    by_path = {r.get("full_path"): r for r in rows}
+    return by_path if len(by_path) == len(rows) and None not in by_path else None
+
+
+def _cr_poses(p):
+    """assembly_get poses: {occurrence name: row}, or None when two occurrences share a name."""
+    rows = p.get("occurrences") or []
+    by_name = {r.get("name"): r for r in rows}
+    return by_name if len(by_name) == len(rows) == p.get("occurrence_count") else None
+
+
+def _cr_pose_rows(p, key="occurrences", count_key="occurrence_count"):
+    """Keep pose rows as a list when two occurrence names collide."""
+    rows = p.get(key)
+    return rows if isinstance(rows, list) and len(rows) == p.get(count_key) else None
+
+
+def _cr_collision_break_probe(ctx):
+    """Break one inserted PartB link without renaming it, recording before and after state."""
+    urn = json.dumps(_ctx_get(ctx, "cr_urn_B", "the saved PartB lineage"))
+    script = r'''import json
+import adsk.core
+import adsk.fusion
+
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    outcome = {"marker": "W2N-CLOUD-BREAK", "expected_source": __EXPECTED_SOURCE__,
+               "preflight_error": None, "break_answer": None, "break_error": None,
+               "before": None, "after": None, "after_error": None}
+    def census(root):
+        rows = []
+        for i in range(root.occurrences.count):
+            occ = root.occurrences.item(i)
+            point = occ.transform2.translation
+            data_file = occ.documentReference.dataFile if occ.isReferencedComponent else None
+            rows.append({"name": occ.name, "full_path": occ.fullPathName,
+                         "source_id": data_file.id if data_file else None,
+                         "is_reference": occ.isReferencedComponent,
+                         "origin_mm": [point.x * 10.0, point.y * 10.0, point.z * 10.0]})
+        return rows
+    try:
+        if design is None:
+            raise RuntimeError("active product is not a Fusion design")
+        root = design.rootComponent
+        before = census(root)
+        outcome["before"] = before
+        targets = [root.occurrences.item(i) for i in range(root.occurrences.count)
+                   if root.occurrences.item(i).isReferencedComponent is True
+                   and root.occurrences.item(i).documentReference.dataFile is not None
+                   and root.occurrences.item(i).documentReference.dataFile.id == __EXPECTED_SOURCE__
+                   and abs(root.occurrences.item(i).transform2.translation.x * 10.0 - 250.0) < 0.001
+                   and abs(root.occurrences.item(i).transform2.translation.y * 10.0) < 0.001
+                   and abs(root.occurrences.item(i).transform2.translation.z * 10.0) < 0.001]
+        originals = [root.occurrences.item(i) for i in range(root.occurrences.count)
+                     if root.occurrences.item(i).isReferencedComponent is True
+                     and root.occurrences.item(i).documentReference.dataFile is not None
+                     and root.occurrences.item(i).documentReference.dataFile.id == __EXPECTED_SOURCE__
+                     and abs(root.occurrences.item(i).transform2.translation.x * 10.0) < 0.001
+                     and abs(root.occurrences.item(i).transform2.translation.y * 10.0) < 0.001
+                     and abs(root.occurrences.item(i).transform2.translation.z * 10.0) < 0.001]
+        if len(targets) != 1 or len(originals) != 1 or targets[0] == originals[0]:
+            raise RuntimeError("expected one linked PartB at x=250 mm and a distinct linked PartB at x=0 mm")
+    except Exception as exc:
+        outcome["preflight_error"] = repr(exc)
+    else:
+        try:
+            outcome["break_answer"] = targets[0].breakLink()
+        except Exception as exc:
+            outcome["break_error"] = repr(exc)
+        try:
+            outcome["after"] = census(design.rootComponent)
+        except Exception as exc:
+            outcome["after_error"] = repr(exc)
+    print(json.dumps(outcome, sort_keys=True))
+'''.replace("__EXPECTED_SOURCE__", urn)
+    return {"script": script, "read_only": False}
+
+
+def _cr_collision_membership_probe(_ctx):
+    """Read held joint halves against each root occurrence after the link break."""
+    return {"read_only": True, "script": r'''import json
+import adsk.core
+import adsk.fusion
+
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    result = {"marker": "W2N-CLOUD-MEMBERSHIP", "error": None, "joint_count": None,
+              "occurrences": []}
+    try:
+        if design is None:
+            raise RuntimeError("active product is not a Fusion design")
+        root = design.rootComponent
+        joints = []
+        for collection_name in ("joints", "asBuiltJoints"):
+            collection = getattr(root, collection_name)
+            for i in range(collection.count):
+                joint = collection.item(i)
+                if joint.name == "CrJoint":
+                    joints.append(joint)
+        result["joint_count"] = len(joints)
+        if len(joints) != 1:
+            raise RuntimeError("expected exactly one root joint named CrJoint")
+        joint = joints[0]
+        one, two = joint.occurrenceOne, joint.occurrenceTwo
+        for i in range(root.occurrences.count):
+            occurrence = root.occurrences.item(i)
+            point = occurrence.transform2.translation
+            result["occurrences"].append({
+                "name": occurrence.name, "full_path": occurrence.fullPathName,
+                "origin_mm": [point.x * 10.0, point.y * 10.0, point.z * 10.0],
+                "is_joint_member": (occurrence == one) is True or (occurrence == two) is True})
+    except Exception as exc:
+        result["error"] = repr(exc)
+    print(json.dumps(result, sort_keys=True))
+'''}
+
+
+def _cr_collision_break_result(value):
+    """Require one exact break and the measured duplicate path, retaining raw refusal details."""
+    result = _script_reply(value)
+    before, after = result.get("before") or [], result.get("after") or []
+
+    def at_x(rows, x):
+        return [row for row in rows if at_origin(row.get("origin_mm"), [x, 0.0, 0.0])]
+
+    def at_origin(origin, expected):
+        return (isinstance(origin, list) and len(origin) == 3
+                and all(_near(got, want, 0.001) for got, want in zip(origin, expected)))
+
+    source = result.get("expected_source")
+    before_zero, before_far = at_x(before, 0.0), at_x(before, 250.0)
+    after_zero, after_far = at_x(after, 0.0), at_x(after, 250.0)
+    collision = (len(after_zero) == len(after_far) == 1
+                 and after_zero[0].get("name") == after_far[0].get("name")
+                 and after_zero[0].get("full_path") == after_far[0].get("full_path"))
+    return _measured("native breakLink without rename, checked on both placed PartB rows", result,
+                     result.get("marker") == "W2N-CLOUD-BREAK"
+                     and result.get("preflight_error") is None
+                     and result.get("break_error") is None
+                     and result.get("break_answer") is True
+                     and result.get("after_error") is None
+                     and len(before_zero) == len(before_far) == 1
+                     and before_zero[0].get("source_id") == source
+                     and before_far[0].get("source_id") == source
+                     and before_zero[0].get("is_reference") is True
+                     and before_far[0].get("is_reference") is True
+                     and len(after_zero) == len(after_far) == 1
+                     and after_zero[0].get("source_id") == source
+                     and after_zero[0].get("is_reference") is True
+                     and after_far[0].get("source_id") is None
+                     and after_far[0].get("is_reference") is False
+                     and collision)
+
+
+def _cr_collision_membership_result(value):
+    """Require independent native equality to select only the original PartB placement."""
+    result = _script_reply(value)
+    rows = result.get("occurrences") or []
+    zero = [row for row in rows if len(row.get("origin_mm") or []) == 3
+            and _near(row["origin_mm"][0], 0.0, 0.001)
+            and _near(row["origin_mm"][1], 0.0, 0.001)
+            and _near(row["origin_mm"][2], 0.0, 0.001)]
+    far = [row for row in rows if len(row.get("origin_mm") or []) == 3
+           and _near(row["origin_mm"][0], 250.0, 0.001)
+           and _near(row["origin_mm"][1], 0.0, 0.001)
+           and _near(row["origin_mm"][2], 0.0, 0.001)]
+    local = [row for row in rows if row.get("name") == _RECALL.get("cr_local")]
+    return _measured("read-only native held-wrapper equality for the colliding occurrences", result,
+                     result.get("marker") == "W2N-CLOUD-MEMBERSHIP"
+                     and result.get("error") is None and result.get("joint_count") == 1
+                     and len(zero) == len(far) == len(local) == 1
+                     and zero[0].get("is_joint_member") is True
+                     and far[0].get("is_joint_member") is False
+                     and local[0].get("is_joint_member") is True)
+
+
+def _component_reference_rows():
+    """Copy a component as new, switch an inserted row, replace a reference and break a link."""
+    names = {key: f"SweepRef{key}." + _STAMP for key in "ABC"}
+    home = lambda c: _ctx_get(c, "cr_home", "the home session")
+    host = lambda c: _ctx_get(c, "cr_host", "the host document")
+    got = lambda key, what: (lambda c: _ctx_get(c, key, what))
+    rows = [("doc_get", {}, _home_document, ("cr_home", _recall("cr_home", _home_address)))]
+
+    def settled(key):
+        """data_get arguments once the saved lineage under `key` resolves and reads complete."""
+        def args(c):
+            urn = _ctx_get(c, key, "a saved part")
+            missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
+                       "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+            for i in range(_SETTLE_POLLS):
+                failed, last = facade("call")("data_get", {"file": urn})
+                if failed:
+                    # _measured raises on any other refusal, which ends the story there.
+                    _measured("only this part's pending resolution is retried", last,
+                              last == missing)
+                elif (last.get("state") or {}).get("is_complete") is True:
+                    return {"file": urn}
+                if i + 1 < _SETTLE_POLLS:
+                    time.sleep(_SETTLE_GAP_S)
+            raise AssertionError(f"{urn!r} did not read complete within the bound: {last!r}")
+        return args
+
+    def part(key, build, configure=False):
+        doc = got("cr_doc_" + key, "the part document")
+        write = lambda args: (lambda c: dict(args, expect_document=doc(c)))
+        rows.extend([
+            ("doc_new", lambda c: {"expect_document": home(c)}, _new_document,
+             ("cr_doc_" + key, lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)])
+        rows.extend((tool, write(args), check, None) for tool, args, check in build)
+        rows.append(("doc_save_as", write({"name": names[key], "project": PROJECT, "folder": FOLDER,
+                                           "create_path": False}), _saved_as(names[key], FOLDER),
+                     ("cr_urn_" + key, _recall("cr_urn_" + key, lambda p: p["document_id"]))))
+        if configure:
+            rows.extend([
+                ("design_configure", write({"action": "create"}),
+                 lambda p: p.get("configured") is True and len(p.get("configurations") or []) == 1,
+                 ("cr_row", _recall("cr_row", lambda p: p["configurations"][0]))),
+                ("design_configure", write({"action": "add_configuration", "name": "Wide"}),
+                 lambda p: p.get("active_configuration") == "Wide", None),
+                ("design_configure", write({"action": "add_parameter", "parameter": "CrW",
+                                            "values": {"Wide": "25 mm"}}),
+                 lambda p: p.get("parameter") == "CrW" and p.get("set") == 1, None),
+                ("design_configure", lambda c: {"action": "activate", "expect_document": doc(c),
+                                                "name": _ctx_get(c, "cr_row", "the first row")},
+                 "ok", None),
+                # Converting a saved design moves it to a new lineage on its next save.
+                ("doc_save", write({"description": "component reference coupon"}),
+                 lambda p: p.get("saved") is True and bool((p.get("lineage_changed") or {}).get("to")),
+                 ("cr_urn_" + key, _recall("cr_urn_" + key,
+                                           lambda p: p["lineage_changed"]["to"])))])
+        rows.extend([
+            ("data_get", settled("cr_urn_" + key),
+             lambda p: (p.get("state") or {}).get("is_complete") is True, None),
+            ("doc_activate", lambda c: {"name": home(c), "expect_document": doc(c)},
+             _activated(), None),
+            ("doc_close", lambda c: {"name": doc(c), "save_changes": False,
+                                     "expect_document": home(c)}, _document_closed, None)])
+
+    def box(sketch, size, distance):
+        return [("sketch_create", {"name": sketch, "plane": "xy"}, "ok"),
+                ("sketch_add_geometry", {"sketch_name": sketch, "units": "mm", "geometry": [
+                    {"kind": "rectangle", "x1": 0, "y1": 0, "x2": size, "y2": size}]}, "ok"),
+                ("model_extrude", {"sketch_name": sketch, "distance": distance, "units": "mm",
+                                   "operation": "new"}, _extruded)]
+    part("A", box("CrASk", 20, 10))
+    part("B", [("sketch_create", {"name": "CrBSk", "plane": "xy"}, "ok"),
+               ("sketch_add_geometry", {"sketch_name": "CrBSk", "units": "mm", "geometry": [
+                   {"kind": "circle", "cx": 0, "cy": 0, "radius": 5}]}, "ok"),
+               ("model_extrude", {"sketch_name": "CrBSk", "distance": 30, "units": "mm",
+                                  "operation": "new"}, _extruded)])
+    part("C", [("param_add", {"name": "CrW", "expression": "10 mm", "unit": "mm"}, "ok")]
+         + box("CrCSk", 20, "CrW"), configure=True)
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                                                 "expect_document": host(c)}, check, save))
+
+    def read(tool, args, check, save=None):
+        rows.append((tool, args, check, save))
+    tree_args = {"include": ["tree"], "tree_handles": True, "max_results": 200}
+    at = lambda origin, want: (isinstance(origin, list) and len(origin) == 3
+                               and all(_near(v, w, 0.001) for v, w in zip(origin, want)))
+    pose_args = {"include": ["poses"], "max_joints": 100, "units": "mm"}
+
+    def volume(key, want):
+        read("model_inspect", lambda c: {"target": _ctx_get(c, key, "an occurrence"),
+                                         "include": ["default", "mass"], "units": "mm"},
+             lambda p: _measured(f"volume {want} mm3", (p.get("mass") or {}).get("volume"),
+                                 _near((p.get("mass") or {}).get("volume"), want, 0.5)))
+
+    def tree(label, check, save=None):
+        read("design_get", tree_args,
+             lambda p: _measured(label, sorted(_cr_tree(p) or []), _cr_tree(p) is not None
+                                 and bool(check(_cr_tree(p), _RECALL))), save)
+
+    def poses(label, check):
+        read("assembly_get", pose_args,
+             lambda p: _measured(label, {k: (v.get("origin"), v.get("joints"))
+                                         for k, v in (_cr_poses(p) or {}).items()},
+                                 _cr_poses(p) is not None and p.get("is_healthy") is True
+                                 and p.get("broken_joints") == [] and bool(check(_cr_poses(p), _RECALL))))
+
+    rows.extend([("doc_new", lambda c: {"expect_document": home(c)}, _new_document,
+                  ("cr_host", lambda p: p["document_handle"])),
+                 ("design_activate_component", {"occurrence": "root"}, "ok", None)])
+    for key, urn, x in (("cr_a1", "cr_urn_A", 0), ("cr_a2", "cr_urn_A", 50), ("cr_c", "cr_urn_C", 100)):
+        write("doc_insert_occurrence", lambda c, urn=urn, x=x: {
+            "document_id": _ctx_get(c, urn, "a saved part"), "x": x, "units": "mm"},
+            lambda p: p.get("inserted") is True and p.get("is_reference") is True,
+            (key, _recall(key, lambda p: p["new_occurrence_name"])))
+    write("model_create_component", {"name": "CrLocal", "y": 60, "units": "mm", "activate": True},
+          lambda p: bool(p.get("full_path")), ("cr_local", _recall("cr_local", lambda p: p["full_path"])))
+    for tool, args, check in box("CrLocalSk", 10, 10):
+        write(tool, args, check)
+    write("design_activate_component", {"occurrence": "root"})
+    write("joint_create_as_built", lambda c: {
+        "occurrence_one": _ctx_get(c, "cr_a1", "the first part"),
+        "occurrence_two": _ctx_get(c, "cr_local", "the local component"),
+        "joint_type": "rigid", "name": "CrJoint"})
+    tree("four distinct children, two on part A", lambda t, r: len(t) == 4
+         and all(t[r[k]].get("source_id") == r["cr_urn_A"] for k in ("cr_a1", "cr_a2"))
+         and "is_reference" not in t[r["cr_local"]])
+
+    # 1. An independent copy: refused on a reference, made from the local component.
+    write("design_add_instance", lambda c: {"component": _ctx_get(c, "cr_a1", "the first part"),
+                                            "independent": True},
+          _refused("is an external reference", "action='break_link'"))
+    write("design_add_instance", lambda c: {"component": _ctx_get(c, "cr_local", "the local one"),
+                                            "independent": True, "y": 90, "units": "mm"},
+          lambda p: p.get("independent") is True and bool(p.get("new_component"))
+          and p.get("new_component") != "CrLocal",
+          ("cr_copy", _recall("cr_copy", lambda p: p["full_path"])))
+    tree("one more child, a local component of its own", lambda t, r: len(t) == 5
+         and "is_reference" not in t[r["cr_copy"]] and t[r["cr_copy"]].get("body_count") == 1
+         and t[r["cr_copy"]].get("component") != t[r["cr_local"]].get("component"))
+    volume("cr_copy", 1000)
+    volume("cr_local", 1000)
+
+    # 2. Switch the inserted configuration to its other row; the occurrence takes the row's name.
+    switch = lambda c, **args: {"action": "switch_occurrence", **args}
+    volume("cr_c", 4000)
+    write("design_configure", lambda c: switch(c, occurrence=_ctx_get(c, "cr_local", "local"),
+                                               name="Wide"),
+          _refused("is not an inserted configuration"))
+    write("design_configure", lambda c: switch(c, occurrence=_ctx_get(c, "cr_c", "the row"),
+                                               name="Tall"), _refused("Got 'Tall'. Rows:", "Wide"))
+    write("design_configure", lambda c: switch(c, occurrence=_ctx_get(c, "cr_c", "the row"),
+                                               name="Wide"),
+          lambda p: p.get("switched") is True and p.get("row") == "Wide"
+          and p.get("row_before") == _RECALL.get("cr_row") and p.get("old_path_resolves") is False,
+          ("cr_c2", _recall("cr_c2", lambda p: p["occurrence"])))
+    volume("cr_c2", 10000)
+    tree("the switched occurrence under its new path only",
+         lambda t, r: len(t) == 5 and r["cr_c2"] in t and r["cr_c"] not in t)
+    poses("the switched occurrence kept its place",
+          lambda o, r: at(o[r["cr_c2"]].get("origin"), [100.0, 0.0, 0.0]))
+
+    # 3. Replace the jointed part A occurrence by part B; its sibling stays on A.
+    replace = lambda c, occurrence, urn: {"action": "replace",
+                                          "occurrence": _ctx_get(c, occurrence, "an occurrence"),
+                                          "file": _ctx_get(c, urn, "a saved part")}
+    write("doc_update_xref", lambda c: replace(c, "cr_local", "cr_urn_B"),
+          _refused("is a local component, not an external reference"))
+    write("doc_update_xref", lambda c: replace(c, "cr_a1", "cr_urn_A"),
+          _refused("already references that file"))
+    write("doc_update_xref", lambda c: replace(c, "cr_a1", "cr_urn_B"),
+          lambda p: p.get("replaced") is True and len(p.get("occurrences") or []) == 1
+          and p["occurrences"][0].get("path_before") == _RECALL.get("cr_a1")
+          and p["occurrences"][0].get("old_path_resolves") is False,
+          ("cr_b1", _recall("cr_b1", lambda p: p["occurrences"][0]["path"])))
+    tree("the replaced occurrence on part B, its sibling still on part A",
+         lambda t, r: len(t) == 5 and t[r["cr_b1"]].get("source_id") == r["cr_urn_B"]
+         and t[r["cr_b1"]].get("is_reference") is True
+         and t[r["cr_a2"]].get("source_id") == r["cr_urn_A"] and r["cr_a1"] not in t)
+    volume("cr_b1", 2356.19)
+    poses("the joint followed the replaced occurrence, which kept its place",
+          lambda o, r: at(o[r["cr_b1"]].get("origin"), [0.0, 0.0, 0.0])
+          and {name for name, row in o.items() if "CrJoint" in (row.get("joints") or [])}
+          == {r["cr_b1"], r["cr_local"]})
+
+    # 4. Break the last link to part A under a new, unique component name.
+    unlink = lambda c, **args: {"action": "break_link",
+                                "occurrence": _ctx_get(c, "cr_a2", "the second part"), **args}
+    write("doc_update_xref", lambda c: unlink(c), _refused("needs 'new_name'"))
+    write("doc_update_xref", lambda c: unlink(c, new_name="CrLocal"),
+          _refused("A component named 'CrLocal' already exists"))
+    write("doc_update_xref", lambda c: unlink(c, new_name="CrLoose"),
+          lambda p: p.get("broken") is True and p.get("component") == "CrLoose"
+          and p.get("reversible") is False and p.get("path_before") == _RECALL.get("cr_a2"),
+          ("cr_loose", _recall("cr_loose", lambda p: p["occurrence"])))
+    tree("the unlinked occurrence is local under its new name; the reference to B is untouched",
+         lambda t, r: len(t) == 5 and "is_reference" not in t[r["cr_loose"]]
+         and t[r["cr_loose"]].get("component") == "CrLoose"
+         and t[r["cr_loose"]].get("body_count") == 1 and r["cr_a2"] not in t
+         and t[r["cr_b1"]].get("source_id") == r["cr_urn_B"])
+    volume("cr_loose", 4000)
+    poses("the unlinked occurrence kept its place and carries no joint",
+          lambda o, r: at(o[r["cr_loose"]].get("origin"), [50.0, 0.0, 0.0])
+          and not o[r["cr_loose"]].get("joints"))
+
+    # 5. Reuse the already-saved PartB lineage for a second placed reference. All public create and
+    # reference-edit checks above finish before the native break below; the coupon closes unsaved.
+    write("doc_insert_occurrence", lambda c: {
+        "document_id": _ctx_get(c, "cr_urn_B", "the saved PartB lineage"),
+        "x": 250, "units": "mm"},
+        lambda p: p.get("inserted") is True and p.get("is_reference") is True,
+        ("cr_b2", _recall("cr_b2", lambda p: p["new_occurrence_name"])))
+    tree("the second reference uses the same PartB lineage at x=250 mm",
+         lambda t, r: len(t) == 6
+         and t[r["cr_b1"]].get("source_id") == r["cr_urn_B"]
+         and t[r["cr_b2"]].get("source_id") == r["cr_urn_B"]
+         and t[r["cr_b2"]].get("is_reference") is True)
+    volume("cr_b2", 2356.19)
+    poses("the second PartB reference is placed at x=250 mm before break",
+          lambda o, r: at(o[r["cr_b2"]].get("origin"), [250.0, 0.0, 0.0]))
+
+    write("sys_execute_script", _cr_collision_break_probe, _cr_collision_break_result)
+    read("sys_execute_script", _cr_collision_membership_probe,
+         _cr_collision_membership_result)
+
+    def collision_rows(p, key="occurrences", count_key="occurrence_count"):
+        rows = _cr_pose_rows(p, key, count_key)
+        return rows
+
+    def collision_claim(p, key="occurrences", count_key="occurrence_count"):
+        rows = collision_rows(p, key, count_key)
+        local_name = _RECALL.get("cr_local")
+        if rows is None or not local_name:
+            return False
+        zero = [row for row in rows if at(row.get("origin"), [0.0, 0.0, 0.0])]
+        far = [row for row in rows if at(row.get("origin"), [250.0, 0.0, 0.0])]
+        local = [row for row in rows if row.get("name") == local_name]
+        return (len(zero) == len(far) == len(local) == 1
+                and zero[0].get("name") == far[0].get("name")
+                and zero[0].get("joints") == ["CrJoint"]
+                and far[0].get("joints") == []
+                and local[0].get("joints") == ["CrJoint"]
+                and all("joints_unverified" not in row for row in (zero[0], far[0], local[0])))
+
+    read("assembly_get", {"include": ["poses"], "max_occurrences": 100,
+                           "max_joints": 100, "units": "mm"},
+         lambda p: _measured("top-level pose rows attribute CrJoint only to the original PartB",
+                             [(row.get("name"), row.get("origin"), row.get("joints"))
+                              for row in p.get("occurrences") or []],
+                             p.get("is_healthy") is True and p.get("broken_joints") == []
+                             and p.get("occurrences_truncated") is False
+                             and p.get("occurrence_count") == 6
+                             and collision_claim(p)))
+    read("assembly_get", {"include": ["poses", "all_occurrences"],
+                           "max_occurrences": 100, "max_all_occurrences": 100,
+                           "max_joints": 100, "units": "mm"},
+         lambda p: _measured("complete all-occurrences rows preserve the same wrapper attribution",
+                             [(row.get("name"), row.get("origin"), row.get("joints"))
+                              for row in p.get("all_occurrences") or []],
+                             p.get("is_healthy") is True and p.get("broken_joints") == []
+                             and p.get("occurrences_truncated") is False
+                             and p.get("all_occurrences_truncated") is False
+                             and p.get("occurrence_count") == p.get("all_occurrence_count") == 6
+                             and collision_claim(p, "all_occurrences", "all_occurrence_count")))
+    rows.extend([
+        ("doc_activate", lambda c: {"name": home(c), "expect_document": host(c)}, _activated(), None),
+        ("doc_close", lambda c: {"name": host(c), "save_changes": False,
+                                 "expect_document": home(c)}, _document_closed, None),
+        ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("cr_home"), None)])
+    return rows
+
+
+_CLOUD_CONFIGURE += _component_reference_rows()

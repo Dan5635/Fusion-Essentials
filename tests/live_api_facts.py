@@ -665,6 +665,11 @@ ENUMS = {
         "SilhouetteSplitShelledBodyOperation": 1,
         "SilhouetteSplitSolidBodyOperation": 2,
     },
+    "fusion.SplitFaceSplitTypes": {
+        "surfaceIntersectionSplitType": 0,
+        "alongVectorSplitType": 1,
+        "closestPointSplitType": 2,
+    },
     "fusion.SurfaceContinuityTypes": {
         "ConnectedSurfaceContinuityType": 0,
         "TangentSurfaceContinuityType": 1,

@@ -19,7 +19,9 @@ from . import _common
 from . import _inputs
 from . import _assert
 from . import _outputs
-from ._pattern_common import _BODIES, _OCCURRENCES, _owning_component, _resolve_input_entities
+from ._pattern_common import (_BODIES, _OCCURRENCES, _FEATURES, _FACES, _seed_property,
+                              _seed_kind, _seed_shapes, _seed_effect,
+                              _owning_component, _resolve_input_entities)
 
 app = adsk.core.Application.get()
 
@@ -53,7 +55,7 @@ def _start_point(raw):
 
 def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, distance=None,
             distance_type: str = "spacing", start_point=None, symmetric: bool = False,
-            units: str = "mm") -> dict:
+            units: str = "mm", features=None, faces=None) -> dict:
     """See TOOL_DESCRIPTION."""
     if int(quantity) < 2:
         return error("quantity must be >= 2 for a path pattern (the original plus at least one copy).")
@@ -74,12 +76,15 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
     if not design:
         return error("No active design. Open or create a document with components first.")
 
-    coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies)
+    coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies, features, faces)
     if rerr:
         return error(rerr)
 
     # The path and the feature must share the component that owns the patterned entities.
-    owner = _owning_component(design, coll, bodies)
+    kind = _seed_kind(occurrences, bodies, features, faces)
+    owner = _owning_component(design, coll, bodies, features, faces)
+    if owner is None:
+        return error("Pattern seed owner did not read; reacquire its feature or face before retrying.")
     left_out = []
     pattern_path, path_label, patherr = build_path(owner, path, left_out=left_out)
     if patherr:
@@ -89,6 +94,9 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
     if dist_type is None:
         return error(f"PatternDistanceType.{_DISTANCE_TYPES[dt_key]} is not available on this "
                      "Fusion version.")
+    before, berr = _seed_shapes(coll, kind)
+    if berr:
+        return error(berr)
     try:
         q = adsk.core.ValueInput.createByReal(int(quantity))
         d = adsk.core.ValueInput.createByReal(float(dist_cm))
@@ -114,6 +122,10 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
     if not feature:
         return error(_common.no_feature_error(design, "Path pattern"))
 
+    effect, eerr = _seed_effect(feature, before)
+    if eerr:
+        return error(eerr)
+
     # Verify the effect: the REAL instance count read off the created feature, never the request.
     real_total = safe(lambda: feature.patternElements.count)
     note = ("Instances placed along the path. Copies keep the seed's orientation; they do not "
@@ -137,7 +149,8 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
         "type": "path",
         "feature": safe(lambda: feature.name),
         "entities": resolved,
-        "entity_kind": "bodies" if bodies not in (None, "", []) else "occurrences",
+        "entity_kind": kind,
+        **effect,
         "path": path_label,
         "quantity": int(real_total) if real_total is not None else None,
         "distance_type": dt_key,
@@ -151,7 +164,7 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
 
 
 TOOL_DESCRIPTION = (
-"Pattern occurrences or bodies along a path.\n"
+"Pattern occurrences, bodies, faces or features along a path; one seed kind per call.\n"
 + _outputs.produces_block(RETURNS)
 )
 
@@ -159,6 +172,8 @@ pattern_path_tool = (
     Tool.create_simple(name="model_pattern_path", description=TOOL_DESCRIPTION)
     .add_input_property(*_OCCURRENCES.as_property())
     .add_input_property("bodies", _BODIES.schema())
+    .add_input_property(*_seed_property(_FEATURES))
+    .add_input_property(*_seed_property(_FACES))
     .add_input_property("path", {"type": ["string", "array"], "items": {"type": "string"},
             "description": "An edge 'handle' (chains across TANGENT connections only; the 'path' "
                            "count is the truth), or 'sketch:<name>'."})
