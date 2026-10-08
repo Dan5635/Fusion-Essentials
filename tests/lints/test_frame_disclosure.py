@@ -45,6 +45,8 @@ _PUBLISHES_A_FRAME_BLOCK = {
 
 # module -> the audited reason its frame is NOT a block of an origin plus three axes.
 _PUBLISHES_OTHERWISE = {
+    "mesh_find": "publishes a world frame label; refuses meshes not owned by the root, so all "
+                 "node, triangle, group, ray and silhouette coordinates have no occurrence transform",
     "assembly_get": "four row-local shapes: an occurrence's placement basis is merged FLAT into "
                     "the row (origin/x_axis/y_axis/z_axis, no wrapper), a joint row carries its own "
                     "frame, that same joint row carries the motion's headings as BARE directions "

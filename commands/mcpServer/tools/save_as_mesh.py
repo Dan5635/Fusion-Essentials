@@ -31,7 +31,35 @@ _SAVE_BODY = _inputs.BodyRef("body", kind="any", required=True)
 _SAVE_QUALITY = _inputs.Choice("quality", options=list(_QUALITIES), default="normal")
 
 
-def _tessellate(body, quality_key):
+# wire name -> (TriangleMeshCalculator member, lowest value, whether that bound is excluded). The
+# angle is passed as the number given: the build answers it as degrees (measured), not radians.
+_CONTROLS = {"surface_tolerance": ("surfaceTolerance", 0.0, True),
+             "max_edge_length": ("maxSideLength", 0.0, True),
+             "normal_deviation_deg": ("maxNormalDeviation", 0.0, True)}
+
+
+_LENGTHS = ("surface_tolerance", "max_edge_length")
+
+
+def _control_values(raw):
+    """({wire name: finite number} for the controls given, error)."""
+    out = {}
+    for name, (_member, low, strict) in _CONTROLS.items():
+        given = raw.get(name)
+        if given is None or given == "":
+            continue
+        value = _common.finite_number(given)
+        if (value is None or (value <= low if strict else value < low)
+                or (name == "normal_deviation_deg" and value > 180)):
+            return None, (f"'{name}' must be a number "
+                          + (f"above {low:g}" if strict else f"of at least {low:g}")
+                          + (" and at most 180" if name == "normal_deviation_deg" else "")
+                          + f" - got {given!r}.")
+        out[name] = value
+    return out, None
+
+
+def _tessellate(body, quality_key, controls=None):
     """Run the body's mesh calculator: (TriangleMesh, the quality key that reached setQuality or None,
     error). Read-only, so it runs outside the base-feature scope."""
     mm = safe(lambda: body.meshManager)
@@ -52,6 +80,13 @@ def _tessellate(body, quality_key):
             return None, None, error(f"Fusion refused mesh quality '{quality_key}' (setQuality "
                                      "returned false), so nothing was exported at that quality.")
         applied = quality_key
+    # Set after the quality: setQuality rewrites every one of these.
+    for name, value in (controls or {}).items():
+        member = _CONTROLS[name][0]
+        safe(lambda member=member, value=value: setattr(calc, member, value))
+        if safe(lambda member=member: getattr(calc, member)) != value:
+            return None, applied, error(f"'{name}' did not read back on the mesh calculator, so "
+                                        "nothing was tessellated. Omit it to use 'quality' alone.")
 
     # calculate is a real computation that can raise on a degenerate body - surface it, don't swallow.
     try:
@@ -89,7 +124,8 @@ def _weld(coords, coord_idx):
         return coords, coord_idx     # never let welding block the tessellation
 
 
-def handler(body: str = "", quality: str = "normal", name: str = "") -> dict:
+def handler(body: str = "", quality: str = "normal", name: str = "", surface_tolerance=None,
+            max_edge_length=None, normal_deviation_deg=None, units: str = "mm") -> dict:
     """Tessellate a BRep solid/surface into a persistent MeshBody in the design. WRITES."""
     design = _common.design()
     if not design:
@@ -105,6 +141,16 @@ def handler(body: str = "", quality: str = "normal", name: str = "") -> dict:
     qual, qerr = _SAVE_QUALITY.resolve(quality)
     if qerr:
         return error(qerr)
+    controls, cerr = _control_values({"surface_tolerance": surface_tolerance,
+                                      "max_edge_length": max_edge_length,
+                                      "normal_deviation_deg": normal_deviation_deg})
+    if cerr:
+        return error(cerr)
+    k = _common.scale(units)
+    if k is None:
+        return error(f"Unknown units '{units}'. Use mm, cm, or in.")
+    # The calculator takes its two lengths in cm.
+    native = {name: value * k if name in _LENGTHS else value for name, value in controls.items()}
 
     # The component that owns the source body (so the new mesh lands beside it), falling back to root.
     comp = safe(lambda: src.parentComponent) or safe(lambda: design.rootComponent)
@@ -119,7 +165,7 @@ def handler(body: str = "", quality: str = "normal", name: str = "") -> dict:
     tessellation_source = _common._native_of(src)
 
     # 1) calculate - READ-ONLY, runs OUTSIDE the base-feature scope.
-    tm, applied_quality, terr = _tessellate(tessellation_source, qual)
+    tm, applied_quality, terr = _tessellate(tessellation_source, qual, native)
     if terr:
         return terr
 
@@ -183,6 +229,11 @@ def handler(body: str = "", quality: str = "normal", name: str = "") -> dict:
             " Inspect it with model_inspect (mesh target), edit with mesh_reduce / mesh_remesh, or "
             "export it with mesh_export."),
     }
+    if controls:
+        payload["controls_applied"] = controls
+        payload["units"] = units or "mm"
+        payload["note"] += (" The controls read back on the calculator; the mesh is not checked "
+                            "against them - compare 'triangle_count' across settings.")
     if rename_warning:
         payload["rename_warning"] = rename_warning
     return ok(payload)
@@ -200,6 +251,11 @@ tool = (
         _SAVE_SPEC)
     .add_input_property("name", {"type": "string",
             "description": "Names the new mesh body."})
+    .add_input_property("surface_tolerance", {"type": "number", "exclusiveMinimum": 0})
+    .add_input_property("max_edge_length", {"type": "number", "exclusiveMinimum": 0})
+    .add_input_property("normal_deviation_deg", {"type": "number", "exclusiveMinimum": 0,
+                                                 "maximum": 180})
+    .add_input_property(*_inputs.UNITS.as_property())
     .strict_schema()
 )
 item = Item.create_tool_item(

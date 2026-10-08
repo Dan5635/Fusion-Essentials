@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 215  |  **description breadcrumbs:** 332  |  **note/error breadcrumbs:** 729
+**Tools:** 220  |  **description breadcrumbs:** 344  |  **note/error breadcrumbs:** 742
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -14,15 +14,15 @@ close orphans, factor duplicated guards into shared helpers.
 - none detected in the scanned literals.
 
 ### Orphans (no incoming breadcrumb detected in this map)
-**Read/Acquire (8)** - higher concern, a check-your-work tool nothing points to:
-  `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
+**Read/Acquire (9)** - higher concern, a check-your-work tool nothing points to:
+  `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `mesh_find`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (57)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_edit`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (60)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_edit_plastic_rule`, `design_edit_reference_image`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_create_rib`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_edit`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
-- **57x** across 56 module(s): "No active design. Create or open a document first (see doc_new)."
-- **24x** across 24 module(s): "No active design. Open or create a document first (see doc_new)."
+- **59x** across 58 module(s): "No active design. Create or open a document first (see doc_new)."
+- **25x** across 24 module(s): "No active design. Open or create a document first (see doc_new)."
 - **8x** across 8 module(s): "No active design with components."
 - **7x** across 2 module(s): "' with design_delete_feature."
 - **6x** across 3 module(s): "Could not create output directory '"
@@ -40,14 +40,14 @@ close orphans, factor duplicated guards into shared helpers.
 - **4x** across 1 module(s): "setMotionData reported success on '"
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
-- `doc_new`  <- 90  (desc 0, note 90)
-- `design_get`  <- 66  (desc 15, note 51)
-- `find_geometry`  <- 59  (desc 17, note 42)
-- `design_delete_feature`  <- 40  (desc 16, note 24)
+- `doc_new`  <- 92  (desc 0, note 92)
+- `design_get`  <- 72  (desc 18, note 54)
+- `find_geometry`  <- 61  (desc 18, note 43)
+- `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
-- `model_inspect`  <- 31  (desc 5, note 26)
-- `sketch_get`  <- 29  (desc 8, note 21)
+- `model_inspect`  <- 33  (desc 6, note 27)
+- `sketch_get`  <- 30  (desc 9, note 21)
 - `data_get`  <- 26  (desc 9, note 17)
 - `sketch_create`  <- 26  (desc 7, note 19)
 - `doc_open`  <- 25  (desc 5, note 20)
@@ -1552,6 +1552,20 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - deleteMe() reported success for '', but its absence is UNVERIFIED: the occurrence walk did not carry '' even before the delete, so the re-read cannot prove the instance is gone - and a check that c...
 - The timeline carries a new error after this call () that it did not carry before. Nothing was rolled back; 'deleted' says whether the occurrence's absence was verified (null = it was not). Undo in ...
 
+### `design_edit_plastic_rule`
+- Design-local rule values retained. Component geometry was not verified.
+- Plastic rule action '' failed: . Applied: . Current rule: . A copy may exist even when its membership did not verify. Read design_get(include=['plastic_rules']); partial edits are retained.
+
+### `design_edit_reference_image`
+- '. Use mm, cm, or in.
+- No active design. Create or open a document first (see doc_new).
+- was changed but its row did not read back; design_get(include=['reference_images']) reads it.
+- ' was not changed as asked:
+- . design_get(include=['reference_images']) reads it as it is.
+- A decal stays on the faces it was created on; a redefine adds faces and removes none. Delete the decal and create it on the faces wanted.
+- 'faces' names  faces with chaining on, and a chained decal keeps only the first. Pass chain_faces=false to place it on all of them.
+- The  did not land as one new image (count  before,  after); design_get(include=['reference_images']) reads what is there.
+
 ### `design_edit_timeline`
 - No active design (open a document with design geometry).
 - This design has no timeline (a direct-modelling design keeps no history), so there is no marker to move and nothing to group.
@@ -1749,13 +1763,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Could not read the timeline:
 - The active design is not a Configured Design (it has no configuration table) - e.g. a design with Variant A/Variant B style options.
 - include=['attributes'] needs 'attribute_group' - the group to read (the same group design_edit_timeline(action='set_attribute') wrote with). Leave 'attribute_key' empty to get every key in that group.
-- Read at the current marker without rolling. supported_edits gives qualified calls and usable operand handles; reacquire at edit time.
-- Read at the current marker without rolling. Null is unknown unless applicable=false; unavailable gives getter failures. Through-all extent_side_count is its native one/two-side flag; extrude direct...
-- Loft sections are in order; null fields are unreadable. Use profile_handle with model_edit_loft; model_inspect include=['mass'] reads mass, volume and density, not the assigned material's name.
-- tapped=false or thread_present=false means absent; applicable=false means inapplicable. Other null fields are unknown. Measure tapped bore geometry with find_geometry/model_inspect; full-length thr...
-- adsk::fusion::ExtrudeFeature
-- adsk::fusion::SweepFeature
-- adsk::fusion::LoftFeature
 - include=['definition'] requires 'feature'; use include=['timeline'] to find it.
 - ' has unsupported definition type
 - ; use include=['timeline'] or model_inspect.
@@ -1768,6 +1775,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Each params[].value is in Fusion internal units (cm / radians) - params[].expression carries the authored unit. Full records: param_get(include_model_parameters=true).
 - A group is ONE row here, carrying member_count and is_collapsed; a COLLAPSED group's members are not listed, though summary.states counts them (an exception from one carries index null - address it...
 - part_number and description are writable with design_set_metadata; id and revision_id are reads only - no tool here writes them.
+- Read at the current marker without rolling. supported_edits gives qualified calls and usable operand handles; reacquire at edit time.
+- Read at the current marker without rolling. Null is unknown unless applicable=false; unavailable gives getter failures. Through-all extent_side_count is its native one/two-side flag; extrude direct...
+- Loft sections are in order; null fields are unreadable. Use profile_handle with model_edit_loft; model_inspect include=['mass'] reads mass, volume and density, not the assigned material's name.
+- tapped=false or thread_present=false means absent; applicable=false means inapplicable. Other null fields are unknown. Measure tapped bore geometry with find_geometry/model_inspect; full-length thr...
 - 'default' keeps overview; include=. 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/'tree_handles' scope the tree; 'group'/'include_suppressed'/'timeline_params' the timeline; 'li...
 
 ### `design_move_occurrence`
@@ -2541,6 +2552,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Use mm, cm, or in.
 - No active design (open or create a document first).
 - 'sketch' and 'name' narrow sketch_* and construction-datum kinds; kind='
+- ' reads a Form's cage: 'name' names the Form; drop
+- 'position' is WORLD: a vertex, an edge's middle, a face's centroid. Cage handles feed form_edit and hold until the cage changes.
+- ' reads one Form and the design holds
+- - name it with 'name' as form_get lists it.
 - 'position' is WORLD. Axis handles feed assembly_move(rotate_axis); plane handles feed sketch_create(plane). Vectors are readbacks; handles retain occurrence. Null position/handle means unread geome...
 - occurrences_walk='unreadable': NEITHER root.allOccurrences nor the component.occurrences fallback enumerated, so the occurrence tree was not searched at all and only root-level bodies were scanned ...
 - occurrences_walk='recursed': root.allOccurrences raised, so the occurrence census was rebuilt from component.occurrences.
@@ -2555,8 +2570,21 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - with total surface area
 - 'primitive' is an object of
 - The cage was refused before Fusion saw it:
-- A Form has no parameters. To change it: form_get(include=['cage']), edit the cage, form_create it, then delete the Form it replaces.
+- A Form has no parameters. form_edit moves or creases its cage in place; for another shape, form_get(include=['cage']), form_create the edited cage, delete this Form.
 - No two-faced B-Rep edge reads sharper than  deg, though the crease records read back exactly; find_geometry lists the edges.
+
+### `form_edit`
+- Earlier cage handles are spent; acquire again with find_geometry.
+- The cage re-read matches the edit.
+- The Form's B-Rep reads the same as before: this change does not alter the surface.
+- '. Use mm, cm, or in.
+- No active design. Create or open a document first (see doc_new).
+- ' did not open (startEdit
+- ' did not confirm closed (
+- ). If the design still reads direct (workspace_orient design.mode), ask the user to click Finish Form; find_geometry then reads the cage as it is.
+- ' was not edited as asked:
+- changed; find_geometry reads it as it is now.
+- The edit of '' did not confirm closed (: ). If the design still reads direct (workspace_orient design.mode), ask the user to click Finish Form; find_geometry then reads the cage as it is.
 
 ### `form_get`
 - '. Use mm, cm, or in.
@@ -2838,6 +2866,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `mesh_export`
 - ') applies to format=stl only, and this call asked for format=
 - - refusing rather than dropping it. Export as stl to bake the unit into the file, or omit 'stl_units'.
+- . Export one stl target, or omit them.
+- apply to one format=stl file - this call asked for format=
+- with split_by_component
 - ') and split_by_component=true cannot be combined: the split writes one file per TOP-LEVEL occurrence and would not narrow to that target - refusing rather than dropping it. Omit 'target' to split ...
 - Provide 'file_path' - the local output path (a file, or a DIRECTORY when split_by_component=true). The format extension is appended if missing.
 - No active design to export. Open or create a document first (see doc_new).
@@ -2845,6 +2876,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - This design exposes no exportManager - cannot export.
 - This build's ExportManager has no
 - export is unavailable here.
+- did not read back on the export options, so nothing was written. Omit them to export with 'refinement' alone.
 - export returned false - nothing was written.
 - export reported success but
 - . execute() returned True but produced nothing - treating this as a FAILURE, not a false success. Check the target geometry and the output path are valid.
@@ -2862,6 +2894,16 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - export wrote no file for this MESH target: the redirect to its owning component () produced no file either. Convert the mesh with mesh_to_brep and export the resulting solid, or place it in a compo...
 - export reported success but . execute() returned True but produced nothing - treating this as a FAILURE, not a false success. Check the target geometry and the output path are valid.
 - MESH target redirected to its owning component: the file holds EVERY body of that component and of the occurrences below it, BRep tessellated. 'component_census' counts its own.
+- The tessellation settings read back; 'triangle_count' is read from the written file. Achieved bounds are not verified; compare the count across settings.
+
+### `mesh_find`
+- Node and triangle indices hold only while 'revision' does. A group's temp_id is spent by any change to the mesh, regrouping included, which 'revision' does not see.
+- The ray meets the mesh nowhere.
+- '. Use mm, cm, or in.
+- 'max_results' is a whole number from 1 to
+- mesh_find reads a mesh body the root component owns; '
+- The nodes and triangles of '
+- 'ray_direction' is [0, 0, 0]; a ray needs a direction.
 
 ### `mesh_generate_face_groups`
 - Face-group generation ran -
@@ -2888,7 +2930,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Direct design - no base-feature scope needed.
 - Wrapped in BaseFeature '%s' (parametric design requires it).
 - 'name' was not applied: the import landed %d mesh bodies - rename each with design_set_name, using the names in 'bodies'.
-- file_path is required - a full path to a .stl / .obj / .3mf file.
+- Pass exactly one of 'file_path' (a .stl / .obj / .3mf file) and 'data' (vertices and triangles) - got
 - Unsupported mesh file '
 - '. Import needs one of:
 - . (To import from the data model, first resolve the file to a local path with the data_* tools, then pass that path.)
@@ -2896,6 +2938,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' for mesh import. Use mm, cm, m, in, or ft.
 - Mesh import returned no bodies (the file may be empty or unreadable as a mesh).
 - Mesh import failed (meshBodies.add raised):
+- One MESH body built from the data; its vertices and triangles read back as sent. mesh_get lists it.
+- ' for mesh data. Use mm, cm, m, in, or ft.
+- Mesh creation failed (addByTriangleMeshData raised): . design_get(include=['timeline']) shows whether a base feature was left.
 - File not found: . (To import from the data model, first resolve the file to a local path with the data_* tools, then pass that path.)
 
 ### `mesh_plane_cut`
@@ -3230,6 +3275,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ground_to_parent reads TRUE on this new occurrence - it is locked to its parent (the FIRST component of an empty design lands locked; the next one does not), so a joint drive displaces the OTHER me...
 - Another design rule named '' now exists; read sheet_get(include=['rules']) for its '#<n>' ref and resolve with sheet_edit_rule.
 - The design's prior sheet-metal rules could not be read, so adoption was skipped; read sheet_get(include=['rules']) to check for a duplicate.
+
+### `model_create_rib`
+- Geometry uses component-local cm units. Every occurrence of this component shows the edit.
+- Retained  '' did not verify healthy added material in only target_body. Health: ; message: . Read model_inspect; design_delete_feature can remove the retained feature.
 
 ### `model_draft`
 - Faces tapered to the pull direction. Pair with view_screenshot to view.
@@ -4379,6 +4428,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Direct design - no base-feature scope needed.
 - No active design. Open or create a document first (see doc_new).
 - 'body' is already a MESH body - save_as_mesh tessellates a BRep solid/surface. To re-triangulate an existing mesh use mesh_remesh; to copy/export it use mesh_export.
+- '. Use mm, cm, or in.
 - Could not resolve a component to add the mesh body into.
 - The occurrence-context 'body' has no readable nativeObject - its required component-owned tessellation source is unavailable.
 - Tessellation produced no coordinate/index data - cannot build a mesh body.
@@ -4390,10 +4440,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Mesh calculator returned no TriangleMesh (tessellation produced nothing).
 - Fusion refused mesh quality '
 - ' (setQuality returned false), so nothing was exported at that quality.
+- ' did not read back on the mesh calculator, so nothing was tessellated. Omit it to use 'quality' alone.
 - Mesh tessellation (calculate) failed:
 - addByTriangleMeshData returned a mesh body but the component's mesh body count did not increase ( before,  after) - the mesh body did not actually land.
 - Quality '' did NOT land: this build exposes no TriangleMeshQualityOptions member for it, so setQuality was never called and the tessellation ran at the calculator's default level of detail. 'qualit...
 - Tessellated the BRep body into a persistent MESH body.  Inspect it with model_inspect (mesh target), edit with mesh_reduce / mesh_remesh, or export it with mesh_export.
+- The controls read back on the calculator; the mesh is not checked against them - compare 'triangle_count' across settings.
 
 ### `sheet_convert`
 - No active design. Create or open a design first.
@@ -4553,21 +4605,33 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `sheet_edit_rule`
 - No active design. Create or open a design first.
+- are unavailable in this build; no rule mutation attempted.
 - ' is a library rule; copy it with action='copy' before editing.
+- Rule persists; final k_factor=
+- did not read back. Applied:
 - ' did not persist; actual is '
-- Design-local rule read back. Assign or convert a component separately.
+- Design-local rule values read back; relief geometry was not verified. Assign or convert a component separately.
+- Two-bend relief needs round with intersection/tangent/vertex, or square with intersection/vertex. Supply both choices if the current pair did not read; no edit attempted.
+- action='delete' takes only rule; omit name and edit fields.
+- ' is used or usage did not read; delete only an unused design rule.
+- The selected rule's collection position did not read; re-read sheet_get before deleting.
+- Rule deletion was not confirmed; read sheet_get before retrying.
 - action='copy' needs a nonempty 'name' for the design-local rule.
 - Design-local rules could not be read; no copy attempted.
 - ' already exists; choose another name or update it.
 - Design sheet-metal rule data is uninitialized. Create a root sheet-metal component with model_create_component(sheet_metal=true), then retry the copy.
 - ' was not verified. Read sheet_get(include=['rules']) to inspect any partial effect.
 - 'name' applies only to action='copy'; use the scoped rule ref for update.
-- action='update' needs thickness, bend_radius, gap, or k_factor.
+- action='update' needs a length, k_factor or relief choice.
 - could not be read. Applied so far:
 - . Read sheet_get(include=['rules']).
 - ' did not evaluate to
 - ' persists; k_factor=
 - did not read back (got '
+- ' did not read back. Applied:
+- ' did not read back (got
+- Rule deletion raised:
+- . Read sheet_get before retrying.
 - Could not copy rule '
 - . Read sheet_get(include=['rules']) before retrying.
 

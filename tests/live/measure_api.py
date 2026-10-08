@@ -67,7 +67,7 @@ _ATTESTATION_FIELDS = ("implementation_fingerprint", "schema_fingerprint",
 # (...Options.create()) carrying no int member at all: the sweep row reports such a name as
 # not-an-enum and the generated facts file records it in NOT_ENUMS, so only a name that does not
 # RESOLVE fails the row.
-_ENUM_FAMILY_RE = re.compile(r"adsk\.(core|fusion|cam|drawing)\.([A-Za-z]*(?:Types|States?|Modes|Methods|Directions|Locations|Positions|Alignments?|Sizes|Formats|Operations|Options))\b")
+_ENUM_FAMILY_RE = re.compile(r"adsk\.(core|fusion|cam|drawing)\.([A-Za-z]*(?:Types|States?|Modes|Methods|Directions|Locations|Positions|Alignments?|Sizes|Formats|Operations|Options|Shapes|Placements))\b")
 # A family reached only through _drawing_common.enum_value("<Family>", "<member>") never appears as
 # a literal adsk.drawing.<Family> in tool source, so the textual scan above cannot see it - the
 # STRING argument is the real reference. enum_value resolves exclusively against adsk.drawing.

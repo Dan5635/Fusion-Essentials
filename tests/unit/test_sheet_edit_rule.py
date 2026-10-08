@@ -103,3 +103,164 @@ def test_index_ref_whose_rule_name_changed_is_refused_and_edits_nothing(monkeypa
     assert target.kFactor == tail.kFactor == .44
     fresh = mod.handler(action="update", rule={"scope": "design", "index": 2, "name": "fw3 tail"}, k_factor=.31)
     assert fresh["isError"] is False and tail.kFactor == .31 and target.kFactor == .44
+
+
+@pytest.fixture
+def relief_rule(monkeypatch):
+    rule = SimpleNamespace(name="Shop", isUsed=False,
+        twoBendReliefShape="two_bend_relief_shape:round",
+        twoBendReliefPlacement="two_bend_relief_placement:intersection", kFactor=.44)
+    for key, member in mod._FIELDS:
+        setattr(rule, member, SimpleNamespace(expression="1 mm", value=.1))
+    collection = _NamedCollection(items=[rule])
+    rule.deleteMe = lambda: collection._items.remove(rule) is None
+    design = SimpleNamespace(designSheetMetalRules=collection)
+    monkeypatch.setattr(mod._common, "design", lambda: design)
+    monkeypatch.setattr(mod._inputs._common, "design", lambda: design)
+    monkeypatch.setattr(mod._sheet_common, "relief_enum", lambda field, label: field + ":" + label)
+    return design, rule
+
+
+@pytest.mark.parametrize("field,member", mod._FIELDS[3:])
+def test_relief_expression_noop_is_not_success(relief_rule, field, member):
+    design, rule = relief_rule
+    reply = mod.handler(action="update", rule="design:Shop", **{field: "2 mm"})
+    assert reply["isError"] and "did not evaluate to" in reply["message"]
+    assert getattr(rule, member).expression == "2 mm"
+    assert design.designSheetMetalRules.count == 1
+
+
+def test_square_tangent_placement_refuses_before_any_rule_write(relief_rule):
+    _, rule = relief_rule
+    reply = mod.handler(action="update", rule="design:Shop", relief_width="2 mm",
+                        two_bend_relief_shape="square", two_bend_relief_placement="tangent")
+    assert reply["isError"] and "intersection/vertex" in reply["message"]
+    assert rule.reliefWidth.expression == "1 mm"
+    assert rule.twoBendReliefShape == "two_bend_relief_shape:round"
+
+
+def test_round_and_square_valid_placements_read_back_as_named_choices(relief_rule):
+    import json
+    _, rule = relief_rule
+    for shape, placement in (("round", "tangent"), ("square", "vertex"), ("square", "intersection")):
+        reply = mod.handler(action="update", rule="design:Shop", two_bend_relief_shape=shape,
+                            two_bend_relief_placement=placement, relief_shape="round",
+                            three_bend_relief_shape="full_round")
+        assert not reply["isError"], reply
+        row = json.loads(reply["content"][0]["text"])
+        assert row["after"]["two_bend_relief_shape"] == shape
+        assert row["after"]["two_bend_relief_placement"] == placement
+        assert row["after"]["relief_shape"] == "round"
+        assert row["after"]["three_bend_relief_shape"] == "full_round"
+        assert "geometry was not verified" in row["note"]
+
+
+def test_used_and_noop_rule_delete_refuse_and_unused_delete_is_verified(relief_rule):
+    design, rule = relief_rule
+    rule.isUsed = True
+    assert mod.handler(action="delete", rule="design:Shop")["isError"]
+    rule.isUsed = False
+    saved = rule.deleteMe
+    rule.deleteMe = lambda: True
+    assert mod.handler(action="delete", rule="design:Shop")["isError"]
+    assert design.designSheetMetalRules.count == 1
+    rule.deleteMe = saved
+    assert not mod.handler(action="delete", rule="design:Shop")["isError"]
+    assert design.designSheetMetalRules.count == 0
+
+
+@pytest.mark.parametrize("reset", ["choice", "length", "k_factor"])
+def test_later_relief_setter_cannot_undo_an_earlier_requested_value(relief_rule, monkeypatch, reset):
+    _, rule = relief_rule
+
+    def coupled_setter(target, member, value):
+        setattr(target, member, value)
+        if member == "threeBendReliefShape":
+            if reset == "choice":
+                target.reliefShape = "relief_shape:straight"
+            elif reset == "length":
+                target.reliefWidth.value = .2
+            else:
+                target.kFactor = .44
+
+    monkeypatch.setattr(mod, "setattr", coupled_setter, raising=False)
+    reply = mod.handler(action="update", rule="design:Shop", relief_width="1 mm", k_factor=.5,
+                        relief_shape="round", three_bend_relief_shape="full_round")
+    assert reply["isError"] and "final" in reply["message"] and "Read sheet_get" in reply["message"]
+
+
+@pytest.mark.parametrize("initial_shape", ["square", "round"])
+def test_square_shape_reset_cannot_lose_requested_vertex_placement(relief_rule, monkeypatch, initial_shape):
+    import json
+    _, rule = relief_rule
+    rule.twoBendReliefShape = "two_bend_relief_shape:" + initial_shape
+    writes = []
+
+    def coupled_setter(target, member, value):
+        setattr(target, member, value)
+        writes.append(member)
+        if member == "twoBendReliefShape":
+            target.twoBendReliefPlacement = "two_bend_relief_placement:intersection"
+
+    monkeypatch.setattr(mod, "setattr", coupled_setter, raising=False)
+    reply = mod.handler(action="update", rule="design:Shop", two_bend_relief_shape="square",
+                        two_bend_relief_placement="vertex")
+    assert not reply["isError"], reply
+    assert json.loads(reply["content"][0]["text"])["after"]["two_bend_relief_placement"] == "vertex"
+    assert writes == (["twoBendReliefPlacement"] if initial_shape == "square" else
+                      ["twoBendReliefPlacement", "twoBendReliefShape", "twoBendReliefPlacement"])
+
+
+def test_shape_only_edit_preserves_prior_vertex_placement(relief_rule, monkeypatch):
+    import json
+    _, rule = relief_rule
+    rule.twoBendReliefPlacement = "two_bend_relief_placement:vertex"
+
+    def coupled_setter(target, member, value):
+        setattr(target, member, value)
+        if member == "twoBendReliefShape":
+            target.twoBendReliefPlacement = "two_bend_relief_placement:intersection"
+
+    monkeypatch.setattr(mod, "setattr", coupled_setter, raising=False)
+    reply = mod.handler(action="update", rule="design:Shop", two_bend_relief_shape="square")
+    assert not reply["isError"], reply
+    row = json.loads(reply["content"][0]["text"])["after"]
+    assert row["two_bend_relief_shape"] == "square" and row["two_bend_relief_placement"] == "vertex"
+
+
+def test_unsupported_relief_choice_cannot_edit_a_length_first(relief_rule):
+    _, rule = relief_rule
+    reply = mod.handler(action="update", rule="design:Shop", relief_width="2 mm", relief_shape="unknown")
+    assert reply["isError"] and rule.reliefWidth.expression == "1 mm"
+
+
+def test_square_alone_on_tangent_refuses_before_touching_a_length(relief_rule):
+    _, rule = relief_rule
+    rule.twoBendReliefPlacement = "two_bend_relief_placement:tangent"
+    reply = mod.handler(action="update", rule="design:Shop", relief_width="2 mm", two_bend_relief_shape="square")
+    assert reply["isError"] and rule.reliefWidth.expression == "1 mm"
+
+
+@pytest.mark.parametrize("start_shape,start_placement,shape,placement,first", [
+    ("round", "tangent", "square", "intersection", "twoBendReliefPlacement"),
+    ("square", "intersection", "round", "tangent", "twoBendReliefShape")])
+def test_two_bend_transition_never_requests_an_invalid_intermediate_pair(
+        relief_rule, monkeypatch, start_shape, start_placement, shape, placement, first):
+    _, rule = relief_rule
+    rule.twoBendReliefShape = "two_bend_relief_shape:" + start_shape
+    rule.twoBendReliefPlacement = "two_bend_relief_placement:" + start_placement
+    writes = []
+
+    def set_shape(target, member, value):
+        if member == "twoBendReliefShape" and value.endswith(":square"):
+            assert target.twoBendReliefPlacement != "two_bend_relief_placement:tangent"
+        if member == "twoBendReliefPlacement" and value.endswith(":tangent"):
+            assert target.twoBendReliefShape != "two_bend_relief_shape:square"
+        writes.append(member)
+        setattr(target, member, value)
+
+    monkeypatch.setattr(mod, "setattr", set_shape, raising=False)
+    reply = mod.handler(action="update", rule="design:Shop", two_bend_relief_shape=shape,
+                        two_bend_relief_placement=placement)
+    assert not reply["isError"], reply
+    assert writes[0] == first

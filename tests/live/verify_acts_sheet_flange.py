@@ -948,6 +948,21 @@ def _sheet_edit_rows(feature_key, target, field, kind, payload, candidate=None, 
         return _measured("independent sheet definition read", after, good)
     rows = [("design_edit_timeline", roll, _roll_landed("before"), None),
             ("design_get", read, _sheet_definition_before(definition_key, field, kind), None)]
+    if kind == "HemFeature":
+        def end_marker(p):
+            value = (p.get("timeline") or {}).get("marker_position")
+            _RECALL[key + "_read_marker"] = value
+            return isinstance(value, int)
+        def rollback_advice(p):
+            definition = p.get("definition") or {}
+            note = (definition.get("note") or "").casefold()
+            return _measured("Hem read-only rollback remedy", definition,
+                "hem_edge" in (definition.get("unavailable") or {})
+                and "design_edit_timeline" in note and "before" in note and "restore" in note)
+        rows = [("design_get", {"include": ["timeline"]}, end_marker, None),
+                ("design_get", read, rollback_advice, None),
+                ("design_get", {"include": ["timeline"]}, lambda p:
+                    (p.get("timeline") or {}).get("marker_position") == _RECALL[key + "_read_marker"], None)] + rows
     if candidate:
         def save(p):
             matches = p.get("matches") or []
@@ -1137,3 +1152,7 @@ def _plastic_rule_read_story():
 
 
 _SHEET_FLANGE += _plastic_rule_read_story()
+
+from verify_acts_plastic import plastic_rule_edit_rows, sheet_relief_rule_rows
+
+_SHEET_FLANGE += plastic_rule_edit_rows() + sheet_relief_rule_rows()

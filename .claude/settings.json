@@ -34,6 +34,7 @@
       "mcp__fusion-essentials__find_geometry",
       "mcp__fusion-essentials__form_get",
       "mcp__fusion-essentials__mesh_get",
+      "mcp__fusion-essentials__mesh_find",
       "mcp__fusion-essentials__model_compute_holder",
       "mcp__fusion-essentials__model_inspect",
       "mcp__fusion-essentials__model_measure_between",

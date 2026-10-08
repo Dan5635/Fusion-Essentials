@@ -4,6 +4,7 @@
 """Shared sheet-metal rule, component, edge and flat-pattern reads."""
 
 import adsk.core
+import adsk.fusion
 from . import _assert, _geom, _common
 from ._common import counted, iter_collection, measured, ptxyz, safe
 
@@ -13,6 +14,28 @@ MAP_BLURB = ("rule_row/scoped_rules/matching_rules/component_row/sheet_edge_face
 
 _RULE_VALUES = ("thickness", "bendRadius", "gap", "reliefWidth", "reliefDepth",
                 "reliefRemnant", "twoBendReliefSize", "threeBendReliefRadius")
+RULE_SHAPES = {
+    "relief_shape": ("reliefShape", "BendReliefShapes", {
+        "straight": "StraightBendReliefShape", "tear": "TearBendReliefShape", "round": "RoundBendReliefShape"}),
+    "two_bend_relief_shape": ("twoBendReliefShape", "TwoBendReliefShapes", {
+        "square": "SquareTwoBendReliefShape", "round": "RoundTwoBendReliefShape"}),
+    "two_bend_relief_placement": ("twoBendReliefPlacement", "TwoBendReliefPlacements", {
+        "intersection": "IntersectionTwoBendReliefPlacement", "tangent": "TangentTwoBendReliefPlacement",
+        "vertex": "VertexTwoBendReliefPlacement"}),
+    "three_bend_relief_shape": ("threeBendReliefShape", "ThreeBendReliefShapes", {
+        "none": "NoReplacementThreeBendReliefShape", "intersection": "IntersectionThreeBendReliefShape",
+        "full_round": "FullRoundThreeBendReliefShape", "round_with_radius": "RoundWithRadiusThreeBendReliefShape"}),
+}
+_RELIEF_ENUMS = {"BendReliefShapes": adsk.fusion.BendReliefShapes,
+                 "TwoBendReliefShapes": adsk.fusion.TwoBendReliefShapes,
+                 "TwoBendReliefPlacements": adsk.fusion.TwoBendReliefPlacements,
+                 "ThreeBendReliefShapes": adsk.fusion.ThreeBendReliefShapes}
+
+
+def relief_enum(field, label):
+    """Return the installed enum member for a validated rule relief choice, or None."""
+    _, family, choices = RULE_SHAPES[field]
+    return safe(lambda: getattr(_RELIEF_ENUMS[family], choices[label]))
 
 
 def pending_unfolds(design):
@@ -143,6 +166,10 @@ def rule_row(design, rule, scope):
         value = safe(lambda key=key: getattr(rule, key))
         out[key] = ({"expression": safe(lambda value=value: value.expression),
                      "value_cm": safe(lambda value=value: value.value)} if value else None)
+    for key, (member, _family, choices) in RULE_SHAPES.items():
+        actual = safe(lambda member=member: getattr(rule, member))
+        out[key] = next((label for label in choices if actual is not None
+                        and actual == relief_enum(key, label)), None)
     if scope == "design":
         out["is_used"] = safe(lambda: rule.isUsed)
     else:

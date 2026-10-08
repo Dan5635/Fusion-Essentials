@@ -301,3 +301,93 @@ class TestMeshInsertStats:
         out = self._insert(units="ft", area=30.48 ** 2, volume=30.48 ** 3)
         assert abs(out["bodies"][0]["area"] - 1.0) < 1e-6         # 1 ft^2
         assert abs(out["bodies"][0]["volume"] - 1.0) < 1e-6       # 1 ft^3
+
+
+class _DataBody(MeshBody):
+    """A mesh body whose polygon mesh is the one handed to it."""
+    polygon_mesh = None
+    mesh = property(lambda self: self.polygon_mesh)
+
+
+class _DataMeshBodies(_MeshBodies):
+    """comp.meshBodies where addByTriangleMeshData lands one body reading the data back - shifted
+    by `drift` cm, with `indices` in place of the ones sent, or raising `refuses`."""
+    def __init__(self, drift=0.0, indices=None, refuses=None, lands=True):
+        super().__init__(())
+        self.drift, self.indices, self.refuses, self.lands = drift, indices, refuses, lands
+        self.sent = None
+
+    def addByTriangleMeshData(self, coords, idx, normals, normal_idx):
+        import types
+        self.sent = (list(coords), list(idx), list(normals), list(normal_idx))
+        if self.refuses:
+            raise RuntimeError(self.refuses)
+        body = _DataBody("Mesh1")
+        body.polygon_mesh = types.SimpleNamespace(
+            nodeCoordinatesAsDouble=[c + self.drift for c in coords],
+            triangleNodeIndices=list(idx) if self.indices is None else self.indices,
+            normalVectorsAsDouble=[])
+        if self.lands:
+            self._items.append(body)
+        return body
+
+
+_TETRA = {"vertices": [[0, 0, 0], [30, 0, 0], [0, 20, 0], [0, 0, 10]],
+          "triangles": [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]}
+
+
+def _data_rig(**kw):
+    bodies = _DataMeshBodies(**kw)
+    comp = _comp(mesh_bodies=bodies)
+    _wire(comp)
+    return bodies, comp
+
+
+class TestMeshData:
+
+    def test_the_data_is_sent_flat_in_cm_and_read_back_before_success(self):
+        bodies, _comp_ = _data_rig()
+        out = payload(mo.handler(data=_TETRA, name="Tetra"))
+        coords, idx, normals, normal_idx = bodies.sent
+        assert coords[3:6] == [3.0, 0.0, 0.0] and idx[:3] == [0, 2, 1] and normals == normal_idx == []
+        assert out["imported"] is True and (out["vertices"], out["triangles"]) == (4, 4)
+        assert out["source"] == "data" and out["name_applied"] is True
+
+    @pytest.mark.parametrize("kw", [{"drift": 0.01}, {"indices": [0, 1, 2] * 4}, {"lands": False}])
+    def test_a_body_that_does_not_read_back_as_sent_is_an_error(self, kw):
+        _data_rig(**kw)
+        res = mo.handler(data=_TETRA)
+        assert res["isError"] is True and ("does not read back" in res["message"]
+                                           or "did not add exactly one" in res["message"])
+
+    @pytest.mark.parametrize("patch,said", [
+        ({"triangles": [[0, 1, 4]]}, "data.triangles[0] is [0, 1, 4]"),
+        ({"triangles": [[0, 1, 1]]}, "three different vertices"),
+        ({"triangles": [[0, 1, -2]]}, "whole numbers of at least 0"),
+        ({"triangles": []}, "at least 3 vertices and 1 triangle"),
+        ({"vertices": [[0, 0, float("nan")], [1, 0, 0], [0, 1, 0]]}, "three finite numbers"),
+        ({"normals": [[0, 0, 1]], "normal_indices": [[0, 0, 0]] * 4}, "['normal_indices', 'normals']"),
+        ({"faces": []}, "['faces']")])
+    def test_bad_data_is_refused_before_any_base_feature_opens(self, patch, said):
+        bodies, comp = _data_rig()
+        _wire(comp, design_type=1)
+        opened = []
+        comp.features.baseFeatures.add = lambda: opened.append(1)
+        res = mo.handler(data={**_TETRA, **patch})
+        assert res["isError"] is True and said in res["message"]
+        assert bodies.sent is None and opened == []
+
+    def test_a_file_and_data_together_or_neither_are_refused(self):
+        _data_rig()
+        assert "got both" in mo.handler(file_path="a.stl", data=_TETRA)["message"]
+        assert "got neither" in mo.handler()["message"]
+
+    def test_a_refused_add_names_the_native_message(self):
+        _data_rig(refuses="3 : invalid parameter coordinates")
+        res = mo.handler(data=_TETRA)
+        assert res["isError"] is True and "3 : invalid parameter coordinates" in res["message"]
+
+    def test_inch_data_is_scaled_to_cm(self):
+        bodies, _comp_ = _data_rig()
+        payload(mo.handler(data=_TETRA, units="in"))
+        assert bodies.sent[0][3] == pytest.approx(76.2)

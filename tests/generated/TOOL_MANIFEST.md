@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 215  |  **Input-kinds:** 31  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 220  |  **Input-kinds:** 33  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -20,6 +20,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `FeatureEditOperands` | A references array resolved by the selected feature action's typed operand kind. |
 | `FeatureRef` | A reference to ONE timeline FEATURE by name, '<component>/<name>', or timeline index, as |
 | `FeatureRefList` | A LIST of timeline features, resolving to (entities, labels) - the entity list plus the |
+| `FormCageHandleList` | A LIST of Form cage handles: vertices, edges or faces of ONE Form's control cage. |
 | `GeometryHandle` | A reference to EXISTING geometry, as a SHORT-LIVED handle from find_geometry (an entityToken). |
 | `GeometryHandleList` | A LIST of geometry handles (e.g. the specific edges to fillet, the bodies to mirror). Accepts a |
 | `JointOriginRef` | A reference to a Joint Origin (a reusable WCS coordinate frame), as EITHER a 'handle' (the |
@@ -28,6 +29,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | `OccurrenceRef` | A reference to an assembly OCCURRENCE (a component instance): a `handle` - its entityToken, which |
 | `OccurrenceRefList` | A list of occurrence references (JSON list or comma-separated), each resolved via OccurrenceRef's |
 | `PlaneRef` | A reference to a PLANE to act on, resolved from ANY of three shapes a user might supply: |
+| `PlasticRuleRef` | Resolve one scoped plastic rule, refusing ambiguous or stale references. |
 | `PointRef` | A point operand: a point handle, a point or circle/arc centre index ref, or a datum name. |
 | `PointRefList` | An ORDERED list of point operands, each resolved through PointRef. |
 | `ProfileRef` | A reference to a sketch PROFILE - a stable 'handle' (entityToken, order-stable across rebuilds) |
@@ -55,6 +57,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | · | `model_compute_holder` | Profile a solid holder body into CAM tool-holder segments, returned with 'holder_json'. |
 | ✎ | `model_construction` | Add a construction point, axis or plane; each 'mode' reads its own inputs. |
 | ✎ | `model_create_component` | Create a new EMPTY component occurrence, at root unless 'parent' nests it |
+| ✎ | `model_create_rib` | Create a rib or web from ordered sketch curves into an explicit solid |
 | ✎ | `model_draft` | Taper (draft) faces relative to a pull plane |
 | ✎ | `model_edit_body` | Copy, move or rehome a body; merge two coplanar faces in direct mode |
 | ✎ | `model_edit_extrude` | Edit solid Extrude; refs from design_get/sketch_get. |
@@ -110,6 +113,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | | Tool | Summary |
 |---|---|---|
 | ✎ | `form_create` | Create a T-spline Form's B-Rep body from a primitive centred on origin (the cylinder is 8-sided), or a quad cage; form_get(include=['cage']) reads one back |
+| ✎ | `form_edit` | Move a Form body or selected cage vertices/faces, or crease cage edges in place |
 | · | `form_get` | List T-spline Forms with their creation records; include=['cage'] returns one Form's cage for form_create. |
 
 ### mesh
@@ -119,9 +123,10 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `mesh_combine` | Boolean-combine MESH bodies: 'tools' into 'target', the body that survives; model_combine sees only BRep solids. |
 | ⚠ | `mesh_delete` | Delete a MESH body - design_delete_feature and design_delete_occurrence cannot reach one. |
 | ✎ | `mesh_export` | Export geometry to a MESH file on local disk; design_export writes neutral BRep formats. |
+| · | `mesh_find` | Acquire scoped mesh groups, nodes, triangles, ray hits or a silhouette |
 | ✎ | `mesh_generate_face_groups` | Segment a MESH body into planar FACE GROUPS - required before mesh_to_brep(method='prismatic'). |
 | · | `mesh_get` | List the MESH bodies in a component or the whole design - the BRep tools cannot see them |
-| ✎ | `mesh_insert` | Import an STL / OBJ / 3MF from a LOCAL path as a MESH body. |
+| ✎ | `mesh_insert` | Insert exactly one LOCAL file_path or triangle data as mesh |
 | ✎ | `mesh_plane_cut` | Cut a MESH body with a plane - trim, split into two bodies, or split the triangulation. |
 | ✎ | `mesh_reduce` | Decimate (reduce the triangle count of) a MESH body. |
 | ✎ | `mesh_remesh` | Regenerate a cleaner, more uniform triangulation of a MESH body. |
@@ -218,6 +223,8 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `design_configure` | Build or switch a Configured Design; 'action' picks the verb |
 | ⚠ | `design_delete_feature` | Delete one timeline feature by name; a pattern/mirror delete takes every instance it created. |
 | ⚠ | `design_delete_occurrence` | Delete one component occurrence; if it was the last instance of its component, the component goes too. |
+| ✎ | `design_edit_plastic_rule` | Copy a plastic rule into the design, update it or delete an unused design rule |
+| ✎ | `design_edit_reference_image` | Create, place, style or delete a root-local canvas or decal from a LOCAL image |
 | ⚠ | `design_edit_timeline` | Edit timeline items from design_get(include=['timeline']); roll to='end' when done. |
 | ✎ | `design_export` | Export a body, component/occurrence or the whole design (omit 'target') to a CAD file on local disk. |
 | · | `design_get` | Design summary and opt-in detail. |
@@ -346,7 +353,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `sheet_create_refold` | Refold one explicit unfold feature after adding flat-state edits |
 | ✎ | `sheet_create_rip` | Rip a sheet body by a face (takes no gap), along an edge or between two vertices (gap from the rule unless given) |
 | ✎ | `sheet_create_unfold` | Unfold sheet-metal bends; cut, then sheet_create_refold. |
-| ✎ | `sheet_edit_rule` | Copy a sheet rule into this design, or edit a design rule. |
+| ✎ | `sheet_edit_rule` | Copy or update a design sheet rule, or delete an unused design rule |
 | · | `sheet_get` | Read sheet rules and assignments; include rules, library_rules, components or features. |
 
 ### sys

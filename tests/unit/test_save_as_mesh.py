@@ -322,3 +322,58 @@ class TestWeld:
         bad = [0.0, 1.0]
         assert mx._weld(bad, [0]) == (bad, [0])
         assert mx._weld([], []) == ([], [])
+
+
+class TestTessellationControls:
+
+    def _save(self, **kw):
+        src = _mesh_source()
+        _wire(_comp(), handles={"h": src})
+        return src, mx.handler(body="h", **kw)
+
+    def test_each_control_lands_on_the_calculator_after_the_quality_and_is_published(self):
+        src, res = self._save(surface_tolerance=0.02, max_edge_length=5, normal_deviation_deg=5)
+        calc = _calculator(src)
+        assert (calc.surfaceTolerance, calc.maxSideLength) == pytest.approx((0.002, 0.5))
+        assert calc.maxNormalDeviation == 5.0
+        out = payload(res)
+        assert out["units"] == "mm" and out["controls_applied"] == {
+            "surface_tolerance": 0.02, "max_edge_length": 5.0, "normal_deviation_deg": 5.0}
+        assert "not checked against them" in out["note"]
+
+    def test_the_calculator_takes_no_aspect_ratio(self):
+        with pytest.raises(TypeError):
+            self._save(max_aspect_ratio=3)
+        assert "max_aspect_ratio" not in mx.tool.to_dict()["inputSchema"]["properties"]
+
+    def test_lengths_follow_the_units_asked_and_the_angle_does_not(self):
+        src, _res = self._save(surface_tolerance=0.01, normal_deviation_deg=5, units="in")
+        calc = _calculator(src)
+        assert calc.surfaceTolerance == pytest.approx(0.0254) and calc.maxNormalDeviation == 5.0
+
+    def test_a_call_without_controls_publishes_none_and_leaves_the_calculator_alone(self):
+        src, res = self._save()
+        assert "controls_applied" not in payload(res) and _calculator(src).maxSideLength == 0.0
+
+    def test_a_control_the_calculator_does_not_keep_stops_before_any_mesh_is_added(self):
+        src = _mesh_source()
+        calc = _calculator(src)
+        type(calc).maxNormalDeviation = property(lambda self: 0.0, lambda self, value: None)
+        try:
+            comp = _comp()
+            _wire(comp, handles={"h": src})
+            res = mx.handler(body="h", normal_deviation_deg=5)
+        finally:
+            type(calc).maxNormalDeviation = 0.0
+        assert res["isError"] is True and "'normal_deviation_deg' did not read back" in res["message"]
+        assert comp.meshBodies.add_args is None
+
+    @pytest.mark.parametrize("kw,said", [
+        ({"surface_tolerance": 0}, "'surface_tolerance' must be a number above 0"),
+        ({"max_edge_length": -1}, "'max_edge_length' must be a number above 0"),
+        ({"normal_deviation_deg": 200}, "above 0 and at most 180"),
+        ({"surface_tolerance": "0.1"}, "got '0.1'")])
+    def test_a_control_out_of_range_is_refused_before_tessellating(self, kw, said):
+        src, res = self._save(**kw)
+        assert res["isError"] is True and said in res["message"]
+        assert _calculator(src)._quality is None

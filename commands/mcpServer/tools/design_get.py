@@ -8,7 +8,6 @@ fingerprint). include=['tree'|'timeline'|'mode'|'configurations'|'materials'|'ap
 """
 
 import json
-import math
 from itertools import islice
 
 import adsk.core
@@ -24,6 +23,9 @@ from . import _cam_common
 from . import _inputs
 from . import _joints
 from . import _materials
+from ._plastic_common import plastic_rule_row as _plastic_rule_row
+from . import _image_common
+from . import _rib_common
 from .design_configure import _CELL_FIELDS, _row_census
 from .model_inspect import _MAX_PER_BODY_ROWS
 
@@ -31,7 +33,7 @@ app = adsk.core.Application.get()
 
 # The deeper slices an agent can opt into (the default returns NONE of these in full - only summaries).
 _SLICES = ("mode", "tree", "timeline", "configurations", "materials", "appearances", "attributes",
-           "metadata", "definition", "datums", "plastic_rules", "library_plastic_rules")
+           "metadata", "definition", "datums", "plastic_rules", "library_plastic_rules", "reference_images")
 _FEATURE = _inputs.FeatureRef("feature", description="Definition for supported feature types.")
 _DEFINITION_UNREAD = object()
 
@@ -1134,23 +1136,6 @@ def _definition_loft(feature):
             "guide_count": _common.counted(lambda: feature.centerLineOrRails.count)}
 
 
-def _plastic_rule_row(rule, scope, index, factor):
-    """Read one scoped plastic rule with explicit length and angle units."""
-    row = {"ref": {"scope": scope, "index": index, "name": safe(lambda: rule.name)},
-           "is_used": _common.read_flag(lambda: rule.isUsed),
-           "minimum_thickness": _common.measured(lambda: rule.minimumThickness, factor),
-           "maximum_thickness": _common.measured(lambda: rule.maximumThickness, factor),
-           "minimum_draft_angle_deg": _common.measured(lambda: math.degrees(rule.minimumDraftAngle))}
-    for key, member in (("thickness", "thickness"), ("nominal_radius", "nominalRadius"),
-                        ("draft_angle", "draftAngle")):
-        parameter = safe(lambda member=member: getattr(rule, member))
-        row[key] = {"expression": safe(lambda: parameter.expression),
-                    "value_deg" if key == "draft_angle" else "value":
-                        _common.measured(lambda: math.degrees(parameter.value)) if key == "draft_angle"
-                        else _common.measured(lambda: parameter.value, factor)}
-    return row
-
-
 def _slice_plastic_rules(design, scope, name_filter, max_results, units):
     """Read bounded plastic-rule rows without copying, editing or assigning a rule."""
     factor, reason = _inputs.UNITS.resolve(units)
@@ -1198,7 +1183,7 @@ def _slice_definition(feature, units):
     if kind not in _edit_feature_common.FEATURE_EDIT_SUPPORT and kind not in (
                     "adsk::fusion::HoleFeature", "adsk::fusion::ThreadFeature",
                     "adsk::fusion::LoftFeature", "adsk::fusion::ExtrudeFeature",
-                    "adsk::fusion::SweepFeature"):
+                    "adsk::fusion::SweepFeature", "adsk::fusion::RibFeature", "adsk::fusion::WebFeature"):
         return None, error(f"'{label}' has unsupported definition type {kind!r}; use "
                            "include=['timeline'] or model_inspect.")
     factor = 1 / _common.scale(values["units"])
@@ -1208,6 +1193,8 @@ def _slice_definition(feature, units):
             thread = _definition_thread(entity, factor)
             out.update({key: value for key, value in thread.items()
                         if key not in ("feature", "component", "type", "timeline_index")})
+    elif kind in ("adsk::fusion::RibFeature", "adsk::fusion::WebFeature"):
+        out = {**_definition_identity(entity), **_rib_common.rib_definition(entity, factor)}
     elif kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature"):
         out = {**_definition_identity(entity), **_edit_feature_common.feature_definition(entity, factor)}
     elif kind == "adsk::fusion::LoftFeature":
@@ -1237,8 +1224,10 @@ def _slice_definition(feature, units):
                "thread": (_definition_thread(child, factor)
                           if child is not _DEFINITION_UNREAD and child is not None else None)}
     out["units"] = (units or "mm").strip().lower()
-    out["note"] = ("Read at the current marker without rolling. supported_edits gives qualified calls and usable operand handles; reacquire at edit time."
+    out.setdefault("note", ("Read at the current marker without rolling. supported_edits gives qualified calls and usable operand handles; reacquire at edit time."
                    if kind in _edit_feature_common.FEATURE_EDIT_SUPPORT else
+                   "Read at the current marker without rolling. unavailable names unread fields; model_inspect checks retained geometry."
+                   if kind in ("adsk::fusion::RibFeature", "adsk::fusion::WebFeature") else
                    "Read at the current marker without rolling. Null is unknown unless applicable=false; "
                    "unavailable gives getter failures. Through-all extent_side_count is its native "
                    "one/two-side flag; extrude direction is unknown here. Sweep orientation_name gives the readable "
@@ -1251,10 +1240,11 @@ def _slice_definition(feature, units):
                    if kind == "adsk::fusion::LoftFeature" else
                    "tapped=false or thread_present=false means absent; applicable=false means "
                    "inapplicable. Other null fields are unknown. Measure tapped bore geometry "
-                   "with find_geometry/model_inspect; full-length threads imply no numeric length.")
+                   "with find_geometry/model_inspect; full-length threads imply no numeric length."))
     if out.get("not_read"):
         out["note"] += " This Extrude definition is partial: not_read lists fields it omits."
-    if kind in ("adsk::fusion::HemFeature", "adsk::fusion::RipFeature") and out.get("unavailable"):
+    if out.get("unavailable") and (kind == "adsk::fusion::RipFeature" or
+            kind == "adsk::fusion::HemFeature" and "hem_edge" not in out["unavailable"]):
         out["note"] += " If the definition is unreadable, roll before this feature; restore the end before editing."
     return out, None
 
@@ -1367,6 +1357,12 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
             out[name], rule_error = _slice_plastic_rules(design, scope, name_filter, max_results, units)
             if rule_error:
                 return rule_error
+
+    if "reference_images" in inc:
+        out["reference_images"], image_error = _image_common.slice_reference_images(
+            design, max_results, units)
+        if image_error:
+            return error(image_error)
 
     # advertise the slices NOT yet pulled (load-bearing: an un-named flag is invisible to the agent).
     remaining = [s for s in _SLICES if s not in inc]

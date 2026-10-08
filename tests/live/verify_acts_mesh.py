@@ -3514,3 +3514,390 @@ def _mesh_translate_rows():
 
 
 _MESH += _mesh_translate_rows()
+
+
+_W3_TETRA = {"vertices": [[0, 0, 0], [30, 0, 0], [0, 20, 0], [0, 0, 10]],
+             "triangles": [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]}
+
+
+def _mesh_bounds(name, lo, hi):
+    """model_inspect on a mesh: its box corners in mm, read apart from the write before it."""
+    def check(p):
+        box = p.get("bbox") or {}
+        return _measured(f"{name} bounds", box, all(
+            _near((box.get("min_point") or {}).get(a), lo[i], 0.001)
+            and _near((box.get("max_point") or {}).get(a), hi[i], 0.001)
+            for i, a in enumerate("xyz")))
+    return check
+
+
+def _mesh_data_rows():
+    """Caller triangle data becomes one mesh; mesh_find reads it; a move spends the revision."""
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("md_doc")
+    write("mesh_insert", {"data": {**_W3_TETRA, "triangles": [[0, 1, 9]]}},
+          _refused("data.triangles[0] is [0, 1, 9]"))
+    read("mesh_get", {}, lambda p: p.get("count") == 0)
+    read("design_get", {"include": ["timeline"]},
+         lambda p: _measured("no base feature left by the refused data",
+                             (p.get("timeline") or {}).get("count"),
+                             (p.get("timeline") or {}).get("count") == 0))
+    write("mesh_insert", {"data": _W3_TETRA, "name": "W3Tetra"},
+          lambda p: p.get("imported") is True and p.get("source") == "data"
+          and (p.get("vertices"), p.get("triangles")) == (4, 4) and p.get("name_applied") is True)
+    read("model_inspect", {"target": "W3Tetra", "units": "mm"},
+         lambda p: _mesh_bounds("W3Tetra", (0, 0, 0), (30, 20, 10))(p)
+         and p.get("is_closed") is True and _near(p.get("volume"), 1000.0, 0.01))
+    write("mesh_insert", {"data": {"vertices": [[50, 0, 0], [60, 0, 0], [50, 10, 0]],
+                                   "triangles": [[0, 1, 2]], "normals": [[1, 0, 0]],
+                                   "normal_indices": [[0, 0, 0]]}, "name": "W3Open"},
+          _refused("'data' is an object of vertices, triangles"))
+    write("mesh_insert", {"data": {"vertices": [[50, 0, 0], [60, 0, 0], [50, 10, 0]],
+                                   "triangles": [[0, 1, 2]]}, "name": "W3Open"},
+          lambda p: p.get("imported") is True and (p.get("vertices"), p.get("triangles")) == (3, 1))
+    read("model_inspect", {"target": "W3Open", "units": "mm"},
+         lambda p: _mesh_bounds("W3Open", (50, 0, 0), (60, 10, 0))(p) and p.get("is_closed") is False)
+    write("sys_execute_script", {"read_only": True, "script": """import adsk.core, adsk.fusion, json
+def run(context):
+    app=adsk.core.Application.get(); d=adsk.fusion.Design.cast(app.activeProduct)
+    if d is None or app.activeDocument.isSaved:
+        raise RuntimeError('owned unsaved mesh scratch required')
+    hits=[b for b in d.rootComponent.meshBodies if b.name == 'W3Open']
+    if len(hits) != 1: raise RuntimeError('one W3Open mesh required')
+    m=hits[0].mesh
+    print(json.dumps({'vertices_cm':list(m.nodeCoordinatesAsDouble),
+                     'triangles':list(m.triangleNodeIndices),
+                     'normals':list(m.normalVectorsAsDouble)}))
+"""}, lambda p: _measured("independent caller mesh geometry", p,
+          p.get("vertices_cm") == [5.0, 0.0, 0.0, 6.0, 0.0, 0.0, 5.0, 1.0, 0.0]
+          and p.get("triangles") == [0, 1, 2]))
+    read("mesh_find", {"body": "W3Tetra", "kind": "node", "nearest_to": [30, 0, 0]},
+         lambda p: p.get("total") == 4 and p["matches"][0]["index"] == 1
+         and p["matches"][0]["position"] == [30.0, 0.0, 0.0] and p.get("frame") == "world",
+         ("md_rev", _recall("md_rev", lambda p: p["revision"])))
+    read("mesh_find", {"body": "W3Tetra", "kind": "triangle", "max_results": 2},
+         lambda p: p.get("total") == 4 and len(p["matches"]) == 2 and p.get("truncated") is True
+         and p.get("revision") == _RECALL["md_rev"])
+    read("mesh_find", {"body": "W3Tetra", "kind": "group"},
+         lambda p: p.get("total", 0) >= 1 and all(_num(m.get("area")) for m in p["matches"]))
+    # straight down through (5, 5): the sloped face x/30 + y/20 + z/10 = 1 at z = 35/6, then z = 0
+    read("mesh_find", {"body": "W3Tetra", "kind": "ray", "ray_origin": [5, 5, 50],
+                       "ray_direction": [0, 0, -1]},
+         lambda p: _measured("ray hits", p.get("matches"),
+                             [round(m["position"][2], 3) for m in p["matches"]] == [5.833, 0.0]))
+    read("mesh_find", {"body": "W3Tetra", "kind": "ray", "ray_origin": [500, 5, 50],
+                       "ray_direction": [0, 0, -1]}, lambda p: p.get("matches") == [])
+    read("mesh_find", {"body": "W3Tetra", "kind": "silhouette", "plane": "xy"},
+         lambda p: _measured("silhouette on xy", p.get("matches"),
+                             len(p["matches"]) == 1 and p["matches"][0]["closed"] is True
+                             and p["matches"][0]["max"][:2] == [30.0, 20.0]))
+    read("mesh_find", {"body": "W3Tetra", "kind": "ray", "ray_origin": [5, 5, 50]},
+         _refused("missing ray_direction"))
+    write("model_move", {"bodies": ["W3Tetra"], "dx": 10}, lambda p: p.get("moved") is True)
+    read("mesh_find", {"body": "W3Tetra", "kind": "node", "nearest_to": [40, 0, 0]},
+         lambda p: p["matches"][0]["position"] == [40.0, 0.0, 0.0]
+         and p.get("revision") != _RECALL["md_rev"])
+    close()
+    return rows
+
+
+_MESH += _mesh_data_rows()
+
+
+def _tessellation_rows():
+    """A coarser and a finer angle on one cylinder, compared on what was actually produced."""
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("ts_doc")
+    write("sketch_create", {"plane": "xy", "name": "TsSk"})
+    write("sketch_add_geometry", {"sketch_name": "TsSk", "geometry": [
+        {"kind": "circle", "cx": 0, "cy": 0, "radius": 10}]})
+    write("model_extrude", {"sketch_name": "TsSk", "distance": 20}, "ok",
+          ("ts_body", _recall("ts_body", lambda p: p["result_bodies"][0])))
+
+    def saved(key, name, **controls):
+        write("save_as_mesh", lambda c: {"body": _ctx_get(c, "ts_body", "cylinder"),
+                                         "name": name, **controls},
+              lambda p: p.get("name") == name and (p.get("controls_applied") or {}) == {
+                  k: float(v) for k, v in controls.items()} and _num(p.get("triangle_count")),
+              (key, _recall(key, lambda p: p["triangle_count"])))
+        read("model_inspect", {"target": name, "units": "mm"},
+             lambda p: p.get("triangle_count") == _RECALL[key])
+    saved("ts_coarse", "TsCoarse", normal_deviation_deg=30)
+    saved("ts_fine", "TsFine", normal_deviation_deg=5)
+    read("mesh_get", {}, lambda p: _measured(
+        "a finer angle makes more triangles", [_RECALL["ts_coarse"], _RECALL["ts_fine"]],
+        _RECALL["ts_fine"] > _RECALL["ts_coarse"] and p.get("count") == 2))
+    saved("ts_surface_coarse", "TsSurfaceCoarse", surface_tolerance=0.5)
+    saved("ts_surface_fine", "TsSurfaceFine", surface_tolerance=0.005)
+    read("mesh_get", {}, lambda p: _measured(
+        "surface tolerance refines the cylinder", [_RECALL["ts_surface_coarse"], _RECALL["ts_surface_fine"]],
+        p.get("count") == 4 and _RECALL["ts_surface_fine"] > _RECALL["ts_surface_coarse"]))
+    saved("ts_edge_plain", "TsEdgePlain")
+    saved("ts_edge", "TsEdge", max_edge_length=2)
+    read("mesh_get", {}, lambda p: _measured(
+        "edge length refines the cylinder", [_RECALL["ts_edge_plain"], _RECALL["ts_edge"]],
+        p.get("count") == 6 and _RECALL["ts_edge"] > _RECALL["ts_edge_plain"]))
+    write("save_as_mesh", lambda c: {"body": _ctx_get(c, "ts_body", "cylinder"),
+                                     "normal_deviation_deg": 200}, _refused("at most 180"))
+    write("save_as_mesh", lambda c: {"body": _ctx_get(c, "ts_body", "cylinder"),
+                                     "max_aspect_ratio": 4}, _refused("max_aspect_ratio"))
+
+    def exported(key, deg):
+        path = EXPORT_DIR + f"/w3_cyl_{deg}.stl"
+        write("mesh_export", lambda c: {"target": _ctx_get(c, "ts_body", "cylinder"),
+                                        "format": "stl", "file_path": path,
+                                        "normal_deviation_deg": deg},
+              lambda p: p.get("exported") is True and p.get("refinement") == "custom"
+              and (p.get("options_applied") or {}).get("normal_deviation_deg") == float(deg)
+              and _num(p.get("triangle_count")) and p.get("size_bytes") == 84 + 50 * p["triangle_count"],
+              (key, _recall(key, lambda p: p["triangle_count"])))
+    exported("ts_stl_coarse", 30)
+    exported("ts_stl_fine", 0.8)
+    for key, suffix, controls in (("ts_stl_default", "default", {}),
+                                  ("ts_stl_ratio", "ratio", {"max_aspect_ratio": 2})):
+        write("mesh_export", lambda c, suffix=suffix, controls=controls: {
+            "target": _ctx_get(c, "ts_body", "cylinder"), "format": "stl",
+            "file_path": EXPORT_DIR + f"/w3_cyl_{suffix}.stl", **controls},
+            lambda p, controls=controls: p.get("exported") is True
+            and p.get("options_applied") == {"stl_units": "mm", **controls}
+            and _num(p.get("triangle_count")) and p.get("size_bytes") == 84 + 50 * p["triangle_count"],
+            (key, _recall(key, lambda p: p["triangle_count"])))
+
+    def on_disk(p):
+        files = {}
+        for key, deg in (("ts_stl_coarse", 30), ("ts_stl_fine", 0.8),
+                         ("ts_stl_default", "default"), ("ts_stl_ratio", "ratio")):
+            data = Path(EXPORT_DIR + f"/w3_cyl_{deg}.stl").read_bytes()
+            files[key] = (struct.unpack_from("<I", data, 80)[0] if len(data) >= 84 else None,
+                          len(data), hashlib.sha256(data[84:]).hexdigest()[:12])
+        return _measured("the four STL files on disk", files, p.get("count") == 6 and all(
+            count == _RECALL[key] and size == 84 + 50 * count
+            for key, (count, size, _digest) in files.items())
+            and files["ts_stl_fine"][0] > files["ts_stl_coarse"][0]
+            and files["ts_stl_fine"][2] != files["ts_stl_coarse"][2]
+            and files["ts_stl_ratio"][0] > files["ts_stl_default"][0]
+            and files["ts_stl_ratio"][2] != files["ts_stl_default"][2])
+    read("mesh_get", {}, on_disk)
+    write("mesh_export", lambda c: {"target": _ctx_get(c, "ts_body", "cylinder"), "format": "obj",
+                                    "file_path": EXPORT_DIR + "/w3_cyl.obj",
+                                    "max_aspect_ratio": 3}, _refused("format=obj"))
+    close()
+    return rows
+
+
+_MESH += _tessellation_rows()
+
+
+def _cage_vertex_at(x, y, z):
+    """find_geometry(form_vertex): the nearest cage vertex sits at this point, in mm."""
+    return lambda p: _measured(f"cage vertex at ({x}, {y}, {z})", (p.get("matches") or [{}])[0],
+                               bool(p.get("matches"))
+                               and p["matches"][0]["position"] == [float(x), float(y), float(z)])
+
+
+def _form_edit_rows():
+    """A cage vertex moved and returned, an edge creased, the whole body moved: each re-read."""
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("fe_doc")
+    write("form_create", {"primitive": {"shape": "box", "size": [20, 20, 20], "spans": [2, 2, 2]},
+                          "name": "W3Box"}, lambda p: p.get("created") is True,
+          ("fe_form", _recall("fe_form", lambda p: p["form"])))
+    read("model_inspect", {"target": "W3Box", "include": ["default", "mass"], "units": "mm"}, "ok",
+         ("fe_volume", _recall("fe_volume", lambda p: p["mass"]["volume"])))
+
+    def find(kind, near, check, save):
+        read("find_geometry", lambda c: {"kind": kind, "nearest_to": near, "max_results": 1,
+                                         "name": _ctx_get(c, "fe_form", "the Form")},
+             check, (save, _recall(save, lambda p: p["matches"][0]["handle"])))
+
+    def edit(args, check):
+        write("form_edit", lambda c: {"body": _ctx_get(c, "fe_form", "the Form"),
+                                      **(args(c) if callable(args) else args)}, check)
+    find("form_vertex", [10, 10, 10], _cage_vertex_at(10, 10, 10), "fe_corner")
+    edit(lambda c: {"action": "move", "entities": [_ctx_get(c, "fe_corner", "corner")],
+                    "translation": [5, 5, 5]},
+         lambda p: p.get("edited") is True and p.get("changed") is True
+         and p.get("moved_vertices") == 1
+         and p["cage_before"]["revision"] != p["cage_after"]["revision"])
+    read("model_inspect", {"target": "W3Box", "include": ["default", "mass"], "units": "mm"},
+         lambda p: _measured("the solid grew with its corner", (p.get("mass") or {}).get("volume"),
+                             p["mass"]["volume"] > _RECALL["fe_volume"] + 1.0))
+    # the handle read before the move is spent
+    edit(lambda c: {"action": "move", "entities": [_ctx_get(c, "fe_corner", "corner")],
+                    "translation": [-5, -5, -5]}, _refused("earlier cage"))
+    find("form_vertex", [15, 15, 15], _cage_vertex_at(15, 15, 15), "fe_corner2")
+    edit(lambda c: {"action": "move", "entities": [_ctx_get(c, "fe_corner2", "moved corner")],
+                    "translation": [-5, -5, -5]}, lambda p: p.get("edited") is True)
+    read("model_inspect", {"target": "W3Box", "include": ["default", "mass"], "units": "mm"},
+         lambda p: _near_rel((p.get("mass") or {}).get("volume"), _RECALL["fe_volume"], 1e-7))
+    at = lambda x, y, z: lambda p: p["matches"][0]["position"] == [float(x), float(y), float(z)]
+    find("form_face", [5, 5, 10], at(5, 5, 10), "fe_face")
+    edit(lambda c: {"action": "move", "entities": [_ctx_get(c, "fe_face", "top face")],
+                    "translation": [0, 0, 5]},
+         lambda p: p.get("edited") is True and p.get("changed") is True
+         and p.get("moved_vertices") == 4)
+    read("model_inspect", {"target": "W3Box", "include": ["default", "mass"], "units": "mm"},
+         lambda p: _measured("the solid grew with its face", (p.get("mass") or {}).get("volume"),
+                             p["mass"]["volume"] > _RECALL["fe_volume"] + 1.0))
+    find("form_face", [5, 5, 15], at(5, 5, 15), "fe_face2")
+    edit(lambda c: {"action": "move", "entities": [_ctx_get(c, "fe_face2", "moved face")],
+                    "translation": [0, 0, -5]}, lambda p: p.get("edited") is True)
+    read("model_inspect", {"target": "W3Box", "include": ["default", "mass"], "units": "mm"},
+         lambda p: _near_rel((p.get("mass") or {}).get("volume"), _RECALL["fe_volume"], 1e-7))
+    find("form_face", [5, 5, 10], at(5, 5, 10), "fe_face3")
+    find("form_edge", [10, 10, 5], lambda p: p["matches"][0]["creased"] is False, "fe_edge")
+    edit(lambda c: {"action": "crease", "entities": [_ctx_get(c, "fe_edge", "edge")],
+                    "creased": True},
+         lambda p: p.get("edited") is True and p["cage_after"]["creased_edges"] == 1
+         and p.get("moved_vertices") == 0)
+    find("form_edge", [10, 10, 5], lambda p: p["matches"][0]["creased"] is True, "fe_edge2")
+    edit({"action": "move", "translation": [0, 0, 10]},
+         lambda p: p.get("edited") is True and p.get("moved_vertices") == p["cage_after"]["vertices"])
+    read("model_inspect", {"target": "W3Box", "units": "mm"},
+         lambda p: _near((p.get("min_point") or {}).get("z"), 0, 0.01)
+         and _near((p.get("max_point") or {}).get("z"), 20, 0.01))
+    read("form_get", {}, lambda p: (p["forms"][0].get("record") or {}).get("edited_by") == "form_edit"
+         and p["forms"][0].get("modified_downstream") is False)
+    edit({"action": "move", "translation": [0, 0, 0]}, _refused("not all zero"))
+    close()
+    return rows
+
+
+_MESH += _form_edit_rows()
+
+
+def _image_row(kind, **want):
+    """design_get(reference_images): the one image of `kind` reads these values."""
+    def check(p):
+        hits = [r for r in (p.get("reference_images") or {}).get("images") or []
+                if r.get("kind") == kind]
+        row = hits[0] if len(hits) == 1 else {}
+        return _measured(f"the {kind}'s row", row, bool(row) and all(
+            row.get(k) == v if not isinstance(v, list)
+            else isinstance(row.get(k), list) and len(row[k]) == len(v)
+            and all(_near(a, b, 0.001) for a, b in zip(row[k], v))
+            for k, v in want.items()))
+    return check
+
+
+def _reference_image_rows():
+    """A canvas and a decal created, placed, styled and deleted, each read back by design_get."""
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("ri_doc")
+    image = EXPORT_DIR + "/w3_reference.png"
+    images = {"include": ["reference_images"], "units": "mm"}
+    write("sketch_create", {"plane": "xy", "name": "RiSk"})
+    write("sketch_add_geometry", {"sketch_name": "RiSk", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 40, "y2": 30}]})
+    write("model_extrude", {"sketch_name": "RiSk", "distance": 10})
+    read("view_screenshot", {"view": "top", "width": 64, "height": 32, "file_path": image}, "ok")
+
+    def edit(args, check, save=None):
+        write("design_edit_reference_image", args, check, save)
+    edit({"action": "create", "kind": "canvas", "image": image, "plane": "xy"},
+         lambda p: p.get("kind") == "canvas" and p.get("before") is None
+         and bool(p.get("reference")),
+         ("ri_canvas", _recall("ri_canvas", lambda p: p["reference"])))
+    read("design_get", images, _image_row("canvas", position=[0, 0], mirrored=False),
+         ("ri_size", _recall("ri_size", lambda p: p["reference_images"]["images"][0]["size"])))
+    edit(lambda c: {"action": "place", "kind": "canvas", "position": [10, 20], "scale": [2, 2],
+                    "rotation_deg": 90, "reference": _ctx_get(c, "ri_canvas", "canvas")},
+         lambda p: p["after"]["position"] == [10.0, 20.0] and p["after"]["rotation_deg"] == 90.0)
+    read("design_get", images, lambda p: _image_row(
+        "canvas", position=[10, 20], rotation_deg=90.0,
+        size=[2 * _RECALL["ri_size"][0], 2 * _RECALL["ri_size"][1]])(p))
+    edit(lambda c: {"action": "style", "kind": "canvas", "opacity": 30, "display_through": False,
+                    "reference": _ctx_get(c, "ri_canvas", "canvas")},
+         lambda p: p["after"]["opacity"] == 30.0 and p["after"]["display_through"] is False)
+    read("design_get", images, _image_row("canvas", opacity=30.0, display_through=False))
+    edit(lambda c: {"action": "style", "kind": "canvas", "opacity": 30.5, "name": "MustNotRename",
+                    "reference": _ctx_get(c, "ri_canvas", "canvas")}, _refused("whole number from 0 to 100"))
+    read("design_get", images, _image_row("canvas", name="w3_reference", opacity=30.0, display_through=False))
+    edit(lambda c: {"action": "place", "kind": "canvas", "flip_horizontal": True,
+                    "reference": _ctx_get(c, "ri_canvas", "canvas")},
+         lambda p: p["after"]["mirrored"] is True and p["after"]["position"] == [10.0, 20.0])
+    edit(lambda c: {"action": "style", "kind": "canvas", "opacity": 150,
+                    "reference": _ctx_get(c, "ri_canvas", "canvas")}, _refused("from 0 to 100"))
+    # a canvas on a planar face, and a decal on the same face
+    read("find_geometry", {"kind": "planar_face", "nearest_to": [20, 15, 10], "max_results": 1},
+         lambda p: _near(p["matches"][0]["position"][2], 10, 0.001),
+         ("ri_top", _recall("ri_top", lambda p: p["matches"][0]["handle"])))
+    edit(lambda c: {"action": "create", "kind": "canvas", "image": image, "name": "RiOnFace",
+                    "plane": _ctx_get(c, "ri_top", "top face")},
+         lambda p: p["after"]["name"] == "RiOnFace",
+         ("ri_face_canvas", _recall("ri_face_canvas", lambda p: p["reference"])))
+    edit(lambda c: {"action": "delete", "kind": "canvas",
+                    "reference": _ctx_get(c, "ri_face_canvas", "face canvas")},
+         lambda p: p.get("deleted") is True and p.get("after") is None)
+    edit(lambda c: {"action": "create", "kind": "decal", "image": image, "origin": [20, 15, 10],
+                    "faces": [_ctx_get(c, "ri_top", "top face")], "opacity": 40},
+         lambda p: p["after"]["opacity"] == 40.0 and p["after"]["origin"] == [20.0, 15.0, 10.0],
+         ("ri_decal", _recall("ri_decal", lambda p: p["reference"])))
+    decal_of = lambda p: [r for r in p["reference_images"]["images"] if r["kind"] == "decal"][0]
+    read("design_get", images, _image_row("decal", origin=[20, 15, 10],
+                                          first_face_centroid=[20, 15, 10]),
+         ("ri_dsize", _recall("ri_dsize", lambda p: decal_of(p)["size"])))
+    read("design_get", {"include": ["timeline"]}, "ok",
+         ("ri_marker", _recall("ri_marker", lambda p: p["timeline"].get("marker_position"))))
+    edit(lambda c: {"action": "place", "kind": "decal", "origin": [10, 10, 10],
+                    "scale": [0.5, 0.5], "x_direction": [0, 1, 0],
+                    "reference": _ctx_get(c, "ri_decal", "decal")},
+         lambda p: p["after"]["origin"] == [10.0, 10.0, 10.0]
+         and p["after"]["x_direction"] == [0.0, 1.0, 0.0])
+    read("design_get", {"include": ["timeline"]},
+         lambda p: p["timeline"].get("marker_position") == _RECALL["ri_marker"])
+    read("design_get", images, _image_row("decal", origin=[10, 10, 10], opacity=40.0))
+    edit(lambda c: {"action": "place", "kind": "decal", "x_direction": [0, 0, 1],
+                    "reference": _ctx_get(c, "ri_decal", "decal")},
+         _refused("must lie in the first face's plane"))
+    read("find_geometry", {"kind": "planar_face", "nearest_to": [40, 15, 5], "max_results": 1},
+         lambda p: _near(p["matches"][0]["position"][0], 40, 0.001),
+         ("ri_side", _recall("ri_side", lambda p: p["matches"][0]["handle"])))
+    # a decal stays on its faces; two faces need chaining off
+    edit(lambda c: {"action": "place", "kind": "decal", "origin": [40, 15, 5],
+                    "faces": [_ctx_get(c, "ri_side", "side face")],
+                    "reference": _ctx_get(c, "ri_decal", "decal")},
+         _refused("Delete the decal and create it"))
+    read("design_get", images, _image_row("decal", origin=[10, 10, 10],
+                                          first_face_centroid=[20, 15, 10]))
+
+    def drop(key, kind):
+        edit(lambda c: {"action": "delete", "kind": kind, "reference": _ctx_get(c, key, kind)},
+             lambda p: p.get("deleted") is True)
+    drop("ri_decal", "decal")
+    both = lambda c: [_ctx_get(c, "ri_side", "side face"), _ctx_get(c, "ri_top", "top face")]
+    edit(lambda c: {"action": "create", "kind": "decal", "image": image, "origin": [40, 15, 5],
+                    "faces": both(c)}, _refused("chain_faces=false"))
+    # off the first face: Fusion's own refusal comes through and nothing is left behind
+    edit(lambda c: {"action": "create", "kind": "decal", "image": image, "origin": [50, 15, 5],
+                    "faces": both(c), "chain_faces": False}, _refused("not located on primary face"))
+    read("design_get", images, lambda p: not [r for r in p["reference_images"]["images"]
+                                              if r["kind"] == "decal"])
+    # on the +X side face and the top, direction given: read apart from the write
+    edit(lambda c: {"action": "create", "kind": "decal", "image": image, "origin": [40, 15, 5],
+                    "faces": both(c), "chain_faces": False, "x_direction": [0, 0, 1]},
+         lambda p: p["after"]["origin"] == [40.0, 15.0, 5.0],
+         ("ri_decal_side", _recall("ri_decal_side", lambda p: p["reference"])))
+    read("design_get", images, _image_row(
+        "decal", origin=[40, 15, 5], x_direction=[0, 0, 1], first_face_centroid=[40, 15, 5],
+        face_count=2, chain_faces=False))
+    drop("ri_decal_side", "decal")
+    edit(lambda c: {"action": "create", "kind": "decal", "image": image, "origin": [30, 10, 10],
+                    "faces": [_ctx_get(c, "ri_top", "top face")], "scale": [2, 2],
+                    "x_direction": [0, 1, 0], "chain_faces": False},
+         lambda p: p["after"]["origin"] == [30.0, 10.0, 10.0],
+         ("ri_decal2", _recall("ri_decal2", lambda p: p["reference"])))
+    read("design_get", images, lambda p: _image_row(
+        "decal", origin=[30, 10, 10], x_direction=[0, 1, 0], first_face_centroid=[20, 15, 10],
+        face_count=1, size=[2 * _RECALL["ri_dsize"][0], 2 * _RECALL["ri_dsize"][1]])(p))
+    drop("ri_decal2", "decal")
+    drop("ri_canvas", "canvas")
+    read("design_get", images, lambda p: p["reference_images"].get("total") == 0)
+    edit(lambda c: {"action": "delete", "kind": "canvas",
+                    "reference": _ctx_get(c, "ri_canvas", "canvas")},
+         _refused("no longer names a root canvas"))
+    close()
+    return rows
+
+
+_MESH += _reference_image_rows()

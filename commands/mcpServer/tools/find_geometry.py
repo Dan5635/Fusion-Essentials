@@ -14,6 +14,7 @@ from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, scale
 from ._cam_common import clamp_rows
 from . import _common
+from . import _form_common
 from . import _geom
 from . import _inputs
 from . import _outputs
@@ -382,6 +383,52 @@ def _placed_payload(design, target, knd, sketch, name, radius, nearest_to, units
     return ok(payload)
 
 
+_FORM_KINDS = tuple(_form_common.CAGE_KINDS)
+_FORM = _inputs.FeatureRef("name")
+
+
+def _form_payload(design, knd, name, nearest_to, units, inv_k, max_results):
+    """The cage vertices, edges or faces of one Form, each row's handle stamped with the cage
+    revision it was read at."""
+    forms = [ff for _comp, ff in _form_common.all_forms(design)]
+    if (name or "").strip():
+        ff, ferr = _form_common.resolve_form(design, _FORM, name)
+        if ferr:
+            return error(ferr)
+    elif len(forms) == 1:
+        ff = forms[0]
+    else:
+        return error(f"kind='{knd}' reads one Form and the design holds {len(forms)} - name it "
+                     "with 'name' as form_get lists it.")
+    body, berr = _form_common.one_cage_body(ff)
+    if berr:
+        return error(berr)
+    walk = _form_common.cage_walk(body)
+    if walk is None:
+        return error(f"The cage of '{_form_common.form_label(ff)}' did not read.")
+    revision = _form_common.cage_revision(walk)
+    rows = []
+    for index in range(len(walk[_form_common.CAGE_KINDS[knd]])):
+        point = _form_common.cage_point(walk, knd, index)
+        rec = {"kind": knd, "index": index, "position": [round(c * inv_k, 6) for c in point]}
+        if knd == "form_edge":
+            rec["creased"] = walk["edges"][index][2]
+        if knd == "form_face":
+            rec["vertex_count"] = len(walk["faces"][index])
+        rows.append(rec)
+    if isinstance(nearest_to, (list, tuple)) and len(nearest_to) == 3:
+        npt = [float(nearest_to[i]) for i in range(3)]
+        rows.sort(key=lambda rec: _dist(rec["position"], npt))
+    kept = rows[:clamp_rows(max_results, _MAX_RESULTS_DEFAULT, _MAX_RESULTS_CEILING)]
+    for rec in kept:
+        rec["handle"] = _form_common.cage_handle(ff, body, knd, rec["index"], revision)
+    return ok({"target": _form_common.form_label(ff), "kind_filter": knd,
+               "match_count": len(rows), "returned": len(kept), "units": units,
+               "occurrences_walk": None, "matches": kept, "revision": revision,
+               "note": "'position' is WORLD: a vertex, an edge's middle, a face's centroid. Cage "
+                       "handles feed form_edit and hold until the cage changes."})
+
+
 def handler(target: str = "", kind: str = "", radius: float = None,
             nearest_to=None, units: str = "mm", max_results: int = 20, sketch: str = "",
             name: str = "") -> dict:
@@ -396,6 +443,13 @@ def handler(target: str = "", kind: str = "", radius: float = None,
         return error("No active design (open or create a document first).")
 
     knd = (kind or "").strip().lower()
+    if knd in _FORM_KINDS:
+        stray = [n for n, v in (("target", target), ("sketch", sketch), ("radius", radius))
+                 if v not in (None, "")]
+        if stray:
+            return error(f"kind='{knd}' reads a Form's cage: 'name' names the Form; drop "
+                         f"{', '.join(stray)}.")
+        return _form_payload(design, knd, name, nearest_to, units, inv_k, max_results)
     if knd in _PLACED_KINDS:
         return _placed_payload(design, target, knd, sketch, name, radius, nearest_to, units, inv_k,
                                max_results)
@@ -503,7 +557,7 @@ find_tool = (
     .add_input_property(*_inputs.Choice("kind",
         ["cylinder_face", "planar_face", "cone_face", "sphere_face", "torus_face", "nurbs_face",
          "circular_edge", "line_edge", "arc_edge", "ellipse_edge", "elliptical_arc_edge",
-         "spline_edge", "vertex", *_PLACED_KINDS]).as_property())
+         "spline_edge", "vertex", *_PLACED_KINDS, *_FORM_KINDS]).as_property())
     .add_input_property("sketch", {"type": "string"})
     .add_input_property("name", {"type": "string"})
     .add_input_property("radius", {"type": "number",

@@ -1281,9 +1281,14 @@ def feature_definition_view(feature, state, definition, unavailable):
                 and state.get("is_full_length") is True else [])
     scope = ({"derived_parameters_scope": "design"}
              if feature_type == "adsk::fusion::DeriveFeature" else {})
-    return {**definition, **scope, "feature_address": address,
-            "supported_edits": feature_edit_rows(feature, definition),
-            "not_read": not_read, "unavailable": unavailable}
+    out = {**definition, **scope, "feature_address": address,
+           "supported_edits": feature_edit_rows(feature, definition),
+           "not_read": not_read, "unavailable": unavailable}
+    if feature_type == "adsk::fusion::HemFeature" and "hem_edge" in unavailable:
+        out["note"] = ("Read hem_edge by explicitly rolling design_edit_timeline(action='roll', "
+                       "feature=<feature_address>, to='before'), then design_get(include=['definition'], "
+                       "feature=<feature_address>). Restore the prior timeline position when done.")
+    return out
 
 
 def feature_geometry_snapshot(design):

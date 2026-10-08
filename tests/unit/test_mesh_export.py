@@ -943,3 +943,70 @@ class TestExportNoteBudget:
         note = out["note"]
         assert "PARTIAL" in note and "did NOT land" in note and "UNVERIFIED" in note
         assert len(note) <= 400, len(note)          # test_prose_budget.NOTE_BUDGET_CHARS
+
+
+class TestStlTessellationKnobs:
+
+    def _stl(self, tmp_path, **kw):
+        return mx.handler(format="stl", file_path=str(tmp_path / "p.stl"), **kw)
+
+    def test_both_knobs_are_set_as_given_read_back_and_published(self, tmp_path):
+        des = _wire(_comp("Root", bodies=[BRepBody("Body1")]))
+        out = payload(self._stl(tmp_path, normal_deviation_deg=5, max_aspect_ratio=4))
+        opts = des.exportManager._calls[-1]
+        assert (opts.normalDeviation, opts.aspectRatio) == (5.0, 4.0)
+        assert out["options_requested"]["normal_deviation_deg"] == 5.0
+        assert out["options_applied"]["max_aspect_ratio"] == 4.0
+        assert out["options_verified"]["normal_deviation_deg"] is True
+
+    def test_a_knob_whose_write_is_dropped_stops_the_export_before_it_writes(self, tmp_path):
+        des = _wire(_comp("Root", bodies=[BRepBody("Body1")]))
+        des.exportManager.createSTLExportOptions = lambda geom, path: _record(
+            des, "stl", geom, path, drops=("normalDeviation",))
+        res = self._stl(tmp_path, normal_deviation_deg=5)
+        assert res["isError"] is True and "normal_deviation_deg did not read back" in res["message"]
+        assert not (tmp_path / "p.stl").exists()
+
+    def test_a_knob_already_holding_the_value_is_published_unverified(self, tmp_path):
+        des = _wire(_comp("Root", bodies=[BRepBody("Body1")]))
+        _options_holding(des, "normalDeviation", 15.0, "createSTLExportOptions", "stl")
+        out = payload(self._stl(tmp_path, normal_deviation_deg=15))
+        assert out["options_applied"]["normal_deviation_deg"] == 15.0
+        assert out["options_verified"]["normal_deviation_deg"] is False
+
+    def test_the_refinement_reads_custom_once_a_knob_flipped_it(self, tmp_path):
+        des = _wire(_comp("Root", bodies=[BRepBody("Body1")]))
+        custom = mx.adsk.fusion.MeshRefinementSettings.MeshRefinementCustom
+        _options_holding(des, "meshRefinement", custom, "createSTLExportOptions", "stl")
+        out = payload(self._stl(tmp_path, max_aspect_ratio=3))
+        assert out["refinement"] == "custom" and out["refinement_requested"] == "medium"
+
+    @pytest.mark.parametrize("kw,said", [
+        ({"normal_deviation_deg": 0}, "above 0 and at most 180"),
+        ({"normal_deviation_deg": 181}, "above 0 and at most 180"),
+        ({"normal_deviation_deg": float("nan")}, "got nan"),
+        ({"max_aspect_ratio": 0.5}, "of at least 1"),
+        ({"max_aspect_ratio": "4"}, "got '4'")])
+    def test_a_knob_out_of_range_is_refused_naming_it(self, tmp_path, kw, said):
+        des = _wire(_comp("Root", bodies=[BRepBody("Body1")]))
+        res = self._stl(tmp_path, **kw)
+        assert res["isError"] is True and said in res["message"]
+        assert des.exportManager._calls == []
+
+    @pytest.mark.parametrize("kw,said", [
+        ({"format": "obj"}, "format=obj"),
+        ({"format": "stl", "split_by_component": True}, "with split_by_component")])
+    def test_a_knob_off_a_single_stl_file_is_refused_not_dropped(self, tmp_path, kw, said):
+        des = _wire(_comp("Root", bodies=[BRepBody("Body1")]))
+        res = mx.handler(file_path=str(tmp_path / "out"), max_aspect_ratio=3, **kw)
+        assert res["isError"] is True and said in res["message"]
+        assert des.exportManager._calls == []
+
+    def test_the_triangle_count_is_read_only_from_a_file_whose_size_agrees(self, tmp_path):
+        import struct
+        good, short = tmp_path / "good.stl", tmp_path / "short.stl"
+        good.write_bytes(b"\0" * 80 + struct.pack("<I", 2) + b"\0" * 100)
+        short.write_bytes(b"\0" * 80 + struct.pack("<I", 2) + b"\0" * 60)
+        assert mx._binary_stl_triangles(str(good)) == 2
+        assert mx._binary_stl_triangles(str(short)) is None
+        assert mx._binary_stl_triangles(str(tmp_path / "missing.stl")) is None

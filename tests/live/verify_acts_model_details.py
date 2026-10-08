@@ -1965,3 +1965,7 @@ _DETAILS += advanced_feature_edit_rows()
 _DETAILS += surface_boundary_edit_rows()
 _DETAILS += surface_feature_edit_rows()
 _DETAILS += _DATUM_EDITS
+
+from verify_acts_plastic import rib_web_rows
+
+_DETAILS += rib_web_rows()

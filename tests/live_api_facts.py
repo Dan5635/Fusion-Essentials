@@ -362,6 +362,11 @@ ENUMS = {
         "StartEdgeBendPositionType": 3,
         "TangentToSideBendPositionType": 4,
     },
+    "fusion.BendReliefShapes": {
+        "StraightBendReliefShape": 0,
+        "TearBendReliefShape": 1,
+        "RoundBendReliefShape": 2,
+    },
     "fusion.BoundingBoxEntityTypes": {
         "AllEntitiesBoundingBoxEntityType": 0,
         "SolidBRepBodyBoundingBoxEntityType": 1,
@@ -712,11 +717,32 @@ ENUMS = {
         "HighEndThreadLocation": 0,
         "LowEndThreadLocation": 1,
     },
+    "fusion.ThreeBendReliefShapes": {
+        "NoReplacementThreeBendReliefShape": 0,
+        "IntersectionThreeBendReliefShape": 1,
+        "FullRoundThreeBendReliefShape": 2,
+        "RoundWithRadiusThreeBendReliefShape": 3,
+    },
     "fusion.TriangleMeshQualityOptions": {
         "LowQualityTriangleMesh": 8,
         "NormalQualityTriangleMesh": 11,
         "HighQualityTriangleMesh": 13,
         "VeryHighQualityTriangleMesh": 15,
+    },
+    "fusion.TwoBendReliefPlacements": {
+        "NoTwoBendReliefPlacement": 0,
+        "IntersectionTwoBendReliefPlacement": 1,
+        "TangentTwoBendReliefPlacement": 2,
+        "VertexTwoBendReliefPlacement": 3,
+    },
+    "fusion.TwoBendReliefShapes": {
+        "RoundTwoBendReliefShape": 0,
+        "SquareTwoBendReliefShape": 1,
+        "TearTwoBendReliefShape": 2,
+        "TrimToBendTwoBendReliefShape": 3,
+        "LinearWeldTwoBendReliefShape": 4,
+        "ArcWeldTwoBendReliefShape": 5,
+        "LaserWeldTwoBendReliefShape": 6,
     },
     "fusion.UntrimLoopTypes": {
         "AllLoopsUntrimType": 0,

@@ -28,6 +28,38 @@ import verify_core  # noqa: E402  the live sweep's predicate over the metadata s
 
 dg = load_tool("design_get")
 
+
+@pytest.fixture
+def unread_hem(monkeypatch):
+    feature = SimpleNamespace(objectType="adsk::fusion::HemFeature", timelineObject=object())
+    monkeypatch.setattr(dg._inputs, "candidate_address", lambda obj: "Hem1")
+    monkeypatch.setattr(dg._edit_feature_common, "feature_edit_rows", lambda *args: [])
+    return feature
+
+
+def test_unread_hem_operand_points_to_explicit_rollback_read_and_restore(unread_hem):
+    row = dg._edit_feature_common.feature_definition_view(unread_hem, {}, {"hem_edge": None},
+        {"hem_edge": "3 : Didn't roll editing feature back."})
+    assert row["hem_edge"] is None
+    assert "design_edit_timeline" in row["note"] and "to='before'" in row["note"]
+    assert "design_get(include=['definition']" in row["note"] and "Restore" in row["note"]
+    complete = dg._edit_feature_common.feature_definition_view(unread_hem, {}, {"hem_edge": "edge"}, {})
+    assert "note" not in complete
+
+
+@pytest.mark.parametrize("kind", ["HemFeature", "RibFeature"])
+def test_definition_composer_retains_explicit_operand_recovery(unread_hem, monkeypatch, kind):
+    unread_hem.objectType = "adsk::fusion::" + kind
+    monkeypatch.setattr(dg._FEATURE, "resolve", lambda raw: ((unread_hem, "Feature1"), None))
+    if kind == "HemFeature":
+        monkeypatch.setattr(dg._edit_feature_common, "feature_definition", lambda feature, factor:
+            dg._edit_feature_common.feature_definition_view(feature, {}, {"hem_edge": None},
+                {"hem_edge": "3 : Didn't roll editing feature back."}))
+    row, refusal = dg._slice_definition("Feature1", "mm")
+    assert refusal is None and "design_edit_timeline" in row["note"]
+    assert "to='before'" in row["note"] and "restore" in row["note"].casefold()
+    assert "tapped=false" not in row["note"]
+
 # The occurrence walk that will not enumerate at all - the measured unresolved-external-reference
 # state, which reaches the wire as UNKNOWN rather than as zero.
 _UNREADABLE_WALK = "2 : InternalValidationError : occ"

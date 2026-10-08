@@ -107,6 +107,7 @@ _GEOMETRY_REQUIREMENTS = {
                       and _common.safe(lambda: e.geometry.surfaceType) == adsk.core.SurfaceTypes.CylinderSurfaceType),
     "edge": ("an edge", lambda e: isinstance(e, adsk.fusion.BRepEdge)),
     "vertex": ("a vertex", lambda e: isinstance(e, adsk.fusion.BRepVertex)),
+    "sketch_curve": ("a sketch curve", lambda e: isinstance(e, adsk.fusion.SketchCurve)),
 }
 
 
@@ -122,6 +123,8 @@ class GeometryHandle(InputKind):
         self.require = require if require in _GEOMETRY_REQUIREMENTS else "any"
 
     def contract_note(self) -> str:
+        if self.require == "sketch_curve":
+            return "A sketch_get(include_entities=true) curve handle."
         label, _ = _GEOMETRY_REQUIREMENTS[self.require]
         return f"A find_geometry 'handle' at {label}."
 
@@ -3185,6 +3188,52 @@ class Choice(InputKind):
         return v, None
 
 
+class PlasticRuleRef(InputKind):
+    """Resolve one scoped plastic rule, refusing ambiguous or stale references."""
+
+    MAP_HINT = "a scoped plastic rule name or current {scope,index,name} ref"
+
+    def schema(self, brief=False) -> dict:
+        return {"type": ["string", "object"], "properties": {
+            "scope": {"type": "string", "enum": ["design", "library"]}, "index": {"type": "integer", "minimum": 0},
+            "name": {"type": "string"}}, "required": ["scope", "index", "name"],
+            "additionalProperties": False, **self._desc(brief)}
+
+    def contract_note(self) -> str:
+        return "Fresh design_get plastic_rules ref."
+
+    def resolve(self, raw):
+        from ._plastic_common import plastic_rules
+        if isinstance(raw, dict):
+            scope, index, name = raw.get("scope"), raw.get("index"), raw.get("name")
+            if (set(raw) != {"scope", "index", "name"} or scope not in ("design", "library")
+                    or type(index) is not int or index < 0 or not isinstance(name, str) or not name):
+                return None, f"'{self.name}' got {raw!a}; pass a fresh design_get plastic_rules ref."
+        elif isinstance(raw, str) and ":" in raw:
+            scope, name = (part.strip() for part in raw.split(":", 1))
+            scope, index = scope.lower(), None
+            if scope not in ("design", "library") or not name:
+                return None, f"'{self.name}' got {raw!a}; use 'design:<name>' or 'library:<name>'."
+        else:
+            return None, f"'{self.name}' got {raw!a}; use a scoped name or a fresh plastic_rules ref."
+        rules = plastic_rules(_common.design(), scope)
+        if rules is None:
+            return None, f"'{self.name}': {scope} plastic rules could not be completely read."
+        if index is not None:
+            if index >= len(rules):
+                return None, f"'{self.name}' index {index} is out of range; re-read design_get plastic_rules."
+            current = rules[index].name
+            if current.lower() != name.lower():
+                return None, (f"'{self.name}' index {index} is now '{current}', not '{name}'; "
+                              "re-read design_get plastic_rules for a current ref.")
+            return (rules[index], scope, index), None
+        hits = [rule for rule in rules if rule.name.lower() == name.lower()]
+        if len(hits) != 1:
+            return None, (f"'{self.name}': {len(hits)} {scope} rules named '{name}'; "
+                          "pass a fresh design_get plastic_rules ref.")
+        return (hits[0], scope, next(i for i, rule in enumerate(rules) if rule is hits[0])), None
+
+
 class SheetMetalRuleRef(InputKind):
     """A rule selected by scoped name or a current scope/index/name ref."""
 
@@ -4806,3 +4855,23 @@ class SketchDimensionRef(InputKind):
             return (f"that parameter was created by sketch '{oname}' (component '{comp}') - "
                     f"address it with sketch_name='{oname}'")
         return "the design lists no parameter of that name"
+
+
+class FormCageHandleList(InputKind):
+    """A LIST of Form cage handles: vertices, edges or faces of ONE Form's control cage."""
+
+    json_type = "array"
+    MAP_HINT = "cage vertices/edges/faces of one Form by find_geometry handle; spent by any cage change"
+
+    def schema(self, brief=False) -> dict:
+        return {"type": "array", "items": {"type": "string"}, "minItems": 1, **self._desc(brief)}
+
+    def resolve(self, raw, form):
+        """((T-spline body, cage walk, [(kind, index)]), error) against `form`'s cage as it reads now."""
+        from . import _form_common   # _form_common imports this module
+        handles = [] if raw is None else raw
+        if (not isinstance(handles, list) or any(not isinstance(h, str) for h in handles)
+                or (raw is not None and not handles) or (self.required and not handles)):
+            return None, f"'{self.name}' is a list of cage handles from find_geometry."
+        body, walk, picked, err = _form_common.resolve_cage(form, handles, self.name)
+        return (None, err) if err else ((body, walk, picked), None)

@@ -67,8 +67,8 @@ RETURNS = [
     _outputs.ReturnsHandle(key="edge", require="edge"),
 ]
 
-_NOTE = ("A Form has no parameters. To change it: form_get(include=['cage']), edit the cage, "
-         "form_create it, then delete the Form it replaces.")
+_NOTE = ("A Form has no parameters. form_edit moves or creases its cage in place; for another "
+         "shape, form_get(include=['cage']), form_create the edited cage, delete this Form.")
 
 
 def _component(design, raw):

@@ -6,6 +6,7 @@ never modified; a written file is verified against a pre-write snapshot of the o
 """
 
 import os
+import struct
 
 import adsk.core
 import adsk.fusion
@@ -44,6 +45,42 @@ _EXPORT_REFINE = _inputs.Choice("refinement", options=list(_REFINEMENTS), defaul
 # case still ASSIGNS the default (mm, the unit mesh_insert defaults to) rather than leaving it alone.
 _EXPORT_UNITS = _inputs.Choice("stl_units", options=list(_export.STL_UNIT_MEMBERS),
                                description="format=stl only; baked into the file.")
+
+
+# The two STL tessellation knobs this tool sets: wire name -> STLExportOptions member. The angle
+# is passed as the number given: the build answers it as degrees (measured), not the radians its
+# text says.
+_STL_KNOBS = {"normal_deviation_deg": "normalDeviation", "max_aspect_ratio": "aspectRatio"}
+
+
+def _knob_values(normal_deviation_deg, max_aspect_ratio):
+    """({wire name: finite number} for the knobs given, error)."""
+    out = {}
+    for name, raw, low, high in (("normal_deviation_deg", normal_deviation_deg, 0.0, 180.0),
+                                 ("max_aspect_ratio", max_aspect_ratio, 1.0, None)):
+        if raw is None or raw == "":
+            continue
+        value = _common.finite_number(raw)
+        strict = name == "normal_deviation_deg"
+        if (value is None or (value <= low if strict else value < low)
+                or (high is not None and value > high)):
+            return None, (f"'{name}' must be a number "
+                          + (f"above {low:g} and at most {high:g}" if strict else f"of at least {low:g}")
+                          + f" - got {raw!r}.")
+        out[name] = value
+    return out, None
+
+
+def _binary_stl_triangles(path):
+    """The triangle count a binary STL file declares, when its size agrees with it; else None."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            fh.seek(80)
+            count = struct.unpack("<I", fh.read(4))[0]
+    except (OSError, struct.error):
+        return None
+    return count if size == 84 + 50 * count else None
 
 
 # ── mesh_export target resolution (broad: body handle/name, component/occurrence, whole design) ──
@@ -166,7 +203,8 @@ def _write_mesh_file(em, factory_name, fmt, geom, path, ref, unit_key):
 
 def handler(format: str = "3mf", file_path: str = "", target: str = "",
             refinement: str = "medium", stl_units: str = "",
-            split_by_component: bool = False) -> dict:
+            split_by_component: bool = False, normal_deviation_deg=None,
+            max_aspect_ratio=None) -> dict:
     """Export 'target' (body/mesh/component/occurrence, or whole design) to 'file_path' as a mesh, or
     with split_by_component one file per top-level occurrence into the directory 'file_path'."""
     fmt, ferr = _EXPORT_FORMAT.resolve(format)
@@ -184,6 +222,13 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
         return error(f"'stl_units' ('{unit_key}') applies to format=stl only, and this call asked "
                      f"for format={fmt} - refusing rather than dropping it. Export as stl to bake "
                      f"the unit into the file, or omit 'stl_units'.")
+    knobs, kerr = _knob_values(normal_deviation_deg, max_aspect_ratio)
+    if kerr:
+        return error(kerr)
+    if knobs and (fmt != "stl" or split_by_component):
+        return error(f"{', '.join(knobs)} apply to one format=stl file - this call asked for "
+                     f"format={fmt}" + (" with split_by_component" if split_by_component else "")
+                     + ". Export one stl target, or omit them.")
     if split_by_component and (target or "").strip():
         return error(f"'target' ('{target.strip()}') and split_by_component=true cannot be combined: "
                      "the split writes one file per TOP-LEVEL occurrence and would not narrow to "
@@ -326,6 +371,17 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
     applied_refinement = _apply_refinement(opts, ref)
     applied_units, units_verified = (_apply_stl_units(opts, unit_key) if fmt == "stl"
                                      else _export.NOT_APPLIED)
+    # Set after the refinement: assigning a preset resets both knobs to that preset's values.
+    knob_pairs = {name: _export.applied_pair(opts, _STL_KNOBS[name], value, value)
+                  for name, value in knobs.items()}
+    unlanded_knobs = [name for name, pair in knob_pairs.items() if pair[0] is None]
+    if unlanded_knobs:
+        return error(f"{', '.join(unlanded_knobs)} did not read back on the export options, so "
+                     "nothing was written. Omit them to export with 'refinement' alone.")
+    if knobs:
+        custom = safe(lambda: adsk.fusion.MeshRefinementSettings.MeshRefinementCustom)
+        if custom is not None and safe(lambda: opts.meshRefinement) == custom:
+            applied_refinement = "custom"
     try:
         did = em.execute(opts)
     except Exception as e:
@@ -387,6 +443,17 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
         payload["options_applied"] = {"stl_units": applied_units}
         payload["options_requested"] = {"stl_units": unit_key}
         payload["options_verified"] = {"stl_units": units_verified}
+        for name, (landed, changed) in knob_pairs.items():
+            payload["options_applied"][name] = landed
+            payload["options_requested"][name] = knobs[name]
+            payload["options_verified"][name] = changed
+        triangles = _binary_stl_triangles(path)
+        if triangles is not None:
+            payload["triangle_count"] = triangles
+        if knobs:
+            payload["note"] += (" The tessellation settings read back; 'triangle_count' is read "
+                                "from the written file. Achieved bounds are not verified; compare "
+                                "the count across settings.")
     return ok(payload)
 
 
@@ -406,6 +473,9 @@ tool = (
     .add_required_input("file_path")
     .add_input_property("split_by_component", {"type": "boolean",
             "description": "One file per top-level occurrence."})
+    .add_input_property("normal_deviation_deg", {"type": "number", "exclusiveMinimum": 0,
+                                                 "maximum": 180})
+    .add_input_property("max_aspect_ratio", {"type": "number", "minimum": 1})
     .strict_schema()
 )
 # DeliverablesExist re-stats every claimed deliverable (single file_path or split-mode files[]) - a
