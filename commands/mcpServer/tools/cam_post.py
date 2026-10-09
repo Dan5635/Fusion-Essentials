@@ -400,6 +400,35 @@ def _program_number_clause(log_errors, prog_name, program_number, retained):
             "it with cam_delete first.")
 
 
+def _give_setup_machine(program, targets, kind):
+    """(machine label or None, error): a scope of exactly one additive setup gives that setup's machine to the program."""
+    if kind not in ("setup", "setups") or len(targets or ()) != 1 or not _cam_common.is_additive_setup(targets[0]):
+        return None, None
+    setup = targets[0]
+    name = safe(lambda: setup.name)
+    machine = safe(lambda: setup.machine)
+    if machine is None:
+        return None, (f"Additive setup '{name}' reads no machine, and its post takes the machine "
+                      "configuration from it. Posting was not attempted. Assign one with "
+                      "cam_edit_setup(machine=...), then post again.")
+    wanted = safe(lambda: machine.id)
+    if not wanted:
+        return None, (f"The machine of additive setup '{name}' did not read its identity, so giving it "
+                      "to the NC Program could not be verified. Posting was not attempted. Re-read "
+                      "cam_get(include=['machine'], setup=...) and post again.")
+    try:
+        program.machine = machine
+    except Exception as e:
+        return None, (f"The NC Program did not take the machine of additive setup '{name}': {e}. "
+                      "Posting was not attempted.")
+    held = safe(lambda: program.machine.id)
+    if held != wanted:
+        return None, (f"The NC Program's machine is unverified after it was given the machine of additive "
+                      f"setup '{name}': it reads {held!r}, the setup's reads {wanted!r}. Posting was not "
+                      "attempted. cam_get(include=['nc_programs']) reads the program; post again.")
+    return " ".join(filter(None, (safe(lambda: machine.vendor), safe(lambda: machine.model)))) or wanted, None
+
+
 def _operations_collection(cam, targets):
     """The list of things to post - the resolved target(s), or every setup. NCProgram.operations is
     a vector<OperationBase> setter: it takes a plain LIST, not an ObjectCollection, and expands
@@ -842,6 +871,13 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         if merr:
             return error(merr + retained + _rollback_program(cam, program, prog_name, reused))
 
+        machine_label, machine_error = _give_setup_machine(program, targets, kind)
+        if machine_label or machine_error:
+            # from here a refusal on a reused program may leave its machine changed as well
+            retained = retained.replace("post configuration, ", "post configuration, machine configuration, ")
+        if machine_error:
+            return error(machine_error + retained + _rollback_program(cam, program, prog_name, reused))
+
         if units_key != "document" and (_P_UNIT in unresolved or unit_note):
             reason = (unit_note or f"The NC Program has no '{_P_UNIT}' parameter, so output units could not be set.")
             return error(reason + retained + _rollback_program(cam, program, prog_name, reused))
@@ -942,6 +978,8 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             "params_applied": applied,
         })
         result.update(membership)
+        if machine_label:
+            result["machine"] = machine_label
         if kind == "setups":
             # The names the multi-setup scope was asked for, beside what the program read back.
             result["scope_setups"] = setup_names

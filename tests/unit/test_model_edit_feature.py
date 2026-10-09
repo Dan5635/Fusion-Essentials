@@ -1624,7 +1624,7 @@ def test_mirror_body_descriptor_uses_parent_component_and_refuses_missing_owner(
     feature = SimpleNamespace(objectType="adsk::fusion::MirrorFeature", mirrorPlane=plane,
                               inputEntities=[body])
 
-    assert mod._inputs.entity_component(body) is None
+    assert mod._inputs.entity_component(body) is owner
     state, definition, unavailable = mod._edit.feature_edit_state(feature)
     expected = {"handle": "mirror-body-token", "kind": "entity", "name": "MirrorBody",
                 "owner": {"component": "Component1", "occurrence": None},

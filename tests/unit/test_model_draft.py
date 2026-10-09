@@ -112,6 +112,28 @@ class TestGuards:
 
 
 class TestDraft:
+    def test_unread_pull_plane_does_not_invent_a_world_side_frame(self, monkeypatch):
+        _wire(monkeypatch)
+        monkeypatch.setattr(dr._inputs, "placed_datum_frame", lambda *args: (None, None))
+        out = payload(dr.handler(faces=["a"], pull_direction="xy", angle_deg=15,
+                                 angle_two_deg=5, flip=True))
+        assert out["side_reference"]["normal_world"] is None
+        assert out["side_reference"]["frame"] is None
+        assert "angle-to-side mapping is unknown" in out["note"]
+        assert "angle_deg on its positive side" not in out["note"]
+
+    def test_two_angle_reply_uses_the_draft_operand_frame(self, monkeypatch):
+        _wire(monkeypatch)
+        calls = []
+        monkeypatch.setattr(dr._inputs, "placed_datum_frame", lambda plane, kind: (
+            calls.append((plane, kind)) or ((7, 3, 5), [0, 0, -1])))
+        out = payload(dr.handler(faces=["a"], pull_direction="face", angle_deg=15,
+                                 angle_two_deg=5))
+        assert calls == [(('plane', 'xy'), "draft_plane")]
+        assert out["side_reference"] == {"frame": "world", "origin_cm": [7, 3, 5],
+                                          "normal_world": [0, 0, -1], "operand": "face"}
+        assert "A face uses its outward normal" in out["note"]
+
     def test_happy_path_reports_read_back_count(self, monkeypatch):
         feats = _wire(monkeypatch, feature=FakeDraftFeature(n_faces=3),
                       faces=[object(), object()])

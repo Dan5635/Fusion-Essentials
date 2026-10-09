@@ -22,7 +22,7 @@ MAP_BLURB = (
     "FeatureEditOperands (feature refs); "
     "world_construction_axis/axis_line_of (axis entity; world line), "
     "single_placement/entity_component/operand_in (assembly-context lift), "
-    "operand_meta/placed_point_cm/placed_handle (world frame, handle), "
+    "operand_meta/placed_point_cm/placed_datum_frame/placed_handle (world frame, handle), "
     "resolve_surface/surface_ref_label (*_to_surface operand)")
 
 app = adsk.core.Application.get()
@@ -845,18 +845,28 @@ def placed_point_cm(entity, context=None):
 
 
 def placed_datum_frame(entity, kind, context=None):
-    """WORLD (position_cm, unit direction/normal) of an axis or plane, else (None, None)."""
+    """WORLD (position_cm, unit direction/normal) of an axis, plane or sketch_plane, else (None, None)."""
     if kind == "construction_axis":
         line, err = _datum_world_line("axis", entity, context)
         origin = _common.safe(lambda: line.origin) if not err else None
         vector = _common.safe(lambda: line.direction) if not err else None
-    elif kind == "construction_plane":
+    elif kind in ("construction_plane", "sketch_plane", "draft_plane"):
         native = _common._native_of(entity)
         if native is entity and _common.safe(lambda: entity.assemblyContext) is not None:
             return None, None
-        geometry = _common.safe(lambda: native.geometry)
-        origin = _common.safe(lambda: geometry.origin.copy())
-        vector = _common.safe(lambda: geometry.normal.copy())
+        if kind == "sketch_plane":
+            origin = _common.safe(lambda: native.origin.copy())
+            normal = _geom.cross(_geom.unit_vector(_common.safe(lambda: native.xDirection)),
+                                 _geom.unit_vector(_common.safe(lambda: native.yDirection)))
+            vector = _common.safe(lambda: adsk.core.Vector3D.create(*normal)) if normal is not None else None
+        else:
+            geometry = _common.safe(lambda: native.geometry)
+            origin = _common.safe(lambda: geometry.origin.copy())
+            if kind == "draft_plane" and adsk.fusion.BRepFace.cast(native) is not None:
+                normal = _geom.evaluator_normal_at(native, _common.safe(lambda: native.pointOnFace))
+                vector = _common.safe(lambda: adsk.core.Vector3D.create(*normal)) if normal is not None else None
+            else:
+                vector = _common.safe(lambda: geometry.normal.copy())
         matrix, found = _placement_matrix(entity, native, context)
         if not found or origin is None or vector is None:
             return None, None
@@ -2425,12 +2435,12 @@ def _axis_from_face(name, face):
 
 
 def entity_component(ent):
-    """The component an ENTITY belongs to - a face's or edge's body's parent, a sketch line's
-    sketch's parent, or a datum's own component - else None. A datum is read through `.component`
-    before `.parent`, which returns a BASE FEATURE for a non-parametric datum."""
+    """Return the owner component of geometry, sketches or datums, else None."""
+    # A non-parametric datum's parent is a BaseFeature; its component takes precedence.
     return (_common.safe(lambda: ent.body.parentComponent)
             or _common.safe(lambda: ent.parentSketch.parentComponent)
             or _common.safe(lambda: ent.component)
+            or _common.safe(lambda: ent.parentComponent)
             or _common.safe(lambda: ent.parent))
 
 

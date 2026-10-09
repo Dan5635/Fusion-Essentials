@@ -212,6 +212,9 @@ def sheet_relief_rule_rows():
         entries = library.get("rules") or []
         good = ((local.get("readable") is False and local.get("rules") is None)
                 or (local.get("readable") is True and local.get("total") == 0 and local.get("rules") == []))
+        if local.get("readable") is False:
+            good = (good and "If uninitialized" in local.get("note", "")
+                    and "root sheet-metal component with model_create_component(sheet_metal=true)" in local.get("note", ""))
         good = good and library.get("readable") is True and library.get("truncated") is False and bool(entries)
         if capture and good:
             _RECALL["sheet_relief_uninitialized"] = {"local": local, "library": library, "ref": entries[0].get("ref")}
@@ -221,15 +224,28 @@ def sheet_relief_rule_rows():
             good = good and local == before["local"] and library == before["library"]
         return _measured("uninitialized sheet data and library preservation", {"local": local, "library": library}, good)
 
+    def default_rules(p, initialized=False):
+        count = p.get("design_rule_count")
+        note = p.get("note", "")
+        if initialized:
+            good = type(count) is int and count > 0 and not note
+        elif count is None:
+            good = "If uninitialized" in note and "model_create_component(sheet_metal=true)" in note
+        else:
+            good = count == 0 and not note
+        return _measured("conditional local-rule read guidance", {"count": count, "note": note}, good)
+
+    read("sheet_get", {}, default_rules)
     read("sheet_get", {"include": ["rules", "library_rules"], "max_results": 200}, lambda p: empty_rules(p, True))
     write("sheet_edit_rule", lambda ctx: {"action": "copy", "rule": _RECALL["sheet_relief_uninitialized"]["ref"],
         "name": name}, _refused("model_create_component(sheet_metal=true)", "no copy attempted"))
     read("sheet_get", {"include": ["rules", "library_rules"], "max_results": 200}, empty_rules)
     write("model_create_component", {"name": "ReliefSeed", "sheet_metal": True, "activate": True})
+    read("sheet_get", {}, lambda p: default_rules(p, True))
 
     def library_state(p, capture=False):
         state = p.get("library_rules") or {}
-        good = state.get("readable") is True and state.get("truncated") is False
+        good = state.get("readable") is True and state.get("truncated") is False and "note" not in state
         if capture and good:
             _RECALL["sheet_relief_library_initialized"] = state
         elif not capture:

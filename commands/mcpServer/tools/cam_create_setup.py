@@ -15,6 +15,7 @@ from ..mcp_primitives.registry import register
 from ._common import apply_rename, ok, error, safe
 from ._cam_common import (get_cam, machine_kinds, machine_label, resolve_machine,
                           resolve_print_setting, setup_names)
+from . import _cam_additive
 from . import _common
 from . import _inputs
 
@@ -257,6 +258,11 @@ def handler(operation_type: str = "milling", models=None, name: str = "",
     if aerr:
         return error(aerr)
     m_obj, m_label, setting, s_name = additive
+    # Fusion assigns a print setting its machine cannot use without complaint, so this asks first.
+    if setting is not None:
+        fits = _cam_additive.setting_fits(setting, m_obj)
+        if fits is not True:
+            return error(_cam_additive.unfit_refusal(s_name, m_label, fits))
 
     # A cutting setup consumes each folded source body's native flat body.
     flat_rows = None

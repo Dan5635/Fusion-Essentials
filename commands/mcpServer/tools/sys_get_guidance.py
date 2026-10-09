@@ -19,10 +19,10 @@ _SECTION = _inputs.Choice(
 _RECIPE = _inputs.Choice("recipe", loader.RECIPE_IDS)
 
 INDEX_NOTE = (
-    "The one packaged design-guidance document. 'kernel' gives the five rules for every design; "
-    "'sections' and 'recipes' map narrower reads. Call section=<id> for that section's rules or "
-    "recipe=<id> for one recipe. Each rule and recipe declares applicable 'scenarios'; 'sha256' "
-    "hashes the served content. 'resource_uri' serves the whole document over MCP resources.")
+    "Packaged design guidance. 'kernel' gives five rules; 'sections' and 'recipes' index narrower "
+    "reads. Call section=<id> or recipe=<id>. Rules and recipes declare 'scenarios'. 'sha256' "
+    "hashes the current source; 'resource_uri' serves the add-in-load snapshot. Compare its source "
+    "stamp and reload the add-in if hashes differ.")
 
 SECTION_NOTE = (
     "The kernel's five habits apply to every step in this section. Each rule has 'when', 'do', "

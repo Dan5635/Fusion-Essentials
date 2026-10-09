@@ -1519,14 +1519,19 @@ class TestTwoSide:
         assert out["extent"] == "two_side"
         assert out["distance"] == 10.0 and out["distance2"] == 5.0
 
-    def test_first_side_taper_flows_to_two_sided_extent(self):
+    def test_first_side_taper_flows_to_two_sided_extent(self, monkeypatch):
         ef = _install([_sketch("S")])
+        monkeypatch.setattr(ex._inputs, "placed_datum_frame",
+                            lambda entity, kind: ((7, 3, 5), [0.459068, -0.059176, 0.886428]))
         out = _payload(ex.handler(sketch_name="S", extent="two_side", distance=10, distance2=5,
                                   taper_deg=3, taper_two_deg=1))
         _, _, taper_one, taper_two = ef.last_input.two_sides_extent
         assert taper_one is not None and taper_two is not None
         assert out["taper_two_deg"] == pytest.approx(1.0)
         assert out["taper_deg"] == pytest.approx(3.0)
+        assert out["side_reference"]["frame"] == "world"
+        assert out["side_reference"]["normal_world"] == [0.459068, -0.059176, 0.886428]
+        assert "distance2/taper_two_deg oppose" in out["note"]
 
     def test_two_side_first_taper_uses_retained_parameter(self):
         ef = _install([_sketch("S")])

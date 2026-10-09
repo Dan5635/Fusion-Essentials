@@ -2302,3 +2302,50 @@ class TestRestoredRowsAreNamed:
         assert ("restored 1 of 2; the restore of 1 is NOT confirmed: 'tool_feedCutting' reads "
                 "'3000', held '5210.23'. Read each with") in msg
         assert "before relying on it. Restored and re-read: 'tolerance' reads '0.01'." in msg
+
+
+class TestAdditiveInputs:
+    """The arm's routing; what an assignment and a choice verify is tested on the helper itself."""
+
+    def _rig(self, monkeypatch, assign=None, choose=None):
+        op = _install(monkeypatch, op_name="Support1")
+        calls = []
+        monkeypatch.setattr(ce._PARTS, "resolve", lambda raw: (["occ:" + str(r) for r in raw], None))
+        monkeypatch.setattr(ce._cam_additive, "assign_parts", lambda cam, target, occs: (
+            calls.append(("parts", target.name, occs)) or assign
+            or ({"parameter": "supportTarget", "parts_before": [], "parts": ["PartA:1"]}, None)))
+        monkeypatch.setattr(ce._cam_additive, "choose_orientation", lambda cam, target, index: (
+            calls.append(("candidate", target.name, index)) or choose
+            or ({"index": index, "candidate": {}, "part": "PartA:1", "pose": [1.0] * 16}, None)))
+        return op, calls
+
+    def test_parts_are_resolved_and_assigned_and_the_read_back_is_published(self, monkeypatch):
+        _op, calls = self._rig(monkeypatch)
+        out = _payload(ce.handler(operation="Support1", parts=["PartA:1"]))
+        assert calls == [("parts", "Support1", ["occ:PartA:1"])]
+        assert out["parts"] == ["PartA:1"] and out["parameter"] == "supportTarget"
+        assert "cam_generate" in out["note"]
+
+    def test_an_assignment_the_helper_refuses_is_an_error(self, monkeypatch):
+        self._rig(monkeypatch, assign=(None, "does not read the parts asked for"))
+        res = ce.handler(operation="Support1", parts=["PartA:1"])
+        assert res["isError"] is True and "does not read the parts asked for" in res["message"]
+
+    def test_a_candidate_is_chosen_by_its_index(self, monkeypatch):
+        _op, calls = self._rig(monkeypatch)
+        out = _payload(ce.handler(operation="Support1", orientation_candidate=0))
+        assert calls == [("candidate", "Support1", 0)] and out["orientation_candidate"] == 0
+        assert out["part"] == "PartA:1" and len(out["pose"]) == 16
+
+    @pytest.mark.parametrize("extra", [{"parameters": {"tool_feedCutting": "1"}}, {"rename": "X"},
+                                       {"suppressed": True}, {"preset": "P"}])
+    def test_the_additive_inputs_do_not_ride_with_another_edit(self, monkeypatch, extra):
+        op, calls = self._rig(monkeypatch)
+        res = ce.handler(operation="Support1", parts=["PartA:1"], **extra)
+        assert res["isError"] is True and "a call of their own" in res["message"]
+        assert calls == [] and op.name == "Support1"
+
+    def test_parts_and_a_candidate_in_one_call_are_refused(self, monkeypatch):
+        _op, calls = self._rig(monkeypatch)
+        res = ce.handler(operation="Support1", parts=["PartA:1"], orientation_candidate=0)
+        assert res["isError"] is True and "separate steps" in res["message"] and calls == []

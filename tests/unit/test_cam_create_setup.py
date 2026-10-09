@@ -282,6 +282,15 @@ class TestAdditive:
         assert out["print_setting"] == "316L_040_FlexM291 1.00"
         assert out["print_setting_technology"] == "SLM"
 
+    @pytest.mark.parametrize("fits", [False, None])
+    def test_a_print_setting_the_machine_cannot_use_is_refused_before_the_add(self, monkeypatch, fits):
+        _, cam, _m, _s = _additive(monkeypatch, setting=FakePrintSetting("PLA", "FFF", fits=fits))
+        res = cs.handler(operation_type="additive", machine="EOS|M 290", print_setting="PLA")
+        assert res["isError"] is True and "EOS M 290" in res["message"]
+        assert ("not compatible" if fits is False else "did not read") in res["message"]
+        assert "was not assigned" in res["message"]
+        assert cam.setups.count == 0
+
     def test_additive_without_a_machine_is_refused_before_the_add(self, monkeypatch):
         # Measured: setups.add of a machineless additive input RAISES and no setup lands, so the
         # ask happens here rather than surfacing that raise.

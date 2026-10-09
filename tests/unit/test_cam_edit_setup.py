@@ -820,6 +820,80 @@ class TestMachine:
         assert out["machine_set"] == "Haas VF-2"
 
 
+class _PrintingSetup(_Setup):
+    """A setup holding a print setting; `sticks` False models an assignment that does not take."""
+    sticks = True
+
+    @property
+    def printSetting(self):
+        return self._setting
+
+    @printSetting.setter
+    def printSetting(self, value):
+        if self.sticks:
+            self._setting = value
+
+
+def _printing(monkeypatch, setting, additive=True, sticks=True):
+    """One setup, additive unless told otherwise, holding an FFF machine and a 'PLA' setting."""
+    from conftest import FakePrintSetting
+    setup = _PrintingSetup("Setup1", dict(_DEFAULT_PARAMS))
+    setup._setting, setup.sticks = FakePrintSetting("PLA", "FFF"), sticks
+    setup.operationType = (ces.adsk.cam.OperationTypes.AdditiveOperation if additive
+                           else ces.adsk.cam.OperationTypes.MillingOperation)
+    setup._machine = FakeMachine(description="Generic FFF Machine")
+    monkeypatch.setattr(ces, "get_cam", lambda: (make_cam(setup), None))
+    monkeypatch.setattr(ces, "resolve_machine",
+                        lambda name: (FakeMachine(description="Haas VF-2"), "Haas VF-2", None))
+    monkeypatch.setattr(ces, "resolve_print_setting", lambda name, desc="": (setting, setting.name, None))
+    return setup
+
+
+class TestPrintSetting:
+    def test_a_compatible_setting_is_assigned_and_read_back(self, monkeypatch):
+        from conftest import FakePrintSetting
+        wanted = FakePrintSetting("ABS", "FFF", "tough")
+        setup = _printing(monkeypatch, wanted)
+        out = _payload(ces.handler(setup="Setup1", print_setting="ABS"))
+        assert setup.printSetting is wanted
+        assert (out["print_setting_set"], out["print_setting_technology"]) == ("ABS", "FFF")
+
+    @pytest.mark.parametrize("fits", [False, None])
+    def test_a_setting_the_machine_cannot_use_is_refused_and_nothing_is_assigned(self, monkeypatch, fits):
+        from conftest import FakePrintSetting
+        setup = _printing(monkeypatch, FakePrintSetting("316L", "SLM", fits=fits))
+        res = ces.handler(setup="Setup1", print_setting="316L", rename="Renamed")
+        assert res["isError"] is True
+        assert ("not compatible with machine" if fits is False else "did not read") in res["message"]
+        assert setup.printSetting.name == "PLA" and setup.name == "Setup1"
+
+    def test_the_setting_is_judged_against_the_machine_this_call_assigns(self, monkeypatch):
+        from conftest import FakePrintSetting
+        seen = []
+        wanted = FakePrintSetting("316L", "SLM")
+        wanted.isCompatibleWithMachine = lambda machine: seen.append(machine.description) or True
+        _printing(monkeypatch, wanted)
+        _payload(ces.handler(setup="Setup1", print_setting="316L", machine="Haas|VF-2"))
+        assert seen == ["Haas VF-2"]
+
+    def test_an_assignment_that_does_not_take_is_an_error(self, monkeypatch):
+        from conftest import FakePrintSetting
+        _printing(monkeypatch, FakePrintSetting("ABS", "FFF"), sticks=False)
+        res = ces.handler(setup="Setup1", print_setting="ABS")
+        assert res["isError"] is True and "did not take" in res["message"]
+
+    def test_a_setup_that_is_not_additive_refuses_a_print_setting(self, monkeypatch):
+        from conftest import FakePrintSetting
+        _printing(monkeypatch, FakePrintSetting("ABS", "FFF"), additive=False)
+        res = ces.handler(setup="Setup1", print_setting="ABS")
+        assert res["isError"] is True and "applies to an additive setup" in res["message"]
+
+    def test_a_description_without_a_setting_is_refused(self, monkeypatch):
+        _install(monkeypatch)
+        res = ces.handler(setup="Setup1", print_setting_description="tough")
+        assert res["isError"] is True and "pass both or neither" in res["message"]
+
+
 class _JobTypeParam(FakeCAMParameter):
     """The setup's job-type row, which Setup.operationType reads through: milling 0, turning 1."""
 

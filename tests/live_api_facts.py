@@ -81,6 +81,10 @@ ENUMS = {
         "JetOperation": 2,
         "AdditiveOperation": 3,
     },
+    "cam.PrintSettingItemTypes": {
+        "GENERAL": 0,
+        "EXPORTER": 1,
+    },
     "cam.RecognizedPocketBottomType": {
         "RecognizedPocketBottomTypeFlat": 0,
         "RecognizedPocketBottomTypeThrough": 1,

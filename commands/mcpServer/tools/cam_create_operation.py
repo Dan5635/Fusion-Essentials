@@ -610,7 +610,6 @@ def handler(setup: str = "", strategy: str = "", tool_library_url: str = "",
     if named is None and not toolless:
         # absent = both descriptions read and the read-back names the requested tool
         result["tool_identity_checked"] = False
-
     if generate:
         # The Future MUST be registered, not discarded: if it is garbage-collected Fusion ABANDONS
         # the in-progress generation. _cam_common.register_future is the one registration path, and

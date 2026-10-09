@@ -17,6 +17,8 @@ from ._cam_common import (NONFINITE_POST, PARAM_READ, get_cam, enumeration_remed
                           resolve_cam_node, tool_dimensions, tree_nodes, unquote_expression,
                           tool_selector_error, validity_basis)
 from ._cam_presets import resolve_operation_preset
+from . import _cam_additive
+from . import _inputs
 from .cam_create_operation import (_NO_INDEX, _doc_tool_at, _names_the_same_tool, _tool_at,
                                    _tool_facts, index_request_error, tool_index_of)
 # The selection spellings themselves, from the one table cam_select_geometry routes them by.
@@ -538,9 +540,39 @@ _WAS_GENERATING_NOTE = (
     "(cam_get_status) and relaunch if the toolpath is missing.")
 
 
+_PARTS = _inputs.OccurrenceRefList(
+    "parts", description="Additive: the occurrences an orientation, support or interference "
+                         "operation acts on.")
+_ADDITIVE_NEXT = ("cam_generate runs it; cam_get(include=['additive_results'], operation=...) reads "
+                  "what it produced.")
+
+
+def _additive_edit(cam, op, name, parts, candidate):
+    """The reply for a parts assignment or an orientation choice on an additive operation."""
+    if parts is not None and candidate is not None:
+        return error("'parts' and 'orientation_candidate' are separate steps: set the parts, "
+                     "generate, then choose a candidate.")
+    if candidate is not None:
+        chosen, reason = _cam_additive.choose_orientation(cam, op, candidate)
+        if reason:
+            return error(reason)
+        return ok({"operation": name, "orientation_candidate": chosen["index"],
+                   "candidate": chosen["candidate"], "part": chosen["part"], "pose": chosen["pose"],
+                   "note": "The candidate reads current and the part's Manufacture-side pose is turned "
+                           "to it; the design is unchanged. Later operations of the setup may read "
+                           "out of date."})
+    occurrences, reason = _PARTS.resolve(parts)
+    if reason:
+        return error(reason)
+    landed, reason = _cam_additive.assign_parts(cam, op, occurrences)
+    if reason:
+        return error(reason)
+    return ok({"operation": name, **landed, "note": "The parts read back as asked. " + _ADDITIVE_NEXT})
+
+
 def handler(operation: str = "", parameters=None, suppressed=None, preset: str = "",
             rename: str = "", tool_scope: str = "", tool_library_url: str = "",
-            tool_index: int = -1) -> dict:
+            tool_index: int = -1, parts=None, orientation_candidate=None) -> dict:
     """See TOOL_DESCRIPTION."""
     selector_error = tool_selector_error(tool_scope, tool_library_url)
     if selector_error:
@@ -560,7 +592,12 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
     # A PRESENT index runs the tool arm whatever it holds, so an unusable one meets that arm's
     # refusal naming it rather than the 'nothing to do' error.
     want_tool = bool(scope or url) or (tool_index is not None and tool_index != _NO_INDEX)
-    if not wanted and suppressed is None and not want_preset and not want_rename and not want_tool:
+    additive = parts not in (None, "", []) or orientation_candidate is not None
+    if additive and (wanted or suppressed is not None or want_preset or want_rename or want_tool):
+        return error("'parts' and 'orientation_candidate' go in a call of their own, without "
+                     "parameters, preset, tool, rename or suppressed.")
+    if (not wanted and suppressed is None and not want_preset and not want_rename and not want_tool
+            and not additive):
         return error("Provide 'parameters' - at least one name=value to set (e.g. "
     "{'tool_feedCutting': '3000'}) - or 'preset', a preset on this operation's tool, "
     "'tool_index' (with 'tool_scope=document' or 'tool_library_url') to change the cutting tool, "
@@ -574,6 +611,9 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
     if oerr:
         return error(oerr)
     op = node.obj
+    if additive:
+        return _additive_edit(cam, op, safe(lambda: op.name) or operation,
+                              parts if parts not in (None, "", []) else None, orientation_candidate)
     # Read ONCE, before any write below: a write during a generation is accepted and disclosed,
     # never refused.
     was_generating = read_flag(lambda: op.isGenerating) is True
@@ -847,6 +887,9 @@ tool = (
     .add_input_property("tool_scope", {"type": "string", "enum": ["document"]})
     .add_input_property("tool_library_url", {"type": "string"})
     .add_input_property("tool_index", {"type": "integer"})
+    .add_input_property(*_PARTS.as_property(brief=True))
+    .add_input_property("orientation_candidate", {"type": "integer", "minimum": 0,
+            "description": "Additive: an 'index' from cam_get additive_results."})
     .strict_schema()
 )
 

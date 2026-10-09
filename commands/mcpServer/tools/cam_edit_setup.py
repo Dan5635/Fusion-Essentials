@@ -18,9 +18,11 @@ from ._common import apply_rename, named_with_remainder, ok, error, read_flag, s
 # so cam_get's catalog, this assignment and cam_create_machine's reachability gate cannot drift).
 from ._cam_common import (STOCK_MODES, get_cam, enumeration_remedy, expression_error,
                           machine_catalog, machine_label, matched_quoting, parse_parameters,
-                          resolve_cam_node, resolve_machine, setup_nodes, stock_mode_member,
+                          resolve_cam_node, resolve_machine, resolve_print_setting, setup_nodes,
+                          is_additive_setup, stock_mode_member,
                           stock_mode_name, unquote_expression)
 from .cam_create_setup import setup_name_clash
+from . import _cam_additive
 from . import _inputs
 
 app = adsk.core.Application.get()
@@ -279,7 +281,8 @@ def _moved_clause(before, now):
 
 def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=None,
             machine: str = "", machine_strip_simulation: bool = False, wcs=None,
-            rename: str = "", stock_mode: str = "") -> dict:
+            rename: str = "", stock_mode: str = "", print_setting: str = "",
+            print_setting_description: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
     if not (setup or "").strip():
         return error("Provide 'setup' - the CAM setup name (see cam_get).")
@@ -302,6 +305,9 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
     want_machine = (machine or "").strip()
     want_wcs = wcs not in (None, "", {}, [])
     want_rename = (rename or "").strip()
+    want_setting = (print_setting or "").strip()
+    if (print_setting_description or "").strip() and not want_setting:
+        return error("'print_setting_description' qualifies 'print_setting'; pass both or neither.")
 
     want_stock_mode = None
     if (stock_mode or "").strip():
@@ -315,10 +321,11 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
                          "the setup's stock two ways - 'stock' is the from-solid mode with its "
                          "bodies. Pass one or the other.")
 
-    if not (wanted or body_args or want_machine or want_wcs or want_rename or want_stock_mode):
+    if not (wanted or body_args or want_machine or want_wcs or want_rename or want_stock_mode
+            or want_setting):
         return error("Nothing to do. Provide 'parameters' {name: expression}, "
                      "'models'/'fixtures'/'stock' body lists, a 'machine', a 'stock_mode', "
-                     "a 'wcs' binding, and/or 'rename'.")
+                     "a 'wcs' binding, a 'print_setting', and/or 'rename'.")
 
     cam, cerr = get_cam()
     if cerr:
@@ -367,6 +374,21 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
         if m_err:
             return error(m_err)
         resolved_machine = (m_obj, m_label)
+
+    resolved_setting = None
+    if want_setting:
+        if not is_additive_setup(target):
+            return error(f"'print_setting' applies to an additive setup; '{setup}' is not one.")
+        s_obj, s_name, s_err = resolve_print_setting(want_setting, print_setting_description)
+        if s_err:
+            return error(s_err)
+        # judged against the machine the setup will hold once this call's own 'machine' has landed
+        for_machine = resolved_machine[0] if resolved_machine else safe(lambda: target.machine)
+        fits = _cam_additive.setting_fits(s_obj, for_machine)
+        if fits is not True:
+            return error(_cam_additive.unfit_refusal(
+                s_name, resolved_machine[1] if resolved_machine else machine_label(for_machine), fits))
+        resolved_setting = (s_obj, s_name)
 
     mode_write = want_stock_mode is not None
     before_state = _edit_state(target, wanted, resolved_bodies, want_machine, resolved_wcs,
@@ -572,6 +594,20 @@ def handler(setup: str = "", parameters=None, models=None, fixtures=None, stock=
             # absent = the assignment left the setup's job type where it found it
             result["job_type_kept"] = kept
 
+    if resolved_setting is not None:
+        s_obj, s_name = resolved_setting
+        try:
+            target.printSetting = s_obj
+        except Exception as e:
+            return failed(f"Could not assign print setting '{s_name}' to setup '{setup}': {e}.")
+        carried = safe(lambda: target.printSetting)
+        if (safe(lambda: carried.name) != s_name
+                or safe(lambda: carried.description) != safe(lambda: s_obj.description)):
+            return failed(f"Print setting assignment did not take on setup '{setup}': set '{s_name}' "
+                          f"but the setup now reports '{safe(lambda: carried.name)}'.")
+        result["print_setting_set"] = s_name
+        result["print_setting_technology"] = safe(lambda: carried.technology)
+
     if resolved_wcs:
         wcs_set = {}
         for key, entity in resolved_wcs.items():
@@ -654,6 +690,8 @@ tool = (
     .add_input_property("machine", {"type": "string",
             "description": "'vendor|model', or a bare model."})
     .add_input_property("machine_strip_simulation", {"type": "boolean"})
+    .add_input_property("print_setting", {"type": "string", "description": "Additive: a setting name."})
+    .add_input_property("print_setting_description", {"type": "string"})
     .add_input_property("wcs", {"type": "object",
             "description": "{origin/z_axis/x_axis: a find_geometry handle or a Joint Origin handle/name}."})
     .add_input_property("rename", {"type": "string"})

@@ -39,6 +39,47 @@ def test_requested_rule_slice_does_not_repeat_default(sheet_design, monkeypatch)
     assert out == {"rules": {"scope": "design", "cap": 3}}
 
 
+@pytest.fixture
+def unread_rule_count():
+    class UnreadCount(_NamedCollection):
+        @property
+        def count(self):
+            raise RuntimeError("2 : InternalValidationError : smDataRoot")
+    return UnreadCount(items=[])
+
+
+def test_unread_local_default_offers_conditional_initializer_without_deep_read(sheet_design, unread_rule_count, monkeypatch):
+    monkeypatch.setattr(sheet_design, "designSheetMetalRules", unread_rule_count)
+    monkeypatch.setattr(mod, "_rules", lambda *args: pytest.fail("deep rules read on default"))
+    out = payload(mod.handler())
+    assert out["design_rule_count"] is None and out["library_rule_count"] == 6
+    assert "If uninitialized" in out["note"]
+    assert "root sheet-metal component with model_create_component(sheet_metal=true)" in out["note"]
+
+
+def test_unread_local_slice_offers_hint_but_unread_library_does_not(sheet_design, unread_rule_count, monkeypatch):
+    monkeypatch.setattr(sheet_design, "designSheetMetalRules", unread_rule_count)
+    monkeypatch.setattr(mod._sheet_common, "scoped_rules", lambda *_: None)
+    out = payload(mod.handler(include=["rules", "library_rules"]))
+    assert out["rules"]["readable"] is False and out["rules"]["rules"] is None
+    assert "If uninitialized" in out["rules"]["note"]
+    assert "model_create_component(sheet_metal=true)" in out["rules"]["note"]
+    assert out["library_rules"] == {"readable": False, "rules": None}
+
+
+def test_unread_slot_in_initialized_local_rules_does_not_suggest_initialization(sheet_design, monkeypatch):
+    monkeypatch.setattr(sheet_design, "designSheetMetalRules", _NamedCollection([None]))
+    out = payload(mod.handler(include=["rules"]))
+    assert out["rules"] == {"readable": False, "rules": None}
+
+
+def test_readable_local_rules_do_not_suggest_initialization(sheet_design, monkeypatch):
+    monkeypatch.setattr(mod._sheet_common, "scoped_rules", lambda *_: [])
+    out = payload(mod.handler(include=["default", "rules"]))
+    assert out["rules"] == {"readable": True, "rules": [], "total": 0, "truncated": False}
+    assert "note" not in out
+
+
 def test_features_include_adds_exactly_that_slice(sheet_design, monkeypatch):
     monkeypatch.setattr(mod, "_features", lambda design, cap: {"cap": cap})
     out = payload(mod.handler(include=["features"], max_results=5))

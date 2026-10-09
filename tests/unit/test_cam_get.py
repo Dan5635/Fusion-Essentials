@@ -62,6 +62,10 @@ def stub_slices(monkeypatch):
                             {"count": 0, "print_settings": []}, None))
     monkeypatch.setattr(cg, "_slice_templates",
                         lambda cam, loc, url, depth: ({"node_count": 0, "tree": {}}, None))
+    monkeypatch.setattr(cg, "_slice_print_setting", lambda cam, setup, units: ({"name": "PLA"}, None))
+    monkeypatch.setattr(cg, "_slice_placement", lambda cam, setup, units: ({"parts": []}, None))
+    monkeypatch.setattr(cg, "_slice_additive_results",
+                        lambda cam, operation, setup: ({"parts": []}, None))
     monkeypatch.setattr(cg, "_slice_inspection",
                         lambda cam, measure, max_results, units: (
                             {"available": False, "measure_count": 0, "measures": []}, None))
@@ -2539,3 +2543,50 @@ class TestNormalizeInclude:
 
     def test_none_empty(self):
         assert cg._normalize_include(None) == [] and cg._normalize_include("") == []
+
+
+class TestAdditiveSlices:
+    def _rig(self, monkeypatch, additive=True):
+        setup = type("S", (), {"name": "Print"})()
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (object(), None))
+        monkeypatch.setattr(cg, "_slice_setups", lambda cam, s, units: ({"setups": []}, None))
+        monkeypatch.setattr(cg._cc, "find_setup", lambda cam, name: (
+            (setup, ["Print"], None) if name == "Print" else (None, ["Print"], f"No setup '{name}'.")))
+        monkeypatch.setattr(cg._cc, "is_additive_setup", lambda s: additive)
+        monkeypatch.setattr(cg._cam_additive, "print_setting_row", lambda s: {"name": "PLA"})
+        monkeypatch.setattr(cg._cam_additive, "printer_row", lambda s, k: {"scale": k})
+        monkeypatch.setattr(cg._cam_additive, "placement_rows", lambda cam, s, k: ([{"scale": k}], None))
+        return setup
+
+    def test_the_print_setting_slice_carries_the_setting_and_the_printer_in_the_units_asked(self, monkeypatch):
+        self._rig(monkeypatch)
+        out = _payload(cg.handler(include=["print_setting"], setup="Print", units="in"))["print_setting"]
+        assert out["name"] == "PLA" and out["setup"] == "Print" and out["units"] == "in"
+        assert out["printer"]["scale"] == pytest.approx(1 / 2.54)
+
+    def test_placement_names_its_frame_and_scales_by_the_units_asked(self, monkeypatch):
+        self._rig(monkeypatch)
+        out = _payload(cg.handler(include=["placement"], setup="Print"))["placement"]
+        assert out["frame"] == "manufacture" and out["parts"] == [{"scale": 10.0}]
+
+    @pytest.mark.parametrize("kw,said", [
+        ({"setup": ""}, "pass 'setup'"), ({"setup": "Nope"}, "No setup 'Nope'"),
+        ({"setup": "Print", "units": "furlong"}, "Unknown units 'furlong'")])
+    def test_a_setup_slice_refuses_a_missing_or_unknown_setup_and_unknown_units(self, monkeypatch, kw, said):
+        self._rig(monkeypatch)
+        for name in ("print_setting", "placement"):
+            assert said in error_message(cg.handler(include=[name], **kw))
+
+    def test_a_setup_that_is_not_additive_has_neither_slice(self, monkeypatch):
+        self._rig(monkeypatch, additive=False)
+        assert "is not additive" in error_message(cg.handler(include=["placement"], setup="Print"))
+
+    def test_additive_results_reads_one_operation_and_explains_the_candidate_index(self, monkeypatch):
+        self._rig(monkeypatch)
+        op = object()
+        monkeypatch.setattr(cg, "_resolve_op_in_scope", lambda cam, operation, setup: (op, None))
+        monkeypatch.setattr(cg._cam_additive, "additive_results", lambda cam, target: {
+            "parts": ["PartA:1"], "orientation": {"count": 9}} if target is op else {})
+        out = _payload(cg.handler(include=["additive_results"], operation="Orient1"))["additive_results"]
+        assert out["orientation"]["count"] == 9 and "orientation_candidate" in out["note"]
+        assert "pass 'operation'" in error_message(cg.handler(include=["additive_results"]))

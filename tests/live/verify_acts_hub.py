@@ -1201,6 +1201,7 @@ _ADD_SETTING_CAP = 400
 _TWIN_TECH = "FORMLABS_SLS"
 _TWIN_SETTING = "Formlabs SLS"
 _TWIN_PICK = "Fuse 1+ 30 W"
+_TWIN_MACHINE = "Formlabs|Fuse 1+ 30W (Nylon 12)"
 
 
 def _printers_listed(vendor):
@@ -1503,10 +1504,275 @@ def _additive_slice_rows():
                              and _slice_row(p).get("toolpath_valid", True) is True
                              and "error" not in _slice_row(p)))
     read("sys_execute_script", {"script": _SLICE_NATIVE, "read_only": True}, _slice_native)
+    # The shipped FFF post asks the machine for its extruders, so the program must carry the
+    # setup's machine; the file is then read from disk, apart from the reply.
+    write("cam_post", {"scope": _SLICE_SETUP, "post": "generic fff machine", "post_scope": "fusion",
+                       "output_folder": EXPORT_DIR + "/fff", "program_name": "4001"},
+          lambda p: p.get("posted") is True and p.get("machine") == "Autodesk Generic FFF Machine"
+          and p.get("file_count") == 1 and str(p["files"][0].get("file_path")).endswith(".gcode"),
+          ("slice_gcode", _recall("slice_gcode", lambda p: p["files"][0]["file_path"])))
+
+    def gcode_on_disk(p):
+        programs = (p.get("nc_programs") or {}).get("nc_programs") or []
+        with open(_RECALL["slice_gcode"], encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+        head = lines[:40]
+        facts = {"lines": len(lines), "moves": sum(1 for line in lines if line.startswith("G1")),
+                 "printer": next((line for line in head if line.startswith(";Printer name:")), None),
+                 "extruder_offset": any(line.startswith(";Extruder 1 offset x:") for line in head),
+                 "last": lines[-1] if lines else None}
+        return _measured("the FFF program file on disk", facts,
+                         len(programs) == 1 and programs[0].get("name") == "4001"
+                         and facts["printer"] == ";Printer name: Autodesk Generic FFF Machine"
+                         and facts["extruder_offset"] and facts["moves"] > 100
+                         and facts["last"] == ";END OF GCODE"
+                         and not any("!Error" in line for line in lines))
+    read("cam_get", {"include": ["nc_programs"]}, gcode_on_disk)
     write("cam_show_toolpath", lambda c: {"action": "show",
                                           "operation": _ctx_get(c, "slice_op", "the slice")},
           lambda p: p.get("has_toolpath") is not False and "warning" not in p)
     write("cam_show_toolpath", {"action": "hide_all"})
+    write("view_switch_workspace", {"workspace": "design"})
+    close()
+    return rows
+
+
+_PB_SETUP = "PartsBuild"
+_PB_A, _PB_B = "PartA:1", "PartB:1"
+_PB_NATIVE = (
+    "import adsk.core, adsk.cam, json\n"
+    "def run(context):\n"
+    "    doc=adsk.core.Application.get().activeDocument\n"
+    "    cam=adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))\n"
+    "    s=[x for x in cam.setups if x.name=='PartsBuild'][0]\n"
+    "    names=('optimizeOrientationTarget','supportTarget','supportTargetModel',\n"
+    "           'interferenceAnalysisTargets')\n"
+    "    targets={}\n"
+    "    for o in s.allOperations:\n"
+    "        for n in names:\n"
+    "            p=o.parameters.itemByName(n)\n"
+    "            if p:\n"
+    "                targets[o.name]=sorted(e.fullPathName.split('+')[-1] for e in p.value.value)\n"
+    "    poses={o.name:list(o.transform2.asArray()) for o in cam.designRootOccurrence.childOccurrences}\n"
+    "    print(json.dumps({'parts_build':{'setting':s.printSetting.name,'targets':targets,\n"
+    "                                     'poses':poses}}))\n")
+
+
+def _pb_native(p):
+    """The parts build read natively: print setting name, each operation's parts, each part's pose."""
+    if isinstance(p, dict) and "parts_build" in p:
+        return p["parts_build"]
+    for line in str((p or {}).get("output") if isinstance(p, dict) else p or "").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and "parts_build" in row:
+            return row["parts_build"]
+    return {}
+
+
+def _pb_turn(cells):
+    """The nine rotation cells of a 16-cell transform, each column at unit length."""
+    columns = [[cells[4 * row + col] for row in range(3)] for col in range(3)]
+    lengths = [sum(v * v for v in column) ** 0.5 for column in columns]
+    return [cells[4 * row + col] / lengths[col] for row in range(3) for col in range(3)]
+
+
+def _pb_same(a, b, tol=1e-6):
+    return bool(a) and bool(b) and len(a) == len(b) and max(abs(x - y) for x, y in zip(a, b)) <= tol
+
+
+def _additive_parts_rows():
+    """An FFF build of two parts: setting swap, interference, support, orientation and arrange."""
+    from verify_acts_cam import _face_op_settled
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("pb_doc")
+    # PartA has a 20 mm overhang above a column; PartB overlaps the column at the origin.
+    write("model_create_component", {"name": "PartA", "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "PbA"})
+    write("sketch_add_geometry", {"sketch_name": "PbA", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "PbA", "distance": 20, "operation": "new"}, _extruded)
+    write("model_construction", {"kind": "plane", "plane": "xy", "offset": 20, "name": "PbSlabPlane"})
+    write("sketch_create", {"plane": "PbSlabPlane", "name": "PbSlab"})
+    write("sketch_add_geometry", {"sketch_name": "PbSlab", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 30, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "PbSlab", "distance": 5, "operation": "join"}, _extruded)
+    read("model_inspect", {"target": _PB_A, "include": ["default", "mass"], "units": "cm"},
+         lambda p: _measured("the column and overhanging slab material", p.get("mass"),
+                             _near((p.get("mass") or {}).get("volume"), 7, 1e-6)))
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "PartB", "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "PbB"})
+    write("sketch_add_geometry", {"sketch_name": "PbB", "geometry": [
+        {"kind": "rectangle", "x1": -5, "y1": -5, "x2": 5, "y2": 5}]})
+    write("model_extrude", {"sketch_name": "PbB", "distance": 10, "symmetric": True,
+                            "operation": "new"}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("view_switch_workspace", {"workspace": "manufacture"})
+    fff = {"operation_type": "additive", "name": _PB_SETUP, "machine": "Autodesk|Generic FFF Machine",
+           "models": [_PB_A, _PB_B]}
+    # A metal setting on the FFF printer is refused before the setup exists.
+    write("cam_create_setup", {**fff, "print_setting": _ADD_SETTING},
+          _refused("is not compatible with machine", "was not assigned"))
+    read("cam_get", {}, lambda p: _measured("no setup after the refused create", p.get("setups"),
+                                            _PB_SETUP not in json.dumps(p)))
+    write("cam_create_setup", {**fff, "print_setting": "PLA (Bowden Tube)"},
+          lambda p: p.get("created") is True and p.get("print_setting_technology") == "FFF")
+
+    def setting_read(name):
+        def check(p):
+            row = p.get("print_setting") or {}
+            printer = row.get("printer") or {}
+            return _measured(f"the setup's print setting reads '{name}' on the FFF printer", row,
+                             row.get("name") == name and row.get("compatible_with_machine") is True
+                             and (printer.get("platform") or {}).get("size") == [300.0, 300.0, 300.0]
+                             and len(printer.get("extruders") or []) == 2
+                             and len(row.get("general") or []) > 0)
+        return check
+    read("cam_get", {"include": ["print_setting"], "setup": _PB_SETUP},
+         setting_read("PLA (Bowden Tube)"))
+    write("cam_edit_setup", {"setup": _PB_SETUP, "print_setting": "PLA (Direct Drive)"},
+          lambda p: p.get("print_setting_set") == "PLA (Direct Drive)"
+          and p.get("print_setting_technology") == "FFF")
+    write("cam_edit_setup", {"setup": _PB_SETUP, "print_setting": _ADD_SETTING},
+          _refused("is not compatible with machine", "was not assigned"))
+    read("cam_get", {"include": ["print_setting"], "setup": _PB_SETUP},
+         setting_read("PLA (Direct Drive)"))
+
+    def native(label, judge, save=None):
+        read("sys_execute_script", {"script": _PB_NATIVE, "read_only": True},
+             lambda p: _measured(label, _pb_native(p), bool(_pb_native(p)) and judge(_pb_native(p))),
+             save)
+
+    def op(key, strategy, parts):
+        """Create one additive operation, give it its parts, generate it and wait for it."""
+        write("cam_create_operation", {"setup": _PB_SETUP, "strategy": strategy},
+              _additive_op_created(_PB_SETUP, strategy),
+              (key, _recall(key, lambda p: p["operation"])))
+        if parts:
+            write("cam_edit_operation", lambda c: {"operation": _ctx_get(c, key, strategy),
+                                                   "parts": parts},
+                  lambda p: p.get("parts") == sorted(parts) and p.get("parts_before") == [])
+        write("cam_generate", lambda c: {"target": _ctx_get(c, key, strategy), "skip_valid": False},
+              lambda p: p.get("launched") is True and bool(p.get("handle")),
+              (key + "_gen", _recall(key + "_gen", lambda p: p["handle"])))
+        read("cam_get_status", lambda c: {"handle": _ctx_get(c, key + "_gen", strategy)},
+             _face_op_settled(key + "_gen", f"the {strategy} generation settled valid", {"valid": 1}))
+
+    def results(key, judge, save=None):
+        read("cam_get", lambda c: {"include": ["additive_results"], "setup": _PB_SETUP,
+                                   "operation": _ctx_get(c, key, "the operation")},
+             lambda p: _measured(f"additive results of {_RECALL[key]}", p.get("additive_results"),
+                                 judge(p.get("additive_results") or {})), save)
+
+    # INTERFERENCE: both parts in one assignment; the result names the pair that overlaps.
+    op("pb_clash", "additive_interference", [_PB_A, _PB_B])
+    results("pb_clash", lambda r: r.get("interfering_parts") == [_PB_A, _PB_B]
+            and r.get("parts") == [_PB_A, _PB_B] and "Interference detected" in (r.get("warning") or ""))
+    # SUPPORT on the overhanging part, as drawn.
+    op("pb_support", "solid_volume_support", [_PB_A])
+    results("pb_support", lambda r: r.get("parts") == [_PB_A] and r.get("has_error") is False)
+    # ORIENTATION: a candidate cannot be chosen before the candidates exist.
+    write("cam_create_operation", {"setup": _PB_SETUP, "strategy": "automatic_orientation"},
+          _additive_op_created(_PB_SETUP, "automatic_orientation"),
+          ("pb_orient", _recall("pb_orient", lambda p: p["operation"])))
+    write("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "pb_orient", "the orientation"),
+                                           "parts": [_PB_A]},
+          lambda p: p.get("parts") == [_PB_A] and p.get("parameter") == "optimizeOrientationTarget")
+    write("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "pb_orient", "the orientation"),
+                                           "orientation_candidate": 0},
+          _refused("orientation result sets", "cam_generate"))
+    write("cam_generate", lambda c: {"target": _ctx_get(c, "pb_orient", "the orientation"),
+                                     "skip_valid": False},
+          lambda p: p.get("launched") is True and bool(p.get("handle")),
+          ("pb_orient_gen", _recall("pb_orient_gen", lambda p: p["handle"])))
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_orient_gen", "the orientation")},
+         _face_op_settled("pb_orient_gen", "the orientation generation settled valid", {"valid": 1}))
+    native("each operation's parts and the poses before a candidate is chosen",
+           lambda n: n["setting"] == "PLA (Direct Drive)"
+           and n["targets"].get(_RECALL["pb_clash"]) == [_PB_A, _PB_B]
+           and n["targets"].get(_RECALL["pb_support"]) == [_PB_A]
+           and n["targets"].get(_RECALL["pb_orient"]) == [_PB_A],
+           ("pb_before", _recall("pb_before", lambda p: _pb_native(p)["poses"])))
+
+    def turned(r):
+        """The first candidate whose rotation differs from the pose PartA holds now."""
+        now = _pb_turn(_RECALL["pb_before"][_PB_A])
+        rows_ = (r.get("orientation") or {}).get("candidates") or []
+        return next((c for c in rows_ if c.get("transformation")
+                     and not _pb_same(_pb_turn(c["transformation"]), now)), None)
+    results("pb_orient", lambda r: (r.get("orientation") or {}).get("count") == 9
+            and (r.get("orientation") or {}).get("current_index") is None and turned(r) is not None,
+            ("pb_pick", _recall("pb_pick", lambda p: turned(p["additive_results"]))))
+    write("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "pb_orient", "the orientation"),
+                                           "orientation_candidate": _RECALL["pb_pick"]["index"]},
+          lambda p: p.get("orientation_candidate") == _RECALL["pb_pick"]["index"]
+          and p.get("part") == _PB_A
+          and _pb_same(_pb_turn(p.get("pose") or [0] * 16),
+                       _pb_turn(_RECALL["pb_pick"]["transformation"])))
+    results("pb_orient",
+            lambda r: (r.get("orientation") or {}).get("current_index") == _RECALL["pb_pick"]["index"])
+    native("PartA turned to the chosen candidate natively, PartB where it was",
+           lambda n: _pb_same(_pb_turn(n["poses"][_PB_A]), _pb_turn(_RECALL["pb_pick"]["transformation"]))
+           and _pb_same(n["poses"][_PB_B], _RECALL["pb_before"][_PB_B]),
+           ("pb_turned", _recall("pb_turned", lambda p: _pb_native(p)["poses"])))
+
+    def placement(label, judge):
+        def check(p):
+            got = {r.get("part"): r for r in (p.get("placement") or {}).get("parts") or []}
+            return _measured(label, got, set(got) == {_PB_A, _PB_B}
+                             and all(r.get("read") is True for r in got.values()) and judge(got))
+        read("cam_get", {"include": ["placement"], "setup": _PB_SETUP, "units": "cm"}, check)
+    # The placement read against the native poses: the same 16 cells, translation in the units asked.
+    placement("the placement read equals the native poses",
+              lambda got: all(_pb_same(got[part]["pose"], _RECALL["pb_turned"][part], 1e-6)
+                              for part in (_PB_A, _PB_B)))
+    # ARRANGE takes no parts of its own and moves the build's parts on the Manufacture side.
+    op("pb_arrange", "additive_arrange", None)
+    native("the arrange moved both parts natively",
+           lambda n: not _pb_same(n["poses"][_PB_A], _RECALL["pb_turned"][_PB_A])
+           and not _pb_same(n["poses"][_PB_B], _RECALL["pb_turned"][_PB_B]),
+           ("pb_arranged", _recall("pb_arranged", lambda p: _pb_native(p)["poses"])))
+    placement("the placement read follows the arrange",
+              lambda got: all(_pb_same(got[part]["pose"], _RECALL["pb_arranged"][part], 1e-6)
+                              for part in (_PB_A, _PB_B)))
+    # The METAL printer reports FFF support incompatibility after async generation settles.
+    write("cam_create_setup", {"operation_type": "additive", "name": _PB_SETUP + "Metal",
+                               "machine": _ADD_MACHINE, "print_setting": _ADD_SETTING,
+                               "models": [_PB_A]},
+          lambda p: p.get("created") is True)
+    def metal_started(p):
+        landed = (p.get("generation_started") is True and bool(p.get("generation_handle"))
+                  and bool(p.get("operation")) and p.get("setup") == _PB_SETUP + "Metal"
+                  and p.get("strategy") == "solid_volume_support")
+        if landed:
+            _RECALL["pb_refused_op"] = p["operation"]
+        return _measured("metal support generation launched", p, landed)
+    write("cam_create_operation", {"setup": _PB_SETUP + "Metal", "strategy": "solid_volume_support",
+                                   "generate": True},
+          metal_started,
+          ("pb_refused_gen", _recall("pb_refused_gen", lambda p: p["generation_handle"])))
+    # The launch handle belongs to this operation; the status poll must finish with one fault.
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_refused_gen", "the metal support")},
+         _face_op_settled("pb_refused_gen", "metal support generation settled errored", {"errored": 1}))
+    read("cam_get_status", lambda c: {"target": _RECALL["pb_refused_op"]},
+         lambda p: _measured("the settled metal support names its compatibility error",
+                             p.get("operations_with_errors"),
+                             p.get("completed") is True and p.get("operations_with_errors") == [
+                                 {"name": _RECALL["pb_refused_op"],
+                                  "error": "The support object is not compatible with the machine."}]))
+    read("cam_get", lambda c: {"include": ["additive_results"], "setup": _PB_SETUP + "Metal",
+                               "operation": _RECALL["pb_refused_op"]},
+         lambda p: _measured("the support operation independently reads its compatibility error",
+                             p.get("additive_results"),
+                             (p.get("additive_results") or {}).get("operation") == _RECALL["pb_refused_op"]
+                             and (p.get("additive_results") or {}).get("has_error") is True
+                             and str((p.get("additive_results") or {}).get("error") or "").strip()
+                             == "The support object is not compatible with the machine."))
+    write("cam_delete", lambda c: {"entity": _RECALL["pb_refused_op"]},
+          lambda p: p.get("deleted") is True and p.get("entity") == _RECALL["pb_refused_op"])
     write("view_switch_workspace", {"workspace": "design"})
     close()
     return rows
@@ -1537,11 +1803,20 @@ _HUB_ADDITIVE = [
               "print_setting_description"), None),
     # And the remedy that refusal names, taken: the qualifier reaches the twin the platform's own
     # asset url does not, and the setup's OWN description is what says which one landed.
-    ("cam_create_setup", {"operation_type": "additive", "machine": _ADD_MACHINE,
+    ("cam_create_setup", {"operation_type": "additive", "machine": _TWIN_MACHINE,
                           "print_setting": _TWIN_SETTING,
                           "print_setting_description": _TWIN_PICK,
                           "models": [HUB_COMP + ":1"], "name": _ADD_SETUP + "Twin"},
      _twin_picked(_ADD_SETUP + "Twin", _TWIN_SETTING, _TWIN_PICK), None),
+    ("cam_get", {"include": ["print_setting"], "setup": _ADD_SETUP + "Twin"},
+     lambda p: _measured("the qualified twin setting is compatible with its Formlabs printer",
+                         p.get("print_setting"),
+                         (p.get("print_setting") or {}).get("setup") == _ADD_SETUP + "Twin"
+                         and (p.get("print_setting") or {}).get("name") == _TWIN_SETTING
+                         and _TWIN_PICK in (p.get("print_setting") or {}).get("description", "")
+                         and (p.get("print_setting") or {}).get("compatible_with_machine") is True
+                         and ((p.get("print_setting") or {}).get("printer") or {}).get("vendor") == "Formlabs"
+                         and ((p.get("print_setting") or {}).get("printer") or {}).get("model") == "Fuse 1+ 30W (Nylon 12)"), None),
     ("cam_delete", {"entity": _ADD_SETUP + "Twin"},
      lambda p: p.get("deleted") is True and p.get("entity") == _ADD_SETUP + "Twin", None),
     # The machine is REQUIRED on this arm: measured, setups.add of a machineless additive input
@@ -1660,3 +1935,4 @@ _HUB_ADDITIVE = [
 ]
 
 _HUB_ADDITIVE += _additive_slice_rows()
+_HUB_ADDITIVE += _additive_parts_rows()

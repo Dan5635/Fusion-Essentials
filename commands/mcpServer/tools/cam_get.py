@@ -22,12 +22,13 @@ from ._cam_presets import _preset_names, _presets_named
 from ..guidance.loader import STRATEGY_RECIPE_ID
 from . import _inputs
 from . import _cam_read as _cr
+from . import _cam_additive
 
 app = adsk.core.Application.get()
 
 _SLICES = ("operations", "strategies", "parameters", "tool", "references", "nc_programs", "time",
            "tools", "library", "library_types", "machine", "machines", "print_settings",
-           "templates", "inspection")
+           "templates", "inspection", "print_setting", "placement", "additive_results")
 
 # The slices that read CAMManager.libraryManager rather than the document's CAM product. A read of
 # these ALONE answers on a document that has never entered Manufacture, so it skips get_cam().
@@ -220,6 +221,62 @@ def _slice_machine(cam, setup, units):
     """The machine's own LIMITS per setup: spindle speed range + per-axis travels, off the machine's
     kinematics. Distinct from 'machines' (the catalog of machines you can assign)."""
     return _unwrap(_cr.get_machine_limits_handler(setup=setup, units=units))
+
+
+def _additive_setup(cam, setup, slice_name, units="mm"):
+    """(the one additive setup a slice reads, None) or (None, error)."""
+    if units not in CM_TO_UNIT:
+        return None, error(f"Unknown units '{units}'. Use mm, cm, or in.")
+    if not (setup or "").strip():
+        return None, error(f"include=['{slice_name}'] reads one additive setup; pass 'setup'.")
+    found, _names, serr = _cc.find_setup(cam, setup)
+    if not found:
+        return None, error(serr)
+    if not _cc.is_additive_setup(found):
+        return None, error(f"Setup '{setup}' is not additive, so it has no {slice_name}.")
+    return found, None
+
+
+def _slice_print_setting(cam, setup, units):
+    """One additive setup's print setting and printer as the setup holds them."""
+    found, serr = _additive_setup(cam, setup, "print_setting", units)
+    if serr:
+        return None, serr
+    row = _cam_additive.print_setting_row(found)
+    if row is None:
+        return None, error(f"The print setting of setup '{setup}' did not read.")
+    return {"setup": safe(lambda: found.name), **row,
+            "printer": _cam_additive.printer_row(found, CM_TO_UNIT[units]), "units": units}, None
+
+
+def _slice_placement(cam, setup, units):
+    """Where each part of one additive setup sits on the Manufacture side."""
+    found, serr = _additive_setup(cam, setup, "placement", units)
+    if serr:
+        return None, serr
+    rows, reason = _cam_additive.placement_rows(cam, found, CM_TO_UNIT[units])
+    if reason:
+        return None, error(reason)
+    return {"setup": safe(lambda: found.name), "frame": "manufacture", "units": units, "parts": rows,
+            "note": "Each 'pose' is the part's Manufacture-side transform (16 cells, row-major, "
+                    "translation in 'units'); orientation and arrange move it, the design does not "
+                    "change."}, None
+
+
+def _slice_additive_results(cam, operation, setup):
+    """What one additive operation holds: its parts, state, and typed results."""
+    if not (operation or "").strip():
+        return None, error("include=['additive_results'] reads one operation; pass 'operation'.")
+    op, oerr = _resolve_op_in_scope(cam, operation, setup)
+    if oerr:
+        return None, oerr
+    out = _cam_additive.additive_results(cam, op)
+    rows = out.get("orientation")
+    if rows is not None:
+        out["note"] = ("Orientation lengths, areas and volumes are in cm. Pass a candidate's 'index' "
+                       "to cam_edit_operation(orientation_candidate=...); current_index is null "
+                       "until one was chosen.")
+    return out, None
 
 
 def _slice_tools(cam):
@@ -833,6 +890,18 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
             return e
     if "machine" in inc:                        # the assigned machine's spindle/axis limits
         out["machine"], e = _slice_machine(cam, setup, units)
+        if e:
+            return e
+    if "print_setting" in inc:
+        out["print_setting"], e = _slice_print_setting(cam, setup, units)
+        if e:
+            return e
+    if "placement" in inc:
+        out["placement"], e = _slice_placement(cam, setup, units)
+        if e:
+            return e
+    if "additive_results" in inc:
+        out["additive_results"], e = _slice_additive_results(cam, operation, setup)
         if e:
             return e
     if "tools" in inc:

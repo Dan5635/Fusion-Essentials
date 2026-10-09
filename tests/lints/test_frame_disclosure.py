@@ -45,6 +45,12 @@ _PUBLISHES_A_FRAME_BLOCK = {
 
 # module -> the audited reason its frame is NOT a block of an origin plus three axes.
 _PUBLISHES_OTHERWISE = {
+    "model_draft": "side_reference labels world space beside a pull-plane origin and one normal; "
+                   "the direction is the outward face normal or construction-plane normal, not a basis",
+    "model_extrude": "side_reference labels world space beside a placed sketch origin and its normal; "
+                     "it is an operand direction, not a three-axis frame block",
+    "cam_get": "placement publishes a Manufacture frame label beside a row-major pose matrix; "
+               "translations use caller units, and this pose is not the Design occurrence placement",
     "mesh_find": "publishes a world frame label; refuses meshes not owned by the root, so all "
                  "node, triangle, group, ray and silhouette coordinates have no occurrence transform",
     "assembly_get": "four row-local shapes: an occurrence's placement basis is merged FLAT into "

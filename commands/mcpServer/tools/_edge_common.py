@@ -1093,6 +1093,11 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
                 payload["positions"] = measured_sets[0]["positions"]
                 payload["radii"] = [round(radius / k, 6)
                                     for radius in measured_sets[0]["radii_cm"]]
+        if any(row["type"] == "asymmetric" for row in measured_sets):
+            payload["side_mapping"] = None
+            payload["note"] += (" Geometric setback-side mapping is unavailable; find_geometry reads the "
+                                "adjacent faces, and view_section shows the corner. flipped swaps "
+                                "radius/end_radius; remove the feature and recreate if the sides are reversed.")
     else:
         # A legacy request is echoed as itself; measured routes publish retained feature values above.
         payload[size_key] = _inputs.expression_report(size)

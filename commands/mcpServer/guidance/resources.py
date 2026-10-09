@@ -1,15 +1,7 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""The static MCP Resources this server publishes: the packaged guidance, whole and per section.
-
-MCP's resource channel is application-controlled content a client reads by address, which is what
-packaged guidance is. Every entry is built from the same document ``sys_get_guidance`` answers from
-and rendered through the same ``render``, so the channels cannot serve different guidance.
-
-``entry.py`` builds this catalog at startup and hands it to ``start_server``: the transport serves
-the value it was given and reads no product file of its own.
-"""
+"""Publish source-stamped guidance resources captured at add-in load."""
 
 from . import loader
 from . import render
@@ -47,21 +39,18 @@ def _entry(uri, name, title, description, text):
 
 
 def catalog(path=None):
-    """The resource entries this server can serve, each carrying its own rendered text: the whole
-    document, then one per non-kernel section so a client can fetch the playbook it needs alone.
-
-    Raises ``loader.GuidanceUnavailable`` when the packaged document does not read: the caller then
-    publishes nothing and advertises no resource capability, rather than an address that answers
-    with an error."""
-    doc, _sha256 = loader.load(path)
+    """Return whole and section resource snapshots, or raise GuidanceUnavailable."""
+    doc, sha256 = loader.load(path)
     guidance_id = doc.get("guidance_id")
+    stamp = (f"\n\nSource: guidance_id={guidance_id}; sha256={sha256}. "
+             "Resource snapshot: reload the add-in after packaged guidance changes.\n")
     entries = [_entry(uri_for(guidance_id), doc.get("name"), doc.get("title"),
-                      doc.get("description"), render.body(doc))]
+                      doc.get("description"), render.body(doc) + stamp)]
     for sec in (doc.get("sections") or []):
         if not isinstance(sec, dict) or sec.get("id") == loader.KERNEL:
             continue
         section_id = sec.get("id")
         entries.append(_entry(section_uri_for(guidance_id, section_id),
                               f"{guidance_id}/{section_id}", sec.get("title"),
-                              sec.get("use_when"), render.section_text(doc, section_id)))
+                              sec.get("use_when"), render.section_text(doc, section_id) + stamp))
     return entries

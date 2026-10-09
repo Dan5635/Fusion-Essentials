@@ -89,6 +89,8 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
     plane, perr = _PULL.resolve(pull_direction)
     if perr:
         return error(perr)
+    side_origin, side_normal = (_inputs.placed_datum_frame(plane, "draft_plane")
+                                if angle_two is not None else (None, None))
 
     # DraftFeatures.createInput wants a Python list of BRepFace (per the live signature), not an
     # ObjectCollection.
@@ -156,6 +158,14 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
     # feature and on an earlier one alike.
     drafted = _common.counted(lambda: feature.faces.count)
     note = "Faces tapered to the pull direction. Pair with view_screenshot to view."
+    if angle_two is not None:
+        if side_origin is not None and side_normal is not None:
+            note += (" Two-angle sides use the pull operand's normal: angle_deg on its positive "
+                     "side, angle_two_deg on its negative side. A face uses its outward normal; "
+                     "flip reverses taper, not these regions.")
+        else:
+            note += (" World pull frame unavailable, so the angle-to-side mapping is unknown. "
+                     "Reacquire the placed plane or face with find_geometry.")
     if effect_unverified:
         note += (" NONE of the bodies' volume, their face count or the requested faces' own "
                  "normal/area could be read back, so there is no geometric proof the taper landed "
@@ -181,6 +191,10 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
         "pull_direction": pull_direction,
         "note": note,
     }
+    if angle_two is not None:
+        payload["side_reference"] = {"frame": "world" if side_origin is not None and side_normal is not None else None,
+                                     "origin_cm": side_origin,
+                                     "normal_world": side_normal, "operand": pull_direction}
     if effect_unverified:
         payload["effect_unverified"] = True
     # Published only where the before/after pair was READABLE: a null here would read as "no material

@@ -10,6 +10,8 @@ from ._common import error, ok, safe
 from . import _common, _sheet_common, _edit_feature_common
 
 _SLICES = ("rules", "library_rules", "components", "features")
+_LOCAL_RULE_HINT = ("Design-local rules could not be read. If uninitialized, create a root sheet-metal "
+                    "component with model_create_component(sheet_metal=true), then retry.")
 
 
 def _normalize_include(include):
@@ -25,7 +27,12 @@ def _rules(design, scope, limit):
     """Return readable scoped rule rows up to the response cap."""
     rules = _sheet_common.scoped_rules(design, scope)
     if rules is None:
-        return {"readable": False, "rules": None}
+        out = {"readable": False, "rules": None}
+        if scope == "design":
+            local = safe(lambda: design.designSheetMetalRules)
+            if local is None or safe(lambda: local.count) is None:
+                out["note"] = _LOCAL_RULE_HINT
+        return out
     return {"readable": True, "rules": [_sheet_common.rule_row(design, r, scope) for r in rules[:limit]],
             "total": len(rules), "truncated": len(rules) > limit}
 
@@ -114,6 +121,8 @@ def handler(include=None, max_results: int = 50) -> dict:
         library = safe(lambda: design.librarySheetMetalRules)
         out["design_rule_count"] = safe(lambda: local.count) if local is not None else None
         out["library_rule_count"] = safe(lambda: library.count) if library is not None else None
+        if out["design_rule_count"] is None:
+            out["note"] = _LOCAL_RULE_HINT
         out["next"] = [name for name in _SLICES if name not in inc]
     if "rules" in inc:
         out["rules"] = _rules(design, "design", max_results)

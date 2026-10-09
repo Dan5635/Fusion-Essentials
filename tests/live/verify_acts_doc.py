@@ -29,6 +29,20 @@ from verify_acts_model_sweep import (
     _retire_compare, _retire_design_state, _retire_material_state, _sweep_mode_shape, _sweep_mode_box_equal)
 
 
+def _guidance_resource_matches(p):
+    """Read the loaded resource separately and compare its source stamp and content."""
+    reply = facade("_post")({"jsonrpc": "2.0", "id": "guidance-source", "method": "resources/read",
+                            "params": {"uri": p["resource_uri"]}})
+    texts = [r.get("text", "") for r in reply.get("result", {}).get("contents", [])]
+    stamp = f"guidance_id={p.get('guidance_id')}; sha256={p.get('sha256')}"
+    passed = (len(texts) == 1 and len(p.get("sha256") or "") == 64
+              and stamp in texts[0] and "reload the add-in" in texts[0]
+              and all(r["do"][0].upper() + r["do"][1:] in texts[0] for r in p.get("kernel", [])))
+    return _measured("guidance resource source stamp",
+                     {"resource_uri": p["resource_uri"], "source_sha256": p.get("sha256"),
+                      "matching_resource_stamp": passed}, passed)
+
+
 def _kernel_rules_present(p, field="kernel"):
     """Check the five kernel rules and their applicability fields in a guidance reply."""
     rules = p.get(field) or []
@@ -1629,6 +1643,7 @@ _OVERTURE = [
                 and any(r.get("id") == "model" and "sheet metal" in r.get("use_when", "")
                         for r in p.get("sections", []))
                 and _kernel_rules_present(p)), None),
+    ("sys_get_guidance", {}, _guidance_resource_matches, None),
     ("sys_get_guidance", {"section": "model"},
      lambda p: (any(r.get("id") == "threads-by-intent"
                    and "tapped hole with model_hole(tap=...)" in r.get("do", "")

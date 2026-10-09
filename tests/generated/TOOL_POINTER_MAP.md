@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 220  |  **description breadcrumbs:** 344  |  **note/error breadcrumbs:** 742
+**Tools:** 220  |  **description breadcrumbs:** 345  |  **note/error breadcrumbs:** 746
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -42,7 +42,7 @@ close orphans, factor duplicated guards into shared helpers.
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 92  (desc 0, note 92)
 - `design_get`  <- 72  (desc 18, note 54)
-- `find_geometry`  <- 61  (desc 18, note 43)
+- `find_geometry`  <- 62  (desc 18, note 44)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `cam_get`  <- 34  (desc 15, note 19)
@@ -665,6 +665,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `cam_edit_operation`
 - Provide 'operation' - the CAM operation name to edit (see cam_get(include=['operations'])).
+- 'parts' and 'orientation_candidate' go in a call of their own, without parameters, preset, tool, rename or suppressed.
 - Provide 'parameters' - at least one name=value to set (e.g. {'tool_feedCutting': '3000'}) - or 'preset', a preset on this operation's tool, 'tool_index' (with 'tool_scope=document' or 'tool_library...
 - ' parameters cannot be read before assignment; no write was attempted. Re-read it with cam_get(include=['parameters']).
 - ' has no parameter(s):
@@ -672,6 +673,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' parameters cannot be read after tool/preset assignment; no explicit parameter write was attempted.
 - ' lost parameter(s) after tool/preset assignment:
 - . No parameter write was attempted.
+- 'parts' and 'orientation_candidate' are separate steps: set the parts, generate, then choose a candidate.
+- The parts read back as asked.
+- The candidate reads current and the part's Manufacture-side pose is turned to it; the design is unchanged. Later operations of the setup may read out of date.
 - isSuppressed cannot be read on operation '' after setting it to , so the change is UNCONFIRMED. Re-read the operation with cam_get(include=['operations']).
 - Operation '' is GENERATING, so no tool was assigned. Poll it with cam_get_status and retry once the generation has finished.
 - Provide a tool reference: 'tool_scope=document' + 'tool_index', OR 'tool_library_url' + 'tool_index' (from cam_edit_tools).
@@ -694,7 +698,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 ### `cam_edit_setup`
 - Setup edited. Existing toolpaths are now OUT OF DATE - regenerate with cam_generate. A WCS bound via 'wcs' is a LIVE reference to the selected geometry or Joint Origin (bound_entities), so the WCS ...
 - Provide 'setup' - the CAM setup name (see cam_get).
-- Nothing to do. Provide 'parameters' {name: expression}, 'models'/'fixtures'/'stock' body lists, a 'machine', a 'stock_mode', a 'wcs' binding, and/or 'rename'.
+- 'print_setting_description' qualifies 'print_setting'; pass both or neither.
+- Nothing to do. Provide 'parameters' {name: expression}, 'models'/'fixtures'/'stock' body lists, a 'machine', a 'stock_mode', a 'wcs' binding, a 'print_setting', and/or 'rename'.
 - ' has no parameter(s):
 - . (Read the setup's parameter names first; only existing ones are settable.)
 - . Null fields are unread. Re-read with cam_get(include=['setups','parameters'], setup=...).
@@ -704,6 +709,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - (isEditable reads False on each).
 - ' cannot be an empty list - clearing that setup selection is unsupported by this tool. Omit the field to leave it unchanged, or pass one or more bodies or occurrences to replace it.
 - ' and a 'stock' body list in one call set the setup's stock two ways - 'stock' is the from-solid mode with its bodies. Pass one or the other.
+- 'print_setting' applies to an additive setup; '
 - This Fusion build's SetupStockModes carries no '
 - ' member, so 'stock_mode=
 - ' cannot be assigned. Pick another mode.
@@ -856,6 +862,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' names none. cam_edit_tools(action='add_preset') authors one on a library tool.
 - preset(s) but none of their names read, so '
 - ' cannot be matched against them.
+- The print setting of setup '
+- Each 'pose' is the part's Manufacture-side transform (16 cells, row-major, translation in 'units'); orientation and arrange move it, the design does not change.
+- Orientation lengths, areas and volumes are in cm. Pass a candidate's 'index' to cam_edit_operation(orientation_candidate=...); current_index is null until one was chosen.
+- include=['additive_results'] reads one operation; pass 'operation'.
 - cam_generate to regenerate the  out-of-date / ungenerated operation(s); cam_get(include=['operations']) for the per-op detail.
 - 'allowed' is isGenerationAllowed; cam_create_operation REFUSES a false one. null means it did not read, and no refusal follows. A classification flag at its usual value is dropped (false; is_suppre...
 - Counted {found} referenced component(s) among what the {setups} setup(s) select DIRECTLY (the top-level setups[] slice's selected_models/fixtures/stock_solids) - a reference NESTED inside one is no...
@@ -934,6 +944,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Provide 'post' - the post processor: for post_scope=local a full .cps path or a name in the personal/installed post folder; for cloud/hub/fusion the NAME of a post in that library.
 - The post log rejected emitted number ; this NC Program remains. Correct it with cam_set_nc_comment(program='', set_number='<number accepted by this post>'), then retry cam_post(program_name='').
 - The post log rejected emitted number . Retry creation with a program_name that is a number accepted by this post. If rollback says the failed program remains, remove it with cam_delete first.
+- Additive setup '' reads no machine, and its post takes the machine configuration from it. Posting was not attempted. Assign one with cam_edit_setup(machine=...), then post again.
+- The machine of additive setup '' did not read its identity, so giving it to the NC Program could not be verified. Posting was not attempted. Re-read cam_get(include=['machine'], setup=...) and post...
+- The NC Program's machine is unverified after it was given the machine of additive setup '': it reads , the setup's reads . Posting was not attempted. cam_get(include=['nc_programs']) reads the prog...
 - program_operation_count: unsuppressed operations in scope; posted_operations: valid toolpaths in scope (hasToolpath and not errored). Suppressed operations are excluded from both counts and NC output.
 - NC Program '' re-read ZERO operations after the requested scope was assigned, while that scope resolves to  - the assignment did not take, so nothing was posted.
 - stored and  requested operation(s) have no readable operationId, so the program's membership was not compared with the scope.
@@ -3298,6 +3311,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - deg (setSingleAngle returned false), so nothing was drafted.
 - Draft failed: . (The pull direction may not suit these faces, or the angle undercuts the geometry - try a smaller angle or 'flip'.)
 - Draft computed but tapered nothing - on , , so the  deg taper changed no geometry. Check 'pull_direction' is the plane the faces taper relative to, and try 'flip' or a face that is not already para...
+- Two-angle sides use the pull operand's normal: angle_deg on its positive side, angle_two_deg on its negative side. A face uses its outward normal; flip reverses taper, not these regions.
+- World pull frame unavailable, so the angle-to-side mapping is unknown. Reacquire the placed plane or face with find_geometry.
 - NONE of the bodies' volume, their face count or the requested faces' own normal/area could be read back, so there is no geometric proof the taper landed - re-read the faces with model_inspect befor...
 - faces_compared is 0 - no requested face's normal or area could be compared across the add, so faces_moved counts nothing; the volume and face-count deltas are what this result rests on.
 - 'faces_drafted' is null - the count could not be read off the feature, so how many faces the draft took is UNKNOWN here;  face(s) were requested.
@@ -3560,6 +3575,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Extrude reported success but this  changed nothing: no solid body lost material and none was consumed, so the scoped bodies () are untouched. A cut/intersect can only affect bodies named in 'target...
 - - the openings inside a frame outline are closed regions too, so this  acted on them as well. To act on only the regions you mean, read them with sketch_get (area/centroid per region) and pass a pr...
 - Distance/taper are model parameters (see 'model_parameters') - param_set one to an expression to drive this feature parametrically.
+- Positive two-sided lengths: distance/taper_deg follow the sketch normal; distance2/taper_two_deg oppose it. side_reference names its world frame.
 - WARNING: with no 'target_bodies' this  removed material from every VISIBLE body it intersects, including  (hidden bodies are spared). Scope it by passing 'target_bodies' (a named body is cut even i...
 - WARNING: this  DISCONNECTED the target - it created  additional disconnected body/bodies (the feature now yields : ). Reference each piece by name; a later op assuming one body may hit the wrong pi...
 
@@ -4641,6 +4657,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' must be an integer from 1 to 200.
 - No active design. Create or open a design first.
 - Use active_rule_ref with sheet_edit_rule; unknown means identity is unconfirmed. Component names may repeat; use a face/edge handle from find_geometry on the body for sheet_convert.
+- Design-local rules could not be read. If uninitialized, create a root sheet-metal component with model_create_component(sheet_metal=true), then retry.
 
 ### `sketch_add_3d_line`
 - Line drawn in 3D. The end point's non-zero z places it off the sketch's x-y plane. View it from an iso angle with view_screenshot (a top view hides the out-of-plane component).
@@ -5347,7 +5364,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' returns that one recipe. Call twice.
 - The packaged guidance document carries no section '
 - The packaged guidance document carries no recipe '
-- The one packaged design-guidance document. 'kernel' gives the five rules for every design; 'sections' and 'recipes' map narrower reads. Call section=<id> for that section's rules or recipe=<id> for...
+- Packaged design guidance. 'kernel' gives five rules; 'sections' and 'recipes' index narrower reads. Call section=<id> or recipe=<id>. Rules and recipes declare 'scenarios'. 'sha256' hashes the curr...
 - The kernel's five habits apply to every step in this section. Each rule has 'when', 'do', 'except', 'prove', and 'scenarios'; 'kind' marks a safety invariant, while other rules are strategy. 'kerne...
 - The kernel's five habits apply to every step of this recipe. A recipe is one worked construction, not a macro: 'use_when' names prerequisites and each step names its tool. A 'read_back' may need a ...
 - This section holds more rules than one call returns: 'rule_count' of 'rule_total' are in 'rules' and the rest are not here. Read the document at 'resource_uri' over the resource channel for all of ...

@@ -75,6 +75,7 @@ class _NCProgram:
         self._cam = cam
         self.operations = None
         self.postConfiguration = None
+        self.machine = None
         self.parameters = _make_params(missing)
         self.deleted = False
         self.hasError = has_error
@@ -1000,6 +1001,83 @@ class TestOverwriteGuard:
 
 
 # -- the honesty gate: a real file must land -----------------------------------
+
+class _MachinelessProgram(_NCProgram):
+    """A program whose machine assignment does not hold."""
+    machine = property(lambda self: None, lambda self, value: None)
+
+
+def _additive_setup(name="Print", machine=None):
+    setup = _Setup(name, [_Op("Additive Toolpath1")])
+    setup.operationType = cp.adsk.cam.OperationTypes.AdditiveOperation
+    setup.machine = machine
+    return setup
+
+
+_FFF = types.SimpleNamespace(id="cf37", vendor="Autodesk", model="Generic FFF Machine")
+
+
+class TestAdditiveSetupTakesItsMachine:
+    def _post(self, monkeypatch, tmp_path, rig, **kw):
+        program_class = kw.pop("program_class", None)
+        cam = _install(monkeypatch, _CAM(rig, program_class=program_class))
+        kw.setdefault("scope", rig[0].name)
+        kw.setdefault("program_name", "1001")
+        res = cp.handler(post=str(_write_cps(tmp_path)), output_folder=str(tmp_path), **kw)
+        return cam, res
+
+    def test_one_additive_setup_posts_with_its_own_machine_on_the_program(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)])
+        data = _payload(res)
+        assert cam.posted[0].machine is _FFF and data["machine"] == "Autodesk Generic FFF Machine"
+
+    def test_the_setups_list_with_one_additive_setup_does_the_same(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
+                              scope="", setups=["Print"])
+        assert cam.posted[0].machine is _FFF and _payload(res)["machine"]
+
+    def test_a_program_that_does_not_keep_the_machine_is_an_error_and_is_removed(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
+                              program_class=_MachinelessProgram)
+        assert res["isError"] is True and "machine is unverified" in res["message"]
+        assert "Posting was not attempted" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_an_additive_setup_with_no_machine_is_refused_before_the_post(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=None)])
+        assert res["isError"] is True and "cam_edit_setup(machine=" in res["message"]
+        assert "Posting was not attempted" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_a_machine_whose_identity_does_not_read_is_unverified_not_absent(self, monkeypatch, tmp_path):
+        nameless = types.SimpleNamespace(id=None, vendor="Autodesk", model="Generic FFF Machine")
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=nameless)])
+        assert res["isError"] is True and "did not read its identity" in res["message"]
+        assert "reads no machine" not in res["message"] and "Posting was not attempted" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_a_failed_post_on_a_reused_program_names_the_machine_among_what_stays(self, monkeypatch, tmp_path):
+        cam = _install(monkeypatch, _CAM([_additive_setup(machine=_FFF)], writes="failed", existing=("JOB",)))
+        res = cp.handler(post=str(_write_cps(tmp_path)), output_folder=str(tmp_path), program_name="JOB",
+                         scope="Print", overwrite=True)
+        assert res["isError"] is True and "machine configuration" in res["message"]
+        assert cam.ncPrograms._items[0].machine is _FFF
+
+    def test_a_milling_setup_is_posted_without_a_machine_as_before(self, monkeypatch, tmp_path):
+        milling = _Setup("S1", [_Op("Face1")])
+        milling.machine = _FFF
+        cam, res = self._post(monkeypatch, tmp_path, [milling])
+        data = _payload(res)
+        assert cam.posted[0].machine is None and "machine" not in data
+
+    def test_two_setups_or_one_operation_are_posted_without_a_machine_as_before(self, monkeypatch, tmp_path):
+        one, two = _additive_setup("PrintA", _FFF), _additive_setup("PrintB", _FFF)
+        cam, res = self._post(monkeypatch, tmp_path, [one, two], scope="", setups=["PrintA", "PrintB"])
+        assert cam.posted[0].machine is None and "machine" not in _payload(res)
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
+                              scope="Additive Toolpath1", program_name="1002")
+        assert cam.posted[0].machine is None and "machine" not in _payload(res)
+
 
 class TestPostWritesFile:
     def test_posts_document_and_reports_written_file(self, monkeypatch, tmp_path):

@@ -1461,6 +1461,64 @@ class TestAxisLineOfWorldSpace:
         assert other_err is None and other.assemblyContext is second
         assert second_row["position"] == [8.0, 2.0, 1.0]
 
+    @pytest.mark.parametrize("placed", [True, False])
+    def test_sketch_plane_frame_transforms_the_normal_without_inventing_placement(self, monkeypatch, placed):
+        sketch = types.SimpleNamespace(origin=FakePoint(0, 2, 1),
+                                       xDirection=FakeVector3D(1, 0, 0),
+                                       yDirection=FakeVector3D(0, 0, 1))
+        matrix = FakeMatrix3D(deg=30, t=(2, 0, 1.2))
+        monkeypatch.setattr(inp.adsk.core.Vector3D, "create", FakeVector3D)
+        monkeypatch.setattr(inp, "_placement_matrix", lambda *args: (matrix, placed))
+        point, normal = inp.placed_datum_frame(sketch, "sketch_plane")
+        if placed:
+            assert point == pytest.approx([1, 3 ** .5, 2.2])
+            assert normal == pytest.approx([.5, -3 ** .5 / 2, 0], abs=1e-6)
+        else:
+            assert (point, normal) == (None, None)
+
+    def test_native_sketch_parent_component_places_once_and_refuses_ambiguous_instances(self,
+                                                                                          axis_env, monkeypatch):
+        env = axis_env()
+        owner = MakeComp(name="SketchOwner", entity_token="TOKEN:SketchOwner")
+        sketch = types.SimpleNamespace(parentComponent=owner, origin=FakePoint(1, 2, 0),
+                                       xDirection=FakeVector3D(1, 0, 0),
+                                       yDirection=FakeVector3D(0, 1, 0))
+        monkeypatch.setattr(inp.adsk.core.Vector3D, "create", FakeVector3D)
+        first = env.place(owner, "SketchOwner:1", matrices=[FakeMatrix3D(t=(7, 3, 5))])[0]
+        assert inp.entity_component(sketch) is owner
+        assert inp.placed_datum_frame(sketch, "sketch_plane") == ((8, 5, 5), [0.0, 0.0, 1.0])
+        env.place(owner, "SketchOwner:1", "SketchOwner:2",
+                  matrices=[FakeMatrix3D(t=(7, 3, 5)), FakeMatrix3D(t=(17, 3, 5))])
+        assert inp.placed_datum_frame(sketch, "sketch_plane") == (None, None)
+        proxy = types.SimpleNamespace(nativeObject=sketch, assemblyContext=first,
+                                      origin=FakePoint(99, 99, 99))
+        assert inp.placed_datum_frame(proxy, "sketch_plane") == ((8, 5, 5), [0.0, 0.0, 1.0])
+
+    def test_draft_face_uses_outward_evaluator_normal_even_when_surface_normal_opposes_it(self, monkeypatch):
+        face = types.SimpleNamespace(
+            kind="face", geometry=types.SimpleNamespace(origin=FakePoint(0, 0, 2),
+                                                        normal=FakeVector3D(0, 0, 1)),
+            pointOnFace=FakePoint(0, 0, 2),
+            evaluator=types.SimpleNamespace(getNormalAtPoint=lambda point: (True, FakeVector3D(0, 0, -1))))
+        monkeypatch.setattr(inp.adsk.fusion, "BRepFace",
+                            types.SimpleNamespace(cast=lambda value: value if getattr(value, "kind", None) == "face" else None))
+        monkeypatch.setattr(inp.adsk.core.Vector3D, "create", FakeVector3D)
+        monkeypatch.setattr(inp, "_placement_matrix", lambda *args: (None, True))
+        assert inp.placed_datum_frame(face, "draft_plane") == ((0, 0, 2), [0.0, 0.0, -1.0])
+        plane = types.SimpleNamespace(kind="plane", geometry=face.geometry)
+        assert inp.placed_datum_frame(plane, "draft_plane") == ((0, 0, 2), [0.0, 0.0, 1.0])
+        assert inp.placed_datum_frame(plane, "construction_plane") == ((0, 0, 2), [0.0, 0.0, 1.0])
+
+    def test_draft_face_refuses_unread_outward_normal_without_surface_fallback(self, monkeypatch):
+        face = types.SimpleNamespace(
+            kind="face", geometry=types.SimpleNamespace(origin=FakePoint(0, 0, 2),
+                                                        normal=FakeVector3D(0, 0, 1)),
+            pointOnFace=FakePoint(0, 0, 2),
+            evaluator=types.SimpleNamespace(getNormalAtPoint=lambda point: (False, FakeVector3D(0, 0, -1))))
+        monkeypatch.setattr(inp.adsk.fusion, "BRepFace", types.SimpleNamespace(cast=lambda value: value))
+        monkeypatch.setattr(inp, "_placement_matrix", lambda *args: (None, True))
+        assert inp.placed_datum_frame(face, "draft_plane") == (None, None)
+
     def test_plane_proxy_without_native_read_does_not_double_place_world_geometry(self, axis_env):
         env = axis_env()
         owner = MakeComp(name="PlaneOwner", entity_token="TOKEN:PlaneOwner")

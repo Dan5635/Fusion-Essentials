@@ -4,6 +4,7 @@
 """The model solid creation act and its read-back predicates."""
 
 import math
+import json
 
 from verify_core import (
     _activated, _box, _document_closed, _home_address, _new_document,
@@ -2711,3 +2712,430 @@ def _w2_two_angle_draft_rows():
 
 
 _SOLIDS += _w2_two_angle_draft_rows()
+
+
+_SIDE_FIXTURE = """CASE = __CASE__
+ROTATED = __ROTATED__
+FLIP = __FLIP__
+MODE = __MODE__
+
+
+def run(context):
+    import adsk.core, adsk.fusion, json, math
+    app = adsk.core.Application.get()
+    doc = app.activeDocument
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    if doc is None or doc.isSaved or design is None:
+        raise RuntimeError('Side fixture requires its own unsaved design')
+    root = design.rootComponent
+    if (design.designType != adsk.fusion.DesignTypes.ParametricDesignType
+            or design.activeComponent != root or design.timeline.count
+            or root.bRepBodies.count or root.sketches.count or root.occurrences.count):
+        raise RuntimeError('Side fixture requires a blank parametric scratch')
+    matrix = adsk.core.Matrix3D.create()
+    if ROTATED:
+        axis = adsk.core.Vector3D.create(1, 2, 3)
+        if axis.normalize() is not True:
+            raise RuntimeError('Fixture rotation axis is invalid')
+        if matrix.setToRotation(math.radians(47), axis,
+                                adsk.core.Point3D.create(0, 0, 0)) is not True:
+            raise RuntimeError('Fixture rotation refused')
+        matrix.translation = adsk.core.Vector3D.create(7, 3, 5)
+    occ = root.occurrences.addNewComponent(matrix)
+    comp = occ.component
+    comp.name = 'SidePart'
+    if occ.activate() is not True or design.activeComponent != comp:
+        raise RuntimeError('Fixture component did not become active')
+
+    def rectangle(name, x, width, height, plane=None, allow_projected=False):
+        sketch = comp.sketches.add(plane if plane is not None else comp.xYConstructionPlane)
+        sketch.name = name
+        sketch.sketchCurves.sketchLines.addTwoPointRectangle(
+            adsk.core.Point3D.create(x, 0, 0), adsk.core.Point3D.create(x + width, height, 0))
+        if not allow_projected and sketch.profiles.count != 1:
+            raise RuntimeError('Fixture profile is not unique: ' + name)
+        return sketch
+
+    def block(name, x, width, height, depth):
+        sketch = rectangle(name + 'Sketch', x, width, height)
+        given = comp.features.extrudeFeatures.createInput(
+            sketch.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        if given.setDistanceExtent(False, adsk.core.ValueInput.createByReal(depth)) is not True:
+            raise RuntimeError('Fixture block extent refused')
+        feature = comp.features.extrudeFeatures.add(given)
+        if feature is None or feature.bodies.count != 1:
+            raise RuntimeError('Fixture block did not create exactly one body')
+        body = feature.bodies.item(0)
+        body.name = name
+        return body
+
+    control = block('SideControl', 6, 2, 2, 2)
+    bottom = [f for f in control.faces if adsk.core.Plane.cast(f.geometry) is not None
+              and abs(f.centroid.z) < 1e-7 and abs(f.area - 4) < 1e-7]
+    if len(bottom) != 1:
+        raise RuntimeError('Fixture control bottom face is not unique')
+    reference_face = bottom[0]
+    selected_planes = []
+    target = None
+    extra_control = None
+    args = {}
+    if CASE == 'draft':
+        target = block('SideTarget', 0, 3, 4, 4)
+        planes = comp.constructionPlanes
+        given = planes.createInput()
+        if given.setByOffset(comp.xYConstructionPlane, adsk.core.ValueInput.createByReal(2)) is not True:
+            raise RuntimeError('Fixture neutral plane refused')
+        neutral = planes.add(given)
+        neutral.name = 'SideNeutral'
+        hits = [f for f in target.faces
+                if adsk.core.Plane.cast(f.geometry) is not None and abs(f.centroid.x) < 1e-7
+                and abs(f.area - 16) < 1e-7]
+        if len(hits) != 1:
+            raise RuntimeError('Fixture draft face is not unique')
+        args = {'faces': [hits[0].entityToken], 'pull_direction': neutral.entityToken,
+                'angle_deg': 15, 'angle_two_deg': 5, 'tangent_chain': False, 'flip': FLIP}
+        origin, normal = neutral.geometry.origin, neutral.geometry.normal
+        if MODE == 'face':
+            face_sketch = rectangle('PullFaceSketch', 6, 2, 2, neutral)
+            pull_input = comp.features.extrudeFeatures.createInput(
+                face_sketch.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+            if pull_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(2)) is not True:
+                raise RuntimeError('Pull face block extent refused')
+            pull_feature = comp.features.extrudeFeatures.add(pull_input)
+            if pull_feature is None or pull_feature.bodies.count != 1:
+                raise RuntimeError('Pull face block did not create one body')
+            extra_control = pull_feature.bodies.item(0)
+            extra_control.name = 'PullFaceControl'
+            pull_faces = [f for f in extra_control.faces if adsk.core.Plane.cast(f.geometry) is not None
+                          and abs(f.centroid.z - 2) < 1e-7 and abs(f.area - 4) < 1e-7]
+            if len(pull_faces) != 1:
+                raise RuntimeError('Pull bottom face is not unique')
+            pull = pull_faces[0]
+            args['pull_direction'] = pull.entityToken
+            origin, normal = pull.geometry.origin, pull.geometry.normal
+    elif CASE == 'extrude':
+        profile_x = 20 if MODE == 'face' else 0
+        sketch = rectangle('SideProfile', profile_x, 3, 4,
+                           comp.xZConstructionPlane if MODE == 'xz' else
+                           comp.yZConstructionPlane if MODE == 'yz' else
+                           reference_face if MODE == 'face' else None,
+                           allow_projected=MODE == 'face')
+        args = {'sketch_name': sketch.name, 'component': comp.name, 'extent': 'two_side',
+                'distance': 10, 'distance2': 20, 'taper_deg': 5, 'taper_two_deg': 15, 'units': 'mm'}
+        if MODE != 'xy':
+            profile_hits = []
+            for profile in sketch.profiles:
+                props = profile.areaProperties()
+                center = props.centroid
+                if (abs(props.area - 12) < 1e-7
+                        and abs(center.x - profile_x - 1.5) < 1e-7
+                        and abs(center.y - 2) < 1e-7):
+                    profile_hits.append(profile)
+            if len(profile_hits) != 1:
+                raise RuntimeError('Authored rectangle profile did not resolve by area and centroid')
+            args['profile_index'] = profile_hits[0].entityToken
+        origin, normal = sketch.origin, sketch.xDirection.crossProduct(sketch.yDirection)
+    elif CASE == 'fillet':
+        target = block('SideTarget', 0, 2.2, 2, 1.8)
+        hits = [e for e in target.edges if abs(e.boundingBox.minPoint.x) < 1e-7
+                and abs(e.boundingBox.maxPoint.x) < 1e-7 and abs(e.boundingBox.minPoint.y) < 1e-7
+                and abs(e.boundingBox.maxPoint.y) < 1e-7
+                and abs(e.boundingBox.maxPoint.z - e.boundingBox.minPoint.z - 1.8) < 1e-7]
+        if len(hits) != 1 or hits[0].faces.count != 2:
+            raise RuntimeError('Fixture fillet edge/adjacent faces are not unique')
+        edge = hits[0]
+        for face in edge.faces:
+            plane = adsk.core.Plane.cast(face.geometry)
+            if plane is None:
+                raise RuntimeError('Fixture fillet adjacent face is not planar')
+            good, outward = face.evaluator.getNormalAtPoint(face.pointOnFace)
+            if not good:
+                raise RuntimeError('Fixture adjacent face normal unreadable')
+            selected_planes.append({'face_token': face.entityToken, 'point_cm': face.pointOnFace.asArray(),
+                                    'normal': outward.asArray()})
+        args = {'edges': [edge.entityToken], 'fillet_type': 'asymmetric', 'radius': 1,
+                'end_radius': 2, 'flipped': FLIP, 'tangent_chain': False, 'units': 'mm'}
+        origin = edge.startVertex.geometry
+        normal = origin.vectorTo(edge.endVertex.geometry)
+    else:
+        raise RuntimeError('Unknown fixture case')
+    if normal.normalize() is not True:
+        raise RuntimeError('Fixture operand normal is invalid')
+    record = {'case': CASE, 'rotated': ROTATED, 'flip': FLIP, 'requested_frame': matrix.asArray(),
+              'component_token': comp.entityToken, 'occurrence_token': occ.entityToken,
+              'control_token': control.entityToken, 'args': args,
+              'target_token': target.entityToken if target else None,
+              'extra_control_token': extra_control.entityToken if extra_control else None,
+              'operand_origin_cm': origin.asArray(), 'operand_normal': normal.asArray(),
+              'operand_token': (pull.entityToken if CASE == 'draft' and MODE == 'face' else
+                                neutral.entityToken if CASE == 'draft' else
+                                sketch.entityToken if CASE == 'extrude' else None),
+              'mode': MODE,
+              'adjacent_planes': selected_planes, 'baseline_count': design.timeline.count}
+    design.attributes.add('Wave4Side', 'fixture', json.dumps(record))
+    if design.timeline.markerPosition != design.timeline.count:
+        raise RuntimeError('Fixture did not finish at the timeline end')
+    print('SIDE:' + json.dumps(record))
+"""
+_SIDE_READ = """def run(context):
+    import adsk.core, adsk.fusion, json, math
+    app = adsk.core.Application.get()
+    doc = app.activeDocument
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    if doc is None or doc.isSaved or design is None:
+        raise RuntimeError('Side read requires the owned unsaved design')
+    tag = design.attributes.itemByName('Wave4Side', 'fixture')
+    if tag is None:
+        raise RuntimeError('Side read has no ownership marker')
+    record = json.loads(tag.value)
+
+    def resolve(token, cls):
+        found = list(design.findEntityByToken(token))
+        if len(found) != 1 or cls.cast(found[0]) is None:
+            raise RuntimeError('Side fixture identity did not resolve uniquely')
+        return cls.cast(found[0])
+
+    comp = resolve(record['component_token'], adsk.fusion.Component)
+    occ = resolve(record['occurrence_token'], adsk.fusion.Occurrence)
+    control = resolve(record['control_token'], adsk.fusion.BRepBody)
+    extra = (resolve(record['extra_control_token'], adsk.fusion.BRepBody)
+             if record.get('extra_control_token') else None)
+    if (design.activeComponent != comp or occ.component != comp or control.parentComponent != comp
+            or design.rootComponent.occurrences.count != 1 or design.rootComponent.bRepBodies.count
+            or design.timeline.markerPosition != design.timeline.count):
+        raise RuntimeError('Side fixture scope or end marker changed')
+    matrix = occ.transform2
+    origin = adsk.core.Point3D.create(*record['operand_origin_cm'])
+    normal = adsk.core.Vector3D.create(*record['operand_normal'])
+    face_outward = None
+    if record['case'] == 'draft':
+        if record.get('mode') == 'face':
+            face = resolve(record['operand_token'], adsk.fusion.BRepFace)
+            origin, normal = face.geometry.origin, face.geometry.normal
+            good, face_outward = face.evaluator.getNormalAtPoint(face.pointOnFace)
+            if good is not True or face_outward.normalize() is not True:
+                raise RuntimeError('Pull face outward normal did not read')
+        else:
+            plane = resolve(record['operand_token'], adsk.fusion.ConstructionPlane).geometry
+            origin, normal = plane.origin, plane.normal
+    elif record['case'] == 'extrude':
+        sketch = resolve(record['operand_token'], adsk.fusion.Sketch)
+        origin = sketch.origin
+        normal = sketch.xDirection.crossProduct(sketch.yDirection)
+    if normal.normalize() is not True:
+        raise RuntimeError('Operand normal is invalid')
+    world_origin, world_normal = origin.copy(), normal.copy()
+    if world_origin.transformBy(matrix) is not True or world_normal.transformBy(matrix) is not True:
+        raise RuntimeError('Operand frame transform refused')
+
+    def point(values):
+        p = adsk.core.Point3D.create(*values)
+        if p.transformBy(matrix) is not True:
+            raise RuntimeError('Point transform refused')
+        return p.asArray()
+
+    def vector(values):
+        v = adsk.core.Vector3D.create(*values)
+        if v.transformBy(matrix) is not True:
+            raise RuntimeError('Vector transform refused')
+        return v.asArray()
+
+    def shape(body):
+        props = body.getPhysicalProperties(adsk.fusion.CalculationAccuracy.VeryHighCalculationAccuracy)
+        return {'volume_cm3': props.volume, 'solid': body.isSolid,
+                'vertices_cm': sorted([v.geometry.asArray() for v in body.vertices]),
+                'face_count': body.faces.count}
+
+    targets = [b for b in comp.bRepBodies if b != control and b != extra]
+    if len(targets) > 1:
+        raise RuntimeError('Side read has more than one target body')
+    if record.get('target_token'):
+        pinned = resolve(record['target_token'], adsk.fusion.BRepBody)
+        if len(targets) != 1 or targets[0] != pinned or pinned.parentComponent != comp:
+            raise RuntimeError('Draft target identity changed')
+    faces, vertices, boundaries = [], [], []
+    if targets:
+        target = targets[0]
+        for index, face in enumerate(target.faces):
+            good, outward = face.evaluator.getNormalAtPoint(face.pointOnFace)
+            if not good:
+                raise RuntimeError('Target face normal unreadable')
+            centroid = face.centroid
+            signed = origin.vectorTo(centroid).dotProduct(normal)
+            cosine = max(-1, min(1, outward.dotProduct(normal) / outward.length))
+            faces.append({'index': index, 'handle': face.entityToken, 'area_cm2': face.area,
+                          'planar': adsk.core.Plane.cast(face.geometry) is not None,
+                          'centroid_local_cm': centroid.asArray(), 'normal_local': outward.asArray(),
+                          'centroid_world_cm': point(centroid.asArray()), 'normal_world': vector(outward.asArray()),
+                          'signed_distance_cm': signed, 'normal_angle_deg': math.degrees(math.acos(cosine))})
+            for prior in record['adjacent_planes']:
+                n = adsk.core.Vector3D.create(*prior['normal'])
+                p = adsk.core.Point3D.create(*prior['point_cm'])
+                if (adsk.core.Plane.cast(face.geometry) is None
+                        or abs(abs(n.dotProduct(outward)) - 1) > 1e-6
+                        or abs(p.vectorTo(centroid).dotProduct(n)) > 1e-6):
+                    continue
+                for edge in face.edges:
+                    others = [f for f in edge.faces if f != face]
+                    if len(others) != 1 or adsk.core.Plane.cast(others[0].geometry) is not None:
+                        continue
+                    ends = [edge.startVertex.geometry, edge.endVertex.geometry]
+                    offsets = []
+                    for end in ends:
+                        delta = origin.vectorTo(end)
+                        along = delta.dotProduct(normal)
+                        offsets.append(math.sqrt(max(0, delta.length ** 2 - along ** 2)))
+                    boundaries.append({'original_face': prior, 'current_face_handle': face.entityToken,
+                                       'boundary_handle': edge.entityToken,
+                                       'endpoints_local_cm': [e.asArray() for e in ends],
+                                       'endpoints_world_cm': [point(e.asArray()) for e in ends],
+                                       'setback_cm': offsets})
+        vertices = [{'local_cm': v.geometry.asArray(), 'world_cm': point(v.geometry.asArray()),
+                     'signed_distance_cm': origin.vectorTo(v.geometry).dotProduct(normal)} for v in target.vertices]
+    proxy_samples = sorted([v.geometry.asArray() for v in control.createForAssemblyContext(occ).vertices])
+    expected_samples = sorted([point(v.geometry.asArray()) for v in control.vertices])
+    if (len(proxy_samples) != len(expected_samples) or any(abs(a - b) > 1e-6
+            for actual, expected in zip(proxy_samples, expected_samples) for a, b in zip(actual, expected))):
+        raise RuntimeError('Native-to-world frame does not match assembly proxy geometry')
+    unhealthy = [{'name': design.timeline.item(i).name, 'state': int(design.timeline.item(i).healthState)}
+                 for i in range(design.timeline.count)
+                 if design.timeline.item(i).healthState != adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState]
+    print('SIDE:' + json.dumps({'case': record['case'], 'rotated': record['rotated'], 'flip': record['flip'],
+          'operand': {'origin_local_cm': origin.asArray(), 'normal_local': normal.asArray(),
+                      'origin_world_cm': world_origin.asArray(), 'normal_world': world_normal.asArray(),
+                      'face_outward_local': face_outward.asArray() if face_outward else None,
+                      'face_outward_world': vector(face_outward.asArray()) if face_outward else None},
+          'occurrence_frame': matrix.asArray(), 'control': shape(control),
+          'extra_control': shape(extra) if extra else None,
+          'target': shape(targets[0]) if targets else None, 'faces': faces,
+          'vertices': vertices, 'fillet_boundaries': boundaries, 'timeline_count': design.timeline.count,
+          'baseline_count': record['baseline_count'], 'unhealthy': unhealthy,
+          'frame_control': {'proxy_cm': proxy_samples, 'calculated_cm': expected_samples}}))
+"""
+
+
+def _side_data(p):
+    """Decode one owned side witness."""
+    if not isinstance(p, str) or not p.startswith("SIDE:"):
+        raise AssertionError("Owned side witness did not return SIDE data")
+    return json.loads(p[5:])
+
+
+def _side_equal(a, b):
+    """Compare the independent shape/frame snapshots within numeric read tolerance."""
+    if isinstance(a, dict):
+        return isinstance(b, dict) and a.keys() == b.keys() and all(_side_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return isinstance(b, list) and len(a) == len(b) and all(_side_equal(x, y) for x, y in zip(a, b))
+    return _near(a, b, 1e-6) if isinstance(a, (int, float)) and not isinstance(a, bool) else a == b
+
+
+def _side_observed(p, key, phase):
+    """Compare tool side disclosure with independently read geometry and preserved controls."""
+    got = _side_data(p)
+    if phase == "before":
+        _RECALL[key + "_before"] = got
+        return _measured("side fixture frame", got["occurrence_frame"],
+                         not got["unhealthy"] and got["rotated"] is True
+                         and _side_equal(got["occurrence_frame"], _RECALL[key + "_fixture"]["requested_frame"]))
+    before = _RECALL[key + "_before"]
+    valid = (not got["unhealthy"] and _side_equal(before["control"], got["control"])
+             and _side_equal(before["extra_control"], got["extra_control"])
+             and _side_equal(before["occurrence_frame"], got["occurrence_frame"]))
+    if phase == "restored":
+        valid = (valid and _side_equal(before["target"], got["target"])
+                 and before["timeline_count"] == got["timeline_count"])
+    else:
+        edit = _RECALL[key + "_edit"]
+        valid = valid and got["timeline_count"] == before["timeline_count"] + 1 and got["target"] is not None
+        if got["case"] in ("draft", "extrude"):
+            ref = edit.get("side_reference") or {}
+            outward = got["operand"]["face_outward_world"] if got["case"] == "draft" else None
+            expected_normal = outward or got["operand"]["normal_world"]
+            valid = (valid and ref.get("frame") == "world"
+                     and _side_equal(list(ref.get("normal_world") or []), expected_normal)
+                     and _side_equal(list(ref.get("origin_cm") or []), got["operand"]["origin_world_cm"]))
+            faces = got["faces"]
+            if got["case"] == "draft":
+                if outward:
+                    geometry = got["operand"]["normal_world"]
+                    opposed = sum(a * b for a, b in zip(outward, geometry)) < -.999
+                    valid = (valid and opposed and "A face uses its outward normal" in edit.get("note", "")
+                             and any(f["signed_distance_cm"] < -.5
+                                     and _near(180 - f["normal_angle_deg"], 75, .01) for f in faces)
+                             and any(f["signed_distance_cm"] > .5
+                                     and _near(180 - f["normal_angle_deg"], 95, .01) for f in faces))
+                else:
+                    valid = (valid and "angle_deg on its positive side" in edit.get("note", "")
+                             and any(f["signed_distance_cm"] > .5 and _near(f["normal_angle_deg"], 105, .01) for f in faces)
+                             and any(f["signed_distance_cm"] < -.5 and _near(f["normal_angle_deg"], 85, .01) for f in faces))
+            else:
+                valid = (valid and "distance2/taper_two_deg oppose" in edit.get("note", "")
+                         and any(f["signed_distance_cm"] > .1 and _near(f["normal_angle_deg"], 95, .01) for f in faces)
+                         and any(f["signed_distance_cm"] < -.1 and _near(f["normal_angle_deg"], 75, .01) for f in faces))
+        else:
+            bounds = got["fillet_boundaries"]
+            offsets = sorted(round(b["setback_cm"][0], 6) for b in bounds)
+            valid = (valid and "side_mapping" in edit and edit["side_mapping"] is None
+                     and "Geometric setback-side mapping is unavailable" in edit.get("note", "")
+                     and edit.get("flipped") is True and offsets == [.1, .2]
+                     and any(b["original_face"]["normal"][0] < -.9
+                             and all(_near(v, .2, 1e-6) for v in b["setback_cm"]) for b in bounds)
+                     and any(b["original_face"]["normal"][1] < -.9
+                             and all(_near(v, .1, 1e-6) for v in b["setback_cm"]) for b in bounds))
+    return _measured("rotated side " + phase, got, valid)
+
+
+def _side_disclosure_rows():
+    """Demonstrate operand-relative replies on rotated owned component fixtures."""
+    home = "side_disclosure_home"
+    rows = [("doc_get", {}, _home_document, (home, _home_address))]
+    def observed(key, phase):
+        def check(payload):
+            return _side_observed(payload, key, phase)
+        return check
+    for case, mode in (("draft", "xy"), ("extrude", "xy"), ("fillet", "xy"),
+                       ("extrude", "xz"), ("extrude", "yz"), ("extrude", "face"),
+                       ("draft", "face")):
+        key = "side_disclosure_" + case + ("_" + mode if mode != "xy" else "")
+        rows.append(("doc_new", lambda c: {"expect_document": _ctx_get(c, home, "home")},
+                     _new_document, (key + "_doc", lambda p: p["document_handle"])))
+        def script_args(c, code, key=key, read_only=True):
+            return {"script": code, "read_only": read_only,
+                    "expect_document": _ctx_get(c, key + "_doc", "side scratch")}
+        flip = not (case == "draft" and mode == "face")
+        code = (_SIDE_FIXTURE.replace("__CASE__", repr(case))
+                .replace("__ROTATED__", "True").replace("__FLIP__", repr(flip))
+                .replace("__MODE__", repr(mode)))
+        def built(p, key=key):
+            _RECALL[key + "_fixture"] = _side_data(p)
+            return bool(_RECALL[key + "_fixture"]["requested_frame"])
+        rows.append(("sys_execute_script", lambda c, code=code, f=script_args: f(c, code, read_only=False),
+                     built, (key + "_fixture", _side_data)))
+        rows.append(("sys_execute_script", lambda c, f=script_args: f(c, _SIDE_READ),
+                     observed(key, "before"), None))
+        def edit_args(c, key=key):
+            return {**_ctx_get(c, key + "_fixture", "fixture")["args"],
+                    "expect_document": _ctx_get(c, key + "_doc", "side scratch")}
+        def edited(p, key=key):
+            _RECALL[key + "_edit"] = p
+            return bool(p.get("feature"))
+        rows.append(("model_" + case, edit_args, edited, (key + "_feature", lambda p: p["feature"])))
+        rows.append(("sys_execute_script", lambda c, f=script_args: f(c, _SIDE_READ),
+                     observed(key, "after"), None))
+        rows.append(("design_delete_feature", lambda c, key=key: {
+            "feature": "SidePart/" + _ctx_get(c, key + "_feature", "feature"),
+            "expect_document": _ctx_get(c, key + "_doc", "side scratch")}, "ok", None))
+        rows.append(("sys_execute_script", lambda c, f=script_args: f(c, _SIDE_READ),
+                     observed(key, "restored"), None))
+        rows.append(("doc_activate", lambda c, key=key: {
+            "name": _ctx_get(c, home, "home"),
+            "expect_document": _ctx_get(c, key + "_doc", "side scratch")},
+            _activated(), None))
+        rows.append(("doc_close", lambda c, key=key: {
+            "name": _ctx_get(c, key + "_doc", "side scratch"), "save_changes": False,
+            "expect_document": _ctx_get(c, home, "home")}, _document_closed, None))
+    return rows
+
+
+_SOLIDS += _side_disclosure_rows()

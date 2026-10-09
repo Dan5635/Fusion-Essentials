@@ -600,10 +600,14 @@ class FakePrintSetting:
     """A print setting from the library or off an additive setup: the name a request resolves by,
     the technology a filter reads, and the description - the one member two shipped settings that
     agree on everything else differ in, so it is what says WHICH one landed."""
-    def __init__(self, name, technology="SLM", description="a print setting"):
+    def __init__(self, name, technology="SLM", description="a print setting", fits=True):
         self.name = name
         self.technology = technology
         self.description = description
+        self._fits = fits
+
+    def isCompatibleWithMachine(self, machine):
+        return self._fits
 
 
 @fusion_fake(live_type="SetupInput", facts=("shape-dump-cam-job-world",))
