@@ -29,8 +29,8 @@ recomputes the hash and fails on any difference, so a green suite cannot ride on
 run that never saw the current code or a weakened predicate. Only a run with zero
 FAIL/blocked/pass* steps rewrites this file.
 
-Stamp: source 71b8e41574b5b6d105edcdcc594dd74a631c29c16a4b43f7a5a06cb4fec93f9f | Fusion 2706.0.116 | verified 2026-10-08
-Loaded: implementation 977213b3a32e1acd4baadbf5f88c5fc8be9137fd941d4ace6ded3736a61057f9 | schema 6cbea259dcdc1e581df0976228f5e83e7ec74d9d49025ab7e40544188c2b4fd9 | load 4cbd6f10fe1a4fef840dfef09eaa28b4 | session 317ecaaeea1f402eb8a2d7ee339067ee
+Stamp: source e08738bd34ad3bea023665b8e5db2f622a2c13b7dbae67b6bd9c150436df3f2c | Fusion 2706.0.116 | verified 2026-10-09
+Loaded: implementation 944d5a57cf5fa1603d33dfa2788294564c545a48d9b148fe4a2d044f9cd55fce | schema 40586edad8aeeb1eb3cf51bf32f884a7d4d1362012e28fbd9b253b98b3b629e4 | load cc4db4422d19464abb29b5574341ffee | session 267fa122215e4a02ad462e8e994af64f
 
 216 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending
 
@@ -84,6 +84,7 @@ Loaded: implementation 977213b3a32e1acd4baadbf5f88c5fc8be9137fd941d4ace6ded3736a
 | ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE | narrative |
 | ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS | narrative |
 | ACT 11f - CLOUD: DERIVE EDITS | narrative |
+| ACT 11h - CLOUD: COMPONENT COPY | narrative |
 | ACT 12 - SHEET METAL COUPON | narrative |
 | ACT 12b - SHEET METAL LASER OUTPUT | narrative |
 | ACT 12b1 - SHEET METAL SOURCE UPDATE | narrative |

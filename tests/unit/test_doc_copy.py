@@ -7,6 +7,7 @@ reference read did not answer.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,7 +54,7 @@ class _DeafRename(FakeDataFile):
 def FakeProject(name, pid="p1"):
     """A project whose root folder starts empty - tests append files and subfolders to it."""
     project = FakeDataProject(name=name, project_id=pid,
-                              root_folder=FakeDataFolder("Root", is_root=True))
+                              root_folder=FakeDataFolder("Root", folder_id="fid:root", is_root=True))
     project.rootFolder.parentProject = project
     return project
 
@@ -547,3 +548,132 @@ class TestCopyDocumentSchema:
         out = _payload(dm.handler(
             name="Template", source_project="Library", project="CAM"))
         assert out["copied"] is True
+
+
+class TestCopyActiveComponent:
+    def test_starts_future_without_claiming_landed_file(self, monkeypatch, _install):
+        project = FakeProject("CAM")
+        _install([project], active=SimpleNamespace(name="Source"))
+        future = SimpleNamespace(uploadState=0, dataFile=None)
+        calls = []
+        component = SimpleNamespace(name="Part")
+        component.saveCopyAs = lambda *args: (calls.append(args), future)[1]
+        occurrence = SimpleNamespace(component=component, fullPathName="Part:1")
+        monkeypatch.setattr(dm._OCCURRENCE, "resolve", lambda raw: (occurrence, None))
+        uploads, counter = {}, [0]
+        monkeypatch.setattr(dm, "_UPLOADS", uploads)
+        monkeypatch.setattr(dm, "_UPLOAD_HANDLE_SEQ", counter)
+        out = _payload(dm.handler(occurrence="Part:1", name="Part-Copy", project="CAM"))
+        assert out["copy_started"] is True and out["upload_handle"] == "up1"
+        assert "copied_id" not in out and "file_id" not in out
+        assert calls == [("Part-Copy", project.rootFolder, "[AI agent] Component copy", "")]
+        assert uploads["up1"]["future"] is future
+        assert uploads["up1"]["destination_folder_id"] == project.rootFolder.id
+
+    def test_cloud_source_selectors_are_not_combined_with_occurrence(self, monkeypatch, _install):
+        _install([FakeProject("CAM")])
+        invoked = []
+        monkeypatch.setattr(dm._OCCURRENCE, "resolve", lambda raw: invoked.append(raw))
+        for extra in ({"document_id": "urn:file"}, {"source_project": "Library"},
+                      {"source_project_id": "pid"}, {"source_folder": "Parts"}):
+            reply = dm.handler(occurrence="Part:1", name="New", project="CAM", **extra)
+            assert reply["isError"] is True and "omit" in reply["message"]
+        assert invoked == []
+
+    def test_whitespace_occurrence_does_not_fall_through_to_cloud_copy(self, _install):
+        source = FakeFile("Part", fid="urn:src")
+        library = FakeProject("Library")
+        library.rootFolder._files.append(source)
+        destination = FakeProject("CAM", pid="p-cam")
+        _install([library, destination])
+        reply = dm.handler(occurrence=" ", name="Part", source_project="Library", project="CAM")
+        assert reply["isError"] is True and "'occurrence' is blank" in reply["message"]
+        assert destination.rootFolder._files == []
+
+    def test_component_copy_refuses_conflicting_destination_selectors_before_lookup(
+            self, monkeypatch, _install):
+        _install([FakeProject("CAM")])
+        calls = []
+        monkeypatch.setattr(dm, "_find_project", lambda *a, **kw: calls.append(kw))
+        reply = dm.handler(occurrence="Part:1", name="New", project="CAM", project_id="other")
+        assert reply["isError"] is True and "only one destination selector" in reply["message"]
+        assert calls == []
+
+    def test_component_copy_requires_explicit_name_and_refuses_ambiguous_occurrence(
+            self, monkeypatch, _install):
+        _install([FakeProject("CAM")], active=SimpleNamespace(name="Source"))
+        unnamed = dm.handler(occurrence="Part:1", project="CAM")
+        assert unnamed["isError"] is True and "name" in unnamed["message"]
+        monkeypatch.setattr(dm._OCCURRENCE, "resolve",
+                            lambda raw: (None, "'Part:1' names two occurrences; pass a handle"))
+        ambiguous = dm.handler(occurrence="Part:1", name="New", project="CAM")
+        assert ambiguous["isError"] is True and "two occurrences" in ambiguous["message"]
+
+    def test_duplicate_and_pending_names_refuse_before_second_publication(
+            self, monkeypatch, _install):
+        project = FakeProject("CAM")
+        project.rootFolder._files.append(FakeFile("Taken", fid="urn:taken"))
+        _install([project], active=SimpleNamespace(name="Source"))
+        calls = []
+        future = SimpleNamespace(uploadState=0, dataFile=None)
+        component = SimpleNamespace(name="Part")
+        component.saveCopyAs = lambda *args: (calls.append(args), future)[1]
+        monkeypatch.setattr(dm._OCCURRENCE, "resolve",
+                            lambda raw: (SimpleNamespace(component=component,
+                                                         fullPathName="Part:1"), None))
+        monkeypatch.setattr(dm, "_UPLOADS", {})
+        monkeypatch.setattr(dm, "_UPLOAD_HANDLE_SEQ", [0])
+        existing = dm.handler(occurrence="Part:1", name="Taken", project="CAM")
+        assert existing["isError"] is True and "already exists" in existing["message"]
+        first = _payload(dm.handler(occurrence="Part:1", name="Fresh", project="CAM"))
+        assert first["copy_started"] is True
+        pending = dm.handler(occurrence="Part:1", name="fresh", project="CAM")
+        assert pending["isError"] is True and "already tracked" in pending["message"]
+        assert len(calls) == 1
+        future.uploadState = 2
+        unpolled_failure = dm.handler(occurrence="Part:1", name="Fresh", project="CAM")
+        assert unpolled_failure["isError"] is True and "up1" in unpolled_failure["message"]
+        assert len(calls) == 1
+        future.uploadState = 1
+        dm._UPLOADS["up1"]["identity_error"] = "Wrong folder"
+        mismatch = dm.handler(occurrence="Part:1", name="Fresh", project="CAM")
+        assert mismatch["isError"] is True and "Wrong folder" in mismatch["message"]
+        assert "up1" in mismatch["message"] and len(calls) == 1
+        assert "different name or folder" in mismatch["message"]
+
+    def test_immediately_failed_component_copy_never_claims_started(
+            self, monkeypatch, _install):
+        _install([FakeProject("CAM")], active=SimpleNamespace(name="Source"))
+        component = SimpleNamespace(name="Part", saveCopyAs=lambda *args:
+                                    SimpleNamespace(uploadState=2, dataFile=None))
+        monkeypatch.setattr(dm._OCCURRENCE, "resolve",
+                            lambda raw: (SimpleNamespace(component=component,
+                                                         fullPathName="Part:1"), None))
+        monkeypatch.setattr(dm, "_UPLOADS", {})
+        monkeypatch.setattr(dm, "_UPLOAD_HANDLE_SEQ", [0])
+        reply = dm.handler(occurrence="Part:1", name="New", project="CAM")
+        assert reply["isError"] is True and "FAILED immediately" in reply["message"]
+        assert "copy_started" not in reply and "up1" in reply["message"]
+        assert "up1" in dm._UPLOADS
+        again = dm.handler(occurrence="Part:1", name="New", project="CAM")
+        assert again["isError"] is True and "already tracked" in again["message"]
+
+    def test_document_switch_during_cloud_lookup_refuses_before_save_copy_as(
+            self, monkeypatch, _install):
+        project = FakeProject("CAM")
+        app, _ = _install([project], active=SimpleNamespace(name="Source"))
+        calls = []
+        component = SimpleNamespace(name="Part")
+        component.saveCopyAs = lambda *args: calls.append(args)
+        monkeypatch.setattr(dm._OCCURRENCE, "resolve",
+                            lambda raw: (SimpleNamespace(component=component,
+                                                         fullPathName="Part:1"), None))
+        original = dm._find_project
+        def switched(*args, **kwargs):
+            result = original(*args, **kwargs)
+            app.activeDocument = SimpleNamespace(name="Other")
+            return result
+        monkeypatch.setattr(dm, "_find_project", switched)
+        reply = dm.handler(occurrence="Part:1", name="Copy", project="CAM")
+        assert reply["isError"] is True and "source document changed" in reply["message"]
+        assert calls == []

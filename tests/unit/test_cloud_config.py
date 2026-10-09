@@ -165,6 +165,7 @@ class TestTheTierIsWired:
             "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE",
             "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS",
             "ACT 11f - CLOUD: DERIVE EDITS",
+            "ACT 11h - CLOUD: COMPONENT COPY",
         }
         link = "ACT 11b2 - CLOUD: LINK GUARD REVIEW"
         cloud = {name for name, _p, _n, _f in tool_verify.ACTS if name.startswith("ACT 11")}

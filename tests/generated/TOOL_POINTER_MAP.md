@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 220  |  **description breadcrumbs:** 345  |  **note/error breadcrumbs:** 746
+**Tools:** 220  |  **description breadcrumbs:** 347  |  **note/error breadcrumbs:** 750
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -41,7 +41,7 @@ close orphans, factor duplicated guards into shared helpers.
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
 - `doc_new`  <- 92  (desc 0, note 92)
-- `design_get`  <- 72  (desc 18, note 54)
+- `design_get`  <- 73  (desc 18, note 55)
 - `find_geometry`  <- 62  (desc 18, note 44)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
 - `view_screenshot`  <- 36  (desc 6, note 30)
@@ -49,8 +49,8 @@ close orphans, factor duplicated guards into shared helpers.
 - `model_inspect`  <- 33  (desc 6, note 27)
 - `sketch_get`  <- 30  (desc 9, note 21)
 - `data_get`  <- 26  (desc 9, note 17)
+- `doc_open`  <- 26  (desc 5, note 21)
 - `sketch_create`  <- 26  (desc 7, note 19)
-- `doc_open`  <- 25  (desc 5, note 20)
 - `assembly_get`  <- 23  (desc 4, note 19)
 
 ## The detected guidance surface
@@ -940,10 +940,14 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' stored operations could not be enumerated; no flat refresh or post was attempted.
 - Reconfiguration may be partial.
 - Flat paths were generated, but fail-on-post behavior did not read back; no NC file was posted.
+- ' has no readable owning setup. No NC program was created. Re-read cam_get(include=['operations']) and retry with its exact operation path.
+- The owning setup of operation '
+- ' has no readable operation type. No NC program was created. Re-read cam_get(include=['setups']) before posting.
 - Post config not found for ''. Tried: . Provide a full .cps path, or a post name in the personal () or installed () post folder. post_scope=fusion resolves the same name against the posts this insta...
 - Provide 'post' - the post processor: for post_scope=local a full .cps path or a name in the personal/installed post folder; for cloud/hub/fusion the NAME of a post in that library.
 - The post log rejected emitted number ; this NC Program remains. Correct it with cam_set_nc_comment(program='', set_number='<number accepted by this post>'), then retry cam_post(program_name='').
 - The post log rejected emitted number . Retry creation with a program_name that is a number accepted by this post. If rollback says the failed program remains, remove it with cam_delete first.
+- The operation's owning setup could not be verified. Posting was not attempted. Re-read cam_get(include=['operations']) and pass its exact operation path as 'scope'.
 - Additive setup '' reads no machine, and its post takes the machine configuration from it. Posting was not attempted. Assign one with cam_edit_setup(machine=...), then post again.
 - The machine of additive setup '' did not read its identity, so giving it to the NC Program could not be verified. Posting was not attempted. Re-read cam_get(include=['machine'], setup=...) and post...
 - The NC Program's machine is unverified after it was given the machine of additive setup '': it reads , the setup's reads . Posting was not attempted. cam_get(include=['nc_programs']) reads the prog...
@@ -957,6 +961,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Flat generation finished, but requested . Handles  remain pollable for Future progress with document-wide readiness. Check cam_get(include=['operations']) for selected health. No NC file was posted.
 - Flat generation did not complete with verified nonempty paths within s.  flat model(s) were refreshed; handles  remain pollable for Future progress, with document-wide readiness. Check cam_get(incl...
 - Active document changed after flat generation; handles  remain pollable for Future progress with document-wide readiness. No NC file was posted.
+- Operation '' has no readable owning setup. No NC program was created. Re-read cam_get(include=['operations']) and retry with its exact operation path.
+- The owning setup of operation '' has no readable operation type. No NC program was created. Re-read cam_get(include=['setups']) before posting.
 - NC Program '' already exists, but its stored operations cannot be compared with what 'scope' resolves to:  stored and  requested operation(s) have no readable operationId, so whether reconfiguring ...
 - NC Program '' already exists and its stored operations differ from what 'scope' resolves to - reconfiguring would overwrite a program that may be machinist-curated. Omit 'scope', 'setups', 'post', ...
 - No valid toolpaths to post - every operation is out-of-date, errored, or ungenerated. Run cam_generate (in the Manufacture workspace) first. ()
@@ -1246,14 +1252,19 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - at folder '' (a network stall, not the file/folder cap) - results are PARTIAL. Narrow with 'folder'=<path>, raise time_budget_s, or retry.
 
 ### `data_get_upload_status`
-- Upload complete - the cloud confirms the file has fully landed and processed. Use file_id with doc_open or data_get.
-- No uploads have been launched in this session. Call data_upload_file first.
+- - the cloud file has landed and processed. Use file_id with doc_open or data_get.
+- Component copy publication complete
+- No uploads are tracked in this add-in session. An add-in reload clears poll handles but does not undo an earlier upload or component copy; inspect the destination with data_get before starting anot...
 - Provide 'handle' (from data_upload_file's upload_handle, or 'latest') or 'file_name' to look up an upload.
+- Component copy publication failed. Inspect the destination with data_get before retrying doc_copy.
 - Upload failed. Check the source file's format/permissions and retry data_upload_file.
 - No upload with handle '
 - No tracked upload matches file_name='
+- Component copy still publishing - poll again.
 - Still transferring the file to the cloud - poll again.
+- Component copy cloud processing is unfinished - poll again.
 - File transfer finished; the cloud is still processing it (e.g. translating a neutral format into a Fusion design) - poll again.
+- Component copy publication completed but its file identity did not match: name= (expected ), folder_id= (expected ), file_id=. Handle  remains tracked and reserves this folder/name for this add-in ...
 
 ### `data_move_file`
 - Verified by re-resolving the file and reading its parentFolder back. A project's ROOT folder reports the PROJECT's name, so a move to '/' shows that name.
@@ -1907,6 +1918,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `doc_copy`
 - The copy preserves external references: each referenced component still points at its ORIGINAL source file - the references are not re-copied. This tool does not offer a Document.saveAs-based copy ...
+- 'occurrence' is blank. Pass a handle or fullPathName from design_get, or omit the field for a cloud-file copy.
+- 'occurrence' selects the active design; omit document_id, source_project, source_project_id and source_folder. Use a separate call for a cloud file.
+- Provide 'name' for the component copy's new cloud file.
+- Provide only one destination selector for a component copy: 'project' or 'project_id'. Use data_get to confirm its identity first.
 - Provide 'document_id' (lineage URN, preferred) or 'name'.
 - Provide 'project' (name) or 'project_id' for the destination.
 - Destination project not found:
@@ -1915,6 +1930,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' already exists in '
 - ). Copy into a different 'folder'
 - Copy returned nothing for document '
+- No active source document for the component copy.
+- Could not resolve destination project:
+- Could not access destination project root:
+- Copy failed for document '
 - No file found for document_id '
 - '. Pass the file's lineage id (URN) from data_get.
 - When using 'name', also provide 'source_project' (name) or 'source_project_id' so the lookup is unambiguous.
@@ -1930,18 +1949,34 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - . Use data_get, or pass document_id (URN).
 - files share it in project '
 - . Fusion allows same-name files in different folders; refusing rather than copying the wrong one. Pass document_id (the lineage URN above) to copy one exactly.
-- Could not resolve destination project:
-- Could not access destination project root:
-- Copy failed for document '
+- Destination folder path not found: '
+- '). Folders at project root:
+- . Pass create_path=true, or use data_get(include=['folders']) to see the structure.
 - findFileById failed for '
 - Could not resolve source project:
 - source_folder path not found: '
 - '. Folders at project root:
 - . Use data_get(include=['folders']) to see the structure.
-- Destination folder path not found: '
-- '). Folders at project root:
-- . Pass create_path=true, or use data_get(include=['folders']) to see the structure.
 - Could not prepare destination path '
+- ' has no readable component.
+- The occurrence's component name or path could not be read; copy was not started.
+- Destination folder id could not be read; copy was not started.
+- The active source document changed while resolving the destination; component copy was not started. Activate the source and retry.
+- Component copy returned no future for '
+- '. Do not retry until the destination is checked with data_get.
+- ' reports FAILED immediately. Handle
+- remains tracked; poll it with data_get_upload_status and inspect the destination with data_get before retrying.
+- Publication started from the component's LOCAL coordinates; the occurrence's assembly placement and sibling components are not included. Poll data_get_upload_status(handle=upload_handle) for the la...
+- Inspect the destination with data_get. While this handle remains tracked, use a different name or folder for any new copy.
+- A component copy named '
+- ' is already tracked in this folder (handle
+- Poll that handle with data_get_upload_status first.
+- Its completed identity did not match:
+- Component copy raised while starting for '
+- . Whether the cloud received it is unknown; inspect the destination with data_get.
+- A component copy named '' is already tracked in this folder (handle ). Inspect the destination with data_get. While this handle remains tracked, use a different name or folder for any new copy.
+- Component copy raised while starting for '': . Whether the cloud received it is unknown; inspect the destination with data_get.
+- Component copy for '' reports FAILED immediately. Handle  remains tracked; poll it with data_get_upload_status and inspect the destination with data_get before retrying.
 - source_folder path not found: '' (missing segment '') in project ''. Folders at project root: . Use data_get(include=['folders']) to see the structure.
 - By-name search stopped at its budget: visited  folders (cap ) under  of project '' without covering it ( files seen). The walk is bounded because each folder is a slow cloud fetch on Fusion's main ...
 - By-name source search could not completely read  folder(s) () under  of project ''. Refusing because an unread file name or folder can hide a same-name twin. Retry after the folders are readable, p...

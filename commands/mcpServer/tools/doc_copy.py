@@ -1,18 +1,27 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Copy an existing cloud document into a destination project/folder. Cloud-to-cloud: it does not
-touch the active session, and the copy PRESERVES external references. WRITES."""
+"""Copy a cloud document or an active component into a destination project/folder."""
+
+import time
 
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import counted, ok, error, read_flag, safe
+from . import _inputs, _outputs
+from . import _data_common as _cloud
 from ._data_common import (
     _MAX_XREFS, _data, _files_in_folder_by_name, _find_project, _split_path,
     _resolve_folder_path, _ensure_folder_path, _folder_path_string,
-    _same_name_refusal, _retained_parents,
+    _same_name_refusal, _retained_parents, _UPLOADS, _UPLOAD_HANDLE_SEQ,
 )
+
+_OCCURRENCE = _inputs.OccurrenceRef("occurrence", required=False)
+
+RETURNS = [_outputs.ReturnsValue(
+    "upload_handle", "a component-copy publication handle - poll until state='complete'",
+    consumers=["data_get_upload_status"])]
 
 
 def _xref_summary(data_file):
@@ -77,13 +86,95 @@ def _find_file_by_name(root_folder, name):
     return matches, seen, visited, bool(queue), unread
 
 
+def _copy_component(occ, target, final_name, dproj, auto_created, source_doc):
+    """Start a component-local cloud copy and hold its future for the upload-status poller."""
+    comp = safe(lambda: occ.component)
+    if comp is None:
+        return error(f"Occurrence '{safe(lambda: occ.fullPathName)}' has no readable component."
+                     + _retained_parents(auto_created))
+    source_name = safe(lambda: comp.name)
+    source_path = safe(lambda: occ.fullPathName)
+    if not source_name or not source_path:
+        return error("The occurrence's component name or path could not be read; copy was not started."
+                     + _retained_parents(auto_created))
+    folder_id = safe(lambda: target.id)
+    if not folder_id:
+        return error("Destination folder id could not be read; copy was not started."
+                     + _retained_parents(auto_created))
+    if source_doc is None or safe(lambda: _cloud.app.activeDocument) != source_doc:
+        return error("The active source document changed while resolving the destination; "
+                     "component copy was not started. Activate the source and retry."
+                     + _retained_parents(auto_created))
+    for handle, entry in _UPLOADS.items():
+        if (entry.get("kind") == "component_copy"
+                and entry.get("destination_folder_id") == folder_id
+                and entry.get("requested_name", "").lower() == final_name.lower()):
+            problem = entry.get("identity_error")
+            return error(f"A component copy named '{final_name}' is already tracked in this folder "
+                         f"(handle {handle}). "
+                         + (f"Its completed identity did not match: {problem} " if problem else
+                            "Poll that handle with data_get_upload_status first. ")
+                         + "Inspect the destination with data_get. While this handle remains "
+                           "tracked, use a different name or folder for any new copy."
+                         + _retained_parents(auto_created))
+    try:
+        future = comp.saveCopyAs(final_name, target, "[AI agent] Component copy", "")
+    except Exception as exc:
+        return error(f"Component copy raised while starting for '{source_path}': {exc}. Whether "
+                     "the cloud received it is unknown; inspect the destination with data_get."
+                     + _retained_parents(auto_created))
+    if not future:
+        return error(f"Component copy returned no future for '{source_path}'. Do not retry until "
+                     "the destination is checked with data_get." + _retained_parents(auto_created))
+    _UPLOAD_HANDLE_SEQ[0] += 1
+    handle = f"up{_UPLOAD_HANDLE_SEQ[0]}"
+    _UPLOADS[handle] = {
+        "kind": "component_copy", "future": future,
+        "source_file": None, "source_component": source_name,
+        "source_occurrence": source_path, "requested_name": final_name,
+        "destination_project": safe(lambda: dproj.name),
+        "destination_folder": _folder_path_string(target) or "(project root)",
+        "destination_folder_id": folder_id, "started_at": time.time(),
+    }
+    if safe(lambda: future.uploadState) == 2:
+        return error(f"Component copy for '{source_path}' reports FAILED immediately. Handle "
+                     f"{handle} remains tracked; poll it with data_get_upload_status and inspect "
+                     "the destination with data_get before retrying."
+                     + _retained_parents(auto_created))
+    return ok({
+        "copy_started": True, "upload_handle": handle,
+        "source_component": source_name, "source_occurrence": source_path,
+        "requested_name": final_name,
+        "destination_project": safe(lambda: dproj.name),
+        "destination_folder": _folder_path_string(target) or "(project root)",
+        "auto_created_parents": auto_created,
+        "note": ("Publication started from the component's LOCAL coordinates; the occurrence's "
+                 "assembly placement and sibling components are not included. Poll "
+                 "data_get_upload_status(handle=upload_handle) for the landed file_id, then use "
+                 "doc_open and inspect its geometry and history. No cloud completion is claimed yet."),
+    })
+
+
 def handler(document_id: str = "", name: str = "",
             source_project: str = "", source_project_id: str = "",
             source_folder: str = "",
             project: str = "", project_id: str = "",
-            folder: str = "", create_path: bool = False) -> dict:
-    """Copy an existing cloud document into a destination project/folder; see TOOL_DESCRIPTION."""
-    if not (document_id or name):
+            folder: str = "", create_path: bool = False,
+            occurrence: str = "") -> dict:
+    """Copy a cloud document or one active component into a destination folder."""
+    if occurrence and not (occurrence or "").strip():
+        return error("'occurrence' is blank. Pass a handle or fullPathName from design_get, or omit "
+                     "the field for a cloud-file copy.")
+    component_mode = bool((occurrence or "").strip())
+    if component_mode and (document_id or source_project or source_project_id or source_folder):
+        return error("'occurrence' selects the active design; omit document_id, source_project, "
+                     "source_project_id and source_folder. Use a separate call for a cloud file.")
+    if component_mode and not (name or "").strip():
+        return error("Provide 'name' for the component copy's new cloud file.")
+    if component_mode and project and project_id:
+        return error("Provide only one destination selector for a component copy: 'project' or "
+                     "'project_id'. Use data_get to confirm its identity first.")
+    if not component_mode and not (document_id or name):
         return error("Provide 'document_id' (lineage URN, preferred) or 'name'.")
     if not (project or project_id):
         return error("Provide 'project' (name) or 'project_id' for the destination.")
@@ -93,10 +184,19 @@ def handler(document_id: str = "", name: str = "",
     except Exception as e:
         return error(str(e))
 
-    # --- resolve the source DataFile ---
+    # --- resolve the source DataFile or active-design occurrence ---
     src = None
+    source_occurrence = None
+    source_doc = None
     unread = []          # folders the by-name walk could not enumerate (empty on the URN path)
-    if document_id:
+    if component_mode:
+        source_doc = safe(lambda: _cloud.app.activeDocument)
+        if source_doc is None:
+            return error("No active source document for the component copy.")
+        source_occurrence, source_error = _OCCURRENCE.resolve(occurrence)
+        if source_error:
+            return error(source_error)
+    elif document_id:
         try:
             src = data.findFileById(document_id)
         except Exception as e:
@@ -215,7 +315,8 @@ def handler(document_id: str = "", name: str = "",
                     f"{', '.join(n for n in opts if n) or '(none)'}. "
                     "Pass create_path=true, or use data_get(include=['folders']) to see the structure.")
 
-    src_name = safe(lambda: src.name) or "(unknown)"
+    src_name = safe(lambda: src.name) if src is not None else safe(lambda: source_occurrence.component.name)
+    src_name = src_name or "(unknown)"
     # The copied file's intended FINAL name: the requested 'name' if given, else the source's.
     # DataFile.copy() cannot set a name, so a requested rename is applied after the copy below.
     want_name = (name or "").strip()
@@ -223,7 +324,7 @@ def handler(document_id: str = "", name: str = "",
 
     # 'folder' always narrows the collision; 'name' only does on the document_id path, because on
     # the by-name path 'name' IS the source lookup, so a different one copies a different file.
-    rename_remedy = (" or give the copy a different 'name'." if document_id else
+    rename_remedy = (" or give the copy a different 'name'." if document_id or component_mode else
                      ". On this call 'name' selects the SOURCE file, so changing it copies a "
                      "different document - pass 'document_id' (the source's lineage URN from "
                      "data_get) to free 'name' for the copy.")
@@ -243,6 +344,9 @@ def handler(document_id: str = "", name: str = "",
                       f"'{_folder_path_string(target) or '(project root)'}' "
                       f"(id {safe(lambda: existing.id)}). Copy into a different 'folder'"
                       + rename_remedy + _retained_parents(auto_created))
+
+    if component_mode:
+        return _copy_component(source_occurrence, target, final_name, dproj, auto_created, source_doc)
 
     xrefs, xref_count = _xref_summary(src)
 
@@ -299,8 +403,8 @@ def handler(document_id: str = "", name: str = "",
 
 
 TOOL_DESCRIPTION = (
-    "Copy a saved cloud document into a destination project/folder. Cloud-to-cloud: the active "
-    "session is not touched."
+    "Copy a cloud document or active occurrence's component into a project/folder. Component "
+    "publication is async; poll data_get_upload_status.\n" + _outputs.produces_block(RETURNS)
 )
 
 tool = (
@@ -313,7 +417,7 @@ tool = (
     .add_input_property("document_id", {"type": "string",
         "description": "Lineage URN from data_get."})
     .add_input_property("name", {"type": "string",
-        "description": "Source name (needs source_project); the copy's name with document_id."})
+        "description": "Source name with source_project; copy name with document_id or occurrence."})
     .add_input_property("source_project", {"type": "string"})
     .add_input_property("source_project_id", {"type": "string"})
     .add_input_property("source_folder", {"type": "string",
@@ -324,6 +428,7 @@ tool = (
         "description": "Destination folder path, e.g. 'Parts/WidgetA'."})
     .add_input_property("create_path", {"type": "boolean",
         "description": "Create missing folders."})
+    .add_input_property(*_OCCURRENCE.as_property())
     .strict_schema()
 )
 item = Item.create_tool_item(

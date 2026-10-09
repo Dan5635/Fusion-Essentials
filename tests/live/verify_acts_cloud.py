@@ -6215,3 +6215,222 @@ def _component_reference_rows():
 
 
 _CLOUD_CONFIGURE += _component_reference_rows()
+
+
+# --- ACT 11h: A PLACED COMPONENT PUBLISHED AS A LOCAL DESIGN -------------------------------
+_COMPONENT_COPY_NAME = "SweepComponentCopy " + _STAMP
+_COMPONENT_COPY_FIXTURE = '''import adsk.core, adsk.fusion, json, math
+def run(context):
+    app = adsk.core.Application.get()
+    doc = app.activeDocument
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    if design is None:
+        raise RuntimeError('Component copy fixture has no Design product')
+    root = design.rootComponent
+    if doc.isSaved or root.occurrences.count or root.bRepBodies.count or design.timeline.count:
+        raise RuntimeError('Component copy fixture requires a new empty design')
+    def part(name, matrix, w, h, d):
+        occ = root.occurrences.addNewComponent(matrix)
+        comp = occ.component
+        comp.name = name
+        sketch = comp.sketches.add(comp.xYConstructionPlane)
+        sketch.name = name + 'Profile'
+        sketch.sketchCurves.sketchLines.addTwoPointRectangle(
+            adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(w, h, 0))
+        if sketch.profiles.count != 1:
+            raise RuntimeError('Fixture sketch has no unique profile')
+        ext = comp.features.extrudeFeatures.createInput(
+            sketch.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        if ext.setDistanceExtent(False, adsk.core.ValueInput.createByReal(d)) is not True:
+            raise RuntimeError('Fixture extent refused')
+        feature = comp.features.extrudeFeatures.add(ext)
+        if feature is None or feature.bodies.count != 1:
+            raise RuntimeError('Fixture extrusion refused')
+        feature.bodies.item(0).name = name + 'Body'
+        return occ
+    placed = adsk.core.Matrix3D.create()
+    if placed.setToRotation(math.radians(31), adsk.core.Vector3D.create(0, 0, 1),
+                            adsk.core.Point3D.create(0, 0, 0)) is not True:
+        raise RuntimeError('Fixture placement refused')
+    placed.translation = adsk.core.Vector3D.create(7, 3, 5)
+    chosen = part('CopyPart', placed, 3, 4, 2)
+    part('CopyControl', adsk.core.Matrix3D.create(), 1, 2, 3)
+    print(json.dumps({'occurrence': chosen.entityToken, 'path': chosen.fullPathName,
+                      'component': chosen.component.name}))
+'''
+
+_COMPONENT_COPY_READ = '''import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    doc = app.activeDocument
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    if design is None:
+        raise RuntimeError('Component copy read has no Design product')
+    root = design.rootComponent
+    def shape(body):
+        return {'name': body.name, 'solid': body.isSolid,
+                'volume_cm3': body.getPhysicalProperties(
+                    adsk.fusion.CalculationAccuracy.VeryHighCalculationAccuracy).volume,
+                'vertices_cm': sorted([v.geometry.asArray() for v in body.vertices])}
+    occurrences = []
+    for occ in root.allOccurrences:
+        occurrences.append({'path': occ.fullPathName, 'component': occ.component.name,
+                            'frame': list(occ.transform2.asArray()),
+                            'local_bodies': [shape(b) for b in occ.component.bRepBodies]})
+    try:
+        data_file = doc.dataFile
+    except Exception:
+        data_file = None
+    print(json.dumps({'name': doc.name, 'saved': doc.isSaved, 'modified': doc.isModified,
+        'document_id': data_file.id if data_file is not None else None,
+        'root_bodies': [shape(b) for b in root.bRepBodies], 'occurrences': occurrences,
+        'timeline': [{'name': design.timeline.item(i).name,
+                      'health': int(design.timeline.item(i).healthState)}
+                     for i in range(design.timeline.count)],
+        'parameters': sorted([{'name': p.name, 'expression': p.expression, 'value': p.value}
+                             for p in design.allParameters], key=lambda p: p['name'])}))
+'''
+
+
+def _component_copy_fixture(p):
+    """Require the fixture to choose one exact occurrence in a two-part design."""
+    row = _script_reply(p)
+    return _measured("two-part component-copy fixture selected one occurrence",
+                     row, bool(row.get("occurrence")) and row.get("component") == "CopyPart"
+                     and row.get("path") == "CopyPart:1")
+
+
+def _component_copy_before(p):
+    """Record an independent source geometry and history baseline."""
+    row = _script_reply(p)
+    occs = row.get("occurrences") or []
+    chosen = next((o for o in occs if o.get("component") == "CopyPart"), {})
+    control = next((o for o in occs if o.get("component") == "CopyControl"), {})
+    frame = chosen.get("frame") or []
+    _RECALL["cc_source_before"] = row
+    _RECALL["cc_selected_local"] = (chosen.get("local_bodies") or [None])[0]
+    _RECALL["cc_selected_history"] = [t for t in row.get("timeline") or []
+                                       if t.get("name") in ("CopyPartProfile", "Extrude1")]
+    return _measured("source has placed chosen part and separate control",
+                     {"occurrences": occs, "timeline": row.get("timeline"),
+                      "parameters": row.get("parameters")},
+                     row.get("saved") is False and row.get("modified") is True
+                     and len(occs) == 2 and len(frame) == 16
+                     and _near(frame[3], 7, 1e-8) and _near(frame[7], 3, 1e-8)
+                     and _near(frame[11], 5, 1e-8)
+                     and len(chosen.get("local_bodies") or []) == 1
+                     and len(control.get("local_bodies") or []) == 1
+                     and len(row.get("timeline") or []) == 6
+                     and len(row.get("parameters") or []) == 4)
+
+
+def _component_copy_source_unchanged(p):
+    """Compare a fresh native read to the pre-publication source snapshot."""
+    row = _script_reply(p)
+    before = _RECALL.get("cc_source_before")
+    return _measured("component publication kept source geometry, placement and history",
+                     {"before": before, "after": row}, row == before)
+
+
+def _component_copy_started(p):
+    """Require a held future with no claimed cloud lineage at start."""
+    return _measured("component copy started without a claimed finished file",
+                     {"copy_started": p.get("copy_started"), "upload_handle": p.get("upload_handle"),
+                      "requested_name": p.get("requested_name"),
+                      "destination_folder": p.get("destination_folder")},
+                     p.get("copy_started") is True and bool(p.get("upload_handle"))
+                     and p.get("requested_name") == _COMPONENT_COPY_NAME
+                     and p.get("destination_folder") == FOLDER
+                     and "copied_id" not in p and "file_id" not in p)
+
+
+def _component_copy_finished(p):
+    """Require the existing poller to read exact completed component publication."""
+    return _measured("component copy settled with an exact cloud lineage",
+                     {k: p.get(k) for k in ("state", "operation", "file_id", "file_name",
+                                              "destination_folder", "source_component")},
+                     p.get("state") == "complete" and p.get("operation") == "component_copy"
+                     and str(p.get("file_id") or "").startswith("urn:")
+                     and p.get("file_name") == _COMPONENT_COPY_NAME
+                     and p.get("destination_folder") == FOLDER
+                     and p.get("source_component") == "CopyPart")
+
+
+def _component_copy_cloud(p):
+    """Read the completed file through data_get rather than trusting the poller's echo."""
+    f, loc, state = p.get("file") or {}, p.get("location") or {}, p.get("state") or {}
+    return _measured("published file independently reads in the intended folder",
+                     {"file": f, "location": loc, "state": state},
+                     f.get("name") == _COMPONENT_COPY_NAME
+                     and f.get("id") == _RECALL.get("cc_copy_id")
+                     and (loc.get("parent_folder") or {}).get("path") == FOLDER
+                     and state.get("is_complete") is True)
+
+
+def _component_copy_opened(p):
+    """Compare the reopened design's raw geometry and history to the chosen local part."""
+    row = _script_reply(p)
+    before = _RECALL.get("cc_source_before") or {}
+    selected = _RECALL.get("cc_selected_local")
+    timeline = row.get("timeline") or []
+    parameters = row.get("parameters") or []
+    source_timeline = before.get("timeline") or []
+    source_parameters = before.get("parameters") or []
+    return _measured("reopened copy retains component-local geometry and editable history",
+                     {"copy": row, "source_selected_body": selected},
+                     row.get("document_id") == _RECALL.get("cc_copy_id")
+                     and row.get("name") == _COMPONENT_COPY_NAME
+                     and row.get("saved") is True and row.get("modified") is False
+                     and row.get("root_bodies") == [selected]
+                     and row.get("occurrences") == []
+                     and len(timeline) == 2 and all(t.get("health") == 0 for t in timeline)
+                     and [t.get("name") for t in timeline] ==
+                     [t.get("name") for t in source_timeline[1:3]]
+                     and len(parameters) == 2
+                     and parameters == source_parameters[:2])
+
+
+_CLOUD_COMPONENT_COPY = [
+    ("doc_get", {}, _home_document, ("cc_home", _recall("cc_home", _home_address))),
+    ("doc_new", {}, _new_document, ("cc_source", _recall("cc_source", lambda p: p["document_handle"]))),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_FIXTURE, "read_only": False},
+     _component_copy_fixture, ("cc_occurrence", lambda p: _script_reply(p)["occurrence"])),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_READ, "read_only": True},
+     _component_copy_before, None),
+    ("doc_copy", lambda c: {"occurrence": _ctx_get(c, "cc_occurrence", "selected component"),
+                             "name": _COMPONENT_COPY_NAME, "project": PROJECT, "folder": FOLDER,
+                             "expect_document": _ctx_get(c, "cc_source", "source scratch")},
+     _component_copy_started, ("cc_upload", lambda p: p["upload_handle"])),
+    ("data_get_upload_status", lambda c: {"handle": _ctx_get(c, "cc_upload", "copy future")},
+     _component_copy_finished, ("cc_copy_id", _recall("cc_copy_id", lambda p: p["file_id"]))),
+    ("data_get", lambda c: {"file": _ctx_get(c, "cc_copy_id", "copy lineage")},
+     _component_copy_cloud, None),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_READ, "read_only": True},
+     _component_copy_source_unchanged, None),
+    ("doc_open", lambda c: {"file_id": _ctx_get(c, "cc_copy_id", "copy lineage"),
+                            "force_api_open": True,
+                            "expect_document": _ctx_get(c, "cc_source", "source scratch")},
+     _opened(_COMPONENT_COPY_NAME, lambda: _RECALL.get("cc_copy_id")),
+     ("cc_copy_session", _recall("cc_copy_session", lambda p: p["document_handle"]))),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_READ, "read_only": True},
+     _component_copy_opened, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "cc_source", "source scratch")},
+     _activated(), None),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_READ, "read_only": True},
+     _component_copy_source_unchanged, None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "cc_copy_session", "copy document"),
+                              "save_changes": False,
+                              "expect_document": _ctx_get(c, "cc_source", "source scratch")},
+     _document_closed, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "cc_home", "home document")},
+     _activated(), None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "cc_source", "source scratch"),
+                              "save_changes": False,
+                              "expect_document": _ctx_get(c, "cc_home", "home document")},
+     _document_closed, None),
+    ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("cc_home")
+     and p.get("open_count") >= 1 and all(
+         r.get("document_handle") not in {_RECALL.get("cc_source"),
+                                          _RECALL.get("cc_copy_session")}
+         for r in p.get("open_documents") or []), None),
+]

@@ -241,7 +241,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 |---|---|---|
 | ✎ | `doc_activate` | Bring an open document to the foreground (make it the active document). |
 | ⚠ | `doc_close` | Close an open document, or every one (close_all) |
-| ✎ | `doc_copy` | Copy a saved cloud document into a destination project/folder |
+| ✎ | `doc_copy` | Copy a cloud document or active occurrence's component into a project/folder |
 | · | `doc_get` | Read the SESSION's open documents: which is active, save state, lineage URNs |
 | ✎ | `doc_insert_derive` | Derive OPEN source's last SAVED cloud version: one-way linked copy |
 | ✎ | `doc_insert_import` | Import a CAD file from LOCAL DISK: solids into a component, DXF as sketches, SVG into a sketch. |
@@ -264,7 +264,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ⚠ | `data_delete_folder` | Delete a folder on the cloud, IRREVERSIBLY: 'confirm_name' must EXACTLY match the folder's current name. |
 | ✎ | `data_download_file` | Download ONE non-Fusion cloud file to a local folder; the transfer is SYNCHRONOUS and freezes Fusion until it finishes |
 | · | `data_get` | Read the CLOUD data model by scope: hubs and projects, one project's files, its folder tree, one folder's summary, or ONE file's record |
-| · | `data_get_upload_status` | Poll a data_upload_file upload: 'state' is uploading, processing, complete (file_id included) or failed. |
+| · | `data_get_upload_status` | Poll data_upload_file or async doc_copy: 'state' is uploading, processing, complete (file_id included) or failed. |
 | ✎ | `data_move_file` | Move ONE cloud file into an EXISTING folder of its own project; it creates nothing. |
 | ✎ | `data_switch_hub` | Switch the active Autodesk data hub after checking cloud-backed edits; list hubs with data_get(include=['hubs']). |
 | ✎ | `data_upload_file` | Upload a local CAD file into a project |

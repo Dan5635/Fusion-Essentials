@@ -139,6 +139,7 @@ from verify_acts_cam import (  # noqa: F401
 from verify_acts_cloud import (  # noqa: F401
     RUN_FOLDER, MOVED_FOLDER, SOURCE_DOC, COPY_DOC, HOST_DOC, RUN_PATH, MOVED_PATH,
     RESTORE_VERSION, _CLOUD_DATA, _CLOUD_DOC, _CLOUD_LINK, _CLOUD_DRAWING,
+    _CLOUD_COMPONENT_COPY,
     _lit, _files_gone, _xrefs)
 
 from verify_acts_hub import (  # noqa: F401

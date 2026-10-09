@@ -10,6 +10,7 @@ beat addresses. The hub is authored a metre out along X on the XZ plane and stay
 """
 
 import json
+import os
 import time
 
 import _dump_reader
@@ -1512,22 +1513,42 @@ def _additive_slice_rows():
           and p.get("file_count") == 1 and str(p["files"][0].get("file_path")).endswith(".gcode"),
           ("slice_gcode", _recall("slice_gcode", lambda p: p["files"][0]["file_path"])))
 
-    def gcode_on_disk(p):
+    def gcode_on_disk(p, program_name="4001", file_key="slice_gcode"):
         programs = (p.get("nc_programs") or {}).get("nc_programs") or []
-        with open(_RECALL["slice_gcode"], encoding="utf-8", errors="replace") as handle:
+        matches = [row for row in programs if row.get("name") == program_name]
+        path = _RECALL[file_key]
+        with open(path, encoding="utf-8", errors="replace") as handle:
             lines = handle.read().splitlines()
         head = lines[:40]
-        facts = {"lines": len(lines), "moves": sum(1 for line in lines if line.startswith("G1")),
+        facts = {"size_bytes": os.path.getsize(path), "path": path,
+                 "lines": len(lines), "moves": sum(1 for line in lines if line.startswith("G1")),
                  "printer": next((line for line in head if line.startswith(";Printer name:")), None),
                  "extruder_offset": any(line.startswith(";Extruder 1 offset x:") for line in head),
                  "last": lines[-1] if lines else None}
         return _measured("the FFF program file on disk", facts,
-                         len(programs) == 1 and programs[0].get("name") == "4001"
+                         len(programs) == (1 if program_name == "4001" else 2)
+                         and len(matches) == 1 and matches[0].get("program_number") == program_name
+                         and matches[0].get("machine") == "Autodesk Generic FFF Machine"
+                         and matches[0].get("operation_count") == 1
+                         and matches[0].get("posted_operations") == 1
+                         and os.path.basename(path) == program_name + ".gcode"
+                         and (program_name == "4001" or path != _RECALL["slice_gcode"])
+                         and facts["size_bytes"] > 0
                          and facts["printer"] == ";Printer name: Autodesk Generic FFF Machine"
                          and facts["extruder_offset"] and facts["moves"] > 100
                          and facts["last"] == ";END OF GCODE"
                          and not any("!Error" in line for line in lines))
     read("cam_get", {"include": ["nc_programs"]}, gcode_on_disk)
+    write("cam_post", lambda c: {"scope": _ctx_get(c, "slice_op", "the slice"),
+                                  "post": "generic fff machine", "post_scope": "fusion",
+                                  "output_folder": EXPORT_DIR + "/fff", "program_name": "4002"},
+          lambda p: p.get("posted") is True and p.get("scope") == "operation"
+          and p.get("machine") == "Autodesk Generic FFF Machine"
+          and p.get("membership_verified") is True and p.get("posted_operations") == 1
+          and p.get("file_count") == 1 and str(p["files"][0].get("file_path")).endswith(".gcode"),
+          ("slice_op_gcode", _recall("slice_op_gcode", lambda p: p["files"][0]["file_path"])))
+    read("cam_get", {"include": ["nc_programs"]},
+         lambda p: gcode_on_disk(p, "4002", "slice_op_gcode"))
     write("cam_show_toolpath", lambda c: {"action": "show",
                                           "operation": _ctx_get(c, "slice_op", "the slice")},
           lambda p: p.get("has_toolpath") is not False and "warning" not in p)

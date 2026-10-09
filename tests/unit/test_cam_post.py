@@ -1070,12 +1070,64 @@ class TestAdditiveSetupTakesItsMachine:
         data = _payload(res)
         assert cam.posted[0].machine is None and "machine" not in data
 
-    def test_two_setups_or_one_operation_are_posted_without_a_machine_as_before(self, monkeypatch, tmp_path):
+    def test_two_setups_are_posted_without_a_single_machine(self, monkeypatch, tmp_path):
         one, two = _additive_setup("PrintA", _FFF), _additive_setup("PrintB", _FFF)
         cam, res = self._post(monkeypatch, tmp_path, [one, two], scope="", setups=["PrintA", "PrintB"])
         assert cam.posted[0].machine is None and "machine" not in _payload(res)
+
+    def test_additive_operation_takes_its_owning_setups_machine(self, monkeypatch, tmp_path):
         cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
                               scope="Additive Toolpath1", program_name="1002")
+        assert cam.posted[0].machine is _FFF
+        assert _payload(res)["machine"] == "Autodesk Generic FFF Machine"
+
+    def test_same_named_operation_uses_the_resolved_owners_machine(self, monkeypatch, tmp_path):
+        other = types.SimpleNamespace(id="different", vendor="Other", model="FFF")
+        one, two = _additive_setup("PrintA", _FFF), _additive_setup("PrintB", other)
+        cam, res = self._post(monkeypatch, tmp_path, [one, two],
+                              scope="PrintB / Additive Toolpath1", program_name="1002")
+        assert cam.posted[0].operations == [two.allOperations.item(0)]
+        assert cam.posted[0].machine is other
+        assert _payload(res)["machine"] == "Other FFF"
+
+    def test_operation_with_unreadable_owner_refuses_before_post(self, monkeypatch, tmp_path):
+        cam = _install(monkeypatch, _CAM([_additive_setup(machine=_FFF)]))
+        monkeypatch.setattr(cp._cam_common, "owning_setup", lambda node: None)
+        res = cp.handler(scope="Additive Toolpath1", post=str(_write_cps(tmp_path)),
+                         output_folder=str(tmp_path), program_name="1002")
+        assert res["isError"] is True and "no readable owning setup" in res["message"]
+        assert cam.ncPrograms.create_calls == 0 and cam.ncPrograms.add_calls == 0
+        assert cam.posted == []
+
+    def test_operation_with_unreadable_owner_type_refuses_before_program_creation(self, monkeypatch,
+                                                                                   tmp_path):
+        setup = _additive_setup(machine=_FFF)
+        setup.operationType = None
+        cam = _install(monkeypatch, _CAM([setup]))
+        res = cp.handler(scope="Additive Toolpath1", post=str(_write_cps(tmp_path)),
+                         output_folder=str(tmp_path), program_name="1002")
+        assert res["isError"] is True and "no readable operation type" in res["message"]
+        assert cam.ncPrograms.create_calls == 0 and cam.ncPrograms.add_calls == 0
+        assert cam.posted == []
+
+    def test_additive_operation_with_missing_machine_refuses_before_post(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=None)],
+                              scope="Additive Toolpath1", program_name="1002")
+        assert res["isError"] is True and "cam_edit_setup(machine=" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_additive_operation_machine_write_must_read_back(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
+                              scope="Additive Toolpath1", program_name="1002",
+                              program_class=_MachinelessProgram)
+        assert res["isError"] is True and "machine is unverified" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_milling_operation_does_not_inherit_its_setups_machine(self, monkeypatch, tmp_path):
+        milling = _Setup("Mill", [_Op("Face1")])
+        milling.machine = _FFF
+        cam, res = self._post(monkeypatch, tmp_path, [milling],
+                              scope="Face1", program_name="1002")
         assert cam.posted[0].machine is None and "machine" not in _payload(res)
 
 

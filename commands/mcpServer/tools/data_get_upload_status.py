@@ -25,7 +25,7 @@ def _find_by_name(file_name, folder):
         return None, None
     for h in reversed(list(_data_common._UPLOADS.keys())):
         entry = _data_common._UPLOADS[h]
-        if (entry.get("source_file") or "").lower() != want_name:
+        if (entry.get("source_file") or entry.get("requested_name") or "").lower() != want_name:
             continue
         if want_folder and (entry.get("destination_folder") or "").lower() != want_folder:
             continue
@@ -36,7 +36,9 @@ def _find_by_name(file_name, folder):
 def handler(handle: str = "", file_name: str = "", folder: str = "") -> dict:
     """Report an upload's current state; see TOOL_DESCRIPTION."""
     if not _data_common._UPLOADS:
-        return error("No uploads have been launched in this session. Call data_upload_file first.")
+        return error("No uploads are tracked in this add-in session. An add-in reload clears poll "
+                     "handles but does not undo an earlier upload or component copy; inspect the "
+                     "destination with data_get before starting another copy.")
 
     key = (handle or "").strip()
     entry = None
@@ -80,7 +82,9 @@ def handler(handle: str = "", file_name: str = "", folder: str = "") -> dict:
 
     payload = {
         "handle": key,
+        "operation": entry.get("kind") or "file_upload",
         "source_file": entry.get("source_file"),
+        "requested_name": entry.get("requested_name"),
         "destination_project": entry.get("destination_project"),
         "destination_folder": entry.get("destination_folder"),
         "state": state,
@@ -88,37 +92,64 @@ def handler(handle: str = "", file_name: str = "", folder: str = "") -> dict:
     }
 
     if state == "complete":
-        payload["file_id"] = safe(lambda: df.id)
+        landed_id = safe(lambda: df.id)
+        if entry.get("kind") == "component_copy":
+            landed_name = safe(lambda: df.name)
+            landed_folder = safe(lambda: df.parentFolder.id)
+            expected_name = entry.get("requested_name")
+            expected_folder = entry.get("destination_folder_id")
+            if (not landed_id or landed_name != expected_name
+                    or not landed_folder or landed_folder != expected_folder):
+                problem = (f"Component copy publication completed but its file identity did not "
+                           f"match: name={landed_name!r} (expected {expected_name!r}), "
+                           f"folder_id={landed_folder!r} (expected {expected_folder!r}), "
+                           f"file_id={landed_id!r}. Handle {key} remains tracked and reserves this "
+                           "folder/name for this add-in session. Inspect the destination with "
+                           "data_get; use a different name or folder for a new copy.")
+                entry["identity_error"] = problem
+                return error(problem)
+            payload["file_name"] = landed_name
+            payload["source_component"] = entry.get("source_component")
+            payload["source_occurrence"] = entry.get("source_occurrence")
+        payload["file_id"] = landed_id
         payload["version_id"] = safe(lambda: df.versionId)
         payload["version_number"] = safe(lambda: df.versionNumber)
         payload["fusion_web_url"] = safe(lambda: df.fusionWebURL)
-        payload["note"] = ("Upload complete - the cloud confirms the file has fully landed and "
-                            "processed. Use file_id with doc_open or data_get.")
+        payload["note"] = (("Component copy publication complete" if entry.get("kind") == "component_copy"
+                            else "Upload complete")
+                           + " - the cloud file has landed and processed. Use file_id with doc_open "
+                             "or data_get.")
         _data_common._UPLOADS.pop(key, None)
     elif state == "failed":
-        payload["note"] = ("Upload failed. Check the source file's format/permissions and retry "
-                            "data_upload_file.")
+        payload["note"] = (("Component copy publication failed. Inspect the destination with "
+                            "data_get before retrying doc_copy."
+                            if entry.get("kind") == "component_copy" else
+                            "Upload failed. Check the source file's format/permissions and retry "
+                            "data_upload_file."))
         _data_common._UPLOADS.pop(key, None)
     elif state == "uploading":
-        payload["note"] = "Still transferring the file to the cloud - poll again."
+        payload["note"] = ("Component copy still publishing - poll again." if entry.get("kind") ==
+                           "component_copy" else "Still transferring the file to the cloud - poll again.")
     else:  # processing
-        payload["note"] = ("File transfer finished; the cloud is still processing it (e.g. "
-                            "translating a neutral format into a Fusion design) - poll again.")
+        payload["note"] = (("Component copy cloud processing is unfinished - poll again."
+                            if entry.get("kind") == "component_copy" else
+                            "File transfer finished; the cloud is still processing it (e.g. "
+                            "translating a neutral format into a Fusion design) - poll again."))
 
     return ok(payload)
 
 
 TOOL_DESCRIPTION = (
-    "Poll a data_upload_file upload: 'state' is uploading, processing, complete (file_id included) "
-    "or failed."
+    "Poll data_upload_file or async doc_copy: 'state' is uploading, processing, complete "
+    "(file_id included) or failed."
 )
 
 tool = (
     Tool.create_simple(name="data_get_upload_status", description=TOOL_DESCRIPTION)
     .add_input_property("handle", {"type": "string",
-            "description": "An upload_handle, or 'latest'."})
+            "description": "An upload_handle or 'latest'."})
     .add_input_property("file_name", {"type": "string",
-            "description": "Alt to 'handle': the uploaded file's name."})
+            "description": "Alt to handle: uploaded or copied file name."})
     .add_input_property("folder", {"type": "string",
             "description": "With 'file_name': its destination folder."})
     .strict_schema()

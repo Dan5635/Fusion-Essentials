@@ -400,11 +400,22 @@ def _program_number_clause(log_errors, prog_name, program_number, retained):
             "it with cam_delete first.")
 
 
-def _give_setup_machine(program, targets, kind):
-    """(machine label or None, error): a scope of exactly one additive setup gives that setup's machine to the program."""
-    if kind not in ("setup", "setups") or len(targets or ()) != 1 or not _cam_common.is_additive_setup(targets[0]):
+def _give_setup_machine(program, targets, kind, node=None):
+    """Give one additive scope's owning setup machine to the NC program."""
+    if len(targets or ()) != 1:
         return None, None
-    setup = targets[0]
+    if kind == "operation":
+        setup = _cam_common.owning_setup(node) if node is not None and node.obj is targets[0] else None
+        if setup is None:
+            return None, ("The operation's owning setup could not be verified. Posting was not "
+                          "attempted. Re-read cam_get(include=['operations']) and pass its exact "
+                          "operation path as 'scope'.")
+    elif kind in ("setup", "setups"):
+        setup = targets[0]
+    else:
+        return None, None
+    if not _cam_common.is_additive_setup(setup):
+        return None, None
     name = safe(lambda: setup.name)
     machine = safe(lambda: setup.machine)
     if machine is None:
@@ -747,7 +758,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
 
     # Resolve the scope up front so a bad name fails before we touch the NC Program. Stays None/
     # "document" for as-is (scope and setups are guaranteed blank by the as_is check above).
-    targets, kind = (None, "document")
+    targets, kind, node = None, "document", None
     want = (scope or "").strip()
     if setup_names and want:
         return error("Pass 'scope' or 'setups', not both - 'scope' names ONE setup/folder/operation "
@@ -763,6 +774,17 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         if serr:
             return error(serr + " Omit 'scope' to post the whole document.")
         targets, kind = [node.obj], node.kind
+        if kind == "operation":
+            owner = _cam_common.owning_setup(node)
+            if owner is None:
+                return error(f"Operation '{want}' has no readable owning setup. No NC program was "
+                             "created. Re-read cam_get(include=['operations']) and retry with its "
+                             "exact operation path.")
+            owner_type = safe(lambda: owner.operationType, _MISSING)
+            if owner_type is _MISSING or owner_type is None:
+                return error(f"The owning setup of operation '{want}' has no readable operation type. "
+                             "No NC program was created. Re-read cam_get(include=['setups']) "
+                             "before posting.")
 
     # OVERWRITE GUARD: reconfiguring an EXISTING program whose STORED operations differ from the
     # REQUESTED scope would clobber a program that may be machinist-curated. Each refusal names
@@ -871,7 +893,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         if merr:
             return error(merr + retained + _rollback_program(cam, program, prog_name, reused))
 
-        machine_label, machine_error = _give_setup_machine(program, targets, kind)
+        machine_label, machine_error = _give_setup_machine(program, targets, kind, node)
         if machine_label or machine_error:
             # from here a refusal on a reused program may leave its machine changed as well
             retained = retained.replace("post configuration, ", "post configuration, machine configuration, ")
