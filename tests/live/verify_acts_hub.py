@@ -42,6 +42,7 @@ HUB_ROT_WCS = "HubRotaryWCS"     # that setup's origin, a Joint Origin at the hu
 HUB_TURN_CYCLES = ("TurnFace", "TurnRough", "TurnFinish", "TurnPart")
 # What the roughing cycle leaves for the finishing pass, sent and read back through one spelling.
 _ROUGH_ALLOWANCE = {"useStockToLeave": "true", "xStockToLeave": "0.5mm", "zStockToLeave": "0.5mm"}
+_TURN_PRESET = "SweepTurnCutting"
 # The rotary families, each wrapped about the hub axis.
 HUB_ROT_OPS = ("RotContour", "RotPocket", "RotFinish")
 
@@ -347,6 +348,22 @@ def _hub_tools_landed(p):
         g[0] == w[0] and (w[1] is None or _near(g[1], w[1], 0.01)) for g, w in zip(got, want))
     return _measured(f"{len(want)} hub cutters at index {base}, in the order they were added",
                      {"tool_count": p.get("tool_count"), "base": base, "landed": got}, ok_)
+
+
+def _turn_preset_values(p):
+    """The turning operation uses the new preset with both authored cutting expressions."""
+    tool = p.get("tool") or {}
+    preset = tool.get("preset") or {}
+    expressions = preset.get("expressions") or {}
+    active = tool.get("active_preset") or {}
+    return _measured("turning preset surface speed and feed per revolution",
+                     {"active": active.get("name"), "expressions": expressions},
+                     active.get("name") == _TURN_PRESET
+                     and preset.get("name") == _TURN_PRESET
+                     and expressions.get("tool_useConstantSurfaceSpeed") == "true"
+                     and expressions.get("tool_surfaceSpeed") in ("180000 mm/min", "180000.")
+                     and expressions.get("tool_useFeedPerRevolution") == "true"
+                     and expressions.get("tool_feedCuttingRel") in ("0.18 mm", "0.18"))
 
 
 def _sized_by(field, request, mm):
@@ -942,6 +959,11 @@ _HUB_JOB = [
      lambda p: p.get("added") == len(_HUB_TOOLS)
      and p.get("tool_count") == _RECALL.get("hub_tool_base") + len(_HUB_TOOLS), None),
     ("cam_edit_tools", {"action": "list", "scope": "document"}, _hub_tools_landed, None),
+    ("cam_edit_tools", lambda c: {"action": "add_preset", "scope": "document",
+                                  "tool": _ctx_get(c, "hub_tool_base", "the hub tool base") + _TURN_AT,
+                                  "preset": {"name": _TURN_PRESET, "surface_speed": 180000,
+                                             "feed_per_revolution": 0.18}},
+     lambda p: _TURN_PRESET in (p.get("presets") or []), None),
     # THE LATHE JOB FIRST, because that is the order the part is made in: the hub is turned from a
     # cylinder of stock before anything is milled into it. A turning setup of the other
     # operation_type, read back off the Setup itself as the API's own enum name, and carrying no
@@ -984,6 +1006,10 @@ _HUB_JOB = [
                 "tool_index": _ctx_get(c, "hub_tool_base", "the hub tool base") + _TURN_AT,
                 "generate": False},
      _op_named(HUB_TURN_SETUP, "turning_face", HUB_TURN_CYCLES[0]), None),
+    ("cam_edit_operation", {"operation": HUB_TURN_CYCLES[0], "preset": _TURN_PRESET},
+     lambda p: p.get("preset") == _TURN_PRESET and _num(p.get("preset_index")), None),
+    ("cam_get", {"include": ["tool"], "operation": HUB_TURN_CYCLES[0],
+                 "preset": _TURN_PRESET}, _turn_preset_values, None),
     # a TURNING tool's holder carries none of the milling keys (description/product-id/vendor/
     # segments), so it reads through its OWN keys instead - overall_length is one of them, a number.
     ("cam_get", {"include": ["tool"], "operation": HUB_TURN_CYCLES[0]},

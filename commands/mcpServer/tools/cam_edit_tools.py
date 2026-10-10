@@ -93,6 +93,19 @@ class _Target:
         the only read that covers a preset change, which moves no tool COUNT."""
         return _persisted_preset_names(self._refetch_tool(index))
 
+    def reread_preset_expressions(self, index, name, parameter_names):
+        """The named preset's requested expressions off a freshly fetched tool, or None."""
+        tool = self._refetch_tool(index)
+        if tool is None:
+            return None
+        matches = _presets_named(safe(lambda: tool.presets), name)
+        if len(matches) != 1:
+            return {"matches": len(matches)}
+        params = safe(lambda: matches[0][1].parameters)
+        return {"matches": 1, "expressions": {
+            pname: safe(lambda pname=pname: params.itemByName(pname).expression)
+            for pname in parameter_names}}
+
     def stored_tool_numbers(self):
         """Every tool_number the STORED library holds, re-read from its url (None when it cannot be
         re-read) - the SET a caller matches an auto-assigned number against, however a persist
@@ -756,6 +769,9 @@ def _build_entry(ref):
         serr = _preset_spec_error(ps)
         if serr:
             return None, None, serr
+        if any(ps.get(key) is not None for key in ("surface_speed", "feed_per_revolution")):
+            return None, None, ("Create the tool first, then use action='add_preset' to set "
+                                "surface_speed or feed_per_revolution with a library re-read.")
         preset = safe(lambda: tool.presets.add())
         if preset is None:
             return None, None, ("Could not add a preset to the tool - the requested presets were "
@@ -1080,7 +1096,13 @@ def _do_add_preset(target, tool_index, spec):
     if len(matches) != 1:
         return error(f"Added a preset named '{name}' but the tool's presets read back as "
                      f"{_preset_names(presets)} - the add did not take.")
-    stored, perr = _persist_preset_change(target, tool, tool_index, name, expect_present=True)
+    checked = {}
+    for key, pname in (("surface_speed", "tool_surfaceSpeed"),
+                       ("feed_per_revolution", "tool_feedCuttingRel")):
+        if spec.get(key) is not None:
+            checked[pname] = safe(lambda pname=pname: preset.parameters.itemByName(pname).expression)
+    stored, perr = _persist_preset_change(target, tool, tool_index, name, expect_present=True,
+                                          expected_expressions=checked)
     if perr:
         return error(perr)
     return ok({"tool": tool_index, "preset": name, "preset_index": matches[0][0],
@@ -1371,8 +1393,10 @@ tool = (
             "description": "list: tool-type substring, e.g. 'ball'."})
     .add_input_property("preset", {"type": "object", "properties": {
                 "name": {"type": "string"}, "spindle_speed": {"type": ["number", "string"]},
-                "feed": {"type": ["number", "string"]}},
-            "description": "A bare number is rpm / mm-per-min in the document's units; a string carries its own ('35in/min')."})
+                "feed": {"type": ["number", "string"]},
+                "surface_speed": {"type": ["number", "string"]},
+                "feed_per_revolution": {"type": ["number", "string"]}},
+            "description": "Bare numbers: rpm, mm/min, or mm/rev by field. Strings may carry units ('35in/min'). For per-rev use 0.18 or '0.18 mm'; /rev is implicit. Modes must be active."})
     .strict_schema()
 )
 item = Item.create_tool_item(

@@ -43,6 +43,8 @@ class _Param(FakeCAMParameter):
     every other existing test in this file expects."""
     def __init__(self, name, expr, editable=True):
         super().__init__(name, expr, value=expr, editable=editable)
+        if expr in ("true", "false"):
+            self.value = _val(expr == "true")
 
     @FakeCAMParameter.expression.setter
     def expression(self, v):
@@ -60,6 +62,8 @@ class _Param(FakeCAMParameter):
 
 
 _IN_PER_MIN = re.compile(r"^([+-]?[\d.]+)\s*in/min$")
+_MM_PER_MIN = re.compile(r"^([+-]?[\d.]+)\s*mm/min$")
+_MM = re.compile(r"^([+-]?[\d.]+)\s*mm$")
 
 
 def _evaluate(expr):
@@ -71,7 +75,13 @@ def _evaluate(expr):
     except ValueError:
         pass
     m = _IN_PER_MIN.match(expr.strip())
-    return float(m.group(1)) * 25.4 if m else None
+    if m:
+        return float(m.group(1)) * 25.4
+    m = _MM_PER_MIN.match(expr.strip())
+    if m:
+        return float(m.group(1))
+    m = _MM.match(expr.strip())
+    return float(m.group(1)) / 10 if m else None
 
 
 def _NumParam(name, expr, editable=True):
@@ -179,6 +189,8 @@ def _drop(parameters, name):
 # tool_surfaceSpeed and no tool_spindleSpeed at all.
 _MILL_CUTTING_DATA = {"tool_spindleSpeed": "0", "tool_feedCutting": "0"}
 _TURNING_CUTTING_DATA = {"tool_surfaceSpeed": "0", "tool_feedCutting": "0"}
+_TURNING_REL_DATA = {"tool_useConstantSurfaceSpeed": "true", "tool_surfaceSpeed": "0",
+                     "tool_useFeedPerRevolution": "true", "tool_feedCuttingRel": "0"}
 
 
 class _Preset:
@@ -241,13 +253,17 @@ class _SrcLib(_NamedCollection):
 def _refetched(tool):
     """One tool as a library re-read from its url hands it back: a DIFFERENT object carrying the same
     stored values. Every persist read-back must go through one of these - a read-back satisfied by the
-    object the write just touched proves nothing. (Preset PARAMETER values are not copied; the
-    re-read only ever reports preset NAMES.)"""
+    object the write just touched proves nothing."""
     clone = _Tool(tool.desc)
     clone.parameters = _Params({tool.parameters.item(i).name: tool.parameters.item(i).expression
                                 for i in range(tool.parameters.count)})
     clone.preset_params = dict(tool.preset_params)
     clone.presets = _Presets(_preset_names(tool), owner=clone)
+    for i in range(tool.presets.count):
+        original = tool.presets.item(i)
+        clone.presets.item(i).parameters = _Params({
+            original.parameters.item(j).name: original.parameters.item(j).expression
+            for j in range(original.parameters.count)})
     clone.holder = tool.holder
     return clone
 
@@ -290,6 +306,17 @@ class _Target:
         # library did not store.
         fresh = self._fresh()
         return _preset_names(fresh[index]) if fresh is not None else None
+    def reread_preset_expressions(self, index, name, parameter_names):
+        fresh = self._fresh()
+        if fresh is None:
+            return None
+        matches = cp._presets_named(fresh[index].presets, name)
+        if len(matches) != 1:
+            return {"matches": len(matches)}
+        params = matches[0][1].parameters
+        return {"matches": 1, "expressions": {
+            pname: params.itemByName(pname).expression if params.itemByName(pname) else None
+            for pname in parameter_names}}
     def stored_tool_numbers(self):
         # the numbers the STORED library holds; a test overrides it to simulate a persist-side
         # renumber, which no in-memory read could catch.
@@ -2329,6 +2356,59 @@ class TestPresetValues:
                             preset={"name": "Steel", "feed": 250}))
         assert tool.presets.item(0).parameters.itemByName("tool_feedCutting").expression == "250"
 
+    def test_turning_preset_authors_surface_speed_and_per_revolution_feed(self, monkeypatch):
+        tool = _tool_with_presets("Turning General", preset_params=_TURNING_REL_DATA)
+        _install(monkeypatch, _Target(tools=[tool], is_document=True))
+        _payload(ct.handler(action="add_preset", scope="document", tool=0,
+                            preset={"name": "Steel", "surface_speed": 180000,
+                                    "feed_per_revolution": 0.18}))
+        params = tool.presets.item(0).parameters
+        assert params.itemByName("tool_surfaceSpeed").expression == "180000 mm/min"
+        assert params.itemByName("tool_surfaceSpeed").value.value == 180000
+        assert params.itemByName("tool_feedCuttingRel").expression == "0.18 mm"
+        assert params.itemByName("tool_feedCuttingRel").value.value == 0.018
+
+    def test_name_persists_but_cutting_value_lost_is_error(self, monkeypatch):
+        tool = _tool_with_presets("Turning General", preset_params=_TURNING_REL_DATA)
+        target = _install(monkeypatch, _Target(tools=[tool], is_document=True))
+        original = target.reread_preset_expressions
+
+        def stale(index, name, parameter_names):
+            row = original(index, name, parameter_names)
+            row["expressions"]["tool_feedCuttingRel"] = "0.1 mm"
+            return row
+
+        monkeypatch.setattr(target, "reread_preset_expressions", stale)
+        result = ct.handler(action="add_preset", scope="document", tool=0,
+                            preset={"name": "Steel", "surface_speed": 180000,
+                                    "feed_per_revolution": 0.18})
+        assert result["isError"] is True
+        assert "values did not reach" in result["message"]
+
+    @pytest.mark.parametrize("lost_read", ["names", "expressions"])
+    def test_unreadable_cutting_value_is_not_reported_as_persisted(self, monkeypatch,
+                                                                   lost_read):
+        tool = _tool_with_presets("Turning General", preset_params=_TURNING_REL_DATA)
+        target = _install(monkeypatch, _Target(tools=[tool], is_document=True))
+        monkeypatch.setattr(target, f"reread_preset_{lost_read}", lambda *args: None)
+        result = ct.handler(action="add_preset", scope="document", tool=0,
+                            preset={"name": "Steel", "surface_speed": 180000,
+                                    "feed_per_revolution": 0.18})
+        assert result["isError"] is True
+        assert "could not be re-read" in result["message"]
+        assert "may already exist" in result["message"]
+
+    def test_inactive_turning_mode_refuses_and_removes_partial_preset(self, monkeypatch):
+        inactive = dict(_TURNING_REL_DATA, tool_useFeedPerRevolution="false")
+        tool = _tool_with_presets("Turning General", preset_params=inactive)
+        _install(monkeypatch, _Target(tools=[tool], is_document=True))
+        result = ct.handler(action="add_preset", scope="document", tool=0,
+                            preset={"name": "Steel", "surface_speed": 180000,
+                                    "feed_per_revolution": 0.18})
+        assert result["isError"] is True
+        assert "tool_useFeedPerRevolution" in result["message"]
+        assert tool.presets.count == 0
+
     def test_a_mistyped_key_is_refused_not_silently_dropped(self, monkeypatch):
         tool = _tool_with_presets("EM")
         _install(monkeypatch, _Target(tools=[tool], is_document=True))
@@ -2374,6 +2454,15 @@ class TestPresetValues:
         assert res["isError"] is True and "feed_rate" in res["message"]
         assert len(tgt.tools) == 2 and tgt.persisted == 0
 
+    def test_new_turning_values_require_add_preset_readback(self, monkeypatch):
+        tgt = _install(monkeypatch)
+        result = ct.handler(action="add", scope="cloud", library="L", add_tools=[
+            {"from_type": "drill", "presets": [
+                {"name": "Steel", "surface_speed": 180000, "feed_per_revolution": 0.18}]}])
+        assert result["isError"] is True
+        assert "action='add_preset'" in result["message"]
+        assert len(tgt.tools) == 2 and tgt.persisted == 0
+
 
 class TestPresetSpecNumberGate:
     """_preset_spec_error is the FIRST judge of a preset spec's VALUES - it refuses by TYPE before
@@ -2404,7 +2493,7 @@ class TestPresetSpecNumberGate:
         # The gate never fires on {"name": "Rough", "feed": 500}, so the wire is the only place
         # an agent learns a bare number is rpm / mm-per-min whatever the document's units.
         desc = ct.tool.to_dict()["inputSchema"]["properties"]["preset"]["description"]
-        assert "rpm / mm-per-min" in desc and "35in/min" in desc
+        assert "rpm, mm/min, or mm/rev" in desc and "35in/min" in desc
 
 
 class TestRemovePreset:

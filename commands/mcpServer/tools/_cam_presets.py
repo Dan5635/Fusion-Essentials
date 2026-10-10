@@ -30,8 +30,11 @@ _SPEED_PARAM_CANDIDATES = ("tool_spindleSpeed",)
 _PRESET_VALUE_FIELDS = (
     ("spindle_speed", "speed", "rpm", _SPEED_PARAM_CANDIDATES),
     ("feed", "feed", "mm/min", _FEED_PARAM_CANDIDATES),
+    ("surface_speed", "surface", "mm/min", ("tool_surfaceSpeed",)),
+    ("feed_per_revolution", "feed", "mm/rev", ("tool_feedCuttingRel",)),
 )
-_PRESET_SPEC_KEYS = ("name", "spindle_speed", "feed")
+_PRESET_SPEC_KEYS = ("name", "spindle_speed", "feed", "surface_speed",
+                     "feed_per_revolution")
 _NUMERIC_LEAD = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)")
 
 
@@ -86,19 +89,33 @@ def _preset_spec_error(spec):
 def _set_preset_param(p, key, value, unit):
     """Set ONE preset parameter and prove the value landed, returning an error string or None - a
     bare number is compared against the read-back, a units-carrying expression is not."""
+    want = _plain_number(value)
+    expression = str(value)
+    if want is not None and key == "surface_speed":
+        expression = f"{value} mm/min"
+    elif want is not None and key == "feed_per_revolution":
+        expression = f"{value} mm"
+        want /= 10.0
     try:
-        p.expression = str(value)
+        p.expression = expression
     except Exception as e:
         return f"Could not set '{key}' = {value!r} on the preset: {e}."
     eerr, _ = expression_error(p)
     if eerr:
-        return f"Set '{key}' = {value!r} on the preset but the expression failed to evaluate: {eerr}."
+        remedy = (" Pass a number in mm/rev or a length such as '0.18 mm'; /rev is implicit."
+                  if key == "feed_per_revolution" else "")
+        return (f"Set '{key}' = {value!r} on the preset but the expression failed to evaluate: "
+                f"{eerr}.{remedy}")
     landed = safe(lambda: p.value.value)
     if isinstance(landed, bool) or not isinstance(landed, (int, float)):
         return (f"Set '{key}' = {value!r} on the preset but it read back {landed!r} - no numeric "
                 "value was stored.")
-    want = _plain_number(value)
-    if want is not None and abs(float(landed) - want) > 1e-9:
+    if key in ("surface_speed", "feed_per_revolution"):
+        stored = safe(lambda: p.expression)
+        if stored != expression:
+            return (f"Set '{key}' = {value!r} on the preset but its expression read back "
+                    f"{stored!r} instead of {expression!r}.")
+    if want is not None and abs(float(landed) - want) > max(1e-9, abs(want) * 1e-9):
         return (f"Set '{key}' = {value!r} on the preset but it read back {landed!r} {unit} - the "
                 "value did not land.")
     return None
@@ -129,6 +146,14 @@ def _apply_preset_values(preset, spec):
             have = ", ".join(avail) if avail else "(none)"
             return (f"This preset has no {'/'.join(candidates)} parameter, so '{key}' cannot apply. "
                     f"Its {word} parameters: {have}.")
+        mode_name = {"surface_speed": "tool_useConstantSurfaceSpeed",
+                     "feed_per_revolution": "tool_useFeedPerRevolution"}.get(key)
+        if mode_name:
+            mode = safe(lambda: preset.parameters.itemByName(mode_name))
+            active = safe(lambda: mode.value.value) if mode is not None else None
+            if active is not True:
+                return (f"This preset's {mode_name} reads {active!r}, so '{key}' cannot be "
+                        "used as active cutting data. Choose a tool preset with that mode enabled.")
         verr = _set_preset_param(p, key, value, unit)
         if verr:
             return verr
@@ -218,7 +243,8 @@ def resolve_operation_preset(op, op_name, name):
     return preset, index, None
 
 
-def _persist_preset_change(target, tool, tool_index, name, expect_present):
+def _persist_preset_change(target, tool, tool_index, name, expect_present,
+                           expected_expressions=None):
     """Commit a preset add/remove the way this target commits any tool change, then re-read the
     tool's presets back from the library. Returns (names_or_None, error_or_None)."""
     if target.is_document:
@@ -227,6 +253,10 @@ def _persist_preset_change(target, tool, tool_index, name, expect_present):
         target.persist()
     stored = target.reread_preset_names(tool_index)
     if stored is None:
+        if expected_expressions:
+            return None, (f"Added preset '{name}' but the tool library could not be re-read to "
+                          "verify its cutting values. Inspect the preset list before retrying; "
+                          "the preset may already exist.")
         return None, None
     present = any((s or "").strip().lower() == name.lower() for s in stored)
     if expect_present and not present:
@@ -235,4 +265,15 @@ def _persist_preset_change(target, tool, tool_index, name, expect_present):
     if present and not expect_present:
         return stored, (f"Removed preset '{name}' but the tool re-read from the library still holds "
                         f"it (presets {stored}) - the removal did not reach the library.")
+    if expected_expressions:
+        fresh = target.reread_preset_expressions(tool_index, name, expected_expressions)
+        if fresh is None:
+            return stored, (f"Added preset '{name}' but the tool library could not be re-read "
+                            "for its cutting values. Inspect the preset list before retrying; "
+                            "the preset may already exist.")
+        actual = fresh.get("expressions") or {}
+        if fresh.get("matches") != 1 or actual != expected_expressions:
+            return stored, (f"Added preset '{name}' but its cutting values read back as {actual}, "
+                            f"expected {expected_expressions} - the values did not reach the "
+                            "library.")
     return stored, None
