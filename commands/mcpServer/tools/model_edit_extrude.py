@@ -76,6 +76,43 @@ def _definition_matches(feature, action, values):
     kind = values["extent"]
     if _extent_kind(feature) != kind:
         return False
+    start = safe(lambda: feature.startExtent)
+    landed_start_offset = safe(lambda: start.offset.value)
+    expected_start_offset = values.get("start_offset_cm")
+    if expected_start_offset is not None:
+        if (not isinstance(expected_start_offset, (int, float)) or isinstance(expected_start_offset, bool)
+                or not math.isfinite(expected_start_offset)
+                or not isinstance(landed_start_offset, (int, float))
+                or isinstance(landed_start_offset, bool) or not math.isfinite(landed_start_offset)):
+            return False
+    if ("start_kind" in values and safe(lambda: start.objectType) != values["start_kind"]
+            or values.get("start_offset_cm") is not None
+                and abs(landed_start_offset - expected_start_offset) > _common.EXTENT_MATCH_TOL_CM
+            or values.get("start_entity") is not None
+                and _common.native_identity(safe(lambda: start.entity)) != values["start_entity"]):
+        return False
+    offset = safe(lambda: start.offset)
+    if (values.get("start_offset_name") is not None
+            and safe(lambda: offset.name) != values["start_offset_name"]
+            or values.get("start_offset_expression") is not None
+            and safe(lambda: offset.expression) != values["start_offset_expression"]):
+        return False
+    current_tapers = [safe(lambda: feature.taperAngleOne)]
+    if safe(lambda: feature.hasTwoExtents) is True:
+        current_tapers.append(safe(lambda: feature.taperAngleTwo))
+    expected_tapers = values.get("expected_taper_expressions")
+    if expected_tapers is not None:
+        expected_values = values["expected_taper_values"]
+        expected_names = values["expected_taper_names"]
+        if len(current_tapers) != len(expected_tapers):
+            return False
+        for index, (parameter, expression) in enumerate(zip(current_tapers, expected_tapers)):
+            if (safe(lambda p=parameter: p.expression) != expression
+                    or safe(lambda p=parameter: p.value) is None
+                    or abs(safe(lambda p=parameter: p.value) - expected_values[index]) > 1e-12
+                    or (expected_names[index] is not None
+                        and safe(lambda p=parameter: p.name) != expected_names[index])):
+                return False
     if kind == "to_face":
         return safe(lambda: _common._native_of(feature.extentOne.entity) == values["to_object"]
                     and feature.extentOne.isChained is False
@@ -159,13 +196,60 @@ def _prepare(action, values, raw, design, entity):
     kind = values["extent"]
     if not kind:
         return "action='extent' requires 'extent'."
-    if safe(lambda: entity.startExtent.objectType) != "adsk::fusion::ProfilePlaneStartDefinition":
-        return "Extent replacement requires a profile-plane start; edit this start in Fusion."
-    tapers = [safe(lambda: entity.taperAngleOne.value)]
+    start = safe(lambda: entity.startExtent)
+    start_kind = safe(lambda: start.objectType)
+    if start_kind not in ("adsk::fusion::ProfilePlaneStartDefinition",
+                          "adsk::fusion::OffsetStartDefinition",
+                          "adsk::fusion::FromEntityStartDefinition"):
+        return f"Existing start definition {start_kind!r} is unsupported; inspect the Extrude in Fusion."
+    start_offset = (safe(lambda: start.offset.value)
+                    if start_kind in ("adsk::fusion::OffsetStartDefinition",
+                                      "adsk::fusion::FromEntityStartDefinition") else None)
+    start_entity = (_common.native_identity(safe(lambda: start.entity))
+                    if start_kind == "adsk::fusion::FromEntityStartDefinition" else None)
+    if (start_kind == "adsk::fusion::FromEntityStartDefinition" and
+            (start_entity is None or start_offset is None)):
+        return "Existing from-entity start identity or offset is unreadable; inspect the Extrude in Fusion."
+    offset_object = safe(lambda: start.offset)
+    offset_name = safe(lambda: offset_object.name)
+    offset_expression = safe(lambda: offset_object.expression)
+    if start_kind in ("adsk::fusion::OffsetStartDefinition",
+                      "adsk::fusion::FromEntityStartDefinition") and start_offset is None:
+        return "Existing start offset value is unreadable; inspect the Extrude in Fusion."
+    if (start_kind in ("adsk::fusion::OffsetStartDefinition",
+                       "adsk::fusion::FromEntityStartDefinition")
+            and (not isinstance(start_offset, (int, float)) or isinstance(start_offset, bool)
+                 or not math.isfinite(start_offset))):
+        return "Existing start offset value is non-finite; inspect the Extrude in Fusion."
+    if (start_kind in ("adsk::fusion::OffsetStartDefinition",
+                       "adsk::fusion::FromEntityStartDefinition")
+            and (not isinstance(offset_name, str) or not offset_name
+                 or not isinstance(offset_expression, str) or not offset_expression.strip())):
+        return "Existing start offset parameter identity or expression is unreadable; inspect the Extrude in Fusion."
+    values["start_kind"], values["start_offset_cm"], values["start_entity"] = (
+        start_kind, start_offset, start_entity)
+    values["start_offset_name"], values["start_offset_expression"] = offset_name, offset_expression
+    taper_parameters = [safe(lambda: entity.taperAngleOne)]
     if safe(lambda: entity.hasTwoExtents) is True:
-        tapers.append(safe(lambda: entity.taperAngleTwo.value))
-    if any(taper is None or abs(taper) > 1e-12 for taper in tapers):
-        return "Extent replacement requires zero readable taper angles; inspect param_get."
+        taper_parameters.append(safe(lambda: entity.taperAngleTwo))
+    taper_expressions = [safe(lambda p=p: p.expression) for p in taper_parameters]
+    taper_values = [safe(lambda p=p: p.value) for p in taper_parameters]
+    taper_names = [safe(lambda p=p: p.name) for p in taper_parameters]
+    if (any(value is None or not math.isfinite(value) for value in taper_values)
+            or any(not isinstance(expression, str) or not expression.strip()
+                   for expression in taper_expressions)
+            or any(not isinstance(name, str) or not name for name in taper_names)):
+        return "Existing taper definition is unreadable; inspect param_get before changing the extent."
+    if any(abs(value) > 1e-12 for value in taper_values) and kind not in (
+            "distance", "symmetric", "two_side"):
+        return f"extent='{kind}' with a nonzero taper is unsupported; use distance, symmetric or two_side."
+    if (_extent_kind(entity) == "two_side" and kind != "two_side"
+            and any(abs(value) > 1e-12 for value in taper_values)):
+        return "A two-sided source cannot change to this extent without losing side parameter identity."
+    values["taper_parameters"], values["taper_expressions"] = taper_parameters, taper_expressions
+    values["has_two_extents"] = safe(lambda: entity.hasTwoExtents) is True
+    values["taper_inputs"] = [adsk.core.ValueInput.createByString(expression)
+                               for expression in taper_expressions]
     used = {"distance": {"distance", "units", "direction"}, "symmetric": {"distance", "units"},
             "two_side": {"distance", "distance2", "units"}, "to_face": {"to_object"},
             "through_all": {"direction"}}[kind]
@@ -205,6 +289,20 @@ def _prepare(action, values, raw, design, entity):
         values["depths"] = [-depths[0]]
         values["expression"] = (f"-({text.strip()})" if _inputs.looks_like_expression(text) else
                                 f"-{_inputs.expression_report(text)} {raw['units'] or 'mm'}")
+    if kind == "symmetric" and len(taper_expressions) > 1:
+        return "A two-sided source has separate taper expressions; symmetric extent cannot preserve both."
+    if kind == "two_side" or kind == "through_all" and values["direction"] == "both":
+        indices = [0, 1 if len(taper_expressions) > 1 else None]
+    else:
+        taper_index = 1 if values["has_two_extents"] and side == "negative" else 0
+        indices = [taper_index]
+    source_indices = [i if i is not None else 0 for i in indices]
+    values["expected_taper_expressions"] = [taper_expressions[i] if indices[position] is not None
+                                             else "0 deg"
+                                             for position, i in enumerate(source_indices)]
+    values["expected_taper_values"] = [taper_values[i] if indices[position] is not None else 0.0
+                                      for position, i in enumerate(source_indices)]
+    values["expected_taper_names"] = [taper_names[i] if i is not None else None for i in indices]
     return None
 
 
@@ -225,7 +323,6 @@ def _apply_edit(feature, action, values):
             feature.startExtent = adsk.fusion.OffsetStartDefinition.create(values["start_input"])
     else:
         kind = values["extent"]
-        zero = adsk.core.ValueInput.createByString("0 deg")
         lengths = values["length_inputs"]
         distance = adsk.fusion.DistanceExtentDefinition.create
         through = adsk.fusion.ThroughAllExtentDefinition.create
@@ -234,11 +331,16 @@ def _apply_edit(feature, action, values):
         if kind == "distance" and expression and _extent_kind(feature) == "distance":
             applied = True
         elif kind == "symmetric":
-            applied = feature.setSymmetricExtent(lengths[0], False, zero)
+            applied = feature.setSymmetricExtent(lengths[0], False, values["taper_inputs"][0])
         elif kind == "two_side":
-            applied = feature.setTwoSidesExtent(distance(lengths[0]), distance(lengths[1]), zero, zero)
+            taper_two = (values["taper_inputs"][1] if len(values["taper_inputs"]) > 1
+                         else adsk.core.ValueInput.createByString("0 deg"))
+            applied = feature.setTwoSidesExtent(distance(lengths[0]), distance(lengths[1]),
+                                                values["taper_inputs"][0], taper_two)
         elif kind == "through_all" and values["direction"] == "both":
-            applied = feature.setTwoSidesExtent(through(), through(), zero, zero)
+            taper_two = values["taper_inputs"][-1]
+            applied = feature.setTwoSidesExtent(through(), through(),
+                                                values["taper_inputs"][0], taper_two)
         else:
             extent = (distance(lengths[0]) if kind == "distance" else through()
                       if kind == "through_all" else
@@ -247,7 +349,11 @@ def _apply_edit(feature, action, values):
             if kind == "through_all" and values["direction"] == "negative":
                 extent.isPositiveDirection = False
                 direction = adsk.fusion.ExtentDirections.NegativeExtentDirection
-            applied = feature.setOneSideExtent(extent, direction, zero)
+            taper = (values["taper_inputs"][-1]
+                     if values.get("has_two_extents") and
+                     direction == adsk.fusion.ExtentDirections.NegativeExtentDirection
+                     else values["taper_inputs"][0])
+            applied = feature.setOneSideExtent(extent, direction, taper)
         if applied is not True:
             raise RuntimeError(f"The '{kind}' extent setter returned false.")
         if expression:
@@ -431,16 +537,26 @@ def _definition(feature):
     start = safe(lambda: feature.startExtent)
     start_kind = safe(lambda: start.objectType)
     start_entity = safe(lambda: start.entity) if start_kind == "adsk::fusion::FromEntityStartDefinition" else None
+    start_offset = safe(lambda: start.offset) if start_kind in (
+        "adsk::fusion::OffsetStartDefinition", "adsk::fusion::FromEntityStartDefinition") else None
+    taper_parameters = [safe(lambda: feature.taperAngleOne)]
+    if safe(lambda: feature.hasTwoExtents) is True:
+        taper_parameters.append(safe(lambda: feature.taperAngleTwo))
+    tapers = [{"name": safe(lambda p=p: p.name), "expression": safe(lambda p=p: p.expression),
+               "value": safe(lambda p=p: p.value)} for p in taper_parameters]
     return {"profile_sketch": safe(lambda: sketch.name),
             "profile_index": address[2] if address and address[1] == "profile" else None,
             "start_kind": start_kind,
             "start_offset_cm": (safe(lambda: start.offset.value)
                                 if start_kind in ("adsk::fusion::OffsetStartDefinition",
                                                   "adsk::fusion::FromEntityStartDefinition") else None),
+            "start_offset_parameter": safe(lambda: start_offset.name),
+            "start_offset_expression": safe(lambda: start_offset.expression),
             "start_entity": _common.native_identity(start_entity) if start_entity is not None else None,
             "start_entity_name": safe(lambda: start_entity.name),
             **{key: read[key] for key in ("operation", "extent", "distance_cm", "distance2_cm",
                 "distance_parameter", "distance_expression", "participants")},
+            "tapers": tapers,
             "side": _side(feature, read["extent"])}
 
 def _described(definition):

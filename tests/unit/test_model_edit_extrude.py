@@ -51,12 +51,15 @@ class Extrude(FakeFeature):
         self.extentOne = SimpleNamespace(objectType=_DISTANCE, distance=self.param)
         self.extentTwo = None
         self.hasTwoExtents = False
-        self.taperAngleOne = SimpleNamespace(value=0)
-        self.taperAngleTwo = SimpleNamespace(value=0)
+        self.taperAngleOne = SimpleNamespace(value=0, expression="0 deg", name="d3")
+        self.taperAngleTwo = SimpleNamespace(value=0, expression="0 deg", name="d4")
         self.startExtent = SimpleNamespace(objectType="adsk::fusion::ProfilePlaneStartDefinition")
         self.start_setter_ok = True
         self.setter_ok = True
         self.setter_args = None
+        self.change_taper_name = False
+        self.change_start_offset_expression = False
+        self.change_start_offset_value = False
 
     @property
     def participantBodies(self):
@@ -97,6 +100,14 @@ class Extrude(FakeFeature):
     def setOneSideExtent(self, extent, direction, taper):
         self.setter_args = extent, direction, taper
         if self.setter_ok:
+            if self.change_start_offset_expression:
+                self.startExtent.offset.expression = "6.00 mm"
+            if self.change_start_offset_value:
+                self.startExtent.offset.value = float("nan")
+            self.taperAngleOne.expression = taper.stringValue
+            self.taperAngleOne.value = 0.05235987755982989 if taper.stringValue == "3.0 deg" else 0
+            if self.change_taper_name:
+                self.taperAngleOne.name = "d99"
             self.extentTwo = None
             self.hasTwoExtents = False
             self.bodies.item(0).volume = 0.5
@@ -117,6 +128,10 @@ class Extrude(FakeFeature):
     def setSymmetricExtent(self, distance, full, taper):
         self.setter_args = distance, full, taper
         if self.setter_ok:
+            self.taperAngleOne.expression = taper.stringValue
+            self.taperAngleOne.value = 0.05235987755982989 if taper.stringValue == "3.0 deg" else 0
+            if self.change_taper_name:
+                self.taperAngleOne.name = "d99"
             self.extentOne = SimpleNamespace(objectType="adsk::fusion::SymmetricExtentDefinition",
                 distance=SimpleNamespace(value=distance.realValue), isFullLength=full)
             self.symmetricExtent = self.extentOne
@@ -127,6 +142,12 @@ class Extrude(FakeFeature):
     def setTwoSidesExtent(self, one, two, taper_one, taper_two):
         self.setter_args = one, two, taper_one, taper_two
         if self.setter_ok:
+            self.taperAngleOne.expression = taper_one.stringValue
+            self.taperAngleTwo.expression = taper_two.stringValue
+            self.taperAngleOne.value = 0.05235987755982989 if taper_one.stringValue == "3.0 deg" else 0
+            self.taperAngleTwo.value = 0.05235987755982989 if taper_two.stringValue == "3.0 deg" else 0
+            if self.change_taper_name:
+                self.taperAngleOne.name = "d99"
             self.extentOne, self.extentTwo = one, two
             self.hasTwoExtents = True
             self.bodies.item(0).volume = 2
@@ -153,7 +174,8 @@ class Extrude(FakeFeature):
 def scene(monkeypatch):
     monkeypatch.setattr(adsk.fusion, "Profile", Profile)
     monkeypatch.setattr(adsk.core.ValueInput, "createByReal", FakeValueInput)
-    monkeypatch.setattr(adsk.core.ValueInput, "createByString", lambda value: FakeValueInput(0))
+    monkeypatch.setattr(adsk.core.ValueInput, "createByString",
+                        lambda value: FakeValueInput(string=value))
     monkeypatch.setattr(adsk.core.ValueInput, "cast", staticmethod(
         lambda value: value if isinstance(value, FakeValueInput) else None))
     monkeypatch.setattr(adsk.fusion.ModelParameter, "cast", staticmethod(
@@ -775,7 +797,7 @@ def test_symmetric_requires_explicit_zero_taper_and_half_length(scene):
                                  distance=8))
     assert result["definition_matches"] is True
     assert scene.feature.setter_args[1] is False
-    assert scene.feature.setter_args[2].realValue == 0
+    assert scene.feature.setter_args[2].stringValue == "0 deg"
     assert scene.feature.extentOne.distance.value == pytest.approx(0.8)
 
 
@@ -806,7 +828,7 @@ def test_negative_through_all_sets_both_direction_inputs(scene):
     definition, direction, taper = scene.feature.setter_args
     assert definition.isPositiveDirection is False
     assert direction == adsk.fusion.ExtentDirections.NegativeExtentDirection
-    assert taper.realValue == 0
+    assert taper.stringValue == "0 deg"
 
 
 @pytest.mark.parametrize("operation", ["CutFeatureOperation", "IntersectFeatureOperation"])
@@ -854,11 +876,136 @@ def test_distance_replacement_accepts_existing_extent_kind(scene):
     assert scene.feature.extentOne.distance.value == pytest.approx(0.8)
 
 
-def test_nonzero_taper_refused_before_extent_mutation(scene):
-    scene.feature.taperAngleOne.value = 0.2
+def test_nonzero_taper_extent_retains_its_definition(scene):
+    scene.feature.taperAngleOne.value = 0.05235987755982989
+    scene.feature.taperAngleOne.expression = "3.0 deg"
     result = mod.handler(feature="Extrude1", action="extent", extent="symmetric", distance=8)
-    assert "zero readable taper" in error_message(result)
+    assert payload(result)["definition_matches"] is True
+    assert scene.feature.taperAngleOne.expression == "3.0 deg"
+
+
+@pytest.mark.parametrize("extent,args", [
+    ("distance", {"distance": 8}),
+    ("symmetric", {"distance": 8}),
+    ("two_side", {"distance": 8, "distance2": 6}),
+])
+@pytest.mark.parametrize("start_kind", ["adsk::fusion::OffsetStartDefinition",
+                                         "adsk::fusion::FromEntityStartDefinition"])
+def test_extent_edit_preserves_taper_expression_and_measured_start(scene, extent, args, start_kind):
+    plane = SimpleNamespace(entityToken="start-plane-token", isValid=True)
+    scene.feature.startExtent = SimpleNamespace(
+        objectType=start_kind, offset=SimpleNamespace(value=0.25, name="d1",
+                                                      expression="5.00 mm"), entity=plane)
+    scene.feature.taperAngleOne.expression = "3.0 deg"
+    scene.feature.taperAngleOne.value = 0.05235987755982989
+    result = payload(mod.handler(feature="Extrude1", action="extent", extent=extent, **args))
+    assert result["definition_matches"] is True
+    assert scene.feature.taperAngleOne.expression == "3.0 deg"
+    assert scene.feature.startExtent.objectType == start_kind
+    assert scene.feature.startExtent.offset.value == pytest.approx(0.25)
+    if extent == "two_side":
+        assert scene.feature.setter_args[-2].stringValue == "3.0 deg"
+        assert scene.feature.setter_args[-1].stringValue == "0 deg"
+    else:
+        assert scene.feature.setter_args[-1].stringValue == "3.0 deg"
+
+
+def test_extent_refuses_unreadable_taper_expression_before_mutation(scene):
+    scene.feature.taperAngleOne.expression = None
+    result = mod.handler(feature="Extrude1", action="extent", extent="symmetric", distance=8)
+    assert "taper definition is unreadable" in error_message(result)
     assert scene.timeline._moves == []
+
+
+def test_extent_refuses_unreadable_offset_start_before_mutation(scene):
+    scene.feature._start_extent = SimpleNamespace(
+        objectType="adsk::fusion::OffsetStartDefinition",
+        offset=SimpleNamespace(value=None, name="d1", expression="5.00 mm"))
+    result = mod.handler(feature="Extrude1", action="extent", extent="symmetric", distance=8)
+    assert "start offset value is unreadable" in error_message(result)
+    assert scene.timeline._moves == []
+
+
+def test_extent_refuses_nonfinite_offset_start_before_mutation(scene):
+    scene.feature._start_extent = SimpleNamespace(
+        objectType="adsk::fusion::OffsetStartDefinition",
+        offset=SimpleNamespace(value=float("nan"), name="d1", expression="5.00 mm"))
+    result = mod.handler(feature="Extrude1", action="extent", extent="symmetric", distance=8)
+    assert "start offset value is non-finite" in error_message(result)
+    assert scene.timeline._moves == []
+
+
+def test_extent_rejects_setter_that_renames_existing_taper_parameter(scene):
+    scene.feature.taperAngleOne.expression = "3.0 deg"
+    scene.feature.taperAngleOne.value = 0.05235987755982989
+    scene.feature.change_taper_name = True
+    result = mod.handler(feature="Extrude1", action="extent", extent="symmetric", distance=8)
+    assert result["isError"] is True
+    assert result["details"]["definition_matches"] is False
+    assert result["details"]["mutation_attempted"] is True
+
+
+def test_extent_rejects_setter_that_changes_start_offset_expression(scene):
+    scene.feature.startExtent = SimpleNamespace(
+        objectType="adsk::fusion::OffsetStartDefinition",
+        offset=SimpleNamespace(value=0.25, name="d1", expression="5.00 mm"))
+    scene.feature.change_start_offset_expression = True
+    result = mod.handler(feature="Extrude1", action="extent", extent="distance", distance=8)
+    assert result["isError"] is True
+    assert result["details"]["definition_matches"] is False
+
+
+def test_extent_rejects_nonfinite_landed_start_offset(scene):
+    scene.feature.startExtent = SimpleNamespace(
+        objectType="adsk::fusion::OffsetStartDefinition",
+        offset=SimpleNamespace(value=0.25, name="d1", expression="5.00 mm"))
+    scene.feature.change_start_offset_value = True
+    result = mod.handler(feature="Extrude1", action="extent", extent="distance", distance=8)
+    assert result["isError"] is True
+    assert result["details"]["definition_matches"] is False
+
+
+@pytest.mark.parametrize("extent,args", [("through_all", {"direction": "positive"})])
+def test_nonzero_taper_refuses_unmeasured_extent_modes(scene, extent, args):
+    scene.feature.taperAngleOne.expression = "3.0 deg"
+    scene.feature.taperAngleOne.value = 0.05235987755982989
+    result = mod.handler(feature="Extrude1", action="extent", extent=extent, **args)
+    assert "nonzero taper is unsupported" in error_message(result)
+    assert scene.timeline._moves == []
+
+
+def test_one_sided_to_two_sided_sets_the_new_side_taper_to_zero(scene):
+    scene.feature.taperAngleOne.expression = "3.0 deg"
+    scene.feature.taperAngleOne.value = 0.05235987755982989
+    result = payload(mod.handler(feature="Extrude1", action="extent", extent="two_side",
+                                 distance=8, distance2=6))
+    assert result["definition_matches"] is True
+    assert scene.feature.setter_args[2].stringValue == "3.0 deg"
+    assert scene.feature.setter_args[3].stringValue == "0 deg"
+    assert scene.feature.taperAngleTwo.expression == "0 deg"
+
+
+def test_two_sided_tapered_source_refuses_one_sided_extent(scene):
+    scene.feature.hasTwoExtents = True
+    scene.feature.extentOne = SimpleNamespace(objectType=_DISTANCE, distance=scene.feature.param)
+    scene.feature.extentTwo = SimpleNamespace(objectType=_DISTANCE, distance=Distance(
+        scene.feature, name="d10", expression="6 mm", value=0.6))
+    scene.feature.taperAngleOne.expression = "3.0 deg"
+    scene.feature.taperAngleOne.value = 0.05235987755982989
+    scene.feature.taperAngleTwo.expression = "4.0 deg"
+    scene.feature.taperAngleTwo.value = 0.06981317007977318
+    result = mod.handler(feature="Extrude1", action="extent", extent="distance", distance=8)
+    assert "losing side parameter identity" in error_message(result)
+    assert scene.timeline._moves == []
+
+
+def test_two_sided_zero_taper_source_keeps_one_sided_extent_path(scene):
+    scene.feature.hasTwoExtents = True
+    scene.feature.extentTwo = SimpleNamespace(objectType=_DISTANCE, distance=Distance(
+        scene.feature, name="d10", expression="6 mm", value=0.6))
+    result = payload(mod.handler(feature="Extrude1", action="extent", extent="distance", distance=8))
+    assert result["definition_matches"] is True
+    assert scene.feature.hasTwoExtents is False
 
 
 def test_equal_volume_pocket_move_is_detected_by_face_centroids(scene, monkeypatch):

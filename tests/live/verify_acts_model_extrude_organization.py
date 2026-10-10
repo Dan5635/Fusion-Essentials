@@ -103,6 +103,72 @@ def _extrude_start_body(shift_mm):
     return check
 
 
+def _taper_expression(expression):
+    """Check one model taper parameter's name and expression."""
+    def check(p):
+        row = p.get("parameter") or {}
+        return _measured("Extrude taper parameter expression", row,
+                         row.get("expression") == expression
+                         and row.get("name") == _RECALL.get("ee_taper_extent_param"))
+    return check
+
+
+def _taper_extent_landed(p):
+    """Check extent readback retains the named start and feature identity."""
+    before, after = p.get("definition_before") or {}, p.get("definition_after") or {}
+    was, now = before.get("tapers") or [], after.get("tapers") or []
+    taper_preserved = (len(now) >= len(was) and now[:len(was)] == was
+                       and all(row.get("expression") == "0 deg" and row.get("value") == 0
+                               for row in now[len(was):]))
+    return _measured("tapered extent edit preserves start", p,
+                     p.get("edited") is True and p.get("same_feature") is True
+                     and p.get("definition_matches") is True and p.get("geometry_changed") is True
+                     and before.get("start_kind") == after.get("start_kind")
+                     and before.get("start_offset_cm") == after.get("start_offset_cm")
+                     and before.get("start_offset_parameter") == after.get("start_offset_parameter")
+                     and before.get("start_offset_expression") == after.get("start_offset_expression")
+                     and before.get("start_entity") == after.get("start_entity")
+                     and taper_preserved)
+
+
+def _taper_entity_start_landed(p):
+    """Check the tapered feature adopts the requested from-entity start."""
+    after = p.get("definition_after") or {}
+    return _measured("tapered Extrude from-entity start", p,
+                     p.get("edited") is True and p.get("same_feature") is True
+                     and p.get("definition_matches") is True and p.get("geometry_changed") is True
+                     and after.get("start_kind") == "adsk::fusion::FromEntityStartDefinition"
+                     and after.get("start_offset_cm") is not None
+                     and _near(after.get("start_offset_cm"), 0.7, 1e-6)
+                     and after.get("start_entity") is not None)
+
+
+def _timeline_matches(key):
+    """Check an independently captured timeline remains byte-for-byte stable."""
+    def check(p):
+        before = _RECALL.get(key) or {}
+        now = p.get("timeline") or {}
+        return _measured("extent edit preserves timeline", now,
+                         bool(before.get("timeline")) and now == before)
+    return check
+
+
+def _taper_extent_material_changed(key):
+    """Check a separate body read differs from the recorded pre-edit solid."""
+    def check(p):
+        before = _RECALL.get(key) or {}
+        old_mass, mass = (before.get("mass") or {}).get("volume"), (p.get("mass") or {}).get("volume")
+        old_min, new_min = before.get("min_point") or {}, p.get("min_point") or {}
+        old_max, new_max = before.get("max_point") or {}, p.get("max_point") or {}
+        changed = (not _near(old_mass, mass, 1e-8)
+                   or any(not _near(old_min.get(axis), new_min.get(axis), 1e-8)
+                          or not _near(old_max.get(axis), new_max.get(axis), 1e-8)
+                          for axis in ("x", "y", "z")))
+        return _measured("independent tapered body geometry changed", p,
+                         p.get("kind") == "body" and p.get("lump_count") == 1 and changed)
+    return check
+
+
 def _extrude_start_history(p):
     """Check the feature row and marker against the pre-edit timeline read."""
     before = _RECALL.get("ee_start_history") or {}
@@ -708,6 +774,70 @@ def _extrude_edit_rows():
                      _extrude_start_seed, None))
         rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
                      _extrude_start_history, None))
+    rows.append(("design_activate_component", {"occurrence": "root"}, "ok", None))
+    write("model_create_component", {"name": "EditTaperExtent", "activate": True}, _made_component)
+    rectangle("TaperExtentProfile", (100, 100), (110, 110))
+
+    def save_taper_extent(p):
+        _RECALL["ee_taper_extent_param"] = p["model_parameters"]["taper"]
+        return "EditTaperExtent/" + p["feature"]
+
+    write("model_extrude", {"sketch_name": "TaperExtentProfile", "distance": 10,
+                            "taper_deg": 3, "start_offset": 5}, _extruded,
+          ("ee_taper_extent_feature", _recall("ee_taper_extent_feature", save_taper_extent)))
+    write("param_set", lambda c: {"name": _RECALL["ee_taper_extent_param"],
+          "expression": "3.0 deg"}, "ok")
+    for suffix, extent_args in (("distance", {"extent": "distance", "distance": 15}),
+                                ("symmetric", {"extent": "symmetric", "distance": 12}),
+                                ("two_side", {"extent": "two_side", "distance": 12,
+                                               "distance2": 8})):
+        body = "EditTaperExtent:Body1"
+        baseline_key = "ee_taper_extent_" + suffix + "_before"
+        timeline_key = "ee_taper_extent_" + suffix + "_timeline"
+        rows.append(("model_inspect", _combine_inspect(body), "ok",
+                     (baseline_key, _recall(baseline_key, lambda p: p))))
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, "ok",
+                     (timeline_key, _recall(timeline_key, lambda p: p["timeline"]))))
+        write("model_edit_extrude", lambda c, args=extent_args: {
+            "feature": _ctx_get(c, "ee_taper_extent_feature", "tapered Extrude"),
+            "action": "extent", **args}, _taper_extent_landed)
+        rows.append(("model_inspect", _combine_inspect(body),
+                     _taper_extent_material_changed(baseline_key), None))
+        rows.append(("param_get", lambda c: {"name": _RECALL["ee_taper_extent_param"]},
+                     _taper_expression("3.0 deg"), None))
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                     _timeline_matches(timeline_key), None))
+        if suffix == "distance":
+            rows.append(("model_inspect", _combine_inspect(body), "ok",
+                         ("ee_taper_entity_start_before", _recall(
+                             "ee_taper_entity_start_before", lambda p: p))))
+            rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, "ok",
+                         ("ee_taper_entity_start_timeline", _recall(
+                             "ee_taper_entity_start_timeline", lambda p: p["timeline"]))))
+            write("model_edit_extrude", lambda c: {
+                "feature": _ctx_get(c, "ee_taper_extent_feature", "tapered Extrude"),
+                "action": "start", "start_object": "xy", "start_offset": 7},
+                _taper_entity_start_landed)
+            rows.append(("model_inspect", _combine_inspect(body),
+                         _taper_extent_material_changed("ee_taper_entity_start_before"), None))
+            rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                         _timeline_matches("ee_taper_entity_start_timeline"), None))
+            rows.append(("model_inspect", _combine_inspect(body), "ok",
+                         ("ee_taper_entity_extent_before", _recall(
+                             "ee_taper_entity_extent_before", lambda p: p))))
+            rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, "ok",
+                         ("ee_taper_entity_extent_timeline", _recall(
+                             "ee_taper_entity_extent_timeline", lambda p: p["timeline"]))))
+            write("model_edit_extrude", lambda c: {
+                "feature": _ctx_get(c, "ee_taper_extent_feature", "tapered Extrude"),
+                "action": "extent", "extent": "distance", "distance": 16},
+                _taper_extent_landed)
+            rows.append(("model_inspect", _combine_inspect(body),
+                         _taper_extent_material_changed("ee_taper_entity_extent_before"), None))
+            rows.append(("param_get", lambda c: {"name": _RECALL["ee_taper_extent_param"]},
+                         _taper_expression("3.0 deg"), None))
+            rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                         _timeline_matches("ee_taper_entity_extent_timeline"), None))
     rows += [
         ("doc_activate", lambda c: {"name": _ctx_get(c, "ee_story", "story"),
                                     "expect_document": _ctx_get(c, "ee_doc", "scratch")}, "ok", None),
