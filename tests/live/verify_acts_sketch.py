@@ -2993,6 +2993,58 @@ def _sketch_rename_rows():
 _SKETCHWORK += _sketch_rename_rows()
 
 
+def _axis_point(p, ref, which):
+    """The sketch-local XYZ start or end in mm for one line row."""
+    row = _rows_by_id(p).get(ref) or {}
+    point = row.get(which) or {}
+    return (tuple(point.get(a, 0.0) for a in "xyz")
+            if all(a in point for a in "xy") else None)
+
+
+def _axis_at(p, ref, xyz, which="end"):
+    """Whether sketch_get reads one line point at the expected XYZ position."""
+    got = _axis_point(p, ref, which)
+    return _measured(f"{ref} {which} XYZ", {"got": got, "want": xyz},
+                     got is not None and all(abs(a - b) < 0.01 for a, b in zip(got, xyz)))
+
+
+def _axis_transform_rows():
+    """Rotate a moved and a copied line about local X with an off-plane pivot."""
+    rows, write, read, close = _scratch_rows("axis_doc")
+    for name in ("AxisMove", "AxisCopy"):
+        write("sketch_create", {"plane": "xy", "name": name})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [
+            {"kind": "line", "x1": 0, "y1": 0, "x2": 0, "y2": 10}]})
+        read("sketch_get", _xray(name), lambda p: _axis_at(p, "line:0", (0, 10, 0)))
+    transform = {"rotation_deg": 45, "rotation_axis": [1, 0, 0], "center_z": 5}
+    write("sketch_move", {"sketch_name": "AxisMove", "entities": "line:0", **transform},
+          lambda p: p.get("moved_entities") == ["line:0"]
+          and p.get("coordinates_verified") is True)
+    read("sketch_get", _xray("AxisMove"),
+         lambda p: _axis_at(p, "line:0", (0, 3.5355, 1.4645), "start")
+         and _axis_at(p, "line:0", (0, 10.6066, 8.5355)))
+    write("sketch_copy", {"sketch_name": "AxisCopy", "entities": "line:0", **transform},
+          lambda p: p.get("new_curves") == ["line:1"]
+          and p.get("curve_count_after") - p.get("curve_count_before") == 1
+          and p.get("coordinates_verified") is True)
+    read("sketch_get", _xray("AxisCopy"),
+         lambda p: _axis_at(p, "line:0", (0, 0, 0), "start")
+         and _axis_at(p, "line:0", (0, 10, 0))
+         and _axis_at(p, "line:1", (0, 3.5355, 1.4645), "start")
+         and _axis_at(p, "line:1", (0, 10.6066, 8.5355)))
+    write("sketch_move", {"sketch_name": "AxisMove", "entities": "line:0",
+                          "rotation_deg": 45, "rotation_axis": [0, 0, 0]}, "refused")
+    write("sketch_copy", {"sketch_name": "AxisCopy", "entities": "line:0",
+                          "dx": 1, "rotation_axis": [1, 0, 0]}, "refused")
+    write("sketch_copy", {"sketch_name": "AxisCopy", "entities": "line:0",
+                          "mirror_line": "line:0", "rotation_axis": [1, 0, 0]}, "refused")
+    close()
+    return rows
+
+
+_SKETCHWORK += _axis_transform_rows()
+
+
 # --- sketch_edit(visible) ----------------------------------------------------------------------
 
 def _bulb_set(sketch, want, before):

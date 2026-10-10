@@ -51,10 +51,21 @@ def run(context):
     sk.name='Guide'
     curve=sk.sketchCurves.sketchLines.addByTwoPoints(
         sk.modelToSketchSpace(adsk.core.Point3D.create(*a)),sk.modelToSketchSpace(adsk.core.Point3D.create(*b)))
+    alternate=comp.sketches.add(plane(comp.xZConstructionPlane,-1.5) if kind == 'rib'
+        else plane(comp.xYConstructionPlane,.8))
+    alternate.name='Alternate'
+    if kind == 'rib':
+        c,e=[.2,2.0,1.5],[1.5,2.0,.2]
+    else:
+        c,e=[.2,2.0,.8],[2.8,2.0,.8]
+    alternate_curve=alternate.sketchCurves.sketchLines.addByTwoPoints(
+        alternate.modelToSketchSpace(adsk.core.Point3D.create(*c)),
+        alternate.modelToSketchSpace(adsk.core.Point3D.create(*e)))
     got=[[p.x,p.y,p.z] for p in (curve.startSketchPoint.worldGeometry,curve.endSketchPoint.worldGeometry)]
     if any(abs(got[j][i]-[a,b][j][i])>1e-7 for j in range(2) for i in range(3)):
         raise RuntimeError('fixture guide coordinates mismatch')
     print(json.dumps({'body':target.entityToken,'curves':[curve.entityToken],
+        'alternate':alternate_curve.entityToken,
         'control':control.entityToken,'component':comp.name,'volume_cm3':target.volume,'guide_cm':got}))
 """
 
@@ -128,6 +139,130 @@ def rib_web_rows():
             read("model_inspect", lambda ctx, key=key: {"target": _RECALL[key + "_fixture"]["control"],
                 "include": ["default", "mass"], "units": "mm"}, lambda p:
                 _near((p.get("mass") or {}).get("volume"), 1000, .02))
+        close()
+        result += rows
+    return result
+
+
+def rib_web_retarget_rows():
+    """Retarget a Rib/Web guide and read target shape and downstream Cut health independently."""
+    from verify_acts_sketch import _scratch_rows
+    result = []
+    for kind in ("rib", "web"):
+        key = "rib_retarget" if kind == "rib" else "web_retarget"
+        rows, write, read, close = _scratch_rows(key + "_doc")
+        write("sys_execute_script", {"script": _RIB_FIXTURE.replace("__KIND__", repr(kind))},
+            lambda p: p.get("component") == "RibWebBench" and bool(p.get("body"))
+            and len(p.get("curves") or []) == 1 and bool(p.get("alternate")) and bool(p.get("control")),
+            (key + "_fixture", _recall(key + "_fixture", lambda p: p)))
+        def create(ctx, key=key, kind=kind):
+            fixture = _RECALL[key + "_fixture"]
+            return {"kind": kind, "curves": fixture["curves"], "target_body": fixture["body"],
+                    "thickness": 2, "symmetric": True, "flip": True,
+                    "name": "RetargetWitness"}
+        write("model_create_rib", create, lambda p, kind=kind: p.get("kind") == kind
+              and p.get("feature") == "RetargetWitness")
+        read("model_inspect", lambda _ctx, key=key: {"target": _RECALL[key + "_fixture"]["body"],
+             "include": ["default", "mass"], "units": "mm"}, lambda p: _measured(
+                 "pre-cut Rib/Web target volume", p.get("mass"),
+                 isinstance((p.get("mass") or {}).get("volume"), (int, float))),
+             (key + "_volume_before_cut", _recall(key + "_volume_before_cut", lambda p:
+                 (p.get("mass") or {}).get("volume"))))
+        # The cut stays above the base plate and spans both guide locations.
+        cut_script = """import adsk.core, adsk.fusion, json
+def run(context):
+    app=adsk.core.Application.get(); d=adsk.fusion.Design.cast(app.activeProduct)
+    comp=next(o.component for o in d.rootComponent.occurrences if o.component.name=='RibWebBench')
+    plane_input=comp.constructionPlanes.createInput()
+    if plane_input.setByOffset(comp.xYConstructionPlane,adsk.core.ValueInput.createByReal(.5)) is not True:
+        raise RuntimeError('downstream cut plane refused')
+    sk=comp.sketches.add(comp.constructionPlanes.add(plane_input)); sk.name='DownstreamCutSketch'
+    kind=__KIND__
+    center=(.8,1.75,0) if kind=='rib' else (1.5,1.75,0)
+    sk.sketchCurves.sketchCircles.addByCenterRadius(adsk.core.Point3D.create(*center),.35)
+    if sk.profiles.count != 1: raise RuntimeError('downstream cut profile missing')
+    inp=comp.features.extrudeFeatures.createInput(sk.profiles.item(0),adsk.fusion.FeatureOperations.CutFeatureOperation)
+    ext=adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(1.0))
+    if inp.setOneSideExtent(ext,adsk.fusion.ExtentDirections.PositiveExtentDirection) is not True:
+        raise RuntimeError('downstream cut extent refused')
+    cut=comp.features.extrudeFeatures.add(inp)
+    if cut is None: raise RuntimeError('downstream cut was not returned')
+    cut.name='DownstreamCut'
+    if cut.healthState != adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState:
+        raise RuntimeError('downstream cut is not healthy')
+    print(json.dumps({'token':cut.entityToken,
+        'healthy':cut.healthState == adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState,'name':cut.name}))
+"""
+        write("sys_execute_script", {"script": cut_script.replace("__KIND__", repr(kind))},
+              lambda p: bool(p.get("token")) and p.get("name") == "DownstreamCut"
+              and p.get("healthy") is True,
+              (key + "_cut", _recall(key + "_cut", lambda p: p)))
+        read("model_inspect", lambda _ctx, key=key: {"target": _RECALL[key + "_fixture"]["body"],
+             "include": ["default", "mass"], "units": "mm"},
+             lambda p, key=key: _measured("post-cut target volume", p.get("mass"),
+                 isinstance((p.get("mass") or {}).get("volume"), (int, float))
+                 and len((p.get("mass") or {}).get("center_of_mass") or []) == 3
+                 and (p.get("mass") or {}).get("volume") < _RECALL[key + "_volume_before_cut"] - 1e-6),
+             (key + "_target_before", _recall(key + "_target_before", lambda p:
+                 {"volume": (p.get("mass") or {}).get("volume"),
+                  "center": (p.get("mass") or {}).get("center_of_mass")})))
+        read("model_inspect", lambda _ctx, key=key: {"target": _RECALL[key + "_fixture"]["control"],
+             "include": ["default", "mass"], "units": "mm"},
+             lambda p: _measured("pre-edit control shape", p.get("mass"),
+                 isinstance((p.get("mass") or {}).get("volume"), (int, float))
+                 and len((p.get("mass") or {}).get("center_of_mass") or []) == 3),
+             (key + "_control_before", _recall(key + "_control_before", lambda p:
+                 {"volume": (p.get("mass") or {}).get("volume"),
+                  "center": (p.get("mass") or {}).get("center_of_mass")})))
+        def edit(ctx):
+            return {"feature": "RibWebBench/RetargetWitness", "action": "inputs",
+                    "references": ["Alternate/line:0"]}
+        write("model_edit_feature", edit, lambda p: p.get("edited") is True
+              and p.get("same_feature") is True and p.get("geometry_changed") is True
+              and p.get("definition_matches") is True)
+        write("design_edit_timeline", {"action": "roll", "feature": "RibWebBench/RetargetWitness",
+                                       "to": "before"}, lambda p: p.get("rolled") is True
+              and p.get("feature") == "RetargetWitness"
+              and p.get("marker_position", 0) < p.get("timeline_count", 0))
+        read("design_get", {"include": ["definition"],
+             "feature": "RibWebBench/RetargetWitness"}, lambda p: _measured(
+                 "independent retargeted guide definition", p.get("definition"),
+                 ((p.get("definition") or {}).get("curves") or [{}])[0].get("source_sketch")
+                 == "Alternate"))
+        write("design_edit_timeline", {"action": "roll", "to": "end"},
+              lambda p: p.get("rolled") is True
+              and p.get("marker_position") == p.get("timeline_count"))
+        read("model_inspect", lambda _ctx, key=key: {"target": _RECALL[key + "_fixture"]["body"],
+             "include": ["default", "mass"], "units": "mm"}, lambda p, key=key: _measured(
+                 "retargeted target center of mass", p.get("mass"),
+                 len((p.get("mass") or {}).get("center_of_mass") or []) == 3
+                 and any(not _near(current, was, .01) for current, was in zip(
+                     (p.get("mass") or {}).get("center_of_mass"),
+                     _RECALL[key + "_target_before"]["center"]))))
+        read("model_inspect", lambda _ctx, key=key: {"target": _RECALL[key + "_fixture"]["control"],
+             "include": ["default", "mass"], "units": "mm"}, lambda p, key=key: _near(
+                 (p.get("mass") or {}).get("volume"),
+                 _RECALL[key + "_control_before"]["volume"], .02)
+             and all(_near(current, was, .01) for current, was in zip(
+                 (p.get("mass") or {}).get("center_of_mass") or [],
+                 _RECALL[key + "_control_before"]["center"])))
+        script = """import adsk.core, adsk.fusion, json
+def run(context):
+    d=adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    hits=list(d.findEntityByToken(__TOKEN__))
+    if len(hits)!=1: raise RuntimeError('downstream Cut token did not resolve uniquely')
+    cut=adsk.fusion.ExtrudeFeature.cast(hits[0])
+    if cut is None: raise RuntimeError('downstream token no longer identifies an ExtrudeFeature')
+    print(json.dumps({'token':cut.entityToken,
+        'healthy':cut.healthState == adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState,'name':cut.name}))
+"""
+        def downstream_probe(ctx, key=key, script=script):
+            return {"script": script.replace("__TOKEN__", repr(_RECALL[key + "_cut"]["token"]))}
+        write("sys_execute_script", downstream_probe, lambda p, key=key:
+               _measured("independent downstream Cut health and identity", p,
+                   p.get("token") == _RECALL[key + "_cut"]["token"]
+                   and p.get("name") == "DownstreamCut"
+                   and p.get("healthy") is True))
         close()
         result += rows
     return result

@@ -11,7 +11,8 @@ def _rebox(curve):
     """Re-derive the bounding box from the endpoints, the way Fusion's is derived."""
     a, b = curve.startSketchPoint.geometry, curve.endSketchPoint.geometry
     curve.boundingBox = FakeBoundingBox3D(
-        FakePoint(min(a.x, b.x), min(a.y, b.y), 0.0), FakePoint(max(a.x, b.x), max(a.y, b.y), 0.0))
+        FakePoint(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z)),
+        FakePoint(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z)))
 
 
 def _boxed(token, x, y, dx=1.0, dy=0.0, length=10.0):
@@ -32,8 +33,13 @@ def _matrix():
 
     def set_to_rotation(angle, axis, origin):
         m.angle = angle
-        cells[0][0], cells[0][1] = math.cos(angle), -math.sin(angle)
-        cells[1][0], cells[1][1] = math.sin(angle), math.cos(angle)
+        x, y, z = axis.x, axis.y, axis.z
+        co, si = math.cos(angle), math.sin(angle)
+        cross = ((0, -z, y), (z, 0, -x), (-y, x, 0))
+        for r in range(3):
+            for c in range(3):
+                cells[r][c] = (co * (r == c) + (1 - co) * (x, y, z)[r] * (x, y, z)[c]
+                               + si * cross[r][c])
         return True
 
     def set_cell(row, col, value):
@@ -136,6 +142,66 @@ def shared_name(mod, monkeypatch):
 
 
 class TestCopy:
+
+    def test_axis_copy_to_different_sketch_refuses_before_native_copy(self, mod, sketches):
+        plate, _other = sketches
+        called = []
+        plate.copy = lambda *args: called.append(args)
+        msg = error_message(mod.handler(entities="line:0", target_sketch="Other",
+                                        rotation_deg=45, rotation_axis=[1, 0, 0]))
+        assert "different target sketch has its own local frame" in msg
+        assert called == []
+
+    def test_mirror_refuses_axis_and_z_pivot_instead_of_ignoring_them(self, mod, sketches):
+        for extra in ({"rotation_axis": [1, 0, 0]}, {"center_z": 5}):
+            msg = error_message(mod.handler(entities="line:0", mirror_line="line:1", **extra))
+            assert "Drop:" in msg and next(iter(extra)) in msg
+
+    @pytest.mark.parametrize("wrong", [False, True])
+    def test_local_x_copy_verifies_xyz_and_keeps_source(self, mod, sketches, wrong):
+        plate, _ = sketches
+        source = _lines(plate).item(0)
+        source.endSketchPoint.geometry = FakePoint(0.0, 1.0, 0.0)
+        _rebox(source)
+
+        def copy(collection, matrix):
+            made = _boxed("XC", 0.0, 0.0, dx=0.0, dy=1.0)
+            for point in (made.startSketchPoint.geometry, made.endSketchPoint.geometry):
+                coords = (point.x, point.y, point.z)
+                shifted = tuple(sum(matrix.getCell(r, c) * coords[c] for c in range(3))
+                                + (matrix.translation.x, matrix.translation.y,
+                                   matrix.translation.z)[r] for r in range(3))
+                point.x, point.y, point.z = shifted
+            if wrong:
+                made.endSketchPoint.geometry.z += 0.1
+            _rebox(made)
+            plate.sketchCurves._items.append(made)
+            plate.sketchCurves.sketchLines._items.append(made)
+            returned = adsk.core.ObjectCollection.create()
+            returned.add(made)
+            return returned
+
+        plate.copy = copy
+        result = mod.handler(entities="line:0", rotation_deg=45,
+                             rotation_axis=[1, 0, 0])
+        if wrong:
+            assert "endpoint XYZ coordinates did not verify" in error_message(result)
+        else:
+            out = payload(result)
+            end = _lines(plate).item(2).endSketchPoint.geometry
+            assert (end.x, end.y, end.z) == pytest.approx((0, 2 ** -0.5, 2 ** -0.5))
+            assert out["coordinates_verified"] is True
+            assert source.endSketchPoint.geometry.z == 0.0
+
+    def test_disappearing_copied_endpoint_cannot_verify_from_start_alone(self, mod, sketches):
+        plate, _ = sketches
+        made = _boxed("UnreadCopy", 0.0, 0.0)
+        made.endSketchPoint.geometry = None
+        plate.copy = _copier([], plate, made=[made])
+
+        msg = error_message(mod.handler(entities="line:0", rotation_deg=45,
+                                        rotation_axis=[1, 0, 0]))
+        assert "endpoint XYZ coordinates did not verify" in msg
 
     def test_copy_returns_the_new_curve_refs_and_the_append_note(self, mod, sketches):
         plate, _ = sketches

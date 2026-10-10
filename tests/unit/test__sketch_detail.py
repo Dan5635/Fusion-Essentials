@@ -19,6 +19,8 @@ def test_xyz_translation_preserves_xy_rotation_anchor(monkeypatch):
     monkeypatch.setattr(sd.adsk.core.Matrix3D, "create", lambda: FakeMatrix3D())
     monkeypatch.setattr(sd.adsk.core.Vector3D, "create", FakeVector3D)
     monkeypatch.setattr(sd.adsk.core.Point3D, "create", FakePoint)
+    monkeypatch.setattr(FakeMatrix3D, "getCell",
+                        lambda self, row, col: self.asArray()[4 * row + col], raising=False)
     matrix, refusal = sd._transform(2, 3, 90, 1, 1, 2, dz_cm=-0.4)
     assert refusal is None
     assert (matrix.translation.x, matrix.translation.y, matrix.translation.z) == pytest.approx((5, 4, -0.4))

@@ -945,9 +945,14 @@ _CENTER_X = _inputs.Distance("center_x", allow_zero=True, default=0.0,
                              description="Rotate/scale anchor X.")
 _CENTER_Y = _inputs.Distance("center_y", allow_zero=True, default=0.0,
                              description="Rotate/scale anchor Y.")
+_CENTER_Z = _inputs.Distance("center_z", allow_zero=True, default=0.0,
+                            description="Rotation pivot Z.")
 
 _TRANSFORM_INPUTS = (
     ("rotation_deg", {"type": "number", "description": "Rotation about the anchor, degrees CCW."}),
+    ("rotation_axis", {"type": "array", "items": {"type": "number"},
+                       "minItems": 3, "maxItems": 3,
+                       "description": "Local axis [x,y,z]; default [0,0,1]."}),
     ("scale_factor", {"type": "number", "description": "Uniform scale about the anchor; > 0."}),
 )
 
@@ -963,24 +968,68 @@ def _object_collection(ents, refs):
     return coll, None
 
 
-def _transform(dx_cm, dy_cm, angle_deg, factor, cx_cm, cy_cm, dz_cm=0.0):
-    """Return a sketch-space scale/rotation about (cx, cy), then XYZ translation, or an error."""
+def _transform(dx_cm, dy_cm, angle_deg, factor, cx_cm, cy_cm, dz_cm=0.0,
+               axis=(0.0, 0.0, 1.0), cz_cm=0.0):
+    """Return a sketch-space scale/rotation about a 3D pivot, then XYZ translation."""
     theta = math.radians(float(angle_deg or 0.0))
-    cos_t, sin_t = math.cos(theta), math.sin(theta)
     m = adsk.core.Matrix3D.create()
-    applied = [m.setToRotation(theta, adsk.core.Vector3D.create(0.0, 0.0, 1.0),
+    applied = [m.setToRotation(theta, adsk.core.Vector3D.create(*axis),
                                adsk.core.Point3D.create(0.0, 0.0, 0.0))]
+    pivot = (cx_cm, cy_cm, cz_cm)
+    turned = [sum(m.getCell(r, c) * pivot[c] for c in range(3)) for r in range(3)]
     if factor != 1.0:
         # scaling the whole 3x3 linear block is symmetric in row/column, so it needs no assumption
         # about which index of the 4x4 holds the translation.
         applied += [m.setCell(r, c, m.getCell(r, c) * factor)
                     for r in range(3) for c in range(3)]
-    m.translation = adsk.core.Vector3D.create(
-        cx_cm + dx_cm - factor * (cos_t * cx_cm - sin_t * cy_cm),
-        cy_cm + dy_cm - factor * (sin_t * cx_cm + cos_t * cy_cm), dz_cm)
+    m.translation = adsk.core.Vector3D.create(*(
+        pivot[r] + (dx_cm, dy_cm, dz_cm)[r] - factor * turned[r] for r in range(3)))
     if not all(applied):
         return None, "Fusion refused a cell of the transform matrix, so nothing was transformed."
     return m, None
+
+
+def _rotation_axis(raw, angle):
+    """A finite unit sketch-space axis, or an input error."""
+    if raw is None:
+        return (0.0, 0.0, 1.0), None
+    if not angle:
+        return None, "'rotation_axis' needs a nonzero 'rotation_deg'; it would be ignored."
+    if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+        return None, f"'rotation_axis' needs three numbers [x,y,z]; got {raw!r}."
+    try:
+        values = tuple(float(v) for v in raw)
+    except (TypeError, ValueError):
+        return None, f"'rotation_axis' needs three numbers [x,y,z]; got {raw!r}."
+    if not all(math.isfinite(v) for v in values):
+        return None, f"'rotation_axis' must be finite; got {raw!r}."
+    length = math.hypot(*values)
+    if length <= 1e-12 or not math.isfinite(length):
+        return None, f"'rotation_axis' must be nonzero and finite; got {raw!r}."
+    return tuple(v / length for v in values), None
+
+
+def transform_points_match(before, after, matrix, tolerance=1e-6):
+    """Whether readable endpoint samples landed at the matrix's expected XYZ positions."""
+    if before is None or after is None:
+        return None
+    pairs = []
+    for a, b in zip(before[2:], after[2:]):
+        if a is not None:
+            if b is None:
+                return None
+            pairs.append((a, b))
+    if not pairs:
+        return None
+    offset = matrix.translation
+    shifts = (offset.x, offset.y, offset.z)
+    return all(abs(sum(matrix.getCell(r, c) * a[c] for c in range(3)) + shifts[r] - b[r])
+               <= tolerance for a, b in pairs for r in range(3))
+
+
+def transform_points_readable(position):
+    """Whether a sketch entity has an endpoint or own geometry for XYZ verification."""
+    return position is not None and any(mark is not None for mark in position[2:])
 
 
 def _identity_still_copies(design, sketch, target_sketch, target_component):
@@ -997,7 +1046,8 @@ def _identity_still_copies(design, sketch, target_sketch, target_component):
 
 
 def _prepare(sketch_name, entities, units, dx, dy, rotation_deg, center_x, center_y, scale_factor,
-             component="", target_sketch="", target_component="", dz=None):
+             component="", target_sketch="", target_component="", dz=None,
+             rotation_axis=None, center_z=None):
     """Return resolved transform operands and matrix, or a refusal before mutation."""
     blank = (None,) * 7
     k, uerr = _inputs.UNITS.resolve(units)
@@ -1029,17 +1079,26 @@ def _prepare(sketch_name, entities, units, dx, dy, rotation_deg, center_x, cente
         factor = float(scale_factor if scale_factor is not None else 1.0)
     except (TypeError, ValueError):
         return blank + (error(f"'scale_factor' must be a number, got {scale_factor!r}."),)
-    if factor <= 0:
+    if not math.isfinite(factor) or factor <= 0:
         return blank + (error(f"'scale_factor' must be greater than 0, got {factor}. A uniform "
                               "scale cannot mirror geometry; use sketch_copy with mirror_line."),)
     try:
         angle = float(rotation_deg if rotation_deg is not None else 0.0)
     except (TypeError, ValueError):
         return blank + (error(f"'rotation_deg' must be a number, got {rotation_deg!r}."),)
+    if not math.isfinite(angle):
+        return blank + (error(f"'rotation_deg' must be finite; got {rotation_deg!r}."),)
+    axis, aerr = _rotation_axis(rotation_axis, angle)
+    if aerr:
+        return blank + (error(aerr),)
+    if (center_z is not None and factor == 1.0
+            and (not angle or abs(axis[0]) + abs(axis[1]) <= 1e-12)):
+        return blank + (error("'center_z' needs scaling or rotation about an axis with X/Y "
+                              "direction; it would be ignored."),)
 
     lengths = {}
     for kind, raw in ((_DX, dx), (_DY, dy), (_DZ, dz), (_CENTER_X, center_x),
-                      (_CENTER_Y, center_y)):
+                      (_CENTER_Y, center_y), (_CENTER_Z, center_z)):
         value, lerr = kind.resolve_scaled(raw, k)
         if lerr:
             return blank + (error(lerr),)
@@ -1054,19 +1113,25 @@ def _prepare(sketch_name, entities, units, dx, dy, rotation_deg, center_x, cente
     if cerr:
         return blank + (error(cerr),)
     matrix, merr = _transform(lengths["dx"], lengths["dy"], angle, factor,
-                              lengths["center_x"], lengths["center_y"], lengths["dz"])
+                              lengths["center_x"], lengths["center_y"], lengths["dz"],
+                              axis, lengths["center_z"])
     if merr:
         return blank + (error(merr),)
     return design, sketch, ents, refs, coll, matrix, unit, None
 
 
-def _requested(unit, dx, dy, rotation_deg, scale_factor, dz=None):
+def _requested(unit, dx, dy, rotation_deg, scale_factor, dz=None,
+               rotation_axis=None, center_z=None):
     """Return requested transform values in caller units, including nonzero dz."""
     out = {"units": unit, "dx": float(dx or 0.0), "dy": float(dy or 0.0),
            "rotation_deg": float(rotation_deg or 0.0),
            "scale_factor": float(scale_factor if scale_factor is not None else 1.0)}
     if dz:
         out["dz"] = float(dz)
+    if rotation_axis is not None:
+        out["rotation_axis"] = list(rotation_axis)
+    if center_z is not None:
+        out["center_z"] = float(center_z)
     return out
 
 
@@ -1079,6 +1144,7 @@ def _transform_wire(tool):
                 .add_input_property(*_DZ.as_property())
                 .add_input_property(*_CENTER_X.as_property())
                 .add_input_property(*_CENTER_Y.as_property()))
+    tool = tool.add_input_property(*_CENTER_Z.as_property())
     for name, schema in _TRANSFORM_INPUTS:
         tool = tool.add_input_property(name, dict(schema))
     return tool.add_input_property(*_inputs.UNITS.as_property()).strict_schema()

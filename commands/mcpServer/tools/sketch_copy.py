@@ -246,16 +246,19 @@ def _mirror(sketch_name, entities, mirror_line, component, others):
 def handler(sketch_name: str = "", entities: str = "", target_sketch: str = "",
             units: str = "mm", dx=None, dy=None, rotation_deg=None, center_x=None,
             center_y=None, scale_factor=None, component: str = "",
-            target_component: str = "", mirror_line: str = "", dz=None) -> dict:
+            target_component: str = "", mirror_line: str = "", dz=None,
+            rotation_axis=None, center_z=None) -> dict:
     """See TOOL_DESCRIPTION."""
     if (mirror_line or "").strip():
         return _mirror(sketch_name, entities, mirror_line, component, {
             "dx": dx, "dy": dy, "rotation_deg": rotation_deg, "center_x": center_x,
             "center_y": center_y, "scale_factor": scale_factor, "target_sketch": target_sketch,
-            "target_component": target_component, "dz": dz})
+            "target_component": target_component, "dz": dz,
+            "rotation_axis": rotation_axis, "center_z": center_z})
     design, sketch, ents, refs, coll, matrix, unit, err = _prepare(
         sketch_name, entities, units, dx, dy, rotation_deg, center_x, center_y, scale_factor,
-        component, target_sketch, target_component, dz=dz)
+        component, target_sketch, target_component, dz=dz,
+        rotation_axis=rotation_axis, center_z=center_z)
     if err:
         return err
 
@@ -273,8 +276,20 @@ def handler(sketch_name: str = "", entities: str = "", target_sketch: str = "",
             return error(f"No sketch named '{want_target}' for 'target_sketch'. Available: " + (
                 ", ".join(n for n in _common.all_sketch_names(design) if n) or "(none)"))
     target_name = safe(lambda: target.name)
+    check_xyz = rotation_axis is not None or center_z is not None
+    if check_xyz and want_target:
+        source_id, target_id = _common.native_identity(sketch), _common.native_identity(target)
+        if source_id is None or source_id != target_id:
+            return error("'rotation_axis' and 'center_z' need a copy within the source sketch. "
+                         "A different target sketch has its own local frame; use the default "
+                         "Z-axis transform for a cross-sketch copy.")
 
     before_n = safe(lambda: target.sketchCurves.count, 0) or 0
+    source_before = ([_assert.entity_position(e) for e in ents] if check_xyz else [])
+    if check_xyz and any(not _sketch_detail.transform_points_readable(p)
+                         for p in source_before):
+        return error("The selected entity has no readable XYZ point for rotation verification. "
+                     "Choose an entity with points from sketch_get(include_entities=true).")
     try:
         # targetSketch is passed ONLY when one was asked for - a same-sketch copy is the measured
         # two-argument form.
@@ -298,6 +313,22 @@ def handler(sketch_name: str = "", entities: str = "", target_sketch: str = "",
                      f"{after_n} curve(s) - nothing landed in it.")
 
     landed = after_n - before_n
+    if check_xyz:
+        if landed != len(refs) or len(new_curves) != len(refs):
+            return error(f"The copy landed {landed} curve(s) in '{target_name}', but its requested "
+                         "XYZ positions cannot be paired with {len(refs)} source curve(s). "
+                         "Read sketch_get(include_entities=true).")
+        source_after = [_assert.entity_position(e) for e in ents]
+        if any(b != a for b, a in zip(source_before, source_after)):
+            return error(f"The copy landed in '{target_name}', but changed a source curve in "
+                         f"'{name}'. Read both sketches with sketch_get(include_entities=true).")
+        copied = [_common.resolve_entity_ref(target, ref) for ref in new_curves]
+        exact = [_sketch_detail.transform_points_match(b, _assert.entity_position(c), matrix)
+                 for b, c in zip(source_before, copied)]
+        if any(v is not True for v in exact):
+            return error(f"The copy landed in '{target_name}', but its endpoint XYZ coordinates "
+                         "did not verify against the requested transform. Read sketch_get "
+                         "with include_entities=true.")
     note = ("The new curves' ids are in '" + (target_name or "the target sketch") + "', and an "
             "added curve APPENDS at the end of its kind, so the ids already in use keep their "
             "entities - re-read sketch_get(include_entities=true) for the new ones. "
@@ -316,8 +347,11 @@ def handler(sketch_name: str = "", entities: str = "", target_sketch: str = "",
     out = {"copied": True, "sketch": name, "target_sketch": target_name, "entities": refs,
            "new_curves": new_curves, "curve_count_before": before_n, "curve_count_after": after_n,
            "returned_entity_count": n,
-           "requested": _requested(unit, dx, dy, rotation_deg, scale_factor, dz),
+           "requested": _requested(unit, dx, dy, rotation_deg, scale_factor, dz,
+                                   rotation_axis, center_z),
            "note": note}
+    if check_xyz:
+        out["coordinates_verified"] = True
     if len(new_curves) < landed:
         out["new_curves_complete"] = False
     return ok(out)

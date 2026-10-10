@@ -44,7 +44,7 @@ def _reply_geometry_snapshot(snapshot):
 def _reply_geometry_details(details):
     """Copy details with private geometry censuses converted at the JSON boundary."""
     result = dict(details)
-    for key in ("geometry_before", "geometry_after"):
+    for key in ("geometry_before", "geometry_after", "geometry_restored"):
         if key in result:
             result[key] = _reply_geometry_snapshot(result[key])
     return result
@@ -78,6 +78,9 @@ def _mode_value(row, mode):
 
 def _restore_value(feature, row, value, before_state=None):
     """Restore the original property value at the feature's edit row."""
+    if row.get("setter") == "rib_web_curves":
+        feature.curves = list(value)
+        return
     if row.get("setter") == "hem_definition":
         _sheet_edit.write_hem(feature, value)
         return
@@ -148,6 +151,12 @@ def _restore_value(feature, row, value, before_state=None):
 
 def _apply_value(feature, row, resolved, mode, before_state=None):
     """Apply one row from the closed support table."""
+    if row.get("setter") == "rib_web_curves":
+        curves = _edit.path_entities(resolved)
+        if not curves:
+            raise RuntimeError("The resolved path has no complete sketch-curve sequence.")
+        feature.curves = curves
+        return
     if row.get("setter") == "hem_definition":
         _sheet_edit.write_hem(feature, resolved)
         return
@@ -482,6 +491,7 @@ def _compensate(design, timeline, entity, row, original, label, action, before_s
                "definition_before": before, "definition_after": after,
                "definition_matches": definition_matches,
                "geometry_before": before_geometry, "geometry_after": after_geometry,
+               "definition_restored": restore_definition, "geometry_restored": restore_shape,
                "same_feature": identity, "owner_restored": owner,
                "surface_normals_restored": restore_surface_normals,
                "feature_health": health, "marker_before": marker,

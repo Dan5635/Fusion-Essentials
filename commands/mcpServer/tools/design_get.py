@@ -1187,14 +1187,15 @@ def _slice_definition(feature, units):
         return None, error(f"'{label}' has unsupported definition type {kind!r}; use "
                            "include=['timeline'] or model_inspect.")
     factor = 1 / _common.scale(values["units"])
-    if kind in _edit_feature_common.FEATURE_EDIT_SUPPORT:
+    if kind in ("adsk::fusion::RibFeature", "adsk::fusion::WebFeature"):
+        out = {**_definition_identity(entity), **_rib_common.rib_definition(entity, factor)}
+        out["supported_edits"] = _edit_feature_common.feature_edit_rows(entity, out)
+    elif kind in _edit_feature_common.FEATURE_EDIT_SUPPORT:
         out = {**_definition_identity(entity), **_edit_feature_common.feature_definition(entity, factor)}
         if kind == "adsk::fusion::ThreadFeature":
             thread = _definition_thread(entity, factor)
             out.update({key: value for key, value in thread.items()
                         if key not in ("feature", "component", "type", "timeline_index")})
-    elif kind in ("adsk::fusion::RibFeature", "adsk::fusion::WebFeature"):
-        out = {**_definition_identity(entity), **_rib_common.rib_definition(entity, factor)}
     elif kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature"):
         out = {**_definition_identity(entity), **_edit_feature_common.feature_definition(entity, factor)}
     elif kind == "adsk::fusion::LoftFeature":

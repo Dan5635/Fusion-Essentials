@@ -4803,11 +4803,17 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' but NONE could be identified by entityToken - re-read sketch_get(include_entities=true) for their ids.
 - could be identified (
 - ) - re-read sketch_get(include_entities=true) for the rest.
+- The selected entity has no readable XYZ point for rotation verification. Choose an entity with points from sketch_get(include_entities=true).
 - copy returned no collection for
 - ' - nothing was copied.
 - entity(ies) but sketch '
 - curve(s) - nothing landed in it.
 - ' for 'target_sketch'. Available:
+- 'rotation_axis' and 'center_z' need a copy within the source sketch. A different target sketch has its own local frame; use the default Z-axis transform for a cross-sketch copy.
+- ', but its requested XYZ positions cannot be paired with {len(refs)} source curve(s). Read sketch_get(include_entities=true).
+- ', but changed a source curve in '
+- '. Read both sketches with sketch_get(include_entities=true).
+- ', but its endpoint XYZ coordinates did not verify against the requested transform. Read sketch_get with include_entities=true.
 - Each copy follows its original through symmetry constraints; sketch_delete_entity on those constraints frees it.
 - mirror_line mirrors in place of a transform, in the same sketch. Drop:
 - No active design. Create or open a document first (see doc_new).
@@ -4830,6 +4836,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The curve built for '
 - ' is not its reflection about '
 - mirror returned  entity(ies) and sketch '' went from  to  curve(s) for  asked - re-read sketch_get(include_entities=true) before going on.
+- The copy landed  curve(s) in '', but its requested XYZ positions cannot be paired with {len(refs)} source curve(s). Read sketch_get(include_entities=true).
+- The copy landed in '', but its endpoint XYZ coordinates did not verify against the requested transform. Read sketch_get with include_entities=true.
 - The new curves' ids are in '', and an added curve APPENDS at the end of its kind, so the ids already in use keep their entities - re-read sketch_get(include_entities=true) for the new ones. 'return...
 - curve(s) landed in '' but NONE could be identified by entityToken - re-read sketch_get(include_entities=true) for their ids.
 
@@ -5035,10 +5043,14 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The entities keep their ids - a move adds and removes nothing, so no renumbering. Re-read sketch_get(include_entities=true) for the new coordinates.
 - read the same coordinates afterwards - an existing constraint or dimension refused the move for those, or the transform leaves them where they were.
 - Sketch.move returned false yet the coordinates changed - this reports what the geometry shows, not the return value.
+- The selected entity has no readable XYZ point for rotation verification. Choose an entity with points from sketch_get(include_entities=true).
 - Fusion declined the move in sketch '
 - ' (Sketch.move returned false) and none of
 - read the same coordinates afterwards, so nothing in the sketch changed. Either the transform is one this geometry is symmetric under (a circle rotated about its own centre), or a constraint refused...
 - still read z = 0 on every point after a dz move.
+- The requested XYZ transform did not land for
+- '. Read sketch_get(include_entities=true).
+- ' could not verify endpoint XYZ coordinates. Read sketch_get(include_entities=true).
 - move returned  but  read the same coordinates afterwards, so nothing in the sketch changed. Either the transform is one this geometry is symmetric under (a circle rotated about its own centre), or ...
 - Partial:  read the same coordinates afterwards - an existing constraint or dimension refused the move for those, or the transform leaves them where they were.
 

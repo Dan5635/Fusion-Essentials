@@ -67,18 +67,23 @@ def _bystanders(sketch, ents):
 
 def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=None, dy=None,
             rotation_deg=None, center_x=None, center_y=None, scale_factor=None,
-            component: str = "", dz=None) -> dict:
+            component: str = "", dz=None, rotation_axis=None, center_z=None) -> dict:
     """See TOOL_DESCRIPTION."""
     design, sketch, ents, refs, coll, matrix, unit, err = _prepare(
         sketch_name, entities, units, dx, dy, rotation_deg, center_x, center_y, scale_factor,
-        component, dz=dz)
+        component, dz=dz, rotation_axis=rotation_axis, center_z=center_z)
     if err:
         return err
 
     name = safe(lambda: sketch.name)
-    profiles_before = _common.counted(lambda: sketch.profiles.count) if dz else None
+    profiles_before = (_common.counted(lambda: sketch.profiles.count)
+                       if dz or rotation_axis is not None or center_z is not None else None)
     errors_before, _warn, _total = _common.timeline_health(design)
     before = [_assert.entity_position(e) for e in ents]
+    if (rotation_axis is not None or center_z is not None) and any(
+            not _sketch_detail.transform_points_readable(p) for p in before):
+        return error("The selected entity has no readable XYZ point for rotation verification. "
+                     "Choose an entity with points from sketch_get(include_entities=true).")
     others, others_read = _bystanders(sketch, ents)
     try:
         did = sketch.move(coll, matrix)
@@ -106,6 +111,17 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
     moved = [r for r, v in zip(refs, verdicts) if v is True]
     stayed = [r for r, v in zip(refs, verdicts) if v is False]
     unread = [r for r, v in zip(refs, verdicts) if v is None]
+
+    if rotation_axis is not None or center_z is not None:
+        exact = [_sketch_detail.transform_points_match(b, a, matrix)
+                 for b, a in zip(before, after)]
+        if any(v is False for v in exact):
+            wrong = [r for r, v in zip(refs, exact) if v is False]
+            return error(f"The requested XYZ transform did not land for {', '.join(wrong)} in "
+                         f"sketch '{name}'. Read sketch_get(include_entities=true).")
+        if any(v is None for v in exact):
+            return error(f"The move of sketch '{name}' could not verify endpoint XYZ coordinates. "
+                         "Read sketch_get(include_entities=true).")
 
     if not did and not moved:
         return error(f"Fusion declined the move in sketch '{name}' (Sketch.move returned false) and "
@@ -136,7 +152,10 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
                  "downstream of this sketch no longer compute.")
 
     out = {"moved": True, "sketch": name, "entities": refs, "moved_entities": moved,
-           "requested": _requested(unit, dx, dy, rotation_deg, scale_factor, dz), "note": note}
+           "requested": _requested(unit, dx, dy, rotation_deg, scale_factor, dz,
+                                   rotation_axis, center_z), "note": note}
+    if rotation_axis is not None or center_z is not None:
+        out["coordinates_verified"] = True
     # A shared point or a constraint carries the move to curves nobody named; they are told apart
     # from the request.
     verdicts_other = [(curve, _moved(was, _assert.entity_position(curve))) for curve, was in others]
@@ -150,7 +169,7 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
                         "moved too, through shared points or constraints.")
     if not others_read:
         out["followed_entities_read"] = False
-    if dz:
+    if dz or rotation_axis is not None or center_z is not None:
         # A loop moved off its plane as a whole keeps its profile; one that stops being planar
         # loses it, so the count is published on both sides of the move.
         down = [pos is not None and not _lifted(pos) for pos in after]

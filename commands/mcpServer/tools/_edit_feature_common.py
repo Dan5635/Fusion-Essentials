@@ -22,6 +22,27 @@ MAP_BLURB = (
     "rolled_back_text/failed/identical_geometry_reply - outcomes")
 
 FEATURE_EDIT_SUPPORT = {
+    "adsk::fusion::RibFeature": {
+        "inputs": {"member": "curves", "reference": "path", "cardinality": "many",
+                   "reader": "references", "setter": "rib_web_curves", "field": "curves",
+                   "example": "references=['<sketch curve from sketch_get>']"},
+        "_preserve": {
+            "thickness": {"member": "thickness.expression", "reader": "value", "field": "thickness"},
+            "extent_type": {"member": "extentType", "reader": "value", "field": "extent_type"},
+            "depth": {"member": "depth", "reader": "nullable_expression", "field": "depth"},
+            "symmetric": {"member": "isSymmetric", "reader": "boolean", "field": "symmetric"},
+            "flip": {"member": "isFlipped", "reader": "boolean", "field": "flip"}}},
+    "adsk::fusion::WebFeature": {
+        "inputs": {"member": "curves", "reference": "path", "cardinality": "many",
+                   "reader": "references", "setter": "rib_web_curves", "field": "curves",
+                   "example": "references=['<sketch curve from sketch_get>']"},
+        "_preserve": {
+            "thickness": {"member": "thickness.expression", "reader": "value", "field": "thickness"},
+            "extent_type": {"member": "extentType", "reader": "value", "field": "extent_type"},
+            "depth": {"member": "depth", "reader": "nullable_expression", "field": "depth"},
+            "symmetric": {"member": "isSymmetric", "reader": "boolean", "field": "symmetric"},
+            "flip": {"member": "isFlipped", "reader": "boolean", "field": "flip"},
+            "extend": {"member": "isExtended", "reader": "boolean", "field": "extend"}}},
     "adsk::fusion::HemFeature": {
         "mode": {"member": "definition", "reader": "hem_definition", "setter": "hem_definition",
                  "field": "hem", "choices": ("flat", "open", "rolled", "double"),
@@ -374,6 +395,9 @@ def feature_edit_rows(feature, definition=None):
             handle_key = "profile_handle" if row["reference"] == "profiles" else "handle"
             handles = ([item.get(handle_key) if isinstance(item, dict) else None for item in refs]
                        if isinstance(refs, list) else [])
+            if row["reference"] == "path" and isinstance(refs, list):
+                handles = [item.get("curve_ref") or item.get("handle")
+                           if isinstance(item, dict) else None for item in refs]
             if row["reference"] == "source_body_names":
                 handles = refs if isinstance(refs, list) else []
             if row["reference"] == "plane_pair":
@@ -505,6 +529,13 @@ def collection_entities(collection, cap=64):
         if type(count) is not int or count < 0 or count > cap:
             return None
         values = [safe(lambda i=i: collection[i]) for i in range(count)]
+    elif type(collection).__name__ == "SketchCurveVector":
+        count = safe(lambda: len(collection))
+        if type(count) is not int or count < 0 or count > cap:
+            return None
+        values = safe(lambda: list(collection))
+        if values is None or len(values) != count:
+            return None
     else:
         count = counted(lambda: collection.count)
         if count is None or count > cap:

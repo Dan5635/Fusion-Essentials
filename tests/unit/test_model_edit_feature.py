@@ -173,6 +173,102 @@ def offset_scene(monkeypatch, scene):
     return feature, timeline, before_face, after_face, calls
 
 
+@pytest.fixture
+def rib_scene(monkeypatch, scene):
+    feature, timeline, _new_axis, _before_axis, design, _body = scene
+    feature.objectType = "adsk::fusion::RibFeature"
+    feature.name = feature.timelineObject.name = "Rib1"
+    original = SimpleNamespace(entityToken="guide-original")
+    replacement = SimpleNamespace(entityToken="guide-replacement")
+    rejected = SimpleNamespace(entityToken="guide-rejected")
+    feature.curves = [original]
+    feature.thickness = SimpleNamespace(expression="2 mm")
+    feature.extentType = 1
+    feature.depth = None
+    feature.isSymmetric = True
+    feature.isFlipped = False
+    feature.timelineObject.name = "Rib1"
+    paths = {key: SimpleNamespace(count=1,
+        item=lambda _i, curve=curve: SimpleNamespace(entity=curve))
+        for key, curve in (("replacement", replacement), ("rejected", rejected))}
+    original_shape = {"bodies": {("body-token", "urn:fixture"): {
+        "component": "Part", "body": "Body1", "shape": {"measure": 1}}}, "occurrences": {}}
+
+    def description(entity, _role):
+        return {"handle": entity.entityToken, "kind": "sketch_curve",
+                "name": entity.entityToken, "owner": {"component": "Part"},
+                "geometry": {"id": entity.entityToken}}
+
+    monkeypatch.setattr(mod._edit, "reference_descriptor", description)
+    monkeypatch.setattr(mod._common, "native_identity",
+                        lambda entity: (getattr(entity, "entityToken", None), "urn:fixture"))
+    monkeypatch.setattr(mod._REFERENCES, "resolve_for",
+                        lambda _raw, _feature, _action, _support:
+                        (paths[_raw[0]], None) if _raw[0] in paths else (None, "unknown path"))
+    monkeypatch.setattr(mod._edit, "feature_geometry_snapshot", lambda _design:
+        original_shape if feature.curves[0] is original else {
+            "bodies": {("body-token", "urn:fixture"): {"component": "Part", "body": "Body1",
+                "shape": {"measure": 2 if feature.curves[0] is replacement else 3}}},
+            "occurrences": {}})
+    monkeypatch.setattr(mod._edit, "health", lambda *_args: {
+        "errors": ([{"name": "Rib1"}] if feature.curves[0] is rejected else []), "warnings": []})
+    monkeypatch.setattr(mod._edit, "same_feature", lambda *_args: True)
+    feature.curves = [original]
+    feature._guide_state = {"original": original, "replacement": replacement, "rejected": rejected}
+    return feature, timeline, design
+
+
+def test_rib_curve_retarget_changes_definition_and_geometry(rib_scene):
+    feature, timeline, _design = rib_scene
+    result = payload(mod.handler(feature="Part/Rib1@1", action="inputs",
+                                 references=["replacement"]))
+    assert result["edited"] is True
+    assert result["definition_matches"] is True
+    assert result["geometry_changed"] is True
+    assert result["same_feature"] is True
+    assert feature.curves == [feature._guide_state["replacement"]]
+    assert result["marker_restored"] is True and timeline.markerPosition == timeline.count
+
+
+def test_rib_definition_reads_native_sketch_curve_vector_without_count():
+    class SketchCurveVector:
+        def __init__(self, curves):
+            self.curves = curves
+
+        def __len__(self):
+            return len(self.curves)
+
+        def __iter__(self):
+            return iter(self.curves)
+
+    curve = SimpleNamespace(entityToken="guide-original")
+    assert mod._edit.collection_entities(SketchCurveVector([curve])) == [curve]
+    assert mod._edit.collection_entities(SketchCurveVector([curve]), cap=0) is None
+
+
+def test_unhealthy_rib_curve_retarget_restores_original_definition_and_geometry(rib_scene):
+    feature, timeline, _design = rib_scene
+    result = mod.handler(feature="Part/Rib1@1", action="inputs", references=["rejected"])
+    assert result["isError"] is True
+    assert "introduced timeline health errors" in error_message(result)
+    assert feature.curves == [feature._guide_state["original"]]
+    assert result["details"]["edited"] is False
+    assert result["details"]["restore_gaps"] == []
+    assert result["details"]["same_feature"] is True
+    assert result["details"]["geometry_restored"] == result["details"]["geometry_before"]
+    assert timeline.markerPosition == timeline.count
+
+
+def test_unhealthy_rib_curve_with_unverified_restore_reports_partial_state(rib_scene, monkeypatch):
+    feature, _timeline, _design = rib_scene
+    monkeypatch.setattr(mod, "_restore_value", lambda *_args: None)
+    result = mod.handler(feature="Part/Rib1@1", action="inputs", references=["rejected"])
+    assert result["isError"] is True
+    assert result["details"]["edited"] is None
+    assert result["details"]["restore_gaps"]
+    assert result["details"]["geometry_restored"] != result["details"]["geometry_before"]
+
+
 def test_axis_edit_uses_real_typed_resolver_reads_back_and_restores_marker(scene):
     feature, timeline, new_axis, _before_axis, _design, _body = scene
     result = payload(mod.handler(feature="Part/Revolve1@1", action="axis",
