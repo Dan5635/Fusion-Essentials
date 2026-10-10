@@ -54,6 +54,7 @@ class Extrude(FakeFeature):
         self.taperAngleOne = SimpleNamespace(value=0)
         self.taperAngleTwo = SimpleNamespace(value=0)
         self.startExtent = SimpleNamespace(objectType="adsk::fusion::ProfilePlaneStartDefinition")
+        self.start_setter_ok = True
         self.setter_ok = True
         self.setter_args = None
 
@@ -71,11 +72,27 @@ class Extrude(FakeFeature):
     def reshape(self):
         """Place the body from the current profile and the signed one-sided distance."""
         depth = self.param.value
+        start = (self.startExtent.offset.value if self.startExtent.objectType in (
+            "adsk::fusion::OffsetStartDefinition", "adsk::fusion::FromEntityStartDefinition") else 0)
         x = self.profile_x.get(id(self._profile), 2)
         body = self.bodies.item(0)
-        body.boundingBox = make_bbox((x, 0, min(0, depth)), (x + 1, 1, max(0, depth)))
+        body.boundingBox = make_bbox((x, 0, start + min(0, depth)),
+                                     (x + 1, 1, start + max(0, depth)))
         body.volume = abs(depth)
         self.after_edit()
+
+    @property
+    def startExtent(self):
+        return self._start_extent
+
+    @startExtent.setter
+    def startExtent(self, value):
+        if getattr(self, "start_setter_ok", True):
+            if isinstance(getattr(value, "offset", None), FakeValueInput):
+                value.offset = FakeModelParameter(value=value.offset.realValue)
+            self._start_extent = value
+            if getattr(self, "_profile", None) is not None:
+                self.reshape()
 
     def setOneSideExtent(self, extent, direction, taper):
         self.setter_args = extent, direction, taper
@@ -137,6 +154,10 @@ def scene(monkeypatch):
     monkeypatch.setattr(adsk.fusion, "Profile", Profile)
     monkeypatch.setattr(adsk.core.ValueInput, "createByReal", FakeValueInput)
     monkeypatch.setattr(adsk.core.ValueInput, "createByString", lambda value: FakeValueInput(0))
+    monkeypatch.setattr(adsk.core.ValueInput, "cast", staticmethod(
+        lambda value: value if isinstance(value, FakeValueInput) else None))
+    monkeypatch.setattr(adsk.fusion.ModelParameter, "cast", staticmethod(
+        lambda value: value if isinstance(value, FakeModelParameter) else None))
     monkeypatch.setattr(adsk.fusion.DistanceExtentDefinition, "create", lambda value:
         SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
                         distance=SimpleNamespace(value=value.realValue)))
@@ -196,6 +217,91 @@ def test_equal_volume_profile_shift_and_parked_marker(scene):
     assert "mass properties stale" not in result["note"]
     assert scene.timeline.markerPosition == 3
     assert scene.timeline.count == 4
+
+
+def test_offset_start_moves_body_and_preserves_feature(scene, monkeypatch):
+    monkeypatch.setattr(adsk.fusion.OffsetStartDefinition, "create", lambda value:
+        SimpleNamespace(objectType="adsk::fusion::OffsetStartDefinition",
+                        offset=value))
+    result = payload(mod.handler(feature="Extrude1", action="start", start_offset=5))
+    assert result["edited"] is True
+    assert result["definition_matches"] is True
+    assert result["same_feature"] is True
+    assert result["definition_before"]["start_kind"] == "adsk::fusion::ProfilePlaneStartDefinition"
+    assert result["definition_after"]["start_offset_cm"] == pytest.approx(0.5)
+    assert result["geometry_after"][0][6:8] == [0.5, 1.5]
+    assert scene.timeline.markerPosition == 3
+
+
+def test_from_plane_start_checks_selected_entity(scene, monkeypatch):
+    plane = SimpleNamespace(entityToken="plane-token", name="XY", component=scene.component,
+                            isValid=True, assemblyContext=None)
+    monkeypatch.setattr(mod._START_OBJECT, "resolve", lambda raw, component=None: (plane, None))
+    monkeypatch.setattr(adsk.fusion.FromEntityStartDefinition, "create", lambda entity, offset:
+        SimpleNamespace(objectType="adsk::fusion::FromEntityStartDefinition", entity=entity,
+                        offset=offset))
+    result = payload(mod.handler(feature="Extrude1", action="start", start_object="xy",
+                                 start_offset=8))
+    assert result["definition_matches"] is True
+    assert result["definition_after"]["start_entity"] == ["plane-token", None]
+    assert result["geometry_after"][0][6:8] == [0.8, 1.8]
+
+
+def test_from_plane_start_refuses_foreign_component_before_roll(scene, monkeypatch):
+    foreign = MakeComp(name="Other", entity_token="other-token")
+    plane = SimpleNamespace(entityToken="foreign-plane", component=foreign,
+                            isValid=True, assemblyContext=None)
+    monkeypatch.setattr(mod._START_OBJECT, "resolve", lambda raw, component=None: (plane, None))
+    result = mod.handler(feature="Extrude1", action="start", start_object="xy", start_offset=8)
+    assert "does not belong" in error_message(result)
+    assert scene.timeline._moves == []
+    assert scene.feature.startExtent.objectType == "adsk::fusion::ProfilePlaneStartDefinition"
+    assert scene.body.volume == 1
+
+
+def test_from_entity_start_refuses_wrong_landed_entity(scene, monkeypatch):
+    wanted = SimpleNamespace(entityToken="wanted-plane", parentComponent=scene.component,
+                             isValid=True, assemblyContext=None)
+    wrong = SimpleNamespace(entityToken="wrong-plane", parentComponent=scene.component,
+                            isValid=True, assemblyContext=None)
+    monkeypatch.setattr(mod._START_OBJECT, "resolve", lambda raw, component=None: (wanted, None))
+    monkeypatch.setattr(adsk.fusion.FromEntityStartDefinition, "create", lambda entity, offset:
+        SimpleNamespace(objectType="adsk::fusion::FromEntityStartDefinition", entity=wrong,
+                        offset=offset))
+    result = mod.handler(feature="Extrude1", action="start", start_object="xy", start_offset=8)
+    assert result["isError"] is True
+    assert result["details"]["definition_matches"] is False
+    assert result["details"]["geometry_changed"] is True
+    assert result["details"]["definition_after"]["start_entity"] == ("wrong-plane", None)
+
+
+def test_silent_start_setter_is_error(scene, monkeypatch):
+    scene.feature.start_setter_ok = False
+    monkeypatch.setattr(adsk.fusion.OffsetStartDefinition, "create", lambda value:
+        SimpleNamespace(objectType="adsk::fusion::OffsetStartDefinition",
+                        offset=value))
+    result = mod.handler(feature="Extrude1", action="start", start_offset=5)
+    assert result["isError"] is True
+    assert result["details"]["definition_matches"] is False
+    assert result["details"]["geometry_changed"] is False
+    assert scene.timeline.markerPosition == 3
+
+
+@pytest.mark.parametrize("operation", [
+    adsk.fusion.FeatureOperations.CutFeatureOperation,
+    adsk.fusion.FeatureOperations.IntersectFeatureOperation,
+])
+def test_start_refuses_two_sided_through_all_scope_before_roll(scene, operation):
+    scene.feature.operation = operation
+    scene.feature.hasTwoExtents = True
+    scene.feature.extentOne = adsk.fusion.ThroughAllExtentDefinition.create()
+    scene.feature.extentTwo = adsk.fusion.ThroughAllExtentDefinition.create()
+    result = mod.handler(feature="Extrude1", action="start", start_offset=5)
+    assert "Two-sided through_all with cut/intersect" in error_message(result)
+    assert scene.timeline._moves == []
+    assert scene.feature.startExtent.objectType == "adsk::fusion::ProfilePlaneStartDefinition"
+    assert scene.feature.participantBodies == []
+    assert scene.body.volume == 1
 
 
 def test_silent_profile_setter_is_an_error(scene):

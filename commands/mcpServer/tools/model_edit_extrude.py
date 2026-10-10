@@ -19,10 +19,11 @@ from ._edit_feature_common import (at_address, failed, health as _health,
                                    read_extrude_definition, extrude_extent_kind as _extent_kind,
                                    restore_definition, restore_gaps,
                                    same_feature as _same_feature, sentence, sketch_address)
+from .model_extrude import _start_definition_readback
 
 
 _FEATURE = _inputs.FeatureRef("feature", required=True)
-_ACTION = _inputs.Choice("action", ("profile", "operation", "participants", "extent"), required=True)
+_ACTION = _inputs.Choice("action", ("profile", "operation", "participants", "extent", "start"), required=True)
 _PROFILE = _inputs.ProfileRef("profile")
 _OPERATION = _inputs.boolean_op(default=None, description="")
 _BODIES = _inputs.BodyRefList("target_bodies", kind="solid")
@@ -30,6 +31,7 @@ _EXTENT = _inputs.Choice("extent", ("distance", "symmetric", "two_side", "to_fac
 _DIRECTION = _inputs.Choice("direction", ("positive", "negative", "both"),
                             description="Unset keeps a one-sided side.")
 _FACE = _inputs.GeometryHandle("to_object", require="face")
+_START_OBJECT = _inputs.PlaneRef("start_object")
 _UNITS = _inputs.UnitField()
 _SPEC = [_FEATURE, _ACTION, _PROFILE, _OPERATION, _BODIES, _EXTENT, _DIRECTION, _FACE, _UNITS]
 _UNREAD = object()
@@ -59,6 +61,18 @@ def _definition_matches(feature, action, values):
             bodies = safe(lambda: list(feature.participantBodies))
             matched = matched is True and _members_match(bodies, values["target_bodies"])
         return matched
+    if action == "start":
+        kind, offset, why = _start_definition_readback(
+            safe(lambda: feature.startExtent), values["start_kind"], values["start_cm"],
+            design=values["design"])
+        if why or kind != values["start_kind"]:
+            return False
+        if values["start_object"] is not None:
+            landed = safe(lambda: feature.startExtent.entity)
+            return (_common.native_identity(landed) is not None
+                    and _common.native_identity(landed) ==
+                    _common.native_identity(values["start_object"]))
+        return offset is not None
     kind = values["extent"]
     if _extent_kind(feature) != kind:
         return False
@@ -81,18 +95,19 @@ def _definition_matches(feature, action, values):
 
 
 def _prepare(action, values, raw, design, entity):
-    """Validate this action's inputs and construct its nonmutating extent definitions."""
+    """Validate the action and prepare its definition inputs without changing the feature."""
     allowed = {"profile": {"profile"}, "operation": {"operation", "target_bodies"},
                "participants": {"target_bodies"},
-               "extent": {"extent", "distance", "distance2", "units", "to_object", "direction"}}
+               "extent": {"extent", "distance", "distance2", "units", "to_object", "direction"},
+               "start": {"start_object", "start_offset", "units"}}
     for name in ("profile", "operation", "target_bodies", "extent", "distance", "distance2",
-                 "to_object", "direction"):
+                 "to_object", "direction", "start_object", "start_offset"):
         if raw[name] not in (None, "", []) and name not in allowed[action]:
             return f"'{name}'={raw[name]!r} is not used by action='{action}'. Remove it."
     scoped_operation = safe(lambda: entity.operation) in (
         adsk.fusion.FeatureOperations.CutFeatureOperation,
         adsk.fusion.FeatureOperations.IntersectFeatureOperation)
-    assigns_scope = (action in ("profile", "extent", "participants") and scoped_operation
+    assigns_scope = (action in ("profile", "extent", "participants", "start") and scoped_operation
                      or action == "operation" and values["operation"] in ("cut", "intersect"))
     requested_both = (action == "extent" and values["extent"] == "through_all"
                       and values["direction"] == "both" and scoped_operation)
@@ -118,6 +133,27 @@ def _prepare(action, values, raw, design, entity):
                 adsk.fusion.FeatureOperations.CutFeatureOperation,
                 adsk.fusion.FeatureOperations.IntersectFeatureOperation):
             return "action='participants' requires an existing cut/intersect Extrude."
+    if action == "start":
+        source = safe(lambda: entity.startExtent.objectType)
+        if source not in ("adsk::fusion::ProfilePlaneStartDefinition",
+                          "adsk::fusion::OffsetStartDefinition",
+                          "adsk::fusion::FromEntityStartDefinition"):
+            return f"Existing start definition {source!r} is unsupported; inspect the Extrude in Fusion."
+        scale = _common.scale(raw["units"] or "mm")
+        if scale is None:
+            return f"Unknown units '{raw['units']}'; use mm, cm or in."
+        if raw["start_offset"] is None and not raw["start_object"]:
+            return "action='start' requires 'start_offset' or 'start_object'."
+        offset = raw["start_offset"] if raw["start_offset"] is not None else 0
+        val, cm, why = _inputs.length_value_input(offset, scale, design, "start_offset")
+        if why:
+            return why
+        if cm is None or not math.isfinite(cm):
+            return f"'start_offset'={offset!r} must evaluate to a finite length."
+        values["start_input"], values["start_cm"], values["design"] = val, cm, design
+        values["start_kind"] = ("adsk::fusion::FromEntityStartDefinition" if values["start_object"]
+                                else "adsk::fusion::OffsetStartDefinition")
+        return None
     if action != "extent":
         return None
     kind = values["extent"]
@@ -181,6 +217,12 @@ def _apply_edit(feature, action, values):
             feature.operation = values["native_operation"]
         if values["target_bodies"]:
             feature.participantBodies = list(values["target_bodies"])
+    elif action == "start":
+        if values["start_object"] is not None:
+            feature.startExtent = adsk.fusion.FromEntityStartDefinition.create(
+                values["start_object"], values["start_input"])
+        else:
+            feature.startExtent = adsk.fusion.OffsetStartDefinition.create(values["start_input"])
     else:
         kind = values["extent"]
         zero = adsk.core.ValueInput.createByString("0 deg")
@@ -386,8 +428,17 @@ def _definition(feature):
     profile, sketch, collection, _ = _profile_source(
         feature, safe(lambda: feature.parentComponent), read["profile"])
     address = None if collection else sketch_address(profile)
+    start = safe(lambda: feature.startExtent)
+    start_kind = safe(lambda: start.objectType)
+    start_entity = safe(lambda: start.entity) if start_kind == "adsk::fusion::FromEntityStartDefinition" else None
     return {"profile_sketch": safe(lambda: sketch.name),
             "profile_index": address[2] if address and address[1] == "profile" else None,
+            "start_kind": start_kind,
+            "start_offset_cm": (safe(lambda: start.offset.value)
+                                if start_kind in ("adsk::fusion::OffsetStartDefinition",
+                                                  "adsk::fusion::FromEntityStartDefinition") else None),
+            "start_entity": _common.native_identity(start_entity) if start_entity is not None else None,
+            "start_entity_name": safe(lambda: start_entity.name),
             **{key: read[key] for key in ("operation", "extent", "distance_cm", "distance2_cm",
                 "distance_parameter", "distance_expression", "participants")},
             "side": _side(feature, read["extent"])}
@@ -404,8 +455,13 @@ def _described(definition):
                if d.get("profile_index") is not None else d.get("profile_sketch"))
     parameter = (f"{d['distance_parameter']} = {d.get('distance_expression')}"
                  if d.get("distance_parameter") else None)
+    start_kind = (d.get("start_kind") or "").rsplit("::", 1)[-1]
+    start = ("profile plane" if start_kind == "ProfilePlaneStartDefinition" else
+             f"offset {mm('start_offset_cm')} mm" if start_kind == "OffsetStartDefinition" else
+             f"{d.get('start_entity_name') or d.get('start_entity')} + {mm('start_offset_cm')} mm"
+             if start_kind == "FromEntityStartDefinition" else d.get("start_kind"))
     return {"profile": profile, "operation": d.get("operation"),
-            "participants": d.get("participants"), "extent": extent,
+            "participants": d.get("participants"), "extent": extent, "start": start,
             "distance parameter": parameter}
 
 
@@ -436,6 +492,11 @@ def _remedy(label, action, before, after):
         if d.get("operation") in ("cut", "intersect"):
             args.append(f"target_bodies={d.get('participants')}")
         return call + ", ".join(args) + ")."
+    if action == "start":
+        if d.get("start_kind") == "adsk::fusion::OffsetStartDefinition" and d.get("start_offset_cm") is not None:
+            offset_mm = round(d["start_offset_cm"] * _common.CM_TO_UNIT["mm"], 6)
+            return f"{call}start_offset={offset_mm})."
+        return "Undo the start change in Fusion."
     kind, names = d.get("extent"), (d.get("distance_parameter"), now.get("distance_parameter"))
     if (kind == "distance" and d.get("distance_expression") and now.get("extent") == "distance"
             and names[0] and names[0] == names[1]
@@ -503,7 +564,8 @@ def _linked_scope_error(feature, component, components, index):
 
 def handler(feature: str = "", action: str = "", profile=None, operation: str = "",
             target_bodies=None, extent: str = "", distance=None, distance2=None,
-            units: str = "mm", to_object: str = "", direction: str = "") -> dict:
+            units: str = "mm", to_object: str = "", direction: str = "",
+            start_object: str = "", start_offset=None) -> dict:
     """Edit one Extrude definition and verify its native and geometric effect."""
     raw = dict(locals())
     values, refusal = _inputs.resolve_inputs(_SPEC, raw)
@@ -515,6 +577,12 @@ def handler(feature: str = "", action: str = "", profile=None, operation: str = 
     refusal = _target_error(entity, label)
     if refusal:
         return error(refusal)
+    values["start_object"] = None
+    if start_object:
+        values["start_object"], refusal = _START_OBJECT.resolve(
+            start_object, component=safe(lambda: entity.parentComponent))
+        if refusal:
+            return error(refusal)
     design = _common.design()
     refusal = _prepare(action, values, raw, design, entity)
     if refusal:
@@ -530,7 +598,7 @@ def handler(feature: str = "", action: str = "", profile=None, operation: str = 
         return error(f"'{label}' is after marker {marker}; roll after it with design_edit_timeline.")
     component = safe(lambda: entity.parentComponent)
     values["target_bodies"] = [_common._native_of(body) for body in values["target_bodies"]]
-    for key in ("profile", "to_object"):
+    for key in ("profile", "to_object", "start_object"):
         if values[key] is not None:
             values[key] = _common._native_of(values[key])
     profile_entity = values["profile"]
@@ -553,10 +621,10 @@ def handler(feature: str = "", action: str = "", profile=None, operation: str = 
         operands.append(profile_entity)
     if values["to_object"] is not None:
         operands.append(values["to_object"])
+    if values["start_object"] is not None:
+        operands.append(values["start_object"])
     for operand in operands:
-        owner = (safe(lambda: operand.parentComponent)
-                 or safe(lambda: operand.parentSketch.parentComponent)
-                 or safe(lambda: operand.body.parentComponent))
+        owner = _inputs.entity_component(operand)
         if _common.same_component(component, owner) is not True:
             return error(f"An operand does not belong to '{label}'s owning component.")
         if safe(lambda: operand.assemblyContext, _UNREAD) is not None:
@@ -599,7 +667,7 @@ def handler(feature: str = "", action: str = "", profile=None, operation: str = 
             if (counted(lambda: entity.linkedFeatures.count)
                     and action == "operation" and values["operation"] in ("new", "join")):
                 raise ValueError("A linked Extrude supports only scoped cut/intersect operation edits.")
-            if action in ("profile", "extent") and entity.operation in (
+            if action in ("profile", "extent", "start") and entity.operation in (
                     adsk.fusion.FeatureOperations.CutFeatureOperation,
                     adsk.fusion.FeatureOperations.IntersectFeatureOperation):
                 prior = [_common._native_of(body) for body in entity.participantBodies]
@@ -732,6 +800,8 @@ tool = _inputs.apply_to_tool(
 tool.add_input_property("distance", {"type": ["number", "string"],
                                     "description": "Positive; symmetric per side."})
 tool.add_input_property("distance2", {"type": ["number", "string"]})
+tool.add_input_property(*_START_OBJECT.as_property())
+tool.add_input_property("start_offset", {"type": ["number", "string"]})
 tool.strict_schema()
 item = Item.create_tool_item(
     tool=tool, write="write", handler=handler, run_on_main_thread=True,

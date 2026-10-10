@@ -86,6 +86,41 @@ def _extrude_edit_mass(volume, center_axis=None, center=None):
     return check
 
 
+def _extrude_start_body(shift_mm):
+    """Check the target's independent bounds and volume against its pre-edit read."""
+    def check(p):
+        before = _RECALL.get("ee_start_before") or {}
+        old_lo, old_hi = before.get("min_point") or {}, before.get("max_point") or {}
+        lo, hi = p.get("min_point") or {}, p.get("max_point") or {}
+        mass = p.get("mass") or {}
+        good = (p.get("kind") == "body" and p.get("units") == "mm"
+                and p.get("lump_count") == 1 and _near(mass.get("volume"), 1000, 0.001)
+                and all(_near(lo.get(axis), old_lo.get(axis), 0.01)
+                        and _near(hi.get(axis), old_hi.get(axis), 0.01) for axis in ("x", "y"))
+                and _near(lo.get("z"), old_lo.get("z", float("nan")) + shift_mm, 0.01)
+                and _near(hi.get("z"), old_hi.get("z", float("nan")) + shift_mm, 0.01))
+        return _measured("Extrude start moves target material", p, good)
+    return check
+
+
+def _extrude_start_history(p):
+    """Check the feature row and marker against the pre-edit timeline read."""
+    before = _RECALL.get("ee_start_history") or {}
+    now = p.get("timeline") or {}
+    return _measured("start edit preserves timeline identity", now,
+                     bool(before.get("timeline")) and now == before)
+
+
+def _extrude_start_seed(p):
+    """Check the source body's independent bounds and volume are unchanged."""
+    before = _RECALL.get("ee_start_seed") or {}
+    mass = p.get("mass") or {}
+    return _measured("start edit leaves source material unchanged", p,
+                     p.get("min_point") == before.get("min_point")
+                     and p.get("max_point") == before.get("max_point")
+                     and _near(mass.get("volume"), 500, 0.001))
+
+
 def _ee_shift(x, y):
     """(x, y) moved to where the extrusion story's block landed, the ee_at recall of its origin."""
     at = _RECALL.get("ee_at")
@@ -644,6 +679,35 @@ def _extrude_edit_rows():
               "cut", "G18Replacement", ["Body2"])
     four_read({"Body1": 54000, "Body2": 51000}, (40, 45, 60),
               "four-profile scalar replacement")
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "EditStart", "activate": True}, _made_component)
+    rectangle("EditStartSeed", (100, 0), (110, 10))
+    write("model_extrude", {"sketch_name": "EditStartSeed", "distance": 5}, _extruded)
+    rectangle("EditStartTarget", (120, 0), (130, 10))
+    write("model_extrude", {"sketch_name": "EditStartTarget", "distance": 10}, _extruded,
+          ("ee_start_feature", _recall("ee_start_feature", lambda p: "EditStart/" + p["feature"])))
+    rows.append(("model_inspect", _combine_inspect("EditStart:Body2"), _extrude_edit_mass(1000),
+                 ("ee_start_before", _recall("ee_start_before", lambda p: p))))
+    rows.append(("model_inspect", _combine_inspect("EditStart:Body1"), _extrude_edit_mass(500),
+                 ("ee_start_seed", _recall("ee_start_seed", lambda p: p))))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, "ok",
+                 ("ee_start_history", _recall("ee_start_history", lambda p: p["timeline"]))))
+    rows.append(("find_geometry", lambda c: {
+        "target": "EditStart:Body1", "kind": "planar_face", "units": "mm", "max_results": 1,
+        "nearest_to": [*_ee_shift(105, 5), 5]}, _matched(1, "planar_face"), _fg("ee_start_face")))
+    for args, shift in (({"start_offset": 5}, 5),
+                        ({"start_object": "xy", "start_offset": 8}, 8),
+                        ({"start_object": "face", "start_offset": 0}, 5)):
+        write("model_edit_extrude", lambda c, args=args: {
+            "feature": _ctx_get(c, "ee_start_feature", "EditStart extrude"), "action": "start",
+            **{key: _ctx_get(c, "ee_start_face", "seed face") if key == "start_object" and value == "face"
+               else value for key, value in args.items()}}, _extrude_edit_landed)
+        rows.append(("model_inspect", _combine_inspect("EditStart:Body2"),
+                     _extrude_start_body(shift), None))
+        rows.append(("model_inspect", _combine_inspect("EditStart:Body1"),
+                     _extrude_start_seed, None))
+        rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
+                     _extrude_start_history, None))
     rows += [
         ("doc_activate", lambda c: {"name": _ctx_get(c, "ee_story", "story"),
                                     "expect_document": _ctx_get(c, "ee_doc", "scratch")}, "ok", None),
