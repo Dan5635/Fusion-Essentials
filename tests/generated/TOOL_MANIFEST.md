@@ -178,7 +178,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | · | `cam_find_pockets` | Recognize solid bodies' pockets down an attack vector, for cam_select_geometry(selection='pocket') |
 | ✎ | `cam_generate` | Launch CAM toolpath (re)generation from the MANUFACTURE workspace |
 | ✎ | `cam_generate_setup_sheet` | Generate a machinist SETUP SHEET, named after the DOCUMENT - a second call to the same folder overwrites it |
-| · | `cam_get` | Read the active document's CAM (Manufacture) state: one row per setup by default, deeper slices via 'include' |
+| · | `cam_get` | Read CAM state: setup summary by default, deeper slices via 'include' |
 | · | `cam_get_status` | Read toolpath generation progress; 'readiness' carries the verdict |
 | · | `cam_inspect_toolpaths` | Check CAM toolpath validity |
 | ✎ | `cam_post` | Create (or reuse) an NC Program and post it to a G-code / NC file on disk - the final CAM step |

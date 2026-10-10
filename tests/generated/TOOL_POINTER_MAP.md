@@ -738,6 +738,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - No hub folder to create the library in.
 - addition is unconfirmed: library count reads
 - . Nothing was imported.
+- Preset names belong to this library tool before operation assignment. Pass preset= with the same library_tool to read one cutting recipe.
+- 'library_tool' needs a named library at this scope. List libraries, then pass library= and its tool index.
+- is not a tool index in this library (0..
+- ). Read include=['library'] for its indices.
+- Preset names on library tool
+- did not read; retry this library-tool read before choosing a preset.
+- . Presets on this tool:
+- presets on library tool
+- ). Choose an unambiguous tool or repair duplicate preset names before assignment.
 - Could not read the sample tool libraries - tool types are unavailable.
 - Pass one of these as add_tools[].from_type to clone a sample of that type.
 - Auto-assigned free tool number(s)
@@ -799,6 +808,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - create_library seed  has : a seed copies one existing tool and takes exactly 'library_url' (a string) and 'index' (an integer). 'from_type' and the overrides apply to action='add' only. Nothing was...
 - importToolLibrary returned a URL but no library loads back from it - the create is unconfirmed at ''. Inspect that library before retrying; it was not rolled back.
 - Created library at '' reads  tools, expected . Seed persistence is unconfirmed; inspect that library before retrying. It was not rolled back.
+- '' names  presets on library tool  (indices ). Choose an unambiguous tool or repair duplicate preset names before assignment.
 
 ### `cam_find_holes`
 - Omitted 'bodies' scans every solid body. Each hole's 'faces' lists handles PER SEGMENT, in the group's 'segments' order - pass handles to cam_select_geometry(selection='holes', handles=[...]), whic...
@@ -851,6 +861,9 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `cam_get`
 - 'parameter_names', 'include_unavailable' and 'unavailable_offset' apply only with include=['parameters'].
+- 'library_tool' needs include=['library']; first list that library for indices.
+- 'preset' cannot select both an operation tool and a library tool in one call. Read include=['tool'] and include=['library'] separately.
+- 'preset' needs include=['tool'] with operation=, or include=['library'] with library_tool=.
 - Operation rows capped at
 - ; 'setup' scopes, 'default' keeps setup counts.
 - rows; 'setup' scopes it, strategy_count is the true total.

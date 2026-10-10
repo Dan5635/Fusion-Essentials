@@ -3540,3 +3540,28 @@ class TestReadLibraryEntryPoint:
                             lambda scope: ([{"name": "Team Mill", "url": "u"}], False, None))
         out = _payload(ct.read_library(scope="hub"))
         assert out["scope"] == "hub" and out["library_count"] == 1
+
+    def test_selected_library_tool_discloses_its_preset_without_assigning_an_operation(
+            self, monkeypatch):
+        first, second = _Tool("Plain"), _Tool("Preset tool")
+        recipe = second.presets.add()
+        recipe.name = "Finishing"
+        recipe.parameters.itemByName("tool_spindleSpeed").expression = "5000 rpm"
+        target = _Target([first, second])
+        _install(monkeypatch, target)
+        out = _payload(ct.read_library(tool_index=1, preset="finishing"))
+        assert out["tool"]["index"] == 1
+        assert out["preset_names"] == ["Finishing"] and out["preset_count"] == 1
+        assert out["preset"] == {"name": "Finishing", "expressions": {
+            "tool_spindleSpeed": "5000 rpm", "tool_feedCutting": "0"}}
+        assert target.updated == [] and target.persisted == 0
+        assert "library_tool'=2" in ct.read_library(tool_index=2)["message"]
+
+    def test_duplicate_library_preset_names_refuse_a_false_single_recipe(self, monkeypatch):
+        tool = _Tool("Shared names")
+        for name in ("Finish", "finish"):
+            tool.presets.add().name = name
+        _install(monkeypatch, _Target([tool]))
+        refusal = ct.read_library(tool_index=0, preset="finish")
+        assert refusal["isError"] is True
+        assert "2 presets" in refusal["message"] and "indices [0, 1]" in refusal["message"]

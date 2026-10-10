@@ -1602,6 +1602,16 @@ _CAM_STORY = _setup_preflight_rows() + _chain_transformed_rows() + [
     ("cam_edit_tools", {"action": "add_preset", "scope": "document", "tool": _FLAT_MILL,
                         "preset": {"name": "Sweep35", "feed": "35in/min"}},
      lambda p: "Sweep35" in p["presets"], None),
+    ("cam_get", {"include": ["library"], "scope": "document", "library_tool": _FLAT_MILL,
+                 "preset": "SweepMM"},
+     lambda p: (p.get("library", {}).get("tool", {}).get("index") == _FLAT_MILL
+                and "SweepMM" in p["library"].get("preset_names", [])
+                and p["library"].get("preset", {}).get("name") == "SweepMM"
+                and "900" in str(p["library"]["preset"].get("expressions", {}).get("tool_feedCutting"))
+                and "12000" in str(p["library"]["preset"].get("expressions", {}).get("tool_spindleSpeed"))),
+     None),
+    ("cam_get", {"include": ["library"], "scope": "document", "library_tool": _FLAT_MILL,
+                 "preset": "NoSuchSweepPreset"}, "refused", None),
     # a numeric-leading expression that fails evaluation is refused and rolled back, never a
     # silent zero.
     ("cam_edit_tools", {"action": "add_preset", "scope": "document", "tool": _FLAT_MILL,

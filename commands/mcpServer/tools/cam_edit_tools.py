@@ -20,6 +20,7 @@ from ._cam_common import (asset_leaf, asset_leaf_keys, assets_named, get_cam, ex
                           library_assets, quote_expression, tool_dimension_value,
                           unquote_expression)
 from ._cam_presets import (_apply_preset_values, _persist_preset_change, _persisted_preset_names,
+                           _preset_expressions,
                            _preset_names, _preset_spec_error, _preset_tool, _presets_named)
 
 app = adsk.core.Application.get()
@@ -1303,7 +1304,8 @@ def _do_create_library(scope, name, seed_tools):
     return ok(out)
 
 
-def read_library(scope: str = "document", library: str = "", tool_type: str = "") -> dict:
+def read_library(scope: str = "document", library: str = "", tool_type: str = "",
+                 tool_index=None, preset: str = "") -> dict:
     """The READ-ONLY library listing, shared with cam_get(include=['library']). Lists the tools in the
     target library (or, for a shared scope with no 'library', the libraries at that location). The write
     actions (add/remove/edit) stay on the cam_edit_tools tool - this is just the read half."""
@@ -1311,10 +1313,41 @@ def read_library(scope: str = "document", library: str = "", tool_type: str = ""
     if scope not in _SCOPES:
         return error(f"Unknown scope '{scope}'. Use one of: {', '.join(_SCOPES)}.")
     if scope != "document" and not (library or "").strip():
+        if tool_index is not None:
+            return error("'library_tool' needs a named library at this scope. List libraries, then "
+                         "pass library= and its tool index.")
         return _do_list_libraries(scope)
     target, terr = _resolve_target(scope, library)
     if terr:
         return error(terr)
+    if tool_index is not None:
+        tools = target.tools
+        if type(tool_index) is not int or not (0 <= tool_index < len(tools)):
+            return error(f"'library_tool'={tool_index!r} is not a tool index in this library "
+                         f"(0..{len(tools) - 1}). Read include=['library'] for its indices.")
+        chosen = tools[tool_index]
+        collection = safe(lambda: chosen.presets)
+        names = _preset_names(collection) if collection is not None else None
+        out = {"tool": _tool_summary(chosen, tool_index), "preset_names": names,
+               "preset_count": len(names) if names is not None else None}
+        if preset:
+            if names is None:
+                return error(f"Preset names on library tool {tool_index} did not read; retry "
+                             "this library-tool read before choosing a preset.")
+            matches = _presets_named(collection, preset)
+            if not matches:
+                return error(f"No preset named '{preset}' on library tool {tool_index}. "
+                             f"Presets on this tool: {named_with_remainder([n for n in names if n])}.")
+            if len(matches) > 1:
+                return error(f"'{preset}' names {len(matches)} presets on library tool {tool_index} "
+                             f"(indices {[i for i, _ in matches]}). Choose an unambiguous tool "
+                             "or repair duplicate preset names before assignment.")
+            _, chosen_preset = matches[0]
+            out["preset"] = {"name": safe(lambda: chosen_preset.name),
+                             "expressions": _preset_expressions(chosen_preset)}
+        out["note"] = ("Preset names belong to this library tool before operation assignment. "
+                       "Pass preset= with the same library_tool to read one cutting recipe.")
+        return ok(out)
     return _do_list(target, tool_type)
 
 

@@ -18,7 +18,7 @@ from ._common import (CM_TO_UNIT, iter_collection, measured, named_with_remainde
 from ._cam_common import (STRATEGY_PAIR_NOTE, choice_expressions, clamp_rows, expression_error,
                           get_cam, find_setup, resolve_cam_node, resolve_operation, strategy_pair)
 from . import _cam_common as _cc
-from ._cam_presets import _preset_names, _presets_named
+from ._cam_presets import _preset_expressions, _preset_names, _presets_named
 from ..guidance.loader import STRATEGY_RECIPE_ID
 from . import _inputs
 from . import _cam_read as _cr
@@ -284,12 +284,15 @@ def _slice_tools(cam):
     return _unwrap(_cr.get_tool_list_handler())
 
 
-def _slice_library(cam, scope, library, tool_type):
+def _slice_library(cam, scope, library, tool_type, library_tool=None, preset=""):
     """A tool LIBRARY's catalog (the tools you can ADD), by scope: document/local/cloud/hub/fusion.
     A shared scope with no 'library' lists the libraries there. Distinct from 'tools' (what ops USE);
     the write actions stay on cam_edit_tools, which refuses every write at the fusion scope."""
     from . import cam_edit_tools
-    return _unwrap(cam_edit_tools.read_library(scope or "document", library, tool_type))
+    if library_tool is None and not preset:
+        return _unwrap(cam_edit_tools.read_library(scope or "document", library, tool_type))
+    return _unwrap(cam_edit_tools.read_library(scope or "document", library, tool_type,
+                                               library_tool, preset))
 
 
 def _slice_library_types(cam):
@@ -748,12 +751,6 @@ _SHARED_PRESET_NAME_NOTE = (
     "'preset' for the preset_names / preset_count / active_preset summary.")
 
 
-def _preset_expressions(preset):
-    """{parameter name: expression} for ONE tool preset - its feeds/speeds recipe as authored."""
-    return {safe(lambda p=p: p.name): safe(lambda p=p: p.expression)
-            for p in iter_collection(safe(lambda: preset.parameters))}
-
-
 def _slice_tool(cam, operation, preset, setup="", units="mm"):
     """ONE operation's tool: spec + cutting geometry + its preset NAMES (a tool can hold 20+);
     'preset' drills one preset's expressions (the feeds/speeds recipe). Requires 'operation'; 'setup'
@@ -825,7 +822,8 @@ _VALIDITY_NOTE = (
 
 
 def handler(include=None, setup: str = "", operation: str = "", preset: str = "",
-            scope: str = "", library: str = "", tool_type: str = "", vendor: str = "",
+            scope: str = "", library: str = "", tool_type: str = "", library_tool=None,
+            vendor: str = "",
             machine_type: str = "", technology: str = "", material: str = "",
             template_location: str = "", template_url: str = "", template_depth: int = 0,
             measure: str = "", max_results: int = 0, units: str = "mm",
@@ -843,6 +841,14 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
             ) and "parameters" not in inc:
         return error("'parameter_names', 'include_unavailable' and 'unavailable_offset' apply only "
                      "with include=['parameters'].")
+    if library_tool is not None and "library" not in inc:
+        return error("'library_tool' needs include=['library']; first list that library for indices.")
+    if preset and library_tool is not None and "tool" in inc:
+        return error("'preset' cannot select both an operation tool and a library tool in one "
+                     "call. Read include=['tool'] and include=['library'] separately.")
+    if preset and "tool" not in inc and not ("library" in inc and library_tool is not None):
+        return error("'preset' needs include=['tool'] with operation=, or include=['library'] "
+                     "with library_tool=.")
 
     deep = [s for s in inc if s in _SLICES]
     want_default = not deep or any(s in _DEFAULT_NAMES for s in inc)
@@ -910,7 +916,11 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
             return e
         _bounded(out["tools"], max_results, "tools")
     if "library" in inc:                        # the tool-library catalog (tools you can ADD)
-        out["library"], e = _slice_library(cam, scope, library, tool_type)
+        if library_tool is None:
+            out["library"], e = _slice_library(cam, scope, library, tool_type)
+        else:
+            out["library"], e = _slice_library(cam, scope, library, tool_type,
+                                                library_tool, preset)
         if e:
             return e
         _bounded(out["library"], max_results, "tools", "libraries")
@@ -967,8 +977,8 @@ def _normalize_include(include):
 
 
 TOOL_DESCRIPTION = (
-    "Read the active document's CAM (Manufacture) state: one row per setup by default, deeper "
-    "slices via 'include'. Edits go through cam_edit_setup / cam_edit_operation / cam_edit_tools."
+    "Read CAM state: setup summary by default, deeper slices via 'include'. "
+    "Edits: cam_edit_setup, cam_edit_operation, cam_edit_tools."
 )
 
 tool = (
@@ -987,12 +997,14 @@ tool = (
     .add_input_property("unavailable_offset", {"type": "integer", "minimum": 0,
             "description": "Continues the unavailable listing."})
     .add_input_property("preset", {"type": "string",
-            "description": "With include=['tool']: this preset's feeds/speeds."})
+            "description": "With 'tool' or selected 'library' tool: cutting expressions."})
     .add_input_property("scope", {"type": "string",
             "enum": ["document", "local", "cloud", "hub", "fusion"],
             "description": "Location for 'library'; default document."})
     .add_input_property("library", {"type": "string",
             "description": "A name or url; omit to list the libraries there."})
+    .add_input_property("library_tool", {"type": "integer", "minimum": 0,
+            "description": "With 'library': index from its tool list; reads presets."})
     .add_input_property("tool_type", {"type": "string"})
     .add_input_property("vendor", {"type": "string"})
     .add_input_property("machine_type", {"type": "string",

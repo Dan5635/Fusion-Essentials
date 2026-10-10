@@ -962,6 +962,23 @@ class TestLibrarySlice:
         assert out["library"]["tool_count"] == 1
         assert seen == {"scope": "cloud", "library": "Shop", "tool_type": "ball"}
 
+    def test_router_scopes_preset_read_to_one_library_tool(self, monkeypatch, stub_slices):
+        seen = {}
+        monkeypatch.setattr(cg, "_slice_library",
+                            lambda cam, scope, library, tool_type, tool_index, preset: (
+                                seen.update(index=tool_index, preset=preset)
+                                or ({"preset_names": ["Finish"]}, None)))
+        out = _payload(cg.handler(include=["library"], library_tool=4,
+                                  preset="Finish"))["library"]
+        assert out["preset_names"] == ["Finish"] and seen == {"index": 4, "preset": "Finish"}
+        assert "needs include=['library']" in cg.handler(library_tool=4)["message"]
+
+    def test_preset_cannot_silently_target_two_tool_slices(self, stub_slices):
+        res = cg.handler(include=["tool", "library"], operation="Rough", library_tool=4,
+                         preset="Finish")
+        assert res["isError"] is True
+        assert "separately" in error_message(res)
+
     @pytest.mark.parametrize("asked, returned, truncated", [
         (6, 6, True), (11, 11, True), (12, 12, False), (0, 12, False), (-3, 1, True)])
     def test_max_results_caps_the_library_rows_and_keeps_the_matching_total(

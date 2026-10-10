@@ -10,11 +10,9 @@ from ._common import iter_collection, named_with_remainder, safe
 from ._cam_common import expression_error
 
 MAP_BLURB = (
-    "the ToolPreset substrate: _preset_spec_error (why a {name?, spindle_speed?, feed?} spec is "
-    "unusable), _preset_param_of/_set_preset_param/_apply_preset_values (applying a spec with no "
-    "silent skip), _preset_names/_presets_named (the index-order list, the exact-name lookup), "
-    "_persist_preset_change (the commit-then-re-read), resolve_operation_preset (the preset an "
-    "OPERATION can be pointed at)")
+    "ToolPreset validation and writing: _preset_spec_error, _apply_preset_values, "
+    "_persist_preset_change. Reading: _preset_names, _presets_named, "
+    "_preset_expressions. resolve_operation_preset matches an operation's tool.")
 
 
 # A preset's cutting-data parameter names vary by tool CLASS: a drill carries plunge/drilling feeds
@@ -167,6 +165,12 @@ def _preset_names(presets):
     the list and slide every later name onto the wrong index."""
     return [safe(lambda i=i: presets.item(i).name)
             for i in range(safe(lambda: presets.count, 0) or 0)]
+
+
+def _preset_expressions(preset):
+    """One preset's parameter names and authored expressions."""
+    return {safe(lambda p=p: p.name): safe(lambda p=p: p.expression)
+            for p in iter_collection(safe(lambda: preset.parameters))}
 
 
 def _presets_named(presets, name):
