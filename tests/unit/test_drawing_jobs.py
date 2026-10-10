@@ -519,3 +519,33 @@ class TestDrawingStatus:
         assert row["status"] == "completed" and row["terminal_result"] == result
         assert "canonical_request" not in row and "owner_instance" not in row
         assert status.item.run_on_main_thread is False
+
+    def test_status_guidance_separates_running_completed_and_unknown_outcomes(self, monkeypatch):
+        status = load_tool("drawing_get_status")
+        records = {
+            "queued": {"request_key": "queued", "status": "queued",
+                       "tool": "drawing_export"},
+            "running": {"request_key": "running", "status": "running",
+                        "tool": "drawing_update"},
+            "completed": {"request_key": "completed", "status": "completed",
+                          "tool": "drawing_create", "terminal_result": {"file_id": "urn:one"}},
+            "unresolved": {"request_key": "unresolved", "status": "unresolved",
+                           "tool": "drawing_create", "reason": "server_restarted"},
+            "failed": {"request_key": "failed", "status": "failed",
+                       "tool": "drawing_create", "reason": "native_refused"},
+        }
+
+        class Store:
+            def get(self, key):
+                return dict(records[key])
+
+        monkeypatch.setattr(status.drawing_jobs, "get_store", lambda: Store())
+        read = lambda key: json.loads(status.handler(key)["content"][0]["text"])
+        assert "Poll this request_key" in read("queued")["note"]
+        assert "this operation" in read("queued")["note"]
+        assert "poll the same request_key" in read("running")["note"]
+        assert "processing takes minutes" in read("running")["note"]
+        assert "file_id" in read("completed")["note"]
+        assert "check data_get" in read("failed")["note"]
+        assert "check data_get" in read("unresolved")["note"]
+        assert "unknown" in read("unresolved")["note"].lower()

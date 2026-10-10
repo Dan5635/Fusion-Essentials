@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 220  |  **description breadcrumbs:** 347  |  **note/error breadcrumbs:** 750
+**Tools:** 220  |  **description breadcrumbs:** 349  |  **note/error breadcrumbs:** 753
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -14,8 +14,8 @@ close orphans, factor duplicated guards into shared helpers.
 - none detected in the scanned literals.
 
 ### Orphans (no incoming breadcrumb detected in this map)
-**Read/Acquire (9)** - higher concern, a check-your-work tool nothing points to:
-  `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `drawing_get_status`, `mesh_find`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
+**Read/Acquire (8)** - higher concern, a check-your-work tool nothing points to:
+  `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `mesh_find`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
 
 **Edit (60)** - usually leaf actions, scan for genuine gaps:
   `cam_activate_setup`, `cam_delete_template`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_edit_plastic_rule`, `design_edit_reference_image`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_create_rib`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_edit`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
@@ -48,8 +48,8 @@ close orphans, factor duplicated guards into shared helpers.
 - `cam_get`  <- 34  (desc 15, note 19)
 - `model_inspect`  <- 33  (desc 6, note 27)
 - `sketch_get`  <- 30  (desc 9, note 21)
-- `data_get`  <- 26  (desc 9, note 17)
-- `doc_open`  <- 26  (desc 5, note 21)
+- `data_get`  <- 28  (desc 10, note 18)
+- `doc_open`  <- 27  (desc 5, note 22)
 - `sketch_create`  <- 26  (desc 7, note 19)
 - `assembly_get`  <- 23  (desc 4, note 19)
 
@@ -2562,9 +2562,13 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The drawing's sheet count could not be read, so sheet name '' cannot be resolved. Retry drawing_get after the drawing finishes updating.
 
 ### `drawing_get_status`
-- This is the stored operation state and raw terminal tool result. It does not add an effect verdict or replay unresolved work.
 - Provide the request_key used for deferred drawing work.
 - No durable drawing job has this request_key.
+- Completed. Read terminal_result for the created file_id, then doc_open it.
+- Completed. Read terminal_result and independently check the effect.
+- Failed. Read terminal_result or reason. For drawing_create, check data_get for a cloud file before retrying.
+- Fusion is processing this drawing job. This is not a failure or a progress estimate; poll the same request_key, even if processing takes minutes.
+- Outcome unknown after a restart or persistence failure. For drawing_create, check data_get for the cloud file before any retry; do not assume failure.
 
 ### `drawing_insert_image`
 - Image placed on the sheet.

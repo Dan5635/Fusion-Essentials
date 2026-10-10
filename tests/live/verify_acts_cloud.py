@@ -1547,11 +1547,14 @@ def _drawing_invalid_export_failed(p, polls=_SETTLE_POLLS):
                      {"job_id": p.get("job_id") if isinstance(p, dict) else None,
                       "request_key": p.get("request_key") if isinstance(p, dict) else None,
                       "status": p.get("status") if isinstance(p, dict) else None,
+                      "note": p.get("note") if isinstance(p, dict) else None,
                       "arguments": arguments, "terminal_result": terminal,
                       "file_exists": os.path.exists(_DRAWING_INVALID_PDF)},
                      isinstance(p, dict) and p.get("job_id") == job
                      and p.get("request_key") == _DRAWING_INVALID_KEY
                      and p.get("tool") == "drawing_export" and p.get("status") == "failed"
+                     and "terminal_result" in (p.get("note") or "")
+                     and "before retrying" in (p.get("note") or "")
                      and arguments == expected and terminal.get("isError") is True
                      and "Invalid range" in str(terminal.get("message") or "")
                      and not os.path.exists(_DRAWING_INVALID_PDF))

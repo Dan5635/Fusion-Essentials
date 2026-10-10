@@ -587,7 +587,9 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
 
 
 TOOL_DESCRIPTION = (
-    "Create a cloud drawing; doc_open file_id, then drawing_export, no UI step by default. TIMEOUT is not a verdict; check data_get before retrying."
+    "Create cloud drawing. Generation may take minutes: use deferred=true, request_key and "
+    "expect_document=doc_get.active.document_handle; poll drawing_get_status. Completed -> doc_open "
+    "file_id, no UI step by default. TIMEOUT is not a verdict; for direct calls check data_get before retry."
 )
 
 FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)

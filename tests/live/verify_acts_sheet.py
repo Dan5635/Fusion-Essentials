@@ -965,8 +965,10 @@ def _drawing_complete(p):
     payload = _drawing_terminal(p, "sm_draw_job", _DRAW_KEY, "drawing_create", expected)
     applied = (payload or {}).get("flat_settings_applied") or {}
     return _measured("coupon drawing cloud file and flat preferences", {"status": p.get("status"),
-                     "job_id": p.get("job_id"), "payload": payload},
+                     "job_id": p.get("job_id"), "note": p.get("note"), "payload": payload},
                      (payload or {}).get("created") is True
+                     and "file_id" in (p.get("note") or "")
+                     and "doc_open" in (p.get("note") or "")
                      and ((payload or {}).get("settings_requested") or {}).get("auto_dimension") == "off"
                      and str((payload or {}).get("file_id") or "").startswith("urn:")
                      and applied.get("isFoldedModelIsometricViewAdded") is True
