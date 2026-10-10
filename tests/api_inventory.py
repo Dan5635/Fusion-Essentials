@@ -21,7 +21,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS_DIR = os.path.join(REPO_ROOT, "commands", "mcpServer", "tools")
 OUT_ROOT = os.path.join(REPO_ROOT, "outputs", "api-inventory")
 MODULES = ("core", "fusion", "cam", "drawing", "sim", "electron", "volume")
-PREVIEW = "This class is a preview feature"
+PREVIEW = "is a preview feature"
 _BINDING_GLOBS = (
     os.path.expanduser("~/AppData/Local/Autodesk/webdeploy/production/*/Api/Python/packages/adsk"),
     os.path.expanduser("~/AppData/Local/Autodesk/webdeploy/pre-production/*/Api/Python/packages/adsk"),
@@ -34,6 +34,12 @@ def newest_package():
     """Return the most recently written installed adsk package directory, or None."""
     found = [p for pattern in _BINDING_GLOBS for p in glob.glob(pattern) if os.path.isfile(os.path.join(p, "fusion.py"))]
     return max(found, key=os.path.getmtime) if found else None
+
+
+def _preview(row, kinds):
+    """Return whether a saved binding row declares one of the given kinds Preview."""
+    doc = row.get("doc") or ""
+    return row.get("preview") is True or any(f"This {kind} {PREVIEW}" in doc for kind in kinds)
 
 
 def inventory(path):
@@ -49,14 +55,17 @@ def inventory(path):
                     name = item.name
                     if name.startswith("__") or name == "classType" or name.startswith(("_get_", "_set_")):
                         continue
+                    member_doc = ast.get_docstring(item) or ""
                     members[name] = {"kind": "method", "args": [a.arg for a in item.args.args if a.arg != "self"],
                                      "returns": ast.unparse(item.returns) if item.returns else None,
-                                     "doc": (ast.get_docstring(item) or "")[:400]}
+                                     "preview": _preview({"doc": member_doc}, ("method",)),
+                                     "doc": member_doc[:400]}
                 elif isinstance(item, ast.Assign):
                     for target in item.targets:
                         if isinstance(target, ast.Name) and not target.id.startswith("_") and target.id != "thisown":
                             members[target.id] = {"kind": "constant"}
-            classes[node.name] = {"bases": [ast.unparse(b) for b in node.bases], "preview": PREVIEW in doc,
+            classes[node.name] = {"bases": [ast.unparse(b) for b in node.bases],
+                                  "preview": _preview({"doc": doc}, ("class", "enum")),
                                   "doc": doc[:600], "members": members}
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Attribute):
             target = node.targets[0]
@@ -66,7 +75,9 @@ def inventory(path):
                 doc = next((str(kw.value.value) for kw in call.keywords
                             if kw.arg == "doc" and isinstance(kw.value, ast.Constant)), "")
                 writable = len([a for a in call.args if not (isinstance(a, ast.Constant) and a.value is None)]) >= 2
-                classes[target.value.id]["members"][target.attr] = {"kind": "property", "writable": writable, "doc": doc[:400]}
+                classes[target.value.id]["members"][target.attr] = {
+                    "kind": "property", "writable": writable,
+                    "preview": _preview({"doc": doc}, ("property",)), "doc": doc[:400]}
     return classes
 
 
@@ -131,16 +142,32 @@ def diff_snapshots(old_dir, new_dir):
         added = {c: {"preview": n[c]["preview"], "members": sorted(n[c]["members"])} for c in sorted(set(n) - set(o))}
         removed = {c: sorted(o[c]["members"]) for c in sorted(set(o) - set(n))}
         changed = {}
+        left_preview_members, became_preview_members = [], []
         for cls in sorted(set(o) & set(n)):
             a, b = set(o[cls]["members"]), set(n[cls]["members"])
             if a != b:
                 changed[cls] = {"added": sorted(b - a), "removed": sorted(a - b)}
                 removed_members.extend((f"{mod}.{cls}.{m}", m) for m in sorted(a - b))
+            for member in sorted(a & b):
+                old_member = o[cls]["members"][member]
+                new_member = n[cls]["members"][member]
+                was = _preview(old_member, ("method", "property"))
+                now = _preview(new_member, ("method", "property"))
+                if was and not now:
+                    left_preview_members.append(f"{cls}.{member}")
+                elif now and not was:
+                    became_preview_members.append(f"{cls}.{member}")
         report["modules"][mod] = {
             "classes": {"old": len(o), "new": len(n)}, "classes_added": added, "classes_removed": removed,
             "member_changes": changed,
-            "became_preview": sorted(c for c in set(o) & set(n) if n[c]["preview"] and not o[c]["preview"]),
-            "left_preview": sorted(c for c in set(o) & set(n) if o[c]["preview"] and not n[c]["preview"]),
+            "became_preview": sorted(c for c in set(o) & set(n)
+                                     if _preview(n[c], ("class", "enum"))
+                                     and not _preview(o[c], ("class", "enum"))),
+            "left_preview": sorted(c for c in set(o) & set(n)
+                                   if _preview(o[c], ("class", "enum"))
+                                   and not _preview(n[c], ("class", "enum"))),
+            "members_became_preview": became_preview_members,
+            "members_left_preview": left_preview_members,
         }
     report["removed_members_still_named_by_tools"] = members_still_named(removed_members)
     path = os.path.join(new_dir, "inventory-diff.json")

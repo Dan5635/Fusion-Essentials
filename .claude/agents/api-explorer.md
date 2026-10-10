@@ -53,8 +53,13 @@ Open a tool file only when a diff names it.
    VERIFIED_API_FACTS.md (facts stamp) and VERIFIED_TOOLS.md (receipt stamp).
 2. Snapshot and diff the full inventory: `py -3 tests/api_inventory.py snapshot <version>`, then
    `py -3 tests/api_inventory.py diff outputs/api-inventory/<previous> outputs/api-inventory/<version>`.
-   Keep every snapshot;
-   the diff's `removed_members_still_named_by_tools` is the first list of breaks.
+   Keep every snapshot. Read `left_preview` and `members_left_preview` for classes, enums,
+   methods and properties that may have become eligible; read their `became_preview` counterparts
+   for new deferrals. Compare each candidate's current Autodesk API page with the previous saved
+   status and record its URL, access date and any disagreement with the installed binding label.
+   A missing Preview sentence in a binding is a candidate transition, not proof of official support;
+   do not probe it until the official status is checked. The diff's
+   `removed_members_still_named_by_tools` is the first list of breaks.
 3. Regenerate the surface in an isolated audit checkout of your own, never in the shared main
    tree, and hand the generated delta to the lead: `py -3 tests/gen_all.py`. If gen_api_surface refuses because an
    override row in tests/gen_api_surface.py is now annotated by the bindings, that is a finding
