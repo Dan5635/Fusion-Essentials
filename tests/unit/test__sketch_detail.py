@@ -767,6 +767,14 @@ class TestArcAndPoint:
 # ── driving-dimension tally + missing parameter ─────────────────────────────
 
 class TestDimensionTally:
+    def test_dimension_label_position_reads_in_requested_units(self):
+        dim = FakeDim("d1", 2.0, "20 mm", driving=True)
+        dim.textPosition = SimpleNamespace(x=1.0, y=2.0, z=0.0)
+        _install(FakeSketch("D", dimensions=[dim]))
+        out = _payload(sd.handler(sketch_name="D", include_entities=True, units="in"))
+        assert out["dimensions"][0]["text_position"] == {
+            "x": pytest.approx(0.3937), "y": pytest.approx(0.7874), "z": 0.0}
+
     @pytest.mark.parametrize("driving", [0, 1, "yes"])
     def test_non_boolean_driving_flag_is_unknown(self, driving):
         dim = SimpleNamespace(parameter=SimpleNamespace(name="d1", value=1, expression="1 cm"),

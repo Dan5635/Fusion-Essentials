@@ -148,7 +148,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `sketch_copy` | COPY sketch entities, transformed or mirrored. |
 | ✎ | `sketch_create` | Create a sketch on a plane or a planar face; draw on it with sketch_add_geometry. |
 | ⚠ | `sketch_delete_entity` | Delete ONE sketch entity, constraint, dimension or text, named as '<type>:<index>'. |
-| ✎ | `sketch_dimension` | Add dimensions, or edit dimension/is_driving; sketch_get reads state. |
+| ✎ | `sketch_dimension` | Add dimensions, or edit an existing dimension's driving state/label position; sketch_get reads it. |
 | ✎ | `sketch_edit` | Edit sketch name, visibility or plane; sketch_get reads it. |
 | ✎ | `sketch_edit_curve` | Edit an EXISTING sketch curve in place |
 | · | `sketch_get` | Read sketches, curves, constraints and profile handles for model_extrude. |

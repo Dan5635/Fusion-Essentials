@@ -3,12 +3,13 @@
 
 """MCP building block: add a dimensional constraint (distance/radius/diameter/angle) to a sketch and
 drive its value - the sizing half of parametric sketching (sketch_constrain is the geometric half).
-Entity references are '<type>:<index>', the same scheme as sketch_constrain. Also sets an existing
-dimension's driving flag, addressed by its parameter name. WRITES.
+Entity references are '<type>:<index>', the same scheme as sketch_constrain. Also edits an existing
+dimension's driving flag or label position, addressed by its parameter name. WRITES.
 """
 
 import adsk.core
 import adsk.fusion
+from math import isfinite
 
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
@@ -305,18 +306,29 @@ def _numeric_entity_refs(entry):
 
 _DIMENSION = _inputs.SketchDimensionRef("dimension",
                                 description="Existing dimension parameter from sketch_get.")
+_TEXT_X = _inputs.Distance("text_x", allow_zero=True)
+_TEXT_Y = _inputs.Distance("text_y", allow_zero=True)
 
 
-def _edit_refusal(dimensions, dimension, is_driving):
-    """Why a dimension/is_driving call cannot run as sent, or None."""
+def _edit_refusal(dimensions, dimension, is_driving, text_position, units):
+    """Why a single existing-dimension edit cannot run as sent, or None."""
     if dimensions:
-        return ("'dimension'/'is_driving' edit one existing dimension and take no 'dimensions' "
+        return ("'dimension' with 'is_driving' or 'text_position' edits one existing dimension and takes no 'dimensions' "
                 "batch; this call carries both. Send the batch in its own call.")
     if not isinstance(dimension, str) or not dimension.strip():
-        return (f"is_driving={is_driving!r} needs 'dimension' - the parameter name of an existing "
+        label = (f"is_driving={is_driving!r}" if text_position is None
+                 else f"text_position={text_position!r}")
+        return (f"{label} needs 'dimension' - the parameter name of an existing "
                 "dimension, from sketch_get(include_entities=true).")
-    if not isinstance(is_driving, bool):
+    if text_position is not None:
+        if is_driving is not None:
+            return "Edit 'is_driving' and 'text_position' in separate calls."
+        if not isinstance(text_position, (list, tuple)) or len(text_position) != 2:
+            return f"'text_position' needs [x,y] in 'units'; got {text_position!r}."
+    elif not isinstance(is_driving, bool):
         return f"dimension '{dimension}' needs 'is_driving' true or false; got {is_driving!r}."
+    if text_position is None and units != "mm":
+        return "'units' applies to 'text_position' only; omit it for an is_driving edit."
     return None
 
 
@@ -392,15 +404,70 @@ def _set_driving(design, sketch, name, want):
     return ok(out)
 
 
+def _set_text_position(sketch, name, requested, units):
+    """Move one dimension label and read back its position and dimension state."""
+    factor, uerr = _inputs.UNITS.resolve(units)
+    if uerr:
+        return error(uerr)
+    x, xerr = _TEXT_X.resolve_scaled(requested[0], factor)
+    y, yerr = _TEXT_Y.resolve_scaled(requested[1], factor)
+    if xerr or yerr:
+        return error(xerr or yerr)
+    if not all(isfinite(v) for v in (x, y)):
+        return error(f"'text_position' {requested!r} in '{units}' exceeds Fusion's finite coordinate range.")
+    dim, derr = _DIMENSION.resolve(name, sketch)
+    if derr:
+        return error(derr)
+    before = _sketch_detail.point_cm(safe(lambda: dim.textPosition))
+    if before is None or not all(isfinite(v) for v in before):
+        return error(f"Dimension '{name}' textPosition did not read; no label was moved.")
+    prior_value = safe(lambda: dim.parameter.value)
+    prior_driving = _common.read_flag(lambda: dim.isDriving)
+    target = (x, y, 0.0)
+    scaled = lambda point: {"x": round(point[0] / factor, 4),
+                            "y": round(point[1] / factor, 4),
+                            "z": round(point[2] / factor, 4)}
+    out = {"sketch": safe(lambda: sketch.name), "dimension": name, "units": units,
+           "text_position_before": scaled(before), "requested": scaled(target)}
+    if all(abs(a - b) < 1e-7 for a, b in zip(before, target)):
+        return ok({**out, "changed": False, "text_position": scaled(before),
+                   "note": f"Dimension '{name}' label is already at the requested position."})
+    raised = None
+    try:
+        dim.textPosition = adsk.core.Point3D.create(*target)
+    except Exception as exc:
+        raised = exc
+    after = _sketch_detail.point_cm(safe(lambda: dim.textPosition))
+    if after is not None and not all(isfinite(v) for v in after):
+        after = None
+    out["text_position"] = scaled(after) if after is not None else None
+    out["changed"] = (None if after is None else
+                      any(abs(a - b) >= 1e-7 for a, b in zip(before, after)))
+    out["dimension_value_unchanged"] = (prior_value is not None
+                                         and safe(lambda: dim.parameter.value) == prior_value)
+    out["driving_unchanged"] = (prior_driving is not None
+                                and _common.read_flag(lambda: dim.isDriving) == prior_driving)
+    if (raised is not None or after is None
+            or any(abs(a - b) >= 1e-7 for a, b in zip(after, target))
+            or not out["dimension_value_unchanged"] or not out["driving_unchanged"]):
+        note = (f"Dimension '{name}' label edit did not verify; it may have changed. "
+                "Read sketch_get(include_entities=true) before retrying."
+                + (f" Fusion said: {raised}" if raised is not None else ""))
+        return error(note, {**out, "note": note})
+    return ok({**out, "note": f"Dimension '{name}' label moved; sketch_get reads its position."})
+
+
 def handler(dimensions=None, sketch_name: str = "", component: str = "", dimension: str = "",
-            is_driving=None) -> dict:
+            is_driving=None, text_position=None, units="mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    editing = dimension not in ("", None) or is_driving is not None
+    editing = dimension not in ("", None) or is_driving is not None or text_position is not None
     if editing:
-        refusal = _edit_refusal(dimensions, dimension, is_driving)
+        refusal = _edit_refusal(dimensions, dimension, is_driving, text_position, units)
         if refusal:
             return error(refusal)
     else:
+        if units != "mm":
+            return error("'units' applies to an existing dimension's 'text_position' only; omit it when adding dimensions.")
         entries, eerr = _sketch_batch.entries_or_error(dimensions, "dimensions", _ENTRY_FIELDS)
         if eerr:
             return error(eerr)
@@ -418,7 +485,9 @@ def handler(dimensions=None, sketch_name: str = "", component: str = "", dimensi
                            or "(none)") + ". Use sketch_get.")
         return error("No sketch to dimension. Create one first with sketch_create.")
     if editing:
-        return _set_driving(design, sketch, dimension.strip(), is_driving)
+        return (_set_text_position(sketch, dimension.strip(), text_position, units)
+                if text_position is not None else
+                _set_driving(design, sketch, dimension.strip(), is_driving))
     ellipse_shift = None
 
     def one(i, entry):
@@ -686,7 +755,7 @@ def _one(sketch, entry):
 
 
 TOOL_DESCRIPTION = (
-"Add dimensions, or edit dimension/is_driving; sketch_get reads state."
+"Add dimensions, or edit an existing dimension's driving state/label position; sketch_get reads it."
 )
 
 # One 'dimensions' entry on the wire: the same fields the entry guard admits (_ENTRY_FIELDS).
@@ -714,6 +783,10 @@ tool = (
     .add_input_property(*_sketch_detail.COMPONENT_SCOPE)
     .add_input_property(*_DIMENSION.as_property())
     .add_input_property("is_driving", {"type": "boolean"})
+    .add_input_property("text_position", {"type": "array", "items": {"type": "number"},
+                                      "minItems": 2, "maxItems": 2,
+                                      "description": "Existing dimension label [x,y], sketch-local in 'units'."})
+    .add_input_property(*_inputs.UNITS.as_property())
     .strict_schema()
 )
 

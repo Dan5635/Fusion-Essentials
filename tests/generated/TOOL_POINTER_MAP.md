@@ -4879,13 +4879,19 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `sketch_dimension`
 - No active design. Create or open a document first (see doc_new).
 - No sketch to dimension. Create one first with sketch_create.
+- 'units' applies to an existing dimension's 'text_position' only; omit it when adding dimensions.
 - Drive it later by name via param_set.
+- ' label edit did not verify; it may have changed. Read sketch_get(include_entities=true) before retrying.
+- ' exceeds Fusion's finite coordinate range.
+- ' textPosition did not read; no label was moved.
+- ' label moved; sketch_get reads its position.
+- ' label is already at the requested position.
 - The wedge dimensioned is the one FACING THE SKETCH ORIGIN (the dimension's text point sits at the origin, and the dimensioned wedge is the one containing it) - a value near 180 minus the angle want...
 - A second line that is NOT parallel to the first is ROTATED parallel by this dimension: the constraint MOVES geometry rather than refusing, so re-read sketch_get to confirm the shape is still what w...
 - The solver moved , but satisfying this dimension demanded only  mm of change ( mm measured before it, driven to  mm) - a move far beyond that is what a dimension attached to the UNINTENDED entity l...
 - already stand(s) at the same  ( mm) as . If one of them is already dimensioned in , tie the two with sketch_constrain '' instead of a second , or move one point off that  first.
 - When present, 'solved' is each REFERENCED entity's geometry read back after the solve, with the distance it moved (moved_mm) getting there; geometry the solve moved elsewhere in the sketch is not c...
-- 'dimension'/'is_driving' edit one existing dimension and take no 'dimensions' batch; this call carries both. Send the batch in its own call.
+- 'dimension' with 'is_driving' or 'text_position' edits one existing dimension and takes no 'dimensions' batch; this call carries both. Send the batch in its own call.
 - is_driving= was assigned to  but the flag did not read back, so the change is unverified. Read it with sketch_get(include_entities=true).
 - dimensions[] uses numeric line:N or point:N ref(s)  after  in this batch. Ellipse-radius dimensions can add construction axes and endpoints, shifting line and point indices. This entry was refused ...
 - is_driving=false creates a DRIVEN (reference) dimension - the geometry controls it, so value '' cannot drive it. Drop 'value', or leave is_driving true.

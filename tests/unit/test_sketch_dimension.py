@@ -1615,6 +1615,61 @@ def _error_payload(res):
 
 
 class TestExistingDimensionState:
+    def test_label_edit_uses_dimension_name_and_checks_position_and_value(self, monkeypatch):
+        class Positioned(_StateDim):
+            def __init__(self, name, takes=True):
+                super().__init__(name)
+                self.parameter.value = 2.0
+                self._position = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+                self.takes = takes
+                self.position_writes = []
+
+            @property
+            def textPosition(self):
+                return self._position
+
+            @textPosition.setter
+            def textPosition(self, point):
+                self.position_writes.append(point)
+                if self.takes == "nan":
+                    self._position = SimpleNamespace(x=float("nan"), y=point.y, z=point.z)
+                elif self.takes:
+                    self._position = point
+
+        monkeypatch.setattr(sd.adsk.core.Point3D, "create",
+                            lambda x, y, z: SimpleNamespace(x=x, y=y, z=z))
+        other, target = Positioned("d14"), Positioned("d15")
+        _install_state([_state_sketch("S", [other, target])])
+        out = _payload(sd.handler(sketch_name="S", dimension="d15",
+                                  text_position=[10, 20], units="mm"))
+        assert out["text_position"] == {"x": 10.0, "y": 20.0, "z": 0.0}
+        assert out["dimension_value_unchanged"] is True
+        assert out["driving_unchanged"] is True
+        assert len(target.position_writes) == 1 and not other.position_writes
+
+        target.takes = False
+        refused = _error_payload(sd.handler(sketch_name="S", dimension="d15",
+                                             text_position=[30, 40], units="mm"))
+        assert refused["changed"] is False
+        assert refused["text_position"] == {"x": 10.0, "y": 20.0, "z": 0.0}
+        assert "did not verify" in refused["note"]
+
+        target.takes = "nan"
+        unread = _error_payload(sd.handler(sketch_name="S", dimension="d15",
+                                            text_position=[30, 40]))
+        assert unread["changed"] is None and unread["text_position"] is None
+        assert "did not verify" in unread["note"]
+
+        target._position = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+        refused = sd.handler(sketch_name="S", dimension="d15",
+                             text_position=[1e308, 2], units="in")
+        assert refused["isError"] is True and "finite coordinate range" in refused["message"]
+        assert len(target.position_writes) == 3
+
+    def test_create_rejects_units_that_only_label_edit_uses(self):
+        refused = sd.handler(dimensions=[{"dim_type": "distance"}], units="in")
+        assert refused["isError"] is True and "omit it when adding dimensions" in refused["message"]
+
     def test_nonboolean_after_read_is_unknown_even_when_equal_to_false(self):
         class NumericFlag(_StateDim):
             @property
@@ -1690,9 +1745,9 @@ class TestExistingDimensionState:
 
     @pytest.mark.parametrize("kwargs,says", [
         ({"dimensions": [{"dim_type": "radius", "entity_one": "circle:0"}], "dimension": "d1",
-          "is_driving": False}, "take no 'dimensions' batch"),
+          "is_driving": False}, "takes no 'dimensions' batch"),
         ({"dimensions": [{"dim_type": "radius", "entity_one": "circle:0"}], "is_driving": False},
-         "take no 'dimensions' batch"),
+         "takes no 'dimensions' batch"),
         ({"is_driving": False}, "is_driving=False needs 'dimension'"),
         ({"dimension": "d1"}, "needs 'is_driving' true or false; got None"),
         ({"dimension": "d1", "is_driving": "no"}, "got 'no'")])

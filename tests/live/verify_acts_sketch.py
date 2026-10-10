@@ -3881,6 +3881,67 @@ def _dimension_driving_rows():
 _SKETCHWORK += _dimension_driving_rows()
 
 
+def _dimension_label_rows():
+    """Move one named dimension label without changing its value, neighbor or sketch geometry."""
+    rows, write, read, close = _scratch_rows("label_doc")
+    write("sketch_create", {"plane": "xy", "name": "LabelSk"})
+    write("sketch_add_geometry", {"sketch_name": "LabelSk", "geometry": [
+        {"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0},
+        {"kind": "line", "x1": 0, "y1": 30, "x2": 30, "y2": 30}]})
+    for key, line, value in (("label_target", "line:0", 20),
+                             ("label_neighbor", "line:1", 30)):
+        write("sketch_dimension", {"sketch_name": "LabelSk", "dimensions": [{
+            "dim_type": "distance", "entity_one": line, "value": f"{value} mm"}]},
+            _dim_measures(float(value)),
+            (key, _recall(key, lambda p: p["results"][0]["parameter"])))
+
+    def baseline(p):
+        facts = _sketch_facts(p)
+        dims = {d.get("name"): d for d in (facts or {}).get("dimensions") or []}
+        return _measured("two named dimensions before label edit", dims,
+                         facts is not None and len(dims) == 2
+                         and all(isinstance(dims.get(_RECALL.get(key), {}).get("text_position"), dict)
+                                 for key in ("label_target", "label_neighbor")))
+
+    _keep(read, "sketch_get", _xray("LabelSk"), "label_before", _sketch_facts, baseline)
+
+    def edited(p):
+        name = _RECALL.get("label_target")
+        position = p.get("text_position") or {}
+        return _measured("label edit lands on the named dimension", p,
+                         bool(name) and p.get("dimension") == name and p.get("changed") is True
+                         and p.get("dimension_value_unchanged") is True
+                         and p.get("driving_unchanged") is True
+                         and _near(position.get("x"), 10, 0.001)
+                         and _near(position.get("y"), 20, 0.001)
+                         and _near(position.get("z"), 0, 0.001))
+
+    write("sketch_dimension", lambda c: {
+        "sketch_name": "LabelSk", "dimension": _ctx_get(c, "label_target", "dimension name"),
+        "text_position": [10, 20], "units": "mm"}, edited)
+
+    def read_effect(p):
+        before, now = _RECALL.get("label_before") or {}, _sketch_facts(p) or {}
+        target, neighbor = _RECALL.get("label_target"), _RECALL.get("label_neighbor")
+        dims = {d.get("name"): d for d in now.get("dimensions") or []}
+        wanted = [dict(d, text_position={"x": 10.0, "y": 20.0, "z": 0.0})
+                  if d.get("name") == target else d for d in before.get("dimensions") or []]
+        return _measured("only the chosen label changed in an independent sketch read",
+                         {"before": before.get("dimensions"), "after": now.get("dimensions")},
+                         target != neighbor and len(dims) == 2
+                         and _alike(now.get("dimensions"), wanted, 0.001)
+                         and all(now.get(k) == before.get(k) for k in (
+                             "entities", "profiles", "profile_count", "counts", "frame",
+                             "constraints", "driving_dimension_count")))
+
+    read("sketch_get", _xray("LabelSk"), read_effect)
+    close()
+    return rows
+
+
+_SKETCHWORK += _dimension_label_rows()
+
+
 def _one_profile(area_mm2, centroid=None, tol=0.02):
     """sketch_get: exactly one profile, of this area and, when given, this (x, y) centroid in mm."""
     def check(p):

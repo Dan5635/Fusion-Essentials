@@ -675,6 +675,9 @@ def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_
         driving, driving_unread = _common.read_optional(lambda d=d: d.isDriving)
         if driving is not None and type(driving) is not bool:
             driving, driving_unread = None, "isDriving did not read a boolean"
+        label = point_cm(safe(lambda d=d: d.textPosition))
+        if label is not None and not all(math.isfinite(v) for v in label):
+            label = None
         dimensions.append({
             "name": safe(lambda: par.name) if par else None,
             "value": _dimension_value(raw_value, is_angle, f),
@@ -683,6 +686,8 @@ def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_
             "expression": safe(lambda: par.expression) if par else None,
             # driving = constrains geometry; a driven/reference dim just MEASURES (doesn't lock).
             "driving": driving,
+            "text_position": ({"x": _round(label[0], f), "y": _round(label[1], f),
+                               "z": _round(label[2], f)} if label is not None else None),
             "type": type(d).__name__.replace("SketchDimension", "").replace("Dimension", "").lower(),
             "entities": dimension_entities(sketch, d, token_ids) if i < _XRAY_CAP else None,
         })
