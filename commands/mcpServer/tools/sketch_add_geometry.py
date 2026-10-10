@@ -835,6 +835,12 @@ def _one(sketch, entry, k, units, include_summary=True):
     kind = (entry.get("kind") or "").strip().lower()
     if kind not in _KINDS:
         return refuse(f"Unknown kind '{kind}'. Valid: {', '.join(_KINDS)}.")
+    if kind not in _SLOT_KINDS:
+        flags = [key for key in ("create_width_dimension", "create_radius_dimension",
+                                  "create_angle_dimension") if entry.get(key)]
+        if flags:
+            return refuse(f"kind='{kind}' cannot use {', '.join(flags)}; draw it without those "
+                          "flags, then use sketch_dimension and read sketch_get to verify it.")
     is_construction = bool(entry.get("is_construction"))
     if is_construction and kind == "point":
         return refuse("is_construction does not apply to kind='point' - it is set on sketch "

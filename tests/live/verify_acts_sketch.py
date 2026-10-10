@@ -4608,3 +4608,28 @@ def _text_layout_rows():
 
 
 _SKETCHWORK += _text_layout_rows()
+
+
+def _circle_dimension_flag_rows():
+    """Refuse an unconsumed circle dimension flag without changing the sketch."""
+    rows, write, read, close = _scratch_rows("circle_dim_flag_doc")
+    write("sketch_create", {"plane": "xy", "name": "CircleDimFlag"})
+
+    def state(p):
+        if p.get("truncated") is not False:
+            return None
+        return {key: p.get(key) for key in ("counts", "dimension_count", "entities")}
+
+    _keep(read, "sketch_get", _xray("CircleDimFlag"), "circle_dim_flag_before", state,
+          lambda p: p.get("counts", {}).get("circles") == 0 and p.get("dimension_count") == 0)
+    write("sketch_add_geometry", {"sketch_name": "CircleDimFlag", "geometry": [
+        {"kind": "circle", "cx": 0, "cy": 0, "radius": 12,
+         "create_radius_dimension": True}]},
+          _refused("create_radius_dimension", "sketch_dimension"))
+    read("sketch_get", _xray("CircleDimFlag"),
+         _unchanged("circle_dim_flag_before", state))
+    close()
+    return rows
+
+
+_SKETCHWORK += _circle_dimension_flag_rows()

@@ -322,6 +322,18 @@ class TestPlainSlotRejectsTailInputs:
         assert "slot_length" in res["message"] and "create_angle_dimension" in res["message"]
 
 
+class TestNonSlotDimensionFlags:
+    @pytest.mark.parametrize("field", ["create_width_dimension", "create_radius_dimension",
+                                      "create_angle_dimension"])
+    def test_circle_refuses_dimension_flag_before_drawing(self, monkeypatch, field):
+        s = FakeSketch(); _install_draw(monkeypatch, s)
+        res = sk.handler(geometry=[{"kind": "circle", "cx": 0, "cy": 0, "radius": 12,
+                                    field: True}])
+        assert res["isError"] is True
+        assert field in res["message"] and "sketch_dimension" in res["message"]
+        assert s.sketchCircles.count == 0
+
+
 class TestLinearSlotKinds:
 
     """overall_slot / center_point_slot. Their tail is createWidthDimension FIRST, then the length
