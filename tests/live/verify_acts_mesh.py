@@ -3247,7 +3247,9 @@ _MESH = [
     # execute() answers true while writing nothing, so the file's own size is the read-back - and
     # it is the same file the mesh_insert beat below re-imports.
     ("mesh_export", {"target": "MA", "file_path": EXPORT_DIR + "/eval_mesh", "format": "stl"},
-     lambda p: (p.get("size_bytes") or 0) > 0 and p.get("file_exists") is True, None),
+     lambda p: ((p.get("size_bytes") or 0) > 0 and p.get("file_exists") is True
+                and p.get("exact_mesh_body") is True and p.get("redirected_from_mesh") is False
+                and p.get("source_occurrence") == "Msh:1"), None),
     # THE RE-IMPORT GETS ITS OWN COMPONENT, and the mesh act goes back to Msh afterwards.
     # mesh_insert does NOT land the mesh where the file's own geometry sits: measured on the live
     # document, a mesh exported from (770,875) came back at (30,34) - near the world origin, a metre
@@ -3274,10 +3276,8 @@ _MESH = [
                 and (p["bodies"][0]["triangle_count"] or 0) > 0
                 and p.get("name_applied") is True
                 and "rename_warning" not in p), None),
-    # the round trip measured END TO END: the re-imported mesh is the size of the mesh that was
-    # written - measured 74.99 x 74.99 x 20.0 on a finished run. A size, not a position: the layout
-    # moves the bench, and 25.4 is the only thing this is looking for.
-    ("model_inspect", {"target": "MshIns"}, _mesh_round_trip(75.0, 20.0), None),
+    # The re-import must retain the 20 x 20 x 10 mm seed's size despite layout translation.
+    ("model_inspect", {"target": "MshIns"}, _mesh_round_trip(20.0, 10.0), None),
     ("design_activate_component", {"occurrence": "Msh:1"}, "ok", None),
     # repair on a HEALTHY mesh: nothing of that kind to fix is an honest success, not a failure, and
     # the payload must say so rather than claim a repair. Then a rebuild, whose density is read back
@@ -3627,6 +3627,117 @@ def _exact_mesh_stl_file(p, path):
 
 
 _MESH += _mesh_data_rows()
+
+
+def _placed_mesh_file(p, path):
+    """Read one placed mesh's STL facets independently of the export reply."""
+    data = Path(path).read_bytes() if Path(path).is_file() else b""
+    if len(data) != 134 or struct.unpack_from("<I", data, 80)[0] != 1:
+        return False
+    facet = struct.unpack_from("<12fH", data, 84)
+    vertices = sorted(tuple(round(v, 4) for v in facet[start:start + 3])
+                      for start in (3, 6, 9))
+    return (p.get("exact_mesh_body") is True and p.get("redirected_from_mesh") is False
+            and p.get("source_occurrence") == "PlacedMesh:1" and p.get("frame") == "root"
+            and p.get("triangle_count") == 1 and p.get("size_bytes") == len(data)
+            and vertices == [(50.0, 30.0, 0.0), (50.0, 40.0, 0.0), (60.0, 30.0, 0.0)])
+
+
+def _placed_mesh_export_rows():
+    """Export one placed mesh while a sibling stays out of the STL."""
+    from verify_acts_sketch import _scratch_rows
+
+    rows, write, read, close = _scratch_rows("placed_mesh_doc")
+    triangle = {"vertices": [[0, 0, 0], [10, 0, 0], [0, 10, 0]],
+                "triangles": [[0, 1, 2]]}
+    sibling = {"vertices": [[100, 0, 0], [110, 0, 0], [100, 10, 0]],
+               "triangles": [[0, 1, 2]]}
+    write("model_create_component", {"name": "PlacedMesh", "x": 50, "y": 30,
+                                     "activate": True}, _made_component)
+    write("mesh_insert", {"data": triangle, "name": "ExactA", "target_component": "PlacedMesh:1"},
+          lambda p: p.get("imported") is True and p.get("name_applied") is True)
+    write("mesh_insert", {"data": sibling, "name": "OtherB", "target_component": "PlacedMesh:1"},
+          lambda p: p.get("imported") is True and p.get("name_applied") is True)
+    read("mesh_get", {"target": "PlacedMesh:1"},
+         lambda p: p.get("count") == 2
+         and {m.get("name") for m in p.get("meshes") or []} == {"ExactA", "OtherB"})
+    path = EXPORT_DIR + "/exact_placed_mesh.stl"
+    write("mesh_export", {"target": "PlacedMesh:1:ExactA", "format": "stl",
+                          "stl_units": "mm", "file_path": path},
+          lambda p: _placed_mesh_file(p, path))
+    close()
+    return rows
+
+
+_MESH += _placed_mesh_export_rows()
+
+_NEST_TETRA = {"vertices": [[0, 0, 0], [10, 0, 0], [0, 20, 0], [0, 0, 30]],
+               "triangles": [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]}
+
+
+def _nested_mesh_file(path, occurrence, place):
+    """Check a nested mesh's STL facets against `place`, independently of the export reply."""
+    def check(p):
+        source = occurrence() if callable(occurrence) else occurrence
+        data = Path(path).read_bytes() if Path(path).is_file() else b""
+        if len(data) != 84 + 50 * 4 or struct.unpack_from("<I", data, 80)[0] != 4:
+            return False
+        facets = [struct.unpack_from("<12f", data, 84 + 50 * i) for i in range(4)]
+        found = sorted(tuple(sorted(tuple(round(v, 3) for v in facet[start:start + 3])
+                                    for start in (3, 6, 9))) for facet in facets)
+        placed = [tuple(float(v) for v in place(*vertex)) for vertex in _NEST_TETRA["vertices"]]
+        expected = sorted(tuple(sorted(placed[i] for i in face))
+                          for face in _NEST_TETRA["triangles"])
+        return _measured("nested mesh STL facets in the root frame", found,
+                         p.get("exact_mesh_body") is True
+                         and p.get("redirected_from_mesh") is False
+                         and p.get("source_occurrence") == source
+                         and p.get("frame") == "root" and p.get("triangle_count") == 4
+                         and p.get("size_bytes") == len(data) and found == expected)
+    return check
+
+
+def _nested_mesh_export_rows():
+    """Export one nested, rotated mesh by its mesh_get handle; refuse it once placed twice."""
+    from verify_acts_sketch import _scratch_rows
+
+    rows, write, read, close = _scratch_rows("nested_mesh_doc")
+    inner = "NestOuter:1+NestInner:1"
+    write("model_create_component", {"name": "NestOuter", "x": 50, "y": 30, "rotate_deg": 90,
+                                     "rotate_axis": "z", "activate": True}, _made_component)
+    write("model_create_component", {"name": "NestInner", "parent": "NestOuter:1", "y": 40,
+                                     "z": 20, "rotate_deg": 90, "rotate_axis": "x",
+                                     "activate": True},
+          lambda p: _made_component(p) and p.get("full_path") == inner)
+    write("mesh_insert", {"data": _NEST_TETRA, "name": "NestTetra", "target_component": inner},
+          lambda p: p.get("imported") is True and p.get("name_applied") is True)
+    read("mesh_get", {}, lambda p: p.get("count") == 1 and p["meshes"][0]["name"] == "NestTetra",
+         ("nest_handle", lambda p: p["meshes"][0]["handle"]))
+    once = EXPORT_DIR + "/exact_nested_mesh.stl"
+    # Inner: a quarter turn about X, then (0, 40, 20). Outer: a quarter turn about Z, then (50, 30, 0).
+    write("mesh_export", lambda c: {"target": _ctx_get(c, "nest_handle", "mesh_get handle"),
+                                    "format": "stl", "stl_units": "mm", "file_path": once},
+          _nested_mesh_file(once, inner, lambda x, y, z: (z + 10, x + 30, y + 20)))
+    write("design_activate_component", {"occurrence": "root"})
+    # The instance number is Fusion's to pick, so the second nested path is read back.
+    write("design_add_instance", {"component": "NestOuter", "x": 200, "units": "mm"},
+          lambda p: p.get("created") is True,
+          ("nest_second", _recall("nest_second", lambda p: p["full_path"] + "+NestInner:1")))
+    write("mesh_export", lambda c: {"target": _ctx_get(c, "nest_handle", "mesh_get handle"),
+                                    "format": "stl", "file_path": EXPORT_DIR + "/refused_nested"},
+          _refused("placed 2 times", inner, "'<occurrence>:NestTetra'"))
+    twice = EXPORT_DIR + "/exact_nested_mesh_second.stl"
+    # The second outer instance carries no turn, so only the inner placement and its x apply.
+    write("mesh_export", lambda c: {
+        "target": _ctx_get(c, "nest_second", "second nested path") + ":NestTetra",
+        "format": "stl", "stl_units": "mm", "file_path": twice},
+          _nested_mesh_file(twice, lambda: _RECALL.get("nest_second"),
+                            lambda x, y, z: (x + 200, 40 - z, y + 20)))
+    close()
+    return rows
+
+
+_MESH += _nested_mesh_export_rows()
 
 
 def _tessellation_rows():

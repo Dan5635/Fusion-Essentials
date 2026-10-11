@@ -12,6 +12,9 @@ beat addresses. The hub is authored a metre out along X on the XZ plane and stay
 import json
 import os
 import time
+import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 
 import _dump_reader
 from verify_acts_cam import (
@@ -1459,6 +1462,7 @@ def _container_order(first, second):
 
 
 _SLICE_SETUP = "SliceBuild"
+_SLICE_3MF = EXPORT_DIR + "/slice-build-" + uuid.uuid4().hex + ".3mf"
 _SLICE_NATIVE = (
     "import adsk.core, adsk.cam, json\n"
     "def run(context):\n"
@@ -1494,6 +1498,34 @@ def _slice_native(p):
                      and rows[0][2] is True and rows[0][3] is True and rows[0][4] == 0)
 
 
+def _slice_3mf(p):
+    """Judge an ungated FFF export from the written 3MF model, not its tool reply."""
+    facts = {"path": _SLICE_3MF, "size_bytes": None, "vertices": None,
+             "triangles": None, "millimeter": False, "extents_mm": None}
+    try:
+        facts["size_bytes"] = os.path.getsize(_SLICE_3MF)
+        with zipfile.ZipFile(_SLICE_3MF) as archive:
+            model = archive.read("3D/3dmodel.model")
+        root = ET.fromstring(model)
+        vertices = [node for node in root.iter() if node.tag.endswith("}vertex")]
+        triangles = [node for node in root.iter() if node.tag.endswith("}triangle")]
+        axes = [[float(node.attrib[axis]) for node in vertices] for axis in ("x", "y", "z")]
+        facts["vertices"] = len(vertices)
+        facts["triangles"] = len(triangles)
+        facts["millimeter"] = root.attrib.get("unit") == "millimeter"
+        facts["extents_mm"] = sorted(round(max(values) - min(values), 3) for values in axes)
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile, ET.ParseError):
+        pass
+    return _measured("the FFF 3MF holds the 30 x 20 x 10 mm box on disk", facts,
+                     p.get("exported") is True and p.get("setup") == _SLICE_SETUP
+                     and p.get("file_path") == _SLICE_3MF
+                     and p.get("left_out") == ["supports", "slices"]
+                     and facts["size_bytes"] == p.get("size_bytes")
+                     and facts["millimeter"] and (facts["vertices"] or 0) >= 8
+                     and (facts["triangles"] or 0) >= 12
+                     and facts["extents_mm"] == [10.0, 20.0, 30.0])
+
+
 def _additive_slice_rows():
     """An FFF slice generated through the public tools: pathless before, a valid toolpath after."""
     from verify_acts_cam import _face_op_settled
@@ -1508,6 +1540,7 @@ def _additive_slice_rows():
                                "machine": "Autodesk|Generic FFF Machine",
                                "print_setting": "PLA (Bowden Tube)"},
           lambda p: p.get("created") is True and p.get("print_setting_technology") == "FFF")
+    write("cam_export_setup", {"setup": _SLICE_SETUP, "file_path": _SLICE_3MF}, _slice_3mf)
     read("cam_get", {"include": ["operations"], "setup": _SLICE_SETUP},
          lambda p: _measured("the ungenerated slice row", _slice_row(p),
                              _slice_row(p).get("has_toolpath") is False
@@ -1586,6 +1619,108 @@ def _additive_slice_rows():
 
 _PB_SETUP = "PartsBuild"
 _PB_A, _PB_B = "PartA:1", "PartB:1"
+_PB_INCLUDED_3MF = EXPORT_DIR + "/parts-build-included-" + uuid.uuid4().hex + ".3mf"
+_PB_OMITTED_3MF = EXPORT_DIR + "/parts-build-omitted-" + uuid.uuid4().hex + ".3mf"
+_PB_POSITIVE_NATIVE = """def run(context):
+    import adsk.core, adsk.cam, os, json
+    path = __PATH__
+    doc = adsk.core.Application.get().activeDocument
+    if doc is None or doc.isSaved:
+        raise ValueError('positive export requires the active unsaved PartsBuild scratch')
+    cam = adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))
+    setups = [s for s in cam.setups if s.name == 'PartsBuild'] if cam else []
+    if len(setups) != 1 or sorted(m.name for m in setups[0].models) != ['PartA:1', 'PartB:1']:
+        raise ValueError('positive export requires the unique two-part PartsBuild setup')
+    ops = list(setups[0].allOperations)
+    if len(ops) > 24:
+        raise ValueError('PartsBuild has more than 24 operations')
+    support = [o for o in ops if o.strategy == 'solid_volume_support']
+    slices = [o for o in ops if o.strategy == 'additive_buildstyle']
+    if (len(support) != 1 or support[0].hasError is not False or len(slices) != 1
+            or slices[0].hasToolpath is not True or slices[0].isToolpathValid is not True):
+        raise ValueError('populated support and valid slice are not confirmed')
+    if not os.path.isdir(os.path.dirname(path)) or os.path.exists(path):
+        raise ValueError('positive control directory is missing or output path exists')
+    options = cam.exportManager.create3MFOptions()
+    options.exportObject = setups[0]
+    options.fullFilename = path
+    options.supportInclusion = adsk.cam.CAM3MFSupportInclusionType.IncludeAsSupportType
+    options.isSliceDataIncluded = True
+    if (options.exportObject != setups[0]
+            or os.path.normcase(os.path.normpath(options.fullFilename))
+            != os.path.normcase(os.path.normpath(path))
+            or options.supportInclusion != adsk.cam.CAM3MFSupportInclusionType.IncludeAsSupportType
+            or options.isSliceDataIncluded is not True):
+        raise ValueError('positive control options did not read back')
+    answered = cam.exportManager.execute(options)
+    if answered is not True or not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise RuntimeError('positive control 3MF was not written')
+    print(json.dumps({'positive_3mf': {'path': path, 'size_bytes': os.path.getsize(path),
+                                      'support': support[0].name, 'slice': slices[0].name}}))
+""".replace("__PATH__", repr(_PB_INCLUDED_3MF))
+
+
+def _pb_positive(p):
+    """The one JSON result printed by the positive native export."""
+    if isinstance(p, dict) and "positive_3mf" in p:
+        return p["positive_3mf"]
+    for line in str((p or {}).get("output") if isinstance(p, dict) else p or "").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and "positive_3mf" in row:
+            return row["positive_3mf"]
+    return {}
+
+
+def _pb_3mf_inventory(path):
+    """Bounded independent count of model meshes, support content and slice XML."""
+    core = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
+    slice_ns = "{http://schemas.microsoft.com/3dmanufacturing/slice/2015/07}"
+    with zipfile.ZipFile(path) as archive:
+        members = archive.infolist()
+        names = [member.filename for member in members]
+        if len(names) > 64 or "3D/3dmodel.model" not in names:
+            raise ValueError("3MF model is absent or archive has more than 64 members")
+        if sum(member.file_size for member in members) > 12000000:
+            raise ValueError("3MF archive exceeds the 12 MB inspection cap")
+        roots = {name: ET.fromstring(archive.read(name)) for name in names
+                 if name.lower().endswith(".model")}
+        support_members = [name for name in names if "support" in name.lower()]
+        support_xml = []
+        for name in support_members:
+            if name.lower().endswith(".xml"):
+                root = ET.fromstring(archive.read(name))
+                support_xml.append((root.tag.split("}")[-1],
+                                    sum(node.tag.split("}")[-1] == "anchor" for node in root.iter()),
+                                    sum(node.tag.split("}")[-1] == "entity" for node in root.iter())))
+    objects = [(obj.get("name") or "", obj.get("type") or "model",
+                sum(1 for _ in obj.iter(core + "vertex")),
+                sum(1 for _ in obj.iter(core + "triangle")))
+               for root in roots.values() for obj in root.iter(core + "object")]
+    support_objects = [obj for obj in objects if obj[1] != "model" or "support" in obj[0].lower()]
+    part_meshes = sorted((name, vertices, triangles) for name, kind, vertices, triangles in objects
+                         if kind == "model" and "support" not in name.lower() and vertices > 0)
+    slice_elements = sum(node.tag.startswith(slice_ns) for root in roots.values()
+                         for node in root.iter())
+    slice_attributes = sum(key.startswith(slice_ns) for root in roots.values()
+                           for node in root.iter() for key in node.attrib)
+    volsupport_slices = sum(node.tag.startswith(slice_ns) for name, root in roots.items()
+                            if "volsupport" in name.lower() for node in root.iter())
+    model = roots["3D/3dmodel.model"]
+    points = [tuple(float(node.get(axis)) for axis in ("x", "y", "z"))
+              for node in model.iter(core + "vertex")]
+    return {"size_bytes": os.path.getsize(path), "member_count": len(names),
+            "unit": model.get("unit"), "part_meshes": part_meshes,
+            "mesh_count": sum(obj[2] > 0 for obj in objects),
+            "support_members": support_members, "support_objects": support_objects,
+            "support_xml": support_xml, "slice_elements": slice_elements,
+            "slice_attributes": slice_attributes, "volsupport_slices": volsupport_slices,
+            "placed_by_transform": any("transform" in node.attrib for node in model.iter()),
+            "file_min": [min(pt[i] for pt in points) for i in range(3)] if points else None,
+            "file_max": [max(pt[i] for pt in points) for i in range(3)] if points else None}
+
 _PB_NATIVE = (
     "import adsk.core, adsk.cam, json\n"
     "def run(context):\n"
@@ -1745,10 +1880,11 @@ def _additive_parts_rows():
            ("pb_before", _recall("pb_before", lambda p: _pb_native(p)["poses"])))
 
     def turned(r):
-        """The first candidate whose rotation differs from the pose PartA holds now."""
+        """The first supported candidate with a rotation different from PartA's pose."""
         now = _pb_turn(_RECALL["pb_before"][_PB_A])
         rows_ = (r.get("orientation") or {}).get("candidates") or []
         return next((c for c in rows_ if c.get("transformation")
+                     and (c.get("support_volume") or 0) > 0
                      and not _pb_same(_pb_turn(c["transformation"]), now)), None)
     results("pb_orient", lambda r: (r.get("orientation") or {}).get("count") == 9
             and (r.get("orientation") or {}).get("current_index") is None and turned(r) is not None,
@@ -1785,6 +1921,77 @@ def _additive_parts_rows():
     placement("the placement read follows the arrange",
               lambda got: all(_pb_same(got[part]["pose"], _RECALL["pb_arranged"][part], 1e-6)
                               for part in (_PB_A, _PB_B)))
+    # Arrange changes placement after the first support generation; refresh that support once.
+    write("cam_generate", lambda c: {"target": _ctx_get(c, "pb_support", "the support"),
+                                     "skip_valid": False},
+          lambda p: p.get("launched") is True and bool(p.get("handle")),
+          ("pb_support_final_gen", _recall("pb_support_final_gen", lambda p: p["handle"])))
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_support_final_gen", "the support")},
+         _face_op_settled("pb_support_final_gen", "the placed support settled valid", {"valid": 1}))
+    results("pb_support", lambda r: r.get("parts") == [_PB_A] and r.get("has_error") is False)
+    # Generate the setup's default slice after arrange and refreshed support.
+    def buildstyle(p):
+        rows_ = [r for rec in ((p.get("operations") or {}).get("setups") or [])
+                 if rec.get("setup") == _PB_SETUP for r in rec.get("operations") or []
+                 if r.get("strategy") == "additive_buildstyle"]
+        return rows_[0] if len(rows_) == 1 else {}
+    read("cam_get", {"include": ["operations"], "setup": _PB_SETUP},
+         lambda p: _measured("the unique default PartsBuild slice", buildstyle(p),
+                             bool(buildstyle(p).get("name"))),
+         ("pb_slice", _recall("pb_slice", lambda p: buildstyle(p)["name"])))
+    write("cam_generate", lambda c: {"target": _ctx_get(c, "pb_slice", "the slice"),
+                                     "skip_valid": False},
+          lambda p: p.get("launched") is True and bool(p.get("handle")),
+          ("pb_slice_gen", _recall("pb_slice_gen", lambda p: p["handle"])))
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_slice_gen", "the slice")},
+         _face_op_settled("pb_slice_gen", "the PartsBuild slice settled valid", {"valid": 1}))
+    # Native positive control uses the same owned scratch and exports only once.
+    write("sys_execute_script", {"script": _PB_POSITIVE_NATIVE, "read_only": False},
+          lambda p: _measured("the populated support and valid slice exported natively",
+                              _pb_positive(p), _pb_positive(p).get("path") == _PB_INCLUDED_3MF
+                              and (_pb_positive(p).get("size_bytes") or 0) > 0
+                              and _pb_positive(p).get("support") == _RECALL["pb_support"]
+                              and _pb_positive(p).get("slice") == _RECALL["pb_slice"]))
+
+    def included_file(p):
+        try:
+            facts = _pb_3mf_inventory(_PB_INCLUDED_3MF)
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+            return _measured("the populated 3MF positive control", {"error": str(exc)}, False)
+        want = [("PartA:1+Body1", 12, 20), ("PartB:1+Body1", 8, 12)]
+        structure = any(root == "supportstructures" and anchors > 0 and entities > 0
+                        for root, anchors, entities in facts["support_xml"])
+        return _measured("the same PartsBuild has real support and slice payloads", facts,
+                         buildstyle(p).get("name") == _RECALL["pb_slice"]
+                         and facts["part_meshes"] == want and facts["support_objects"]
+                         and structure and facts["volsupport_slices"] > 0
+                         and facts["slice_elements"] > 0 and facts["slice_attributes"] > 0)
+    read("cam_get", {"include": ["operations"], "setup": _PB_SETUP}, included_file)
+
+    # The public tool now exports the same populated setup with both inclusion knobs off.
+    write("cam_export_setup", {"setup": _PB_SETUP, "file_path": _PB_OMITTED_3MF},
+          lambda p: p.get("exported") is True and p.get("setup") == _PB_SETUP
+          and p.get("file_path") == _PB_OMITTED_3MF
+          and p.get("left_out") == ["supports", "slices"] and (p.get("size_bytes") or 0) > 0)
+
+    def parts_file(p):
+        try:
+            facts = _pb_3mf_inventory(_PB_OMITTED_3MF)
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+            return _measured("the public 3MF omission export", {"error": str(exc)}, False)
+        boxes = [r for r in (p.get("placement") or {}).get("parts") or [] if r.get("read") is True]
+        read_min = [min(r["min_point"][i] for r in boxes) for i in range(3)] if boxes else None
+        read_max = [max(r["max_point"][i] for r in boxes) for i in range(3)] if boxes else None
+        want = [("PartA:1+Body1", 12, 20), ("PartB:1+Body1", 8, 12)]
+        return _measured("the public 3MF retains placed parts within the padded box, no support or slice",
+                         {"read_min": read_min, "read_max": read_max, **facts},
+                         facts["part_meshes"] == want and facts["mesh_count"] == 2
+                         and facts["unit"] == "millimeter" and not facts["placed_by_transform"]
+                         and not facts["support_members"] and not facts["support_objects"]
+                         and facts["slice_elements"] == 0 and facts["slice_attributes"] == 0
+                         and len(boxes) == 2 and _pb_same(facts["file_min"], read_min, 5e-2)
+                         and _pb_same(facts["file_max"], read_max, 5e-2))
+    read("cam_get", {"include": ["placement"], "setup": _PB_SETUP, "units": "mm"}, parts_file)
     # The METAL printer reports FFF support incompatibility after async generation settles.
     write("cam_create_setup", {"operation_type": "additive", "name": _PB_SETUP + "Metal",
                                "machine": _ADD_MACHINE, "print_setting": _ADD_SETTING,
@@ -1981,5 +2188,6 @@ _HUB_ADDITIVE = [
     ("cam_generate", {"target": _MX_SETUP, "skip_valid": True}, _relaunched(_MX_SETUP), None),
 ]
 
-_HUB_ADDITIVE += _additive_slice_rows()
+# The base-license route is a hypothesis until this act runs with the extension absent.
+_FFF_EXPORT = _additive_slice_rows()
 _HUB_ADDITIVE += _additive_parts_rows()

@@ -1283,6 +1283,25 @@ def _opened(name, lineage):
     return check
 
 
+def _open_kept_cloud_home(p):
+    """Read back both the reopened source and the prior cloud-family home."""
+    active = p.get("active") or {}
+    rows = p.get("open_documents")
+    home = _RECALL.get("home_doc")
+    opened = _RECALL.get("source_reopened_handle")
+    complete = (isinstance(rows, list) and p.get("truncated") is False
+                and p.get("open_count") == len(rows))
+    return _measured("reopening the source preserved the prior home", p,
+                     complete and isinstance(home, str) and isinstance(opened, str)
+                     and active.get("document_id") == _RECALL.get("source_urn")
+                     and active.get("document_handle") == opened
+                     and opened != home
+                     and any(r.get("document_handle") == home and r.get("is_active") is not True
+                             for r in rows)
+                     and any(r.get("document_handle") == opened and r.get("is_active") is True
+                             for r in rows))
+
+
 def _drawing_created(p):
     """drawing_create: the CLOUD drawing file the generator wrote - its own name off the DataFile and
     a lineage URN, which is the identity it is addressed by (Fusion auto-names every drawing from its
@@ -2150,6 +2169,104 @@ def _drawing_pdf_record(p):
     return {**facts, "sheet_range": p.get("sheet_range"),
             "native_identity": {"name": acted.get("name"),
                                 "document_id": acted.get("document_id")}}
+
+
+def _drawing_text_args(path):
+    """Read the original sheet's dimension text off one PDF this run exported."""
+    def args(ctx):
+        return {"include": ["text"], "pdf": path, "layer": "FD_Dimensions",
+                "sheet": _drawing_original_sheet(ctx)["name"]}
+    return args
+
+
+def _pdf_layer_strings(path, sheet_name, layer):
+    """pypdf's own read: the 1-based pages labelled with the sheet, the page's text without
+    whitespace, the strings shown inside `layer`, and the file's page count."""
+    import re
+    from pypdf import PdfReader
+    from pypdf.generic import ContentStream
+    reader = PdfReader(path)
+    pages = [i for i, label in enumerate(reader.page_labels)
+             if label == f"[{i + 1}] {sheet_name}"]
+    if len(pages) != 1:
+        return [i + 1 for i in pages], "", None, len(reader.pages)
+    page = reader.pages[pages[0]]
+    properties = page["/Resources"].get("/Properties", {})
+    open_layers, shown = [], 0
+    for args, op in ContentStream(page.get_contents(), reader).operations:
+        if op == b"BDC":
+            open_layers.append(properties[args[1]].get_object().get("/Name", "")
+                               if args[0] == "/OC" else "")
+        elif op == b"EMC" and open_layers:
+            open_layers.pop()
+        elif op == b"Tj":
+            shown += int(layer in open_layers)
+    return ([pages[0] + 1], re.sub(r"\s+", "", page.extract_text()), shown, len(reader.pages))
+
+
+def _drawing_linear_edge(ctx):
+    """The plate edge (mm) the linear dimension spans: the dimensioned line's sheet length against
+    each upright line's, matched to the 80 x 50 x 10 plate's edge ratios."""
+    curves = _ctx_get(ctx, "drawing_persist_curves", "the base view's curves")
+    lines = _drawing_lines(curves)
+    flat = [c for c in lines
+            if abs(c["end"][0] - c["start"][0]) > abs(c["end"][1] - c["start"][1])]
+    upright = [abs(c["end"][1] - c["start"][1]) for c in lines if c not in flat]
+    across = abs(flat[0]["end"][0] - flat[0]["start"][0]) if flat else None
+    edges = (80.0, 50.0, 10.0)
+    found = {a for a in edges for b in edges for tall in upright
+             if a != b and across and tall and abs(across / tall - a / b) < 0.01}
+    if len(found) != 1:
+        raise AssertionError(f"the dimensioned line matches no single plate edge: {found!r}")
+    return found.pop()
+
+
+def _drawing_text_read(path, clean=False):
+    """drawing_get(include=['text']): the original sheet's dimension text, judged against pypdf's
+    read of the same file and against the plate edge the linear dimension spans."""
+    def check(p):
+        rows = p.get("sheets") or []
+        sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+        text = sheet.get("text") if isinstance(sheet.get("text"), list) else []
+        name = _drawing_original_sheet()["name"]
+        pages, page_text, shown, page_count = _pdf_layer_strings(path, name, "FD_Dimensions")
+        placement = _drawing_linear_args(_RECALL)["placement"]
+        edge = _drawing_linear_edge(_RECALL)
+        ranked = sorted((r for r in text if _xy(r.get("at"))),
+                        key=lambda r: (r["at"][0] - placement[0]) ** 2
+                        + (r["at"][1] - placement[1]) ** 2)
+        nearest = ranked[0] if ranked else {}
+        pdf = p.get("pdf") if isinstance(p.get("pdf"), dict) else {}
+        written = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(os.stat(path).st_mtime)))
+        return _measured(
+            "the PDF's dimension text reads back, the linear value being the plate edge it spans",
+            {"sheet": sheet.get("name"), "pdf_page": sheet.get("pdf_page"), "pypdf_pages": pages,
+             "pdf": pdf, "file_written": written, "pypdf_page_count": page_count,
+             "sheet_count": p.get("sheet_count"), "pdf_page_reason": sheet.get("pdf_page_reason"),
+             "rows": len(text), "pypdf_layer_strings": shown, "text_unit": sheet.get("text_unit"),
+             "linear_placement": placement, "plate_edge": edge, "nearest": nearest,
+             "is_modified": p.get("is_modified"), "modified_by_read": p.get("modified_by_read")},
+            sheet.get("name") == name and pages == [sheet.get("pdf_page")]
+            and pdf.get("file") == path and pdf.get("modified_utc") == written
+            and pdf.get("page_count") == page_count == p.get("sheet_count")
+            and "pdf_page_reason" not in sheet and sheet.get("text_unit") == "mm"
+            and "text_truncated" not in sheet and len(text) == shown and shown >= 1
+            and all(r.get("layer") == "FD_Dimensions"
+                    and "".join(str(r.get("text")).split()) in page_text for r in text)
+            and _near(_as_number(nearest.get("text")), edge, 1e-6)
+            and abs(nearest["at"][0] - placement[0]) < 25
+            and abs(nearest["at"][1] - placement[1]) < 25
+            and (not clean or (p.get("is_modified") is False
+                               and p.get("modified_by_read") is None)))
+    return check
+
+
+def _as_number(text):
+    """The number a dimension's text spells, or None."""
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _drawing_persistence_pdf(path):
@@ -3612,9 +3729,22 @@ _CLOUD_DOC = _fit_refusal_rows() + _sketch_roll_dirty_rows() + _named_derive_row
      _activated(), None),
     ("doc_close", lambda c: {"name": _ctx_get(c, "source_urn", "the source"),
                               "save_changes": False}, _document_closed, None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _measured("the prior cloud home is present before reopening the source", p,
+                         _home_document(p) and p.get("truncated") is False
+                         and p.get("open_count") == len(p.get("open_documents") or [])
+                         and p.get("open_count", 0) >= 2
+                         and (p.get("active") or {}).get("document_handle")
+                         == _RECALL.get("home_doc")), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "source_urn", "the source"),
                              "force_api_open": True},
-     _opened(SOURCE_DOC, lambda: _RECALL.get("source_urn")), None),
+     lambda p: _opened(SOURCE_DOC, lambda: _RECALL.get("source_urn"))(p)
+     and _measured("doc_open reports retaining the prior cloud home", p,
+                   p.get("previous_active_closed") is False
+                   and p.get("closed_previous_active") is None),
+     ("source_reopened_handle", _recall("source_reopened_handle",
+                                        lambda p: p["document_handle"]))),
+    ("doc_get", {"max_results": 1000}, _open_kept_cloud_home, None),
     ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
      _file_settled(FOLDER), None),
     _dwell(3.0),
@@ -3831,6 +3961,14 @@ _CLOUD_DRAWING = [
      _drawing_persistence_pdf(_DRAWING_NAMED_AFTER_PDF),
      ("drawing_persist_named_after_pdf", _recall("drawing_persist_named_after_pdf",
       _drawing_pdf_record))),
+    # The value read: the dimension text of that PDF's page for the original sheet, each string and
+    # the layer count read again by pypdf, the linear dimension's value being the plate edge.
+    ("drawing_get", _drawing_text_args(_DRAWING_NAMED_AFTER_PDF),
+     _drawing_text_read(_DRAWING_NAMED_AFTER_PDF), None),
+    ("drawing_get", lambda c: {"include": ["text"], "pdf": _DRAWING_NAMED_AFTER_PDF,
+                               "layer": "No Such Layer",
+                               "sheet": _drawing_original_sheet(c)["name"]},
+     _refused("No text on layer 'No Such Layer'", "FD_Dimensions"), None),
     ("drawing_edit_sheet", _drawing_delete_copy_args, _drawing_copy_delete_requested, None),
     ("drawing_get", {"include": ["views"]}, _drawing_original_settled, None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_BEFORE_PDF),
@@ -3869,6 +4007,10 @@ _CLOUD_DRAWING = [
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_AFTER_PDF),
      _drawing_persistence_pdf(_DRAWING_AFTER_PDF),
      ("drawing_persist_after_pdf", _recall("drawing_persist_after_pdf", _drawing_pdf_record))),
+    # On the clean reopened drawing: neither the export above nor this text read may leave it
+    # modified, and the saved linear dimension still draws the plate edge.
+    ("drawing_get", _drawing_text_args(_DRAWING_AFTER_PDF),
+     _drawing_text_read(_DRAWING_AFTER_PDF, clean=True), None),
     ("data_get", lambda c: _version_args("drawing_persist_saved")(
         {"source_urn": _ctx_get(c, "drawing", "the drawing")[0]}),
      lambda p: _drawing_persistence_version(p, unchanged=True), None),
@@ -4631,21 +4773,26 @@ def _configure_column_rows():
                      ("find_geometry", _lit({"target": body, "units": "mm", "max_results": 100}),
                       _retire_compare("configure_" + body + "_geometry", _edge_extent_geometry, after), None)]
         return rows
-    def legal_table(p):
-        now, old = _configure_table_state(p), _RECALL.get("configure_table")
+    def legal_table(p, first="10 mm", active="B"):
+        now = (_configure_table_state(p, active=active)
+               if isinstance(p.get("configurations"), dict) else None)
+        old = _RECALL.get("configure_table")
         new = [c for c in (now or {}).get("columns", []) if c.get("id") not in {c["id"] for c in (old or {}).get("columns", [])}]
         cells = (now or {}).get("cells") or []
         column_id = _RECALL.get("configure_legal_column")
         added_cells = [c for c in cells if c.get("column_id") == column_id]
         expected_cells = [{"row_id": r["id"], "column_id": column_id,
                            "kind": "ConfigurationParameterCell",
-                           "expression": "13 mm" if r["name"] == "B" else "10 mm"}
+                           "expression": "13 mm" if r["name"] == "B" else first}
                           for r in (old or {}).get("configurations", [])]
-        changed = {"columns", "cells", "cell_count"}
+        changed = {"columns", "cells", "cell_count", "active_configuration", "configurations"}
+        stable_rows = lambda table: [{k: r[k] for k in ("name", "id", "index")}
+                                     for r in table["configurations"]]
         return _measured("one fresh ProbeW column with unchanged existing table identities", now,
                          now is not None and old is not None and len(new) == 1 and new[0]["title"] == "ProbeW"
                          and new[0]["type"] == "ConfigurationParameterColumn"
                          and {k: v for k, v in now.items() if k not in changed} == {k: v for k, v in old.items() if k not in changed}
+                         and stable_rows(now) == stable_rows(old)
                          and [c for c in now["columns"] if c not in new] == old["columns"]
                          and new[0]["id"] == column_id
                          and now.get("cell_count") == len(cells) == old.get("cell_count", 0) + 2
@@ -4657,13 +4804,13 @@ def _configure_column_rows():
             old["user_parameters"][0].update(expression="13 mm", value=13.0, value_internal=1.3)
         return _measured("active B drives actual ProbeW to 13 mm", p,
                          old is not None and _configure_parameters(p) == old)
-    def legal_body(p):
+    def legal_body(p, height=13):
         state = _symmetric_target_body_state(p)
-        return _measured("actual driven 10x8x13 mm solid, 1040 mm3", state,
-                         state is not None and state["size"] == [10, 8, 13]
+        return _measured(f"actual driven 10x8x{height} mm solid, {80 * height} mm3", state,
+                         state is not None and state["size"] == [10, 8, height]
                          and state["bounds"]["min_point"] == {"x": 0, "y": 0, "z": 0}
-                         and state["bounds"]["max_point"] == {"x": 10, "y": 8, "z": 13}
-                         and _near(state["material"]["volume"], 1040, .001))
+                         and state["bounds"]["max_point"] == {"x": 10, "y": 8, "z": height}
+                         and _near(state["material"]["volume"], 80 * height, .001))
     rows = [("doc_get", {}, _home_document, ("configure_home", _recall("configure_home", _home_address))),
             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
                             "max_depth": 10, "max_results": 2000},
@@ -4713,6 +4860,30 @@ def _configure_column_rows():
               _retire_compare("configure_Body2", _symmetric_target_body_state, True), None),
              ("find_geometry", _lit({"target": "Body2", "units": "mm", "max_results": 100}),
               _retire_compare("configure_Body2_geometry", _edge_extent_geometry, True), None),
+             ("design_configure", write({"action": "set_parameter", "parameter": "ProbeW",
+                                          "values": {"Configuration 1": "12 mm"}}),
+              lambda p: p.get("changed") is True and p.get("parameter") == "ProbeW"
+              and (p.get("configuration") or {}).get("name") == "Configuration 1"
+              and p.get("column_id") == _RECALL.get("configure_legal_column")
+              and p.get("previous_expression") == "10 mm" and p.get("expression") == "12 mm"
+              and (p.get("active_configuration") or {}).get("name") == "B", None),
+             ("design_get", {"include": ["configurations"]},
+              lambda p: legal_table(p, "12 mm"), None),
+             ("param_get", {}, legal_params, None),
+             ("model_inspect", _lit({"target": "Body1", "include": ["default", "mass"],
+                                     "units": "mm", "accuracy": "very_high", "per_body": True}),
+              legal_body, None),
+             ("design_configure", write({"action": "activate", "name": "Configuration 1"}),
+              lambda p: p.get("activated") is True and p.get("now_active") == "Configuration 1", None),
+             ("design_get", {"include": ["configurations"]},
+              lambda p: legal_table(p, "12 mm", "Configuration 1"), None),
+             ("param_get", {},
+              lambda p: _configure_parameters(p) is not None
+              and p["user_parameters"][0]["expression"] == "12 mm"
+              and _near(p["user_parameters"][0]["value"], 12, .001), None),
+             ("model_inspect", _lit({"target": "Body1", "include": ["default", "mass"],
+                                     "units": "mm", "accuracy": "very_high", "per_body": True}),
+              lambda p: legal_body(p, 12), None),
              ("doc_close", lambda c: {"name": _ctx_get(c, "configure_owned", "the coupon"), "save_changes": False,
                                       "expect_document": c["configure_owned"]}, _document_closed, None),
              ("doc_activate", lambda c: {"name": _ctx_get(c, "configure_home", "the home session")}, _activated(), None),

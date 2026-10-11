@@ -88,7 +88,7 @@ def _binary_stl_triangles(path):
 # ── mesh_export target resolution (broad: body handle/name, component/occurrence, whole design) ──
 
 def _resolve_export_target(design, target, fmt):
-    """Resolve one export target, using an exact native root mesh for STL."""
+    """Resolve one export target; an STL mesh target is that mesh as placed under the root."""
     root = safe(lambda: design.rootComponent)
     name = (target or "").strip() if isinstance(target, str) else ""
     if not name:
@@ -98,8 +98,11 @@ def _resolve_export_target(design, target, fmt):
     body, berr = _EXPORT_TARGET.resolve(name)
     if body is not None and berr is None and not isinstance(body, str):
         if _inputs._is_mesh(body):
-            if fmt == "stl" and _native_root_mesh(body, root):
-                return body, f"mesh body '{safe(lambda: body.name) or name}'", False, None
+            if fmt == "stl":
+                placed, issue = _mesh_in_root_frame(body, design)
+                if issue:
+                    return None, None, False, issue
+                return placed, f"mesh body '{safe(lambda: body.name) or name}'", False, None
             # The ExportManager cannot write a MeshBody. Its owning component may be broader.
             mesh_name = safe(lambda: body.name) or name
             comp = safe(lambda: body.parentComponent) or root
@@ -137,18 +140,27 @@ _CM_TO_STL = {"mm": 10.0, "cm": 1.0, "m": 0.01, "in": 1.0 / 2.54,
               "ft": 1.0 / 30.48}
 
 
-def _native_root_mesh(body, root):
-    """Whether the mesh coordinates belong to the root export frame."""
-    return (safe(lambda: body.assemblyContext, _common._UNREADABLE) is None
-            and _common.same_component(safe(lambda: body.parentComponent), root) is True)
+def _mesh_in_root_frame(body, design):
+    """(the mesh as its one placement under the root, a root body as is; error)."""
+    name = safe(lambda: body.name) or "?"
+    return _inputs.operand_in(
+        f"Mesh '{name}'", body, safe(lambda: design.rootComponent), design,
+        remedy=f"Name one instance as '<occurrence>:{name}', or export its component by name.")
 
 
-def _exact_mesh_stl(body, root, path, unit_key):
-    """Write one root mesh as binary STL and return its verified triangle count and size."""
-    if not _native_root_mesh(body, root):
-        return None, None, ("This mesh is not a native root body; its placement in the export "
-                            "frame is not verified. Move or copy it into the root component, "
-                            "then export that body.")
+def _exact_mesh_frame(body):
+    """(matrix from the mesh's own coordinates to the root frame, None at the root; error)."""
+    matrix, found = _inputs._placement_matrix(body, _common._native_of(body), None)
+    if not found:
+        return None, "The mesh's placement under the root did not read; no STL was written."
+    return matrix, None
+
+
+def _exact_mesh_stl(body, path, unit_key):
+    """Write one mesh as binary STL in the root frame; verify its count and size."""
+    matrix, frame_issue = _exact_mesh_frame(body)
+    if frame_issue:
+        return None, None, frame_issue
     mesh = safe(lambda: body.mesh)
     if mesh is None:
         return None, None, "The target mesh geometry did not read; no STL was written."
@@ -181,6 +193,19 @@ def _exact_mesh_stl(body, root, path, unit_key):
         return None, None, "The target mesh has a non-finite coordinate; no STL was written."
     if any(not isinstance(i, int) or i < 0 or i >= nodes for i in indices):
         return None, None, "The target mesh has an invalid triangle node index; no STL was written."
+    if matrix is not None:
+        placed = []
+        try:
+            for offset in range(0, len(coords), 3):
+                point = adsk.core.Point3D.create(*coords[offset:offset + 3])
+                if point.transformBy(matrix) is False:
+                    return None, None, "The mesh placement transform returned false; no STL was written."
+                placed.extend((point.x, point.y, point.z))
+        except Exception as exc:
+            return None, None, f"The mesh placement transform failed: {exc}; no STL was written."
+        if not all(math.isfinite(v) for v in placed):
+            return None, None, "The placed mesh has a non-finite coordinate; no STL was written."
+        coords = placed
     scale = _CM_TO_STL[unit_key]
     tmp = None
     before = _export.snapshot(path)
@@ -440,16 +465,19 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
             return error("An existing mesh body is already tessellated; refinement and STL "
                          "tessellation knobs cannot change it. Omit the knobs and use the "
                          "default refinement to export its exact triangles.")
-        triangles, size, issue = _exact_mesh_stl(geom, design.rootComponent, path, unit_key)
+        triangles, size, issue = _exact_mesh_stl(geom, path, unit_key)
         if issue:
             return error(issue)
+        occurrence = safe(lambda: geom.assemblyContext.fullPathName)
         return ok({"exported": True, "format": "stl", "target": desc,
                    "exact_mesh_body": True, "redirected_from_mesh": False,
                    "frame": "root", "file_path": path, "file_exists": True,
+                   "source_occurrence": occurrence,
                    "size_bytes": size, "triangle_count": triangles,
                    "refinement": None, "refinement_requested": ref,
                    "stl_coordinate_units": unit_key,
-                   "note": (f"Exported only {desc} as {triangles} STL triangles in {unit_key}. "
+                   "note": (f"Exported only {desc} as {triangles} STL triangles in the root frame "
+                            f"using {unit_key}. "
                             f"The mesh was already tessellated; refinement did not apply. "
                             f"Re-import with mesh_insert units='{unit_key}' to check the file.")})
 
@@ -511,7 +539,8 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
     # (measure_api mesh-export-component-descends-into-children).
     head = ("MESH target redirected to its owning component: the file holds EVERY body of that "
             "component and of the occurrences below it, BRep tessellated. 'component_census' "
-            "counts its own." if redirected_from_mesh else
+            "counts its own. Use format='stl' to export the mesh alone."
+            if redirected_from_mesh else
             "Exported a MESH file to local disk - the design was not modified.")
     clauses = []
     if applied_refinement is None:
@@ -562,8 +591,8 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
 # ── tool registration ────────────────────────────────────────────────────────────────────────
 
 TOOL_DESCRIPTION = (
-    "Export geometry to a MESH file on local disk. STL can target one root mesh body exactly; "
-    "other mesh targets export their whole component."
+    "Export geometry to a MESH file on local disk. STL targets one root or placed mesh "
+    "body exactly; OBJ/3MF mesh targets export their whole component."
 )
 
 _EXPORT_SPEC = [_EXPORT_FORMAT, _EXPORT_REFINE, _EXPORT_UNITS, _EXPORT_TARGET]

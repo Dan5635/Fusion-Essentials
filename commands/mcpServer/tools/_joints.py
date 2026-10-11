@@ -203,6 +203,17 @@ def component_world_matrix(design, comp, context_occ=None):
     return None
 
 
+def _finite_inverse(matrix):
+    """A copied inverse whose 16 cells read finite, else None."""
+    inverse = safe(lambda: matrix.copy())
+    if inverse is None or safe(lambda: inverse.invert()) is not True:
+        return None
+    cells = safe(lambda: list(inverse.asArray()))
+    if cells is None or len(cells) != 16 or any(_common.finite_number(v) is None for v in cells):
+        return None
+    return inverse
+
+
 def driven_joint_snapshot(design):
     """[(key, name, value_now)] for every joint carrying a driven value, over all_joints - key is
     the entityToken (falling back to the name) so two joints sharing a name are matched correctly."""

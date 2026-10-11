@@ -2407,6 +2407,7 @@ class TestPresetValues:
                                     "feed_per_revolution": 0.18})
         assert result["isError"] is True
         assert "tool_useFeedPerRevolution" in result["message"]
+        assert "Use spindle_speed/feed" in result["message"]
         assert tool.presets.count == 0
 
     def test_a_mistyped_key_is_refused_not_silently_dropped(self, monkeypatch):
@@ -2493,7 +2494,8 @@ class TestPresetSpecNumberGate:
         # The gate never fires on {"name": "Rough", "feed": 500}, so the wire is the only place
         # an agent learns a bare number is rpm / mm-per-min whatever the document's units.
         desc = ct.tool.to_dict()["inputSchema"]["properties"]["preset"]["description"]
-        assert "rpm, mm/min, or mm/rev" in desc and "35in/min" in desc
+        assert ("spindle_speed: rpm" in desc and "surface_speed: mm/min" in desc
+                and "feed_per_revolution: mm/rev" in desc and "35in/min" in desc)
 
 
 class TestRemovePreset:

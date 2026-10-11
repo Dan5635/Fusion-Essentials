@@ -30,6 +30,7 @@ FAMILY_GROUPS = (
     ("hub_cam", ("ACT 8b", "ACT 10c4", "ACT 10c5", "ACT 10c6 -",
                  "ACT 10c7", "ACT 10c8", "ACT 10c9", "ACT 10c10", "ACT 10c11",
                  "ACT 10c12", "ACT 10c13", "ACT 10c14", "ACT 10c15")),
+    ("fff_export", ("ACT 10c16",)),
     ("part_cam", ("ACT 10a", "ACT 10b -", "ACT 10b1", "ACT 10d", "ACT 10e", "ACT 10f")),
     ("cloud", ("ACT 11",)),
     ("sheet_coupon", ("ACT 12 -", "ACT 12b", "ACT 12c", "ACT 12d")),
@@ -38,6 +39,7 @@ FAMILY_GROUPS = (
     ("sheet_flange", ("ACT 12g",)),
     ("small_edits", ("ACT 13 -",)),
     ("lookup", ("ACT 14 -",)),
+    ("render", ("ACT 15 -",)),
     ("finale", ("FINALE",)),
 )
 FAMILY_SLOTS = {}
@@ -96,6 +98,7 @@ PRODUCER_ROWS = {
     "recognition": RECOGNITION,
     "small-edits-box": _box("EditTarget"),
     "lookup-box": _box("LookupGuard"),
+    "render-box": _box("RenderCoupon"),
     "finale-state": FINALE_STATE,
 }
 
@@ -118,6 +121,7 @@ PRODUCER_SLOTS = {
     "recognition": ("pocket_floor", "recognized_cbore_walls"),
     "small-edits-box": (),
     "lookup-box": (),
+    "render-box": (),
     "finale-state": (),
 }
 
@@ -161,6 +165,9 @@ FAMILY_DEPENDENCIES = {
     "small_edits": {"producers": ("small-edits-box",), "requires": ("owned family document",),
                     "provides": ("EditTarget",), "workspace": "Design",
                     "camera": "EditTarget"},
+    "render": {"producers": ("render-box",), "requires": ("owned family document",),
+               "provides": ("RenderCoupon",), "workspace": "Design",
+               "camera": "RenderCoupon"},
     "lookup": {"producers": ("lookup-box",), "requires": ("owned family document",),
                "provides": ("LookupGuard",), "workspace": "Design",
                "camera": "LookupGuard"},
@@ -230,6 +237,8 @@ def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None)
         return list(PRODUCER_ROWS["small-edits-box"])
     if family == "lookup":
         return list(PRODUCER_ROWS["lookup-box"])
+    if family == "render":
+        return list(PRODUCER_ROWS["render-box"])
     return []
 
 

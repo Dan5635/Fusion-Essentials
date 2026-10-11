@@ -226,10 +226,10 @@ def _world_lift(design, sketch, context_occ):
                       "from. Take 'face' from find_geometry with 'target' narrowed to the ONE "
                       "occurrence you mean - a face reached through an occurrence names that "
                       "placement. " + _PROFILE_CUT_REMEDY)
-    inverse = safe(lambda: to_world.copy())
-    if inverse is None or not safe(lambda: inverse.invert()):
+    inverse = _joints._finite_inverse(to_world)
+    if inverse is None:
         return None, (f"The placement of the component{whose} the placement sketch landed in did "
-                      "not invert, so a points_space='world' point could not be carried into its "
+                      "not invert to a finite matrix, so a points_space='world' point could not be carried into its "
                       "frame. " + _PROFILE_CUT_REMEDY)
     return inverse, ""
 

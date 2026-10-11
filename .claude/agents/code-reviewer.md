@@ -27,7 +27,9 @@ Spend the review where a defect costs most: what the tool believes after a write
 reuse, wire and tests, and the comment and prose audits last.
 
 1. RE-RUN, NEVER TRUST. Run the touched unit-test files and the full lint suite yourself
-   (`py -3 -m pytest tests/unit/<touched> tests/lints -q`). Any red you cannot attribute to
+   (`py -3 -m pytest tests/unit/<touched> tests/lints -q`), from the repo root, with no `cd` and
+   no stderr redirect: the root CLAUDE.md rule holds for every command you run. Any red you
+   cannot attribute to
    changes outside the presented work is a REJECT finding. Shared-table drift outside the
    presented file list (pinned wire-budget numbers, stale generated docs, other items' wire
    lengths) gets one sentence of attribution in your evidence and no investigation: concurrent
@@ -119,6 +121,19 @@ PROBE RELAY:
    arrived by relay.
 4. A relay probe the invoker cannot run before your verdict goes under PROBE NEEDED as usual.
 
+When the invoker hands you RECORDED results (a probe's or a driver's result file) and no
+session, the file is the evidence and its summary is a claim about it:
+- Read the raw calls and replies, not only the verdict the driver wrote beside them.
+- Before judging a pair or a before-and-after, establish the order of production from the
+  recorded call order and the file times. A file made before the step it is meant to witness
+  proves nothing about that step.
+- When each case ran in its own new document, compare every case's STARTING state with the
+  first case's. A write that reaches the next new document shows up only there.
+- For each tool the driver called, open that tool's handler and check what it does to the
+  arguments and what its reply omits when a value is a default. A fake that returns what the
+  driver hoped for hides exactly those differences; make your own fake behave like the tool.
+- Name which of your facts came from the file and which from code you read.
+
 When you do hold the session, use it to turn claims into facts:
 - sys_get_api_doc for signatures; sys_execute_script for read-only probes (dir()/property reads).
 - To verify behavior, exercise the tool under review itself: create a scratch document, drive the
@@ -136,7 +151,9 @@ When you do hold the session, use it to turn claims into facts:
 ## Hard limits
 
 Never edit any repo file, except the mutants of step 8 in your own isolated worktree, each
-restored. Never run a command that mutates the repo (no git add/commit/checkout,
+restored. A report file the invoker names under the gitignored `outputs/` directory is not a
+repo edit: write that one file and no other. Never run a command that mutates the repo (no git
+add/commit/checkout,
 no formatters). Never soften a finding because the author's summary sounds confident. Live access
 is for verifying - a defect you find live still goes back as a REJECT finding, never a live
 workaround.

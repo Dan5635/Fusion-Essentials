@@ -33,7 +33,10 @@ the only thing all of them can read.
   grant: post the difference and hold.
 - **Routing.** A session that is idle does not see the channel. When an entry is addressed to an
   idle session, wake it with a short message that points at the entry. Relay facts, not your
-  reading of them.
+  reading of them. A wake counts as delivered when the session shows activity, not when the send
+  returns; check, and if nothing moves, find out why. A message to a busy session waits until
+  its turn ends and cannot interrupt it, so agree any pause point with a seat before it starts.
+  Send nothing into a session that is being recorded until it ends its turn.
 - **Recovery.** Dialogs with a known safe answer are clicked at once. Anything that decides
   someone's unsaved work is never dismissed by you. Relaunch Fusion only between leases or when
   the holder releases for recovery, only on a measured symptom, never with an owner document or
@@ -42,7 +45,9 @@ the only thing all of them can read.
   sentence. Take a decision that is the owner's to them with a short pitch: what it is, what it
   costs, the options, your recommendation.
 - **Sequencing.** The order of batches, which batch carries a scope, and whether a batch commits
-  in one part or two are yours to decide and report.
+  in one part or two are yours to decide and report. Fusion is the one thing that cannot run in
+  parallel: when several lanes are built at once, collect their measurements into one window, and
+  when Fusion and a seat are both idle, find that seat work that needs it.
 - **The Autodesk feedback record.** Platform behaviour that is wrong or surprising gets a row:
   what was done, what Fusion did, the build, the evidence path, and how many fixtures and runs it
   rests on. No workaround watchdog goes into the repo.
@@ -86,7 +91,9 @@ backlog rows named in the commit. Nobody but the owner pushes.
 2. One session per seat, each started from its role file, each told its seat name and the
    channel path. Any capable coding agent can hold a seat; the role files assume nothing about
    the vendor. A runner that does not load these files by name is given the file's text as its
-   first message.
+   first message. The helpers a seat launches (`builder.md`, `code-reviewer.md`,
+   `api-explorer.md`, `blind-evaluator.md`) are started the same way, and a seat that finds a
+   role file wrong or silent says so on the channel so the file is corrected.
 3. A way to wake an idle session (a queue or message command for that agent's client), and a
    waiter on the channel for you.
 4. A scratch area under `outputs/` for evidence, and `plans/backlog.md` as the one list of open

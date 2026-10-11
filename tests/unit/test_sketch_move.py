@@ -191,6 +191,7 @@ class TestTheContainerAndTheMatrix:
         end = line.endSketchPoint.geometry
         assert (end.x, end.y, end.z) == pytest.approx((0, 2 ** -0.5, 2 ** -0.5))
         assert out["coordinates_verified"] is True
+        assert "curve interiors were not checked" in out["note"]
         assert out["requested"]["rotation_axis"] == [2, 0, 0]
 
     def test_three_dimensional_pivot_sets_the_translation_term(self, mod, sketches):
@@ -238,7 +239,7 @@ class TestTheContainerAndTheMatrix:
         plate.move = wrong_move
         msg = error_message(mod.handler(entities="line:0", rotation_deg=45,
                                         rotation_axis=[1, 0, 0]))
-        assert "requested XYZ transform did not land" in msg
+        assert "requested XYZ transform did not verify" in msg and "may have moved" in msg
 
     def test_z_pivot_changes_scale_without_rotation(self, mod, sketches):
         plate, _ = sketches
@@ -255,7 +256,7 @@ class TestTheContainerAndTheMatrix:
         plate.move = _mover([], moves=(), returns=True)
         msg = error_message(mod.handler(entities="line:0", rotation_deg=45,
                                         rotation_axis=[0, 1, 0]))
-        assert "requested XYZ transform did not land" in msg
+        assert "requested XYZ transform did not verify" in msg and "may have moved" in msg
         assert "move changed" not in msg
 
     def test_disappearing_moved_endpoint_cannot_verify_from_start_alone(self, mod, sketches):

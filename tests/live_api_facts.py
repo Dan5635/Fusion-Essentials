@@ -5,7 +5,7 @@ from these values, so the mocks carry measured data, not hand-typed claims. Each
 owned by the measurement row of the same name in tests/live/VERIFIED_API_FACTS.md."""
 
 FUSION_VERSION = "2706.0.116"
-VERIFIED_ON = "2026-10-10"
+VERIFIED_ON = "2026-10-11"
 
 # '<adsk namespace>.<Class>' -> {member: int} - seeded onto the mock adsk modules.
 ENUMS = {
@@ -658,6 +658,10 @@ ENUMS = {
         "CircularPipeSectionType": 0,
         "SquarePipeSectionType": 1,
         "TriangularPipeSectionType": 2,
+    },
+    "fusion.RenderSceneBackgroundTypes": {
+        "EnvironmentRenderSceneBackgroundType": 0,
+        "SolidColorRenderSceneBackgroundType": 1,
     },
     "fusion.RuleFilletTopologyTypes": {
         "RoundsAndFilletsRuleFilletTopologyType": 0,

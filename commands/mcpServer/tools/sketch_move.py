@@ -117,11 +117,13 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
                  for b, a in zip(before, after)]
         if any(v is False for v in exact):
             wrong = [r for r, v in zip(refs, exact) if v is False]
-            return error(f"The requested XYZ transform did not land for {', '.join(wrong)} in "
-                         f"sketch '{name}'. Read sketch_get(include_entities=true).")
+            return error(f"The requested XYZ transform did not verify for {', '.join(wrong)} in "
+                         f"sketch '{name}'. Entities may have moved. Read "
+                         "sketch_get(include_entities=true) before another edit.")
         if any(v is None for v in exact):
             return error(f"The move of sketch '{name}' could not verify endpoint XYZ coordinates. "
-                         "Read sketch_get(include_entities=true).")
+                         "Entities may have moved. Read sketch_get(include_entities=true) "
+                         "before another edit.")
 
     if not did and not moved:
         return error(f"Fusion declined the move in sketch '{name}' (Sketch.move returned false) and "
@@ -156,6 +158,7 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
                                    rotation_axis, center_z), "note": note}
     if rotation_axis is not None or center_z is not None:
         out["coordinates_verified"] = True
+        out["note"] += " Endpoint XYZ coordinates were verified; curve interiors were not checked."
     # A shared point or a constraint carries the move to curves nobody named; they are told apart
     # from the request.
     verdicts_other = [(curve, _moved(was, _assert.entity_position(curve))) for curve, was in others]

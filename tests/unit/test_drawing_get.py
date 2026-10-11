@@ -6,13 +6,16 @@ custom_size only when the build's customSize property answers), the per-view row
 curve points and their cap, the one-view scope, and the include/scope plumbing.
 """
 
+import datetime
+import os
+import time
 import types
 
 import pytest
 
 import live_api_facts
 from conftest import (FakeCustomSheetSize, FakeSheet, FakeView, FakeViews, _CustomTable,
-                      _RevisionRow, _RevisionTable, load_tool, make_drawing,
+                      _RevisionRow, _RevisionTable, export_pdf, load_tool, make_drawing,
                       make_drawing_session, payload)
 
 dg = load_tool("drawing_get")
@@ -281,16 +284,18 @@ class TestViewsSlice:
         enum = dg.tool.input_schema["properties"]["include"]["items"]["enum"]
         assert sorted(enum) == sorted(dg._SLICES)
 
-    def test_every_advertised_slice_actually_dispatches(self, install):
+    def test_every_advertised_slice_actually_dispatches(self, install, pdf):
         # A name the guard admits but no branch reads returns the orientation read again under a
         # token that promised a deeper one.
         adds = {"views": "view_rows", "curves": "curve_unit", "tables": "tables",
-               "revisions": "revision_count"}
+               "revisions": "revision_count", "text": "text_unit"}
         base, _proj = self._typed()
         install([_sheet("S", views=FakeViews([FakeView(base)]))])
+        pdf([_page(1, "[1] S")])
         for name in dg._SLICES:
             assert name in adds, f"name the sheet key include=['{name}'] adds"
-            row = payload(dg.handler(include=[name]))["sheets"][0]
+            scope = {"pdf": "p.pdf"} if name == "text" else {}
+            row = payload(dg.handler(include=[name], **scope))["sheets"][0]
             assert adds[name] in row, name
 
 
@@ -364,7 +369,7 @@ class TestTablesSlice:
                                   "cells": [["Item", "Qty"], ["Bolt", "4"]]}]
         assert "cells_truncated" not in row["tables"][0]
 
-    def test_a_sheet_with_no_tables_reads_an_empty_list_and_the_note_names_the_gap(self, install):
+    def test_a_sheet_with_no_tables_reads_an_empty_list_and_the_note_names_the_route(self, install):
         install([_sheet("S")])
         out = payload(dg.handler(include=["tables"]))
         assert out["sheets"][0]["tables"] == []
@@ -430,6 +435,181 @@ class TestRevisionsSlice:
         install([_sheet("S", revision_table=_RevisionTable([_RevisionRow()]))])
         row = payload(dg.handler())["sheets"][0]
         assert "revisions" not in row and "revision_count" not in row
+
+
+def _run(text, x, y, layer="FD_Dimensions", angle=0.0):
+    return {"text": text, "x": x, "y": y, "angle": angle, "layer": layer}
+
+
+def _mixed_runs():
+    return [_run("A", 1, 1, "BORDER"), _run("80", 2, 2), _run("x", 3, 3, None)]
+
+
+def _page(number, label, runs=(), width=420.16, height=297.04):
+    return {"page": number, "label": label, "width": width, "height": height, "runs": list(runs)}
+
+
+@pytest.fixture
+def pdf(monkeypatch):
+    """Stand the PDF reader's answer in for one path: its pages, or its refusal."""
+    def _pdf(pages=(), error=None):
+        doc = None if error else {"modified": 1760000000.0, "page_count": len(pages),
+                                  "pages": list(pages)}
+        monkeypatch.setattr(dg._pdf_text, "read", lambda path: (doc, error))
+    return _pdf
+
+
+class TestTextSlice:
+    def test_each_sheet_takes_the_page_labelled_with_its_name(self, install, pdf):
+        install([_sheet("Cover"), _sheet("Detail")])
+        pdf([_page(1, "[1] detail", [_run("3", 238.59, 231.94), _run("B", 16.3, 219.0, "BORDER"),
+                                     _run("50", 99.0, 126.9, angle=90.0)]),
+             _page(2, "[2] Cover")])
+        out = payload(dg.handler(include=["text"], pdf="C:/x/sheets.pdf"))
+        cover, detail = out["sheets"]
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1760000000))
+        assert out["pdf"] == {"file": "C:/x/sheets.pdf", "modified_utc": stamp, "page_count": 2}
+        assert stamp.endswith("T08:53:20Z")
+        assert "pdf_page_reason" not in cover and "name and size only" in out["note"]
+        assert (cover["pdf_page"], cover["text"], cover["text_layers"]) == (2, [], [])
+        assert detail["pdf_page"] == 1 and detail["text_unit"] == "mm"
+        assert detail["text"] == [
+            {"text": "3", "at": [238.59, 231.94], "angle": 0.0, "layer": "FD_Dimensions"},
+            {"text": "B", "at": [16.3, 219.0], "angle": 0.0, "layer": "BORDER"},
+            {"text": "50", "at": [99.0, 126.9], "angle": 90.0, "layer": "FD_Dimensions"}]
+        assert detail["text_layers"] == [{"layer": "FD_Dimensions", "count": 2},
+                                         {"layer": "BORDER", "count": 1}]
+        assert "as exported" in out["note"] and "text_truncated" not in detail
+
+    def test_a_sheet_no_single_page_names_reads_null_beside_one_that_reads(self, install, pdf):
+        install([_sheet("Twice"), _sheet("Absent"), _sheet("Once")])
+        pdf([_page(1, "[1] Twice"), _page(2, "[2] Twice"), _page(3, "[3] Once", [_run("8", 1, 2)]),
+             _page(4, "Once"), _page(5, None)])
+        rows = payload(dg.handler(include=["text"], pdf="p.pdf"))["sheets"]
+        assert [(r["pdf_page"], r["text"]) for r in rows[:2]] == [(None, None), (None, None)]
+        assert "text_layers" not in rows[0]
+        assert rows[0]["pdf_page_reason"] == "2 pages are labelled with this sheet's name"
+        assert rows[1]["pdf_page_reason"] == "no page is labelled with this sheet's name"
+        assert rows[2]["pdf_page"] == 3 and [t["text"] for t in rows[2]["text"]] == ["8"]
+
+    @pytest.mark.parametrize("extra,more", [(0, False), (1, True)])
+    def test_a_pdf_naming_no_sheet_is_refused_with_its_first_labels(self, install, pdf, extra,
+                                                                    more):
+        install([_sheet("Cover")])
+        count = dg._MAX_LABELS_LISTED + extra
+        pdf([_page(i + 1, f"[{i + 1}] Other{i}") for i in range(count)])
+        res = dg.handler(include=["text"], pdf="other.pdf")
+        assert res["isError"] is True
+        assert f"its {count} page label(s)" in res["message"] and "'other.pdf'" in res["message"]
+        assert f"Other{dg._MAX_LABELS_LISTED - 1}" in res["message"]
+        assert (f"Other{dg._MAX_LABELS_LISTED}" in res["message"]) is False
+        assert res["message"].count(" ...") == int(more)
+
+    @pytest.mark.parametrize("wider,taller,matched", [
+        (0.5, 0.5, True), (0.51, 0.0, False), (0.0, 0.51, False), (-0.51, 0.0, False)])
+    def test_a_page_of_the_sheets_name_but_another_size_is_not_its_page(self, install, pdf,
+                                                                       wider, taller, matched):
+        install([_sheet("Sheet1")])
+        pdf([_page(1, "[1] Sheet1", [_run("80", 2, 2)], width=420.0 + wider,
+                   height=297.0 + taller)])
+        row = payload(dg.handler(include=["text"], pdf="other.pdf"))["sheets"][0]
+        assert (row["pdf_page"] == 1) is matched and (row["text"] is not None) is matched
+        if not matched:
+            assert row["pdf_page_reason"] == (
+                f"page 1 carries this sheet's name but is {420.0 + wider} x {297.0 + taller} mm; "
+                "the sheet reads 420.0 x 297.0 mm")
+
+    def test_a_sheet_whose_size_did_not_read_takes_no_page(self, install, pdf):
+        install([_sheet("S", width_raises="extent unavailable")])
+        pdf([_page(1, "[1] S", [_run("80", 2, 2)])])
+        row = payload(dg.handler(include=["text"], pdf="p.pdf"))["sheets"][0]
+        assert row["pdf_page"] is None and row["text"] is None
+        assert "size did not read" in row["pdf_page_reason"]
+
+    def test_a_reader_refusal_is_returned_as_the_error(self, install, pdf):
+        install([_sheet("Cover")])
+        pdf(error="'p.pdf' is not a PDF this reader follows: byte 9 holds no xref table.")
+        res = dg.handler(include=["text"], pdf="p.pdf")
+        assert res["isError"] is True and "byte 9 holds no xref table" in res["message"]
+
+    def test_text_needs_a_pdf_and_names_the_export_that_makes_one(self, install):
+        install([_sheet("Cover")])
+        res = dg.handler(include=["text"])
+        assert res["isError"] is True and "drawing_export(format='pdf')" in res["message"]
+
+    @pytest.mark.parametrize("scope", [{"pdf": "p.pdf"}, {"layer": "BORDER"}])
+    def test_pdf_or_layer_without_the_text_slice_is_refused_naming_it(self, install, scope):
+        install([_sheet("Cover")])
+        res = dg.handler(include=["views"], **scope)
+        assert res["isError"] is True
+        assert f"'{next(iter(scope))}' scopes include=['text']" in res["message"]
+
+    def test_layer_keeps_one_layer_whatever_its_case_and_the_census_stays_whole(self, install,
+                                                                                 pdf):
+        install([_sheet("S")])
+        pdf([_page(1, "[1] S", _mixed_runs())])
+        row = payload(dg.handler(include=["text"], pdf="p.pdf", layer="fd_dimensions"))["sheets"][0]
+        assert [t["text"] for t in row["text"]] == ["80"]
+        assert row["text_layers"] == [{"layer": "BORDER", "count": 1},
+                                      {"layer": "FD_Dimensions", "count": 1},
+                                      {"layer": None, "count": 1}]
+
+    def test_a_layer_holding_no_text_is_refused_listing_the_layers_read(self, install, pdf):
+        install([_sheet("S")])
+        pdf([_page(1, "[1] S", _mixed_runs())])
+        res = dg.handler(include=["text"], pdf="p.pdf", layer="Dimensions")
+        assert res["isError"] is True
+        assert "'Dimensions'" in res["message"] and "BORDER, FD_Dimensions." in res["message"]
+
+    def test_a_layer_miss_on_a_sheet_the_pdf_lacks_reads_null_not_a_refusal(self, install, pdf):
+        install([_sheet("S"), _sheet("T")])
+        pdf([_page(1, "[1] T", [_run("80", 2, 2)])])
+        out = payload(dg.handler(include=["text"], pdf="p.pdf", layer="BORDER", sheet="S"))
+        assert out["sheets"][0]["pdf_page"] is None and out["sheets"][0]["text"] is None
+
+    @pytest.mark.parametrize("extra,truncated", [(0, False), (1, True)])
+    def test_text_rows_are_capped_at_the_boundary_after_the_layer_filter(self, install, pdf,
+                                                                         extra, truncated):
+        install([_sheet("S")])
+        runs = ([_run("b", 0, 0, "BORDER")] * 3
+                + [_run(str(i), i, 0) for i in range(dg._MAX_TEXT_PER_SHEET + extra)])
+        pdf([_page(1, "[1] S", runs)])
+        row = payload(dg.handler(include=["text"], pdf="p.pdf",
+                                 layer="FD_Dimensions"))["sheets"][0]
+        assert len(row["text"]) == dg._MAX_TEXT_PER_SHEET
+        assert {t["layer"] for t in row["text"]} == {"FD_Dimensions"}
+        assert row.get("text_truncated", False) is truncated
+        assert row["text_layers"][1]["count"] == dg._MAX_TEXT_PER_SHEET + extra
+
+    @pytest.mark.parametrize("standard,unit,at", [
+        ("asme", "in", [10.0, 5.0]), ("iso", "mm", [254.0, 127.0]),
+        ("unread", "mm", [254.0, 127.0])])
+    def test_positions_land_in_the_coordinate_unit_or_stay_mm_when_it_is_unread(
+            self, install, pdf, standard, unit, at):
+        install([_sheet("S")], standard=standard)
+        pdf([_page(1, "[1] S", [_run("1.5", 254.0, 127.0)])])
+        row = payload(dg.handler(include=["text"], pdf="p.pdf"))["sheets"][0]
+        assert (row["text_unit"], row["text"][0]["at"]) == (unit, at)
+
+    def test_the_slice_reads_a_real_file_through_the_reader(self, install, tmp_path):
+        install([_sheet("Front"), _sheet("Notes")])
+        path = tmp_path / "package.pdf"
+        path.write_bytes(export_pdf([
+            {"label": "[1] Front", "runs": [("2.25", 720, 576, "FD_Dimensions", 0)]},
+            {"label": "[2] Notes", "runs": []}]))
+        out = payload(dg.handler(include=["text"], pdf=f'"{path}"', sheet="Front"))
+        stamp = datetime.datetime.fromtimestamp(os.stat(path).st_mtime, datetime.timezone.utc)
+        assert out["pdf"] == {"file": str(path), "page_count": 2,
+                              "modified_utc": stamp.strftime("%Y-%m-%dT%H:%M:%SZ")}
+        assert out["sheets"][0]["pdf_page"] == 1
+        assert out["sheets"][0]["text"] == [
+            {"text": "2.25", "at": [254.0, 203.2], "angle": 0.0, "layer": "FD_Dimensions"}]
+
+    def test_without_the_slice_no_pdf_keys_are_published_and_the_note_names_it(self, install):
+        install([_sheet("S")])
+        out = payload(dg.handler())
+        assert "pdf" not in out and "pdf_page" not in out["sheets"][0]
+        assert "include=['text'] with pdf=" in out["note"] and "as exported" not in out["note"]
 
 
 class TestSheetScope:

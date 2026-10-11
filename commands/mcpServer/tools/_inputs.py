@@ -2889,6 +2889,23 @@ class FeatureEditOperands(InputKind):
             return placed, None
         return native, None
 
+    def _axis_operand(self, name, value, where, component, design):
+        """(linear axis entity placed for the feature owner, None), or (None, why refused)."""
+        resolved, err = AxisRef(name, entity_only=True).resolve(value, component=component)
+        if err:
+            return None, f"{where}: {err}"
+        if not isinstance(resolved, (tuple, list)) or len(resolved) != 2:
+            return None, f"{where} must resolve to a linear axis entity."
+        if resolved[0] == "world":
+            entity = world_construction_axis(component, value)
+            if entity is None:
+                return None, f"{where} has no readable owner origin axis."
+        elif resolved[0] == "edge":
+            entity = resolved[1]
+        else:
+            return None, f"{where} must resolve to a linear axis entity."
+        return operand_in(where, entity, component, design)
+
     def resolve_for(self, raw, feature, action, support):
         """Resolve a nonempty role list through its existing typed input kind."""
         feature_type = _common.safe(lambda: feature.objectType)
@@ -2921,27 +2938,23 @@ class FeatureEditOperands(InputKind):
         if component is None or design is None:
             return None, "The feature owner or active design is unreadable; reacquire the feature."
         if kind == "axis":
-            resolver = AxisRef("references", entity_only=True)
-            values = []
-            for i, value in enumerate(raw):
-                resolved, err = resolver.resolve(value, component=component)
-                if err:
-                    return None, f"'references'[{i}]: {err}"
-                if not isinstance(resolved, (tuple, list)) or len(resolved) != 2:
-                    return None, f"'references'[{i}] must resolve to a linear axis entity."
-                if resolved[0] == "world":
-                    entity = world_construction_axis(component, value)
-                    if entity is None:
-                        return None, f"'references'[{i}] has no readable owner origin axis."
-                elif resolved[0] == "edge":
-                    entity = resolved[1]
-                else:
-                    return None, f"'references'[{i}] must resolve to a linear axis entity."
-                entity, err = operand_in(f"'references'[{i}]", entity, component, design)
-                if err:
-                    return None, err
-                values.append(entity)
-            return values[0], None
+            return self._axis_operand("references", raw[0], "'references'[0]", component, design)
+        if kind == "direction_pair":
+            roles = row["roles"]
+            given = raw[0]
+            if not isinstance(given, dict) or not given or set(given) - set(roles):
+                got = sorted(map(str, given)) if isinstance(given, dict) else type(given).__name__
+                return None, (f"'references'[0] must be an object with {' and/or '.join(roles)} "
+                              f"(got {got}).")
+            directions = {}
+            for role in roles:
+                if role in given:
+                    entity, err = self._axis_operand(role, given[role], "'references'[0]",
+                                                     component, design)
+                    if err:
+                        return None, err
+                    directions[role] = entity
+            return directions, None
         if kind == "plane":
             resolved, err = PlaneRef("references", required=True).resolve(
                 raw[0], component=component)

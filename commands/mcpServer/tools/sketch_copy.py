@@ -316,7 +316,7 @@ def handler(sketch_name: str = "", entities: str = "", target_sketch: str = "",
     if check_xyz:
         if landed != len(refs) or len(new_curves) != len(refs):
             return error(f"The copy landed {landed} curve(s) in '{target_name}', but its requested "
-                         "XYZ positions cannot be paired with {len(refs)} source curve(s). "
+                         f"XYZ positions cannot be paired with {len(refs)} source curve(s). "
                          "Read sketch_get(include_entities=true).")
         source_after = [_assert.entity_position(e) for e in ents]
         if any(b != a for b, a in zip(source_before, source_after)):
@@ -352,6 +352,7 @@ def handler(sketch_name: str = "", entities: str = "", target_sketch: str = "",
            "note": note}
     if check_xyz:
         out["coordinates_verified"] = True
+        out["note"] += " Endpoint XYZ coordinates were verified; curve interiors were not checked."
     if len(new_curves) < landed:
         out["new_curves_complete"] = False
     return ok(out)

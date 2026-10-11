@@ -136,6 +136,33 @@ FEATURE_EDIT_SUPPORT = {
                                "field": "input_entities"},
             "quantity": {"member": "quantity", "reader": "expression", "field": "quantity"},
             "total_angle": {"member": "totalAngle", "reader": "expression", "field": "total_angle"}}},
+    "adsk::fusion::RectangularPatternFeature": {
+        "axis": {"member": "directionOneEntity", "reference": "direction_pair",
+                 "cardinality": "one", "reader": "direction_pair", "setter": "pattern_directions",
+                 "field": "direction_one",
+                 "roles": {"direction_one": "directionOneEntity",
+                           "direction_two": "directionTwoEntity"},
+                 "example": "references=[{'direction_one': 'z'}]"},
+        "_preserve": {
+            "elements": {"member": "patternElements", "reader": "count", "field": "elements"},
+            "suppressed": {"member": "suppressedElementsIds", "reader": "list",
+                           "field": "suppressed"},
+            "input_entities": {"member": "inputEntities", "reader": "references",
+                               "field": "input_entities"},
+            "quantity_one": {"member": "quantityOne", "reader": "expression",
+                             "field": "quantity_one"},
+            "quantity_two": {"member": "quantityTwo", "reader": "nullable_expression",
+                             "field": "quantity_two"},
+            "distance_one": {"member": "distanceOne", "reader": "expression",
+                             "field": "distance_one"},
+            "distance_two": {"member": "distanceTwo", "reader": "nullable_expression",
+                             "field": "distance_two"},
+            "symmetric_one": {"member": "isSymmetricInDirectionOne", "reader": "boolean",
+                              "field": "symmetric_one"},
+            "symmetric_two": {"member": "isSymmetricInDirectionTwo", "reader": "boolean",
+                              "field": "symmetric_two"},
+            "distance_type": {"member": "patternDistanceType", "reader": "value",
+                              "field": "distance_type"}}},
     "adsk::fusion::DraftFeature": {
         "inputs": {"member": "inputFaces", "reference": "faces", "cardinality": "many",
                    "reader": "references", "field": "input_faces"},
@@ -403,11 +430,17 @@ def feature_edit_rows(feature, definition=None):
             if row["reference"] == "plane_pair":
                 pair = value if isinstance(value, dict) else {}
                 handles = [safe(lambda role=role: pair[role]["handle"]) for role in PLANE_PAIR_ROLES]
+            if row["reference"] == "direction_pair":
+                read = definition or {}
+                set_roles = [role for role in row["roles"] if read.get(role) is not None]
+                handles = [safe(lambda role=role: read[role]["handle"]) for role in set_roles]
             if not address or not handles or any(not isinstance(handle, str) or not handle
                                                  for handle in handles):
                 args = []
             elif row["reference"] == "plane_pair":
                 args.append(f"references={[dict(zip(PLANE_PAIR_ROLES, handles))]!r}")
+            elif row["reference"] == "direction_pair":
+                args.append(f"references={[dict(zip(set_roles, handles))]!r}")
             else:
                 args.append(f"references={handles!r}")
             if row.get("set_collection") and args:
@@ -908,6 +941,23 @@ def feature_edit_state(feature):
                 state[field] = records
                 definition[field] = {role: record[1]
                                      for role, record in zip(PLANE_PAIR_ROLES, records)}
+            elif reader == "direction_pair":
+                # A null directionTwoEntity can coexist with a moving second direction vector.
+                records = {}
+                for role, name in row["roles"].items():
+                    entity = getattr(feature, name)
+                    if entity is None and name == member:
+                        raise RuntimeError(f"{name} reads no entity")
+                    try:
+                        records[role] = (None if entity is None else
+                                         (entity, reference_descriptor(entity, "axis")))
+                    except Exception as exc:
+                        raise RuntimeError(f"{name}: {exc}")
+                state.update(records)
+                definition.update({role: None if record is None else record[1]
+                                   for role, record in records.items()})
+                definition["direction_one_vector"] = _geom.axis_vec(safe(lambda: feature.directionOne))
+                definition["direction_two_vector"] = _geom.axis_vec(safe(lambda: feature.directionTwo))
             elif reader == "source_names":
                 value = [entity.name for entity in getattr(feature, member)]
                 if not value or any(not isinstance(name, str) or not name for name in value):
@@ -1224,6 +1274,9 @@ def feature_reference_state(entities, role):
                                      "owner": {"component": descriptor["source_component"]},
                                      "geometry": geometry}))
         return records
+    if role == "direction_pair":
+        return {name: (entity, reference_descriptor(entity, "axis"))
+                for name, entity in entities.items()}
     values = entities if isinstance(entities, list) else [entities]
     records = [(entity, reference_descriptor(entity, role)) for entity in values]
     return records if isinstance(entities, list) else records[0]
@@ -1315,6 +1368,10 @@ def feature_definition_view(feature, state, definition, unavailable):
     out = {**definition, **scope, "feature_address": address,
            "supported_edits": feature_edit_rows(feature, definition),
            "not_read": not_read, "unavailable": unavailable}
+    if (feature_type == "adsk::fusion::RectangularPatternFeature"
+            and definition.get("direction_two") is None):
+        out["direction_two_note"] = (
+            "No direction_two entity read; direction_two_vector may move with direction_one.")
     if feature_type == "adsk::fusion::HemFeature" and "hem_edge" in unavailable:
         out["note"] = ("Read hem_edge by explicitly rolling design_edit_timeline(action='roll', "
                        "feature=<feature_address>, to='before'), then design_get(include=['definition'], "

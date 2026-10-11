@@ -81,7 +81,7 @@ tool's local copy. The full catalog of kinds and shared helpers is the generated
 a tool.
 
 <!-- BEGIN GENERATED FAMILIES (py -3 tests/gen_manifest.py) -->
-**Tool families** (220 tools — `sys_find_tool <kw>` to search, `TOOL_MANIFEST.md` for the full list): `model`(40) `surface`(12) `form`(3) `mesh`(16) `sketch`(15) `cam`(26) `assembly`(9) `joint`(7) `design`(16) `doc`(14) `data`(10) `drawing`(12) `param`(5) `pmi`(4) `view`(6) `find`(1) `workspace`(1) `appearance`(1) `save`(1) `sheet`(11) `sys`(10)
+**Tool families** (224 tools — `sys_find_tool <kw>` to search, `TOOL_MANIFEST.md` for the full list): `model`(40) `surface`(12) `form`(3) `mesh`(16) `sketch`(15) `cam`(27) `assembly`(9) `joint`(7) `design`(16) `doc`(14) `data`(10) `drawing`(12) `param`(5) `pmi`(4) `view`(6) `find`(1) `workspace`(1) `appearance`(1) `save`(1) `sheet`(11) `sys`(10) `other`(3)
 <!-- END GENERATED FAMILIES -->
 
 ## Tool descriptions and agent-facing strings

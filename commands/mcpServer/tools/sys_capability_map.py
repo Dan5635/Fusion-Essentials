@@ -32,6 +32,7 @@ _FAMILY = {
     "doc":       ("Document lifecycle: open/new/save/close/activate/copy + insert/update references.", "doc_get"),
     "design":    ("The active design as a whole: read structure, mode, recompute, configure, delete.", "design_get"),
     "view":      ("Viewport/camera: screenshots, sections, isolate/orient, workspace switch.", "view_screenshot"),
+    "render":    ("Rendering: local image jobs, scene settings and in-canvas output.", "render_get"),
     "param":     ("User/model parameters: add/get/set/delete + favorites.", "param_get"),
     "sys":       ("Server/session utilities: find tools, this map, API docs, selection, the script hatch.", "sys_find_tool"),
     "find":      ("Find geometry as short-lived handles; use promptly, re-find if stale.", "find_geometry"),

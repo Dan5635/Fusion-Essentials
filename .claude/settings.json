@@ -42,6 +42,7 @@
       "mcp__fusion-essentials__model_measure_relation",
       "mcp__fusion-essentials__param_get",
       "mcp__fusion-essentials__pmi_get",
+      "mcp__fusion-essentials__render_get",
       "mcp__fusion-essentials__sheet_get",
       "mcp__fusion-essentials__sketch_get",
       "mcp__fusion-essentials__sys_capability_map",

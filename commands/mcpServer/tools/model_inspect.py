@@ -229,10 +229,10 @@ def _measuring_axes(jo, geom, x_vec, y_vec, jo_name, desc):
                 f"extents are measured in is unknown - Joint Origin '{jo_name}' placed fine. Target "
                 "a body inside the occurrence you mean (find_geometry returns one handle per "
                 "instance), or omit 'frame' for a world-aligned box.")
-        inverse = safe(lambda: from_world.copy())
-        if inverse is None or not safe(lambda: inverse.invert()):
+        inverse = _joints._finite_inverse(from_world)
+        if inverse is None:
             return None, None, (
-                f"The placement of the component {desc} belongs to did not invert, so the frame's "
+                f"The placement of the component {desc} belongs to did not invert to a finite matrix, so the frame's "
                 "axes could not be brought into the space its extents are measured in. Omit "
                 "'frame' for a world-aligned box.")
     out = []

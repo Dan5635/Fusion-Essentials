@@ -145,6 +145,7 @@ from verify_acts_cloud import (  # noqa: F401
 from verify_acts_hub import (  # noqa: F401
     HUB_COMP, HUB_MILL_SETUP, HUB_TURN_SETUP, _HUB, _HUB_JOB, _fully_constrained, _hub_box,
     _hub_setups, _hub_tools_landed, _rim_edge, _threaded, _tilt_frame, _tilt_v)
+from verify_acts_render import _RENDER_READ, _RENDER_START, poll_render_job  # noqa: F401
 
 from verify_program import (  # noqa: F401
     _ACT_PROGRAM, _SKETCH_PHASE, _placed_boxes, ACTS, FAMILY_PROGRAM,

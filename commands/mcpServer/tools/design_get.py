@@ -1245,8 +1245,12 @@ def _slice_definition(feature, units):
     if out.get("not_read"):
         out["note"] += " This Extrude definition is partial: not_read lists fields it omits."
     if out.get("unavailable") and (kind == "adsk::fusion::RipFeature" or
-            kind == "adsk::fusion::HemFeature" and "hem_edge" not in out["unavailable"]):
-        out["note"] += " If the definition is unreadable, roll before this feature; restore the end before editing."
+            kind == "adsk::fusion::HemFeature" and "hem_edge" not in out["unavailable"] or
+            kind == "adsk::fusion::RectangularPatternFeature"
+            and "input_entities" in out["unavailable"]):
+        out["note"] += (" If unreadable, use design_edit_timeline(action='roll', "
+                        "feature=<feature_address>, to='before'), read again, then restore "
+                        "to='end' before editing.")
     return out, None
 
 def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: bool = False,

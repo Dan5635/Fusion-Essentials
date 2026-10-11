@@ -53,7 +53,12 @@ Open a tool file only when a diff names it.
    VERIFIED_API_FACTS.md (facts stamp) and VERIFIED_TOOLS.md (receipt stamp).
 2. Snapshot and diff the full inventory: `py -3 tests/api_inventory.py snapshot <version>`, then
    `py -3 tests/api_inventory.py diff outputs/api-inventory/<previous> outputs/api-inventory/<version>`.
-   Keep every snapshot. Read `left_preview` and `members_left_preview` for classes, enums,
+   Keep every snapshot. If the local Preview watchlist at
+   `outputs/whole-backlog-closeout-20261005/AFTER-RELEASE-PLAN.md` is present, recheck each linked
+   official API page even when the binding diff is empty. The file is gitignored and may be absent
+   in a clone; still check official status for every candidate, including `VolumetricModel`:
+   `adsk.volume` lacked Preview annotations in 2706.0.116 while Autodesk marked that class Preview.
+   Read `left_preview` and `members_left_preview` for classes, enums,
    methods and properties that may have become eligible; read their `became_preview` counterparts
    for new deferrals. Compare each candidate's current Autodesk API page with the previous saved
    status and record its URL, access date and any disagreement with the installed binding label.

@@ -22,6 +22,9 @@ TOOLS_DIR = os.path.join(REPO_ROOT, "commands", "mcpServer", "tools")
 OUT_ROOT = os.path.join(REPO_ROOT, "outputs", "api-inventory")
 MODULES = ("core", "fusion", "cam", "drawing", "sim", "electron", "volume")
 PREVIEW = "is a preview feature"
+MARKERS = ("preview", "unsupported", "retired")
+_RETIRED = re.compile(r"\bThis (?:class|enum|method|property|API|object|event|type) (?:is|has been) "
+                      r"(?:retired|deprecated)\b", re.I)
 _BINDING_GLOBS = (
     os.path.expanduser("~/AppData/Local/Autodesk/webdeploy/production/*/Api/Python/packages/adsk"),
     os.path.expanduser("~/AppData/Local/Autodesk/webdeploy/pre-production/*/Api/Python/packages/adsk"),
@@ -36,10 +39,22 @@ def newest_package():
     return max(found, key=os.path.getmtime) if found else None
 
 
-def _preview(row, kinds):
-    """Return whether a saved binding row declares one of the given kinds Preview."""
+def _markers(doc):
+    """Return support markers from the complete binding docstring."""
+    lower = doc.lower()
+    return {"preview": PREVIEW in lower,
+            "unsupported": "not officially supported" in lower,
+            "retired": bool(_RETIRED.search(doc))}
+
+
+def _saved_marker(row, marker, cutoff):
+    """Return a saved support marker, or None if an old truncated doc cannot decide."""
     doc = row.get("doc") or ""
-    return row.get("preview") is True or any(f"This {kind} {PREVIEW}" in doc for kind in kinds)
+    if _markers(doc)[marker]:
+        return True
+    if marker in row:
+        return bool(row[marker])
+    return False if len(doc) < cutoff else None
 
 
 def inventory(path):
@@ -58,15 +73,13 @@ def inventory(path):
                     member_doc = ast.get_docstring(item) or ""
                     members[name] = {"kind": "method", "args": [a.arg for a in item.args.args if a.arg != "self"],
                                      "returns": ast.unparse(item.returns) if item.returns else None,
-                                     "preview": _preview({"doc": member_doc}, ("method",)),
-                                     "doc": member_doc[:400]}
+                                     **_markers(member_doc), "doc": member_doc[:400]}
                 elif isinstance(item, ast.Assign):
                     for target in item.targets:
                         if isinstance(target, ast.Name) and not target.id.startswith("_") and target.id != "thisown":
                             members[target.id] = {"kind": "constant"}
             classes[node.name] = {"bases": [ast.unparse(b) for b in node.bases],
-                                  "preview": _preview({"doc": doc}, ("class", "enum")),
-                                  "doc": doc[:600], "members": members}
+                                  **_markers(doc), "doc": doc[:600], "members": members}
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Attribute):
             target = node.targets[0]
             call = node.value
@@ -77,7 +90,7 @@ def inventory(path):
                 writable = len([a for a in call.args if not (isinstance(a, ast.Constant) and a.value is None)]) >= 2
                 classes[target.value.id]["members"][target.attr] = {
                     "kind": "property", "writable": writable,
-                    "preview": _preview({"doc": doc}, ("property",)), "doc": doc[:400]}
+                    **_markers(doc), "doc": doc[:400]}
     return classes
 
 
@@ -139,35 +152,48 @@ def diff_snapshots(old_dir, new_dir):
     removed_members = []
     for mod in sorted(set(old) | set(new)):
         o, n = old.get(mod, {}), new.get(mod, {})
-        added = {c: {"preview": n[c]["preview"], "members": sorted(n[c]["members"])} for c in sorted(set(n) - set(o))}
+        added = {c: {**{marker: _saved_marker(n[c], marker, 600) for marker in MARKERS},
+                     "members": sorted(n[c]["members"])} for c in sorted(set(n) - set(o))}
         removed = {c: sorted(o[c]["members"]) for c in sorted(set(o) - set(n))}
         changed = {}
-        left_preview_members, became_preview_members = [], []
+        transitions = {marker: {"left": [], "became": [], "undecided": 0,
+                                "members_left": [], "members_became": [], "members_undecided": 0}
+                       for marker in MARKERS}
         for cls in sorted(set(o) & set(n)):
             a, b = set(o[cls]["members"]), set(n[cls]["members"])
             if a != b:
                 changed[cls] = {"added": sorted(b - a), "removed": sorted(a - b)}
                 removed_members.extend((f"{mod}.{cls}.{m}", m) for m in sorted(a - b))
+            for marker in MARKERS:
+                was = _saved_marker(o[cls], marker, 600)
+                now = _saved_marker(n[cls], marker, 600)
+                if was is None or now is None:
+                    transitions[marker]["undecided"] += 1
+                elif was is False and now is True:
+                    transitions[marker]["became"].append(cls)
+                elif was is True and now is False:
+                    transitions[marker]["left"].append(cls)
             for member in sorted(a & b):
                 old_member = o[cls]["members"][member]
                 new_member = n[cls]["members"][member]
-                was = _preview(old_member, ("method", "property"))
-                now = _preview(new_member, ("method", "property"))
-                if was and not now:
-                    left_preview_members.append(f"{cls}.{member}")
-                elif now and not was:
-                    became_preview_members.append(f"{cls}.{member}")
+                for marker in MARKERS:
+                    was = _saved_marker(old_member, marker, 400)
+                    now = _saved_marker(new_member, marker, 400)
+                    if was is None or now is None:
+                        transitions[marker]["members_undecided"] += 1
+                    elif was is False and now is True:
+                        transitions[marker]["members_became"].append(f"{cls}.{member}")
+                    elif was is True and now is False:
+                        transitions[marker]["members_left"].append(f"{cls}.{member}")
         report["modules"][mod] = {
             "classes": {"old": len(o), "new": len(n)}, "classes_added": added, "classes_removed": removed,
             "member_changes": changed,
-            "became_preview": sorted(c for c in set(o) & set(n)
-                                     if _preview(n[c], ("class", "enum"))
-                                     and not _preview(o[c], ("class", "enum"))),
-            "left_preview": sorted(c for c in set(o) & set(n)
-                                   if _preview(o[c], ("class", "enum"))
-                                   and not _preview(n[c], ("class", "enum"))),
-            "members_became_preview": became_preview_members,
-            "members_left_preview": left_preview_members,
+            **{f"became_{marker}": entry["became"] for marker, entry in transitions.items()},
+            **{f"left_{marker}": entry["left"] for marker, entry in transitions.items()},
+            **{f"members_became_{marker}": entry["members_became"] for marker, entry in transitions.items()},
+            **{f"members_left_{marker}": entry["members_left"] for marker, entry in transitions.items()},
+            **{f"undecided_{marker}": entry["undecided"] for marker, entry in transitions.items()},
+            **{f"members_undecided_{marker}": entry["members_undecided"] for marker, entry in transitions.items()},
         }
     report["removed_members_still_named_by_tools"] = members_still_named(removed_members)
     path = os.path.join(new_dir, "inventory-diff.json")

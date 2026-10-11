@@ -5,7 +5,7 @@
 
 from verify_core import (
     _RECALL, _ctx_get, _document_closed, _extruded, _home_address, _home_document,
-    _made_component, _matched, _measured, _near, _new_document, _recall, _revolved, _drafted, _fg)
+    _made_component, _matched, _measured, _near, _new_document, _recall, _refused, _revolved, _drafted, _fg)
 
 
 def _save_feature(key):
@@ -75,7 +75,7 @@ def _definition_before(key, action, feature_type, preserved, component_key):
                  and isinstance(offer.get("call"), str) and "model_edit_feature(" in offer["call"]
                  and all(field in d and d[field] is not None for field in required))
         if action in ("axis", "plane"):
-            role = "axis" if action == "axis" else "mirror_plane"
+            role = preserved[0]
             valid = valid and isinstance(d.get(role), dict) and bool(d[role].get("handle"))
         elif action == "inputs":
             items = d.get("input_faces")
@@ -87,13 +87,18 @@ def _definition_before(key, action, feature_type, preserved, component_key):
             valid = valid and field in d and d.get(field) is not None
             if feature_type == "ThreadFeature":
                 valid = valid and d.get("modeled") is d.get("is_modeled")
+        if feature_type == "RectangularPatternFeature":
+            valid = (valid and d.get("quantity_two") == "2"
+                     and d.get("distance_two") not in (None, "0", "0.00 mm")
+                     and d.get("elements") == 6
+                     and isinstance(d.get("direction_one_vector"), list)
+                     and isinstance(d.get("direction_two_vector"), list))
         if valid:
             _RECALL[key] = d
         return _measured("public definition at feature marker has usable typed offer and retained controls",
                          {"feature": d.get("feature"), "component": d.get("component"),
                           "type": d.get("type"), "timeline_index": d.get("timeline_index"),
-                          "field": d.get("axis", d.get("mirror_plane", d.get("input_faces",
-                                  d.get("is_modeled", d.get("operation"))))),
+                          "field": d.get(preserved[0]),
                           "supported_edit": offer, "unavailable": d.get("unavailable")}, valid)
     return check
 
@@ -180,6 +185,9 @@ def _definition_after(key, changed_field, wanted_mode=None, candidate_key=None, 
         controls = [k for k in before if k not in (changed_field, "supported_edits", "unavailable", "not_read", "note")]
         if changed_field == "is_modeled":
             controls = [k for k in controls if k != "modeled"]
+        if after.get("type") == "RectangularPatternFeature":
+            controls = [k for k in controls if k not in ("direction_one_vector",
+                                                        "direction_two_vector")]
         controls_ok = all(_clean(after.get(k)) == _clean(before.get(k)) for k in controls)
         old, new = before.get(changed_field), after.get(changed_field)
         if wanted_mode is not None:
@@ -197,6 +205,17 @@ def _definition_after(key, changed_field, wanted_mode=None, candidate_key=None, 
                 field_value, candidate, _RECALL.get(feature_case + "_component_name"),
                 _RECALL.get(feature_case + "_component"),
                 native_face=native_identity and after.get("type") == "DraftFeature"))
+        if after.get("type") == "RectangularPatternFeature":
+            vector = changed_field + "_vector"
+            field_ok = field_ok and not _vector_near(before.get(vector), after.get(vector))
+            other = ("direction_two_vector" if changed_field == "direction_one"
+                     else "direction_one_vector")
+            if before.get("direction_two") is not None:
+                field_ok = field_ok and _vector_near(before.get(other), after.get(other))
+            if before.get("direction_two") is None:
+                field_ok = (field_ok and after.get("direction_two") is None
+                            and not _vector_near(before.get("direction_two_vector"),
+                                                 after.get("direction_two_vector")))
         good = (after.get("unavailable") == {} and stable and controls_ok and field_ok)
         return _measured("public definition changed only the requested field", {
             "before": {k: before.get(k) for k in (changed_field, "feature", "component", "type", "timeline_index")},
@@ -487,7 +506,7 @@ def _draft_face_identity_check(p):
 def _transition(rows, case, feature_key, action, field, mode=None, candidate_key=None,
                 expected_value=None, restore_mode=None, refresh_original=False,
                 expected_shape=None, body_target_key=None, expected_body=None,
-                candidate_body=False, draft_native_identity=False):
+                candidate_body=False, draft_native_identity=False, role=None):
     """Run one public feature edit, independent effect read, and exact public restoration."""
     before_key = case + "_" + action + "_before"
     shape_key = case + "_" + action + "_shape"
@@ -506,6 +525,8 @@ def _transition(rows, case, feature_key, action, field, mode=None, candidate_key
                 args["references"] = [item.get("handle") for item in descs if isinstance(item, dict)]
             else:
                 args["references"] = [_ctx_get(ctx, candidate_key, "typed edit candidate")]
+            if role:
+                args["references"] = [{role: handle} for handle in args["references"]]
         return args
     def edit_result(expect_change):
         def check(p):
@@ -615,6 +636,103 @@ def _transition(rows, case, feature_key, action, field, mode=None, candidate_key
             "target": _ctx_get(c, body_target_key, "target body"), "include": ["default", "mass"],
             "units": "mm", "accuracy": "very_high"},
             _body_restored(body_target_key, case + " restored"), None))
+
+
+
+def _grid_null_setup_args(ctx, case):
+    """Prepare a measured null second entity on the exact owned scratch feature."""
+    name = _ctx_get(ctx, case + "_feature", "owned pattern")
+    component = _RECALL.get(case + "_component_name")
+    script = (
+        "import adsk.core, adsk.fusion, json\n"
+        "def run(context):\n"
+        "    app=adsk.core.Application.get(); doc=app.activeDocument\n"
+        "    design=adsk.fusion.Design.cast(app.activeProduct)\n"
+        "    root=design.rootComponent if design else None\n"
+        "    if not doc or doc.isSaved or not root or root.occurrences.count != 1:\n"
+        "        print(json.dumps({'refused':'not the owned unsaved one-component scratch'})); return\n"
+        "    comp=root.occurrences.item(0).component\n"
+        "    coll=comp.features.rectangularPatternFeatures\n"
+        "    if comp.name != " + repr(component) + " or coll.count != 1 or coll.item(0).name != "
+        + repr(name) + ":\n"
+        "        print(json.dumps({'refused':'the exact owned pattern was not found'})); return\n"
+        "    f=coll.item(0); timeline=design.timeline\n"
+        "    if not f.timelineObject.rollTo(True):\n"
+        "        print(json.dumps({'refused':'could not roll before the owned pattern'})); return\n"
+        "    result={}\n"
+        "    try:\n"
+        "        result['before']={'one':f.directionOneEntity.entityToken,\n"
+        "            'two':f.directionTwoEntity.entityToken if f.directionTwoEntity else None,\n"
+        "            'vector_two':[f.directionTwo.x,f.directionTwo.y,f.directionTwo.z]}\n"
+        "        f.directionTwoEntity=f.directionOneEntity\n"
+        "        result['after']={'two':f.directionTwoEntity.entityToken if f.directionTwoEntity else None,\n"
+        "            'vector_two':[f.directionTwo.x,f.directionTwo.y,f.directionTwo.z],\n"
+        "            'quantity_two':f.quantityTwo.expression,\n"
+        "            'distance_two':f.distanceTwo.expression,\n"
+        "            'elements':f.patternElements.count}\n"
+        "    except Exception as exc:\n"
+        "        result['setup_error']=str(exc)\n"
+        "    finally:\n"
+        "        timeline.moveToEnd()\n"
+        "    result['marker_end']=timeline.markerPosition==timeline.count\n"
+        "    print(json.dumps(result))\n")
+    return {"script": script, "read_only": False,
+            "expect_document": _ctx_get(ctx, case + "_doc", "owned scratch")}
+
+
+def _grid_null_setup_check(p):
+    """Require the native preparation to leave six real, spaced pattern instances."""
+    before, after = p.get("before") or {}, p.get("after") or {}
+    good = (p.get("marker_end") is True and isinstance(before.get("one"), str)
+            and isinstance(before.get("two"), str) and before["one"] != before["two"]
+            and after.get("two") is None and after.get("quantity_two") == "2"
+            and after.get("distance_two") not in (None, "0", "0.00 mm")
+            and after.get("elements") == 6
+            and not _vector_near(before.get("vector_two"), after.get("vector_two")))
+    return _measured("owned 3 x 2 pattern has a moving implicit second vector", p, good)
+
+
+def _grid_end_marker_read(p):
+    """At the end marker the pattern's inputs do not read and the note says how to read them."""
+    d = p.get("definition") or {}
+    return _measured("pattern inputs unread at the end marker carry the roll remedy",
+                     {"unavailable": d.get("unavailable"), "note": d.get("note")},
+                     d.get("type") == "RectangularPatternFeature"
+                     and "input_entities" in (d.get("unavailable") or {})
+                     and "design_edit_timeline(action='roll'" in (d.get("note") or ""))
+
+
+def _grid_refusal_rows(rows, case):
+    """Show a colliding public edit refuses before changing definition or geometry."""
+    key = case + "_axis_before"
+    shape = case + "_axis_shape"
+    rows.extend([
+        ("design_edit_timeline", lambda c: _roll_before(c, case + "_feature"),
+         _roll_landed("before"), None),
+        ("design_get", lambda c: {"include": ["definition"], "units": "mm",
+         "feature": _ctx_get(c, case + "_feature", "feature")},
+         _definition_before(key, "axis", case, ["direction_one", "direction_two"],
+                            case + "_component"), None),
+        ("design_edit_timeline", _roll_end(), _roll_landed("end"), None),
+        ("design_get", lambda c: {"include": ["definition"], "units": "mm",
+         "feature": _ctx_get(c, case + "_feature", "feature")}, _grid_end_marker_read, None),
+        ("model_inspect", lambda c: {"target": _ctx_get(c, case + "_component", "owned component"),
+         "include": ["default", "mass"], "units": "mm", "accuracy": "very_high",
+         "per_body": True}, _shape_capture(shape, case + " before refused collision"), None),
+        ("model_edit_feature", lambda c: {"feature": _ctx_get(c, case + "_feature", "feature"),
+         "action": "axis", "references": [{"direction_one":
+             _RECALL[key]["direction_two"]["handle"]}]},
+         _refused("direction_one and direction_two", "entityToken", "choose distinct entities"), None),
+        ("design_edit_timeline", lambda c: _roll_before(c, case + "_feature"),
+         _roll_landed("before"), None),
+        ("design_get", lambda c: {"include": ["definition"], "units": "mm",
+         "feature": _ctx_get(c, case + "_feature", "feature")},
+         _definition_restored(key, "direction_one"), None),
+        ("design_edit_timeline", _roll_end(), _roll_landed("end"), None),
+        ("model_inspect", lambda c: {"target": _ctx_get(c, case + "_component", "owned component"),
+         "include": ["default", "mass"], "units": "mm", "accuracy": "very_high",
+         "per_body": True}, _shape_restored(shape, case + " after refused collision"), None),
+    ])
 
 
 def _start(rows, case):
@@ -742,6 +860,36 @@ def feature_edit_rows():
         lambda p: p.get("patterned") is True and p.get("quantity") == 3,
         (case + "_feature", _save_feature(case + "_feature"))))
     _transition(rows, case, case + "_feature", "axis", "axis", candidate_key=case + "_candidate")
+    _cleanup_transition(rows, case)
+
+    # A real 3 x 2 grid exercises both roles, refusal, and an implicit second vector.
+    case = "RectangularPatternFeature"
+    _start(rows, case)
+    _box(rows, "FEGridSeed", 20, 0, 24, 4, 4, case + "_seed")
+    _box(rows, "FEControl", 100, 0, 110, 10, 10, case + "_control")
+    rows.append(("model_construction", {"kind": "axis", "mode": "two_planes", "plane": "xy",
+        "plane2": "xz", "name": "FEGridXAxis"}, "ok", None))
+    _candidate(rows, case + "_candidate", "construction_axis", "FEGridXAxis",
+               {"position": [0, 0, 0], "direction": [-1, 0, 0]})
+    rows.append(("model_pattern_rectangular", lambda c, case=case: {
+        "bodies": [_ctx_get(c, case + "_seed", "pattern seed")], "quantity_one": 3,
+        "spacing_one": 15, "direction_one": "y", "quantity_two": 2,
+        "spacing_two": 20, "direction_two": "z"},
+        lambda p: p.get("patterned") is True and p.get("total_instances") == 6
+                  and p.get("quantity_two") == 2 and p.get("spacing_two") == 20,
+        (case + "_feature", _save_feature(case + "_feature"))))
+    _transition(rows, case, case + "_feature", "axis", "direction_one",
+                candidate_key=case + "_candidate", role="direction_one")
+    _transition(rows, case, case + "_feature", "axis", "direction_two",
+                candidate_key=case + "_candidate", role="direction_two")
+    _grid_refusal_rows(rows, case)
+    rows.extend([
+        ("doc_get", {}, _scratch_active(case + "_doc"), None),
+        ("sys_execute_script", lambda c, case=case: _grid_null_setup_args(c, case),
+         _grid_null_setup_check, None),
+    ])
+    _transition(rows, case, case + "_feature", "axis", "direction_one",
+                candidate_key=case + "_candidate", role="direction_one")
     _cleanup_transition(rows, case)
 
     # Draft has separate input and mode stories; the opposite side is reacquired before feature creation.

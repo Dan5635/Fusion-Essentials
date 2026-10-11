@@ -289,13 +289,10 @@ def _prepare(action, values, raw, design, entity):
         values["depths"] = [-depths[0]]
         values["expression"] = (f"-({text.strip()})" if _inputs.looks_like_expression(text) else
                                 f"-{_inputs.expression_report(text)} {raw['units'] or 'mm'}")
-    if kind == "symmetric" and len(taper_expressions) > 1:
-        return "A two-sided source has separate taper expressions; symmetric extent cannot preserve both."
     if kind == "two_side" or kind == "through_all" and values["direction"] == "both":
         indices = [0, 1 if len(taper_expressions) > 1 else None]
     else:
-        taper_index = 1 if values["has_two_extents"] and side == "negative" else 0
-        indices = [taper_index]
+        indices = [0]
     source_indices = [i if i is not None else 0 for i in indices]
     values["expected_taper_expressions"] = [taper_expressions[i] if indices[position] is not None
                                              else "0 deg"
@@ -904,6 +901,12 @@ def handler(feature: str = "", action: str = "", profile=None, operation: str = 
                    + (" Linked replay may leave mass properties stale. Use design_recompute before "
                       "mass inspection; it can reset uncaptured joint poses."
                       if replayed and linked_owners else ""))
+    if (action == "extent" and definition_before["extent"] == "two_side"
+            and definition_after["extent"] == "symmetric"
+            and definition_after["distance2_cm"] is None
+            and len(definition_before["tapers"]) == 2
+            and len(definition_after["tapers"]) == 1):
+        out["note"] += " The second-side distance and taper parameters no longer read on this feature."
     return identical_geometry_reply(out) if identical else ok(out)
 
 

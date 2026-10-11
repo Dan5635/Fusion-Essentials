@@ -1008,6 +1008,39 @@ def test_two_sided_zero_taper_source_keeps_one_sided_extent_path(scene):
     assert scene.feature.hasTwoExtents is False
 
 
+def test_two_sided_source_negative_distance_keeps_first_taper_identity(scene):
+    scene.feature.hasTwoExtents = True
+    scene.feature.extentTwo = SimpleNamespace(objectType=_DISTANCE, distance=Distance(
+        scene.feature, name="d10", expression="6 mm", value=0.6))
+    scene.feature.taperAngleTwo.name = "d8"
+    result = payload(mod.handler(feature="Extrude1", action="extent", extent="distance",
+                                 distance=8, direction="negative"))
+    assert result["definition_matches"] is True
+    assert result["definition_after"]["side"] == "negative"
+    assert result["definition_after"]["tapers"][0]["name"] == scene.feature.taperAngleOne.name
+
+
+def test_two_sided_zero_taper_converts_to_symmetric_half_length(scene):
+    scene.feature.hasTwoExtents = True
+    scene.feature.param = Distance(scene.feature, name="d7", expression="12 mm", value=1.2)
+    scene.feature.extentOne = SimpleNamespace(objectType=_DISTANCE, distance=scene.feature.param)
+    scene.feature.extentTwo = SimpleNamespace(objectType=_DISTANCE, distance=Distance(
+        scene.feature, name="d10", expression="8 mm", value=0.8))
+    scene.body.volume = 2.0
+    result = payload(mod.handler(feature="Extrude1", action="extent", extent="symmetric", distance=10))
+    assert result["edited"] is True and result["same_feature"] is True
+    assert result["definition_matches"] is True
+    assert result["definition_before"]["distance_cm"] == pytest.approx(1.2)
+    assert result["definition_before"]["distance2_cm"] == pytest.approx(0.8)
+    assert result["definition_after"]["distance_cm"] == pytest.approx(1.0)
+    assert result["definition_after"]["distance2_cm"] is None
+    assert len(result["definition_before"]["tapers"]) == 2
+    assert len(result["definition_after"]["tapers"]) == 1
+    assert scene.feature.hasTwoExtents is False
+    assert scene.body.volume == pytest.approx(2.0)
+    assert "second-side distance and taper parameters no longer read" in result["note"]
+
+
 def test_equal_volume_pocket_move_is_detected_by_face_centroids(scene, monkeypatch):
     def move_pocket():
         scene.body.boundingBox = make_bbox((0, 0, 0), (1, 1, 1))

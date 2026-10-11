@@ -35,6 +35,7 @@ class _Param:
     def __init__(self, name, expr="80 mm"):
         self.name = name
         self.expression = expr
+        self.unit = "mm"
 
 
 class ConfigurationParameterCell:
@@ -80,6 +81,8 @@ class _Col:
         return self._cells[rowname]
     def getCellByRowName(self, name):
         return self._cell(name)
+    def getCellByRowId(self, row_id):
+        return self._cell(row_id.removeprefix("row-"))
     def getCell(self, idx):
         # NOT the addressing the tool should use - the index runs over the COLUMN's own rowCount,
         # so this hands back a scratch cell unrelated to the by-name cells the assertions read.
@@ -87,6 +90,13 @@ class _Col:
         return self._scratch[idx]
     def classType(self):
         return self._cls.__name__
+
+
+class ConfigurationParameterColumn(_Col):
+    def __init__(self, parameter):
+        super().__init__(ConfigurationParameterCell, "param")
+        self.parameter = parameter
+        self.param = parameter
 
 
 class _Row:
@@ -353,7 +363,7 @@ class _Columns:
         return c
 
     def addParameterColumn(self, p):
-        c = _Col(ConfigurationParameterCell, "param"); c.param = p; return self._own(c)
+        return self._own(ConfigurationParameterColumn(p))
     def addSuppressColumn(self, f):
         c = _Col(ConfigurationSuppressCell, "suppress"); c.feature = f; self.added.append(c); return c
     def addVisibilityColumn(self, e):
@@ -623,6 +633,84 @@ class TestAddParameter:
                          values={"Nonexistent": "5 mm"})
         # a value naming a row that doesn't exist should surface, not silently pass
         assert res["isError"] is True and "Nonexistent" in res["message"]
+
+
+class TestSetParameter:
+    def _scene(self, monkeypatch):
+        design = _install(monkeypatch, _Design(configured=True, params=[_Param("plate_len")]))
+        _payload(dc.handler(action="add_configuration", name="Large"))
+        _payload(dc.handler(action="add_parameter", parameter="plate_len",
+                            values={"Default": "10 mm", "Large": "20 mm"}))
+        return design, design.configurationTopTable.columns.added[0]
+
+    def test_edits_only_the_named_inactive_cell(self, monkeypatch):
+        design, column = self._scene(monkeypatch)
+        before = column.getCellByRowName("Large").expression
+        result = _payload(dc.handler(action="set_parameter", parameter="plate_len",
+                                     values={"Default": "12 mm"}))
+        assert result["changed"] is True
+        assert result["configuration"]["id"] == "row-Default"
+        assert result["previous_expression"] == "10 mm"
+        assert result["expression"] == column.getCellByRowName("Default").expression == "12 mm"
+        assert column.getCellByRowName("Large").expression == before == "20 mm"
+        assert design.configurationTopTable.activeRow.name == "Large"
+
+    def test_refuses_active_or_ambiguous_parameter_target_without_write(self, monkeypatch):
+        design, column = self._scene(monkeypatch)
+        active = dc.handler(action="set_parameter", parameter="plate_len",
+                            values={"Large": "25 mm"})
+        assert active["isError"] is True and "active" in active["message"]
+        duplicate = design.configurationTopTable.columns.addParameterColumn(_Param("plate_len"))
+        ambiguous = dc.handler(action="set_parameter", parameter="plate_len",
+                               values={"Default": "12 mm"})
+        assert ambiguous["isError"] is True and "found 2" in ambiguous["message"]
+        assert column.getCellByRowName("Default").expression == "10 mm"
+        assert duplicate.getCellByRowName("Default").expression is None
+
+    def test_silent_cell_write_returns_error_with_read_back(self, monkeypatch):
+        _design, column = self._scene(monkeypatch)
+
+        class SilentCell:
+            @property
+            def expression(self):
+                return "10 mm"
+
+            @expression.setter
+            def expression(self, _value):
+                pass
+
+        column._cells["Default"] = SilentCell()
+        result = dc.handler(action="set_parameter", parameter="plate_len",
+                            values={"Default": "12 mm"})
+        assert result["isError"] is True
+        assert "reads '10 mm'" in result["message"]
+
+    def test_unread_column_refuses_before_mutation(self, monkeypatch):
+        design, column = self._scene(monkeypatch)
+        columns = design.configurationTopTable.columns
+        columns.addParameterColumn(_Param("other"))
+        original_item = columns.item
+        monkeypatch.setattr(columns, "item", lambda i: None if i == 1 else original_item(i))
+        result = dc.handler(action="set_parameter", parameter="plate_len",
+                            values={"Default": "12 mm"})
+        assert result["isError"] is True and "column 1 did not read" in result["message"]
+        assert column.getCellByRowName("Default").expression == "10 mm"
+
+    def test_targets_row_id_even_when_name_lookup_would_alias(self, monkeypatch):
+        design, column = self._scene(monkeypatch)
+        table = design.configurationTopTable
+        default = table.rows.item(0)
+        large = table.rows.item(1)
+        default.name = large.name
+        default.id = "row-unique-default"
+        selected = ConfigurationParameterCell()
+        selected.expression = "10 mm"
+        monkeypatch.setattr(column, "getCellByRowId", lambda row_id: selected)
+        result = _payload(dc.handler(action="set_parameter", parameter="plate_len",
+                                     values={"row-unique-default": "12 mm"}))
+        assert result["configuration"]["id"] == "row-unique-default"
+        assert selected.expression == "12 mm"
+        assert column.getCellByRowName("Large").expression == "20 mm"
 
 
 # ── suppress / visibility (need a resolvable feature/body) ──────────────────

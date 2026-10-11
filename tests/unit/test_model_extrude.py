@@ -1533,6 +1533,13 @@ class TestTwoSide:
         assert out["side_reference"]["normal_world"] == [0.459068, -0.059176, 0.886428]
         assert "distance2/taper_two_deg oppose" in out["note"]
 
+    def test_unreadable_placed_sketch_frame_is_not_called_world(self, monkeypatch):
+        _install([_sketch("S")])
+        monkeypatch.setattr(ex._inputs, "placed_datum_frame", lambda entity, kind: (None, None))
+        out = _payload(ex.handler(sketch_name="S", extent="two_side", distance=10, distance2=5))
+        assert out["side_reference"]["frame"] is None
+        assert out["side_reference"]["normal_world"] is None
+
     def test_two_side_first_taper_uses_retained_parameter(self):
         ef = _install([_sketch("S")])
 

@@ -3,8 +3,9 @@
 import adsk.fusion
 import pytest
 
-from conftest import (BRepBody, FakeExportManager, MakeComp, MakeDesign, MeshBody, _ExportOptions,
-                      _MeshBodies, _NamedCollection, install, load_tool, make_occurrence, payload)
+from conftest import (BRepBody, FakeExportManager, FakeMatrix3D, FakePoint, MakeComp, MakeDesign,
+                      MeshBody, _ExportOptions, _MeshBodies, _NamedCollection, install, load_tool,
+                      make_occurrence, payload)
 
 mx = load_tool("mesh_export")
 
@@ -182,6 +183,120 @@ class TestExportTarget:
         assert "options_verified" not in out
         assert des.exportManager._calls == []
 
+    def test_placed_mesh_stl_uses_root_frame_and_excludes_sibling(self, tmp_path, monkeypatch):
+        import struct
+
+        monkeypatch.setattr(mx.adsk.core.Point3D, "create", FakePoint)
+        root = _comp("Root")
+        child = _comp("Child")
+        target = MeshBody("Target", coords=[0, 0, 0, 1, 0, 0, 0, 1, 0],
+                          triangle_indices=[0, 1, 2], mesh_nodes=3, polygons=0, quads=0,
+                          parent=child)
+        sibling = MeshBody("Sibling", coords=[10, 0, 0, 11, 0, 0, 10, 1, 0],
+                           triangle_indices=[0, 1, 2], mesh_nodes=3, polygons=0, quads=0,
+                           parent=child)
+        child.meshBodies = _MeshBodies([target, sibling])
+        occ = make_occurrence("Child:1", component=child,
+                              transform2=FakeMatrix3D(t=(5, 3, 0)))
+        root.occurrences = _NamedCollection([occ])
+        proxy = target.createForAssemblyContext(occ)
+        design = _wire(root, all_comps=[root, child], handles={"H": proxy})
+        path = tmp_path / "placed.stl"
+        out = payload(mx.handler(format="stl", target="H", stl_units="cm",
+                                 file_path=str(path)))
+        with path.open("rb") as stream:
+            stream.seek(80)
+            assert struct.unpack("<I", stream.read(4))[0] == 1
+            facet = struct.unpack("<12fH", stream.read(50))
+        assert facet[3:12] == (5.0, 3.0, 0.0, 6.0, 3.0, 0.0, 5.0, 4.0, 0.0)
+        assert out["source_occurrence"] == "Child:1"
+        assert out["frame"] == "root" and out["redirected_from_mesh"] is False
+        assert design.exportManager._calls == []
+
+    @staticmethod
+    def _placed(placements):
+        """A design whose component 'Child' holds meshes 'Scan' and 'Sibling' and is placed once
+        per (path, matrix); 'H' is the handle of the NATIVE 'Scan', the one mesh_get publishes."""
+        child = MakeComp("Child", entity_token="CHILD")
+        scan = MeshBody("Scan", coords=[0, 0, 0, 1, 0, 0, 0, 2, 0], triangle_indices=[0, 1, 2],
+                        mesh_nodes=3, polygons=0, quads=0, parent=child)
+        sibling = MeshBody("Sibling", coords=[10, 0, 0, 11, 0, 0, 10, 1, 0],
+                           triangle_indices=[0, 1, 2], mesh_nodes=3, polygons=0, quads=0,
+                           parent=child)
+        child.meshBodies = _MeshBodies([scan, sibling])
+        occs = [make_occurrence(path, component=child, transform2=matrix)
+                for path, matrix in placements]
+        root = MakeComp("Root", entity_token="ROOT", occurrences=occs)
+        return _wire(root, all_comps=[root, child], handles={"H": scan})
+
+    @staticmethod
+    def _facets(path):
+        """(declared triangle count, [12 floats per facet]) of a binary STL."""
+        import struct
+
+        data = path.read_bytes()
+        count = struct.unpack_from("<I", data, 80)[0]
+        return count, [[round(v, 6) for v in struct.unpack_from("<12f", data, 84 + 50 * i)]
+                       for i in range((len(data) - 84) // 50)]
+
+    def test_a_native_mesh_handle_exports_alone_through_its_one_rotated_placement(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mx.adsk.core.Point3D, "create", FakePoint)
+        design = self._placed([("Outer:1+Child:1", FakeMatrix3D(deg=90, t=(5, 3, 0)))])
+        path = tmp_path / "one.stl"
+        out = payload(mx.handler(format="stl", target="H", stl_units="cm", file_path=str(path)))
+        count, facets = self._facets(path)
+        # A quarter turn about Z takes (x, y) to (-y, x) before the offset; the normal stays +Z.
+        assert count == 1 and facets == [[0, 0, 1, 5, 3, 0, 5, 4, 0, 3, 3, 0]]
+        assert out["source_occurrence"] == "Outer:1+Child:1" and out["frame"] == "root"
+        assert out["exact_mesh_body"] is True and out["redirected_from_mesh"] is False
+        assert design.exportManager._calls == []
+
+    def test_a_native_mesh_of_a_twice_placed_component_is_refused_naming_both(self, tmp_path):
+        design = self._placed([("Child:1", FakeMatrix3D(t=(5, 3, 0))),
+                               ("Child:2", FakeMatrix3D(t=(9, 0, 0)))])
+        path = tmp_path / "two.stl"
+        result = mx.handler(format="stl", target="H", file_path=str(path))
+        assert result["isError"] is True
+        assert "placed 2 times (Child:1, Child:2)" in result["message"]
+        assert "'<occurrence>:Scan'" in result["message"]
+        assert not path.exists() and design.exportManager._calls == []
+
+    def test_the_instance_spelling_the_refusal_offers_exports_that_instance(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mx.adsk.core.Point3D, "create", FakePoint)
+        self._placed([("Child:1", FakeMatrix3D(t=(5, 3, 0))),
+                      ("Child:2", FakeMatrix3D(t=(9, 0, 0)))])
+        path = tmp_path / "second.stl"
+        out = payload(mx.handler(format="stl", target="Child:2:Scan", stl_units="cm",
+                                 file_path=str(path)))
+        assert self._facets(path) == (1, [[0, 0, 1, 9, 0, 0, 10, 0, 0, 9, 2, 0]])
+        assert out["source_occurrence"] == "Child:2"
+
+    def test_a_mesh_whose_component_is_placed_nowhere_is_refused_not_widened(self, tmp_path):
+        design = self._placed([])
+        path = tmp_path / "none.stl"
+        result = mx.handler(format="stl", target="H", file_path=str(path))
+        assert result["isError"] is True
+        assert "'Child', which is not placed in the assembly" in result["message"]
+        assert "export its component by name" in result["message"]
+        assert not path.exists() and design.exportManager._calls == []
+
+    def test_a_placement_matrix_that_does_not_read_writes_no_stl(self, tmp_path):
+        child = MakeComp("Child", entity_token="CHILD")
+        scan = MeshBody("Scan", coords=[0, 0, 0, 1, 0, 0, 0, 2, 0], triangle_indices=[0, 1, 2],
+                        mesh_nodes=3, polygons=0, quads=0, parent=child)
+        child.meshBodies = _MeshBodies([scan])
+        occ = make_occurrence("Child:1", component=child,
+                              raises_on={"transform2": "3 : transform unavailable"})
+        root = MakeComp("Root", entity_token="ROOT", occurrences=[occ])
+        design = _wire(root, all_comps=[root, child], handles={"H": scan})
+        path = tmp_path / "blind.stl"
+        result = mx.handler(format="stl", target="H", file_path=str(path))
+        assert result["isError"] is True
+        assert "placement under the root did not read" in result["message"]
+        assert not path.exists() and design.exportManager._calls == []
+
     def test_exact_mesh_stl_refuses_to_drop_a_quad(self, tmp_path):
         comp = _comp("Root")
         target = MeshBody("Mixed", coords=[0, 0, 0, 1, 0, 0, 0, 1, 0],
@@ -217,16 +332,13 @@ class TestExportTarget:
         result = mx.handler(format="stl", target="Large", file_path=str(tmp_path / "large.stl"))
         assert result["isError"] is True and "limited to 250000" in result["message"]
 
-    def test_nonroot_mesh_stl_keeps_disclosed_component_export(self, tmp_path):
-        root = _comp("Root")
-        child = _comp("Child")
-        target = MeshBody("Placed", parent=child)
-        child.meshBodies = _MeshBodies([target])
-        des = _wire(root, all_comps=[root, child], handles={"H": target})
-        out = payload(mx.handler(format="stl", target="H", file_path=str(tmp_path / "p.stl")))
-        assert des.exportManager._calls[-1].geom is child
+    def test_a_placed_mesh_in_another_format_keeps_the_disclosed_component_export(self, tmp_path):
+        des = self._placed([("Child:1", FakeMatrix3D(t=(5, 3, 0)))])
+        out = payload(mx.handler(format="obj", target="H", file_path=str(tmp_path / "p.obj")))
+        assert des.exportManager._calls[-1].geom.name == "Child"
         assert out["redirected_from_mesh"] is True
-        assert out["component_census"]["mesh_bodies"] == 1
+        assert out["component_census"]["mesh_bodies"] == 2
+        assert "Use format='stl' to export the mesh alone." in out["note"]
 
     def test_the_redirect_note_names_the_brep_bodies_and_the_children_the_file_carries(self, tmp_path):
         # The component export writes the component's BRep bodies AND the bodies of the occurrences

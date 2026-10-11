@@ -287,7 +287,7 @@ class TestTheOpenReportsItsOwnCost:
         # is not documentReferences (1 here, and 9 on the assembly that loaded 27 live).
         assert out["documents_loaded"] == 27 and out["referenced_documents"] == 1
         assert isinstance(out["open_seconds"], float)
-        assert "27 documents" in out["note"] and "open_count" in out["note"]
+        assert "grew by 27" in out["note"] and "open_count" in out["note"]
 
     def test_an_open_that_loaded_only_itself_makes_no_cost_claim(self, monkeypatch):
         # The exact boundary: one document loaded is an ordinary open, and the cost sentence exists
@@ -384,6 +384,111 @@ class TestConfiguredDesign:
     def test_a_flag_that_does_not_read_off_the_opened_document_is_null(self, monkeypatch):
         unread = self._open(monkeypatch)
         assert unread["is_configured_design"] is None and "configured_design_note" not in unread
+
+
+class TestPreviousActiveDisposition:
+    def test_absent_prior_is_unknown_until_its_wrapper_reads_invalid(self, monkeypatch):
+        class UnreadableValidity(FakeFusionDocument):
+            @property
+            def isValid(self):
+                raise RuntimeError("document validity is unavailable")
+
+        opened = FakeFusionDocument(name="Saved")
+        monkeypatch.setattr(od, "app", FakeApplication(
+            active_document=opened, documents=FakeDocuments([opened])))
+        assert od._still_open(FakeFusionDocument(name="Untitled", is_modified=False)) is None
+        assert od._still_open(UnreadableValidity(name="Untitled")) is None
+        assert od._still_open(FakeFusionDocument(name="Untitled", closed=True)) is False
+
+    def test_open_discloses_blank_replacement_but_not_a_preserved_blank(self, monkeypatch):
+        def run(replace):
+            previous = FakeFusionDocument(name="Untitled", is_modified=False)
+            opened = FakeFusionDocument(
+                name="Saved", data_file=FakeDataFile("Saved", file_id=URN), is_modified=False)
+            documents = FakeDocuments([previous])
+            fake_app = FakeApplication(active_document=previous, documents=documents)
+            monkeypatch.setattr(od, "app", fake_app)
+            monkeypatch.setattr(w, "app", fake_app)
+            monkeypatch.setattr(od, "_resolve_data_file",
+                                lambda raw: (FakeDataFile("Saved", file_id=URN), raw, [raw]))
+
+            def native_open(_file):
+                if replace:
+                    previous._closed = True
+                    documents._items = [opened]
+                else:
+                    documents._items.append(opened)
+                fake_app.activeDocument = opened
+                return opened, "openUsingContext", None
+
+            monkeypatch.setattr(od, "_open_document", native_open)
+            result = od.handler(file_id=URN, force_api_open=True)
+            assert result["isError"] is False
+            return json.loads(result["content"][0]["text"])
+
+        replaced = run(True)
+        assert replaced["documents_loaded"] == 0
+        assert replaced["previous_active_closed"] is True
+        prior = replaced["closed_previous_active"]
+        assert prior["name"] == "Untitled" and prior["is_modified"] is False
+        assert prior["document_handle"] in replaced["note"]
+        assert "doc_get" in replaced["note"]
+
+        preserved = run(False)
+        assert preserved["documents_loaded"] == 1
+        assert preserved["previous_active_closed"] is False
+        assert preserved["closed_previous_active"] is None
+        assert preserved["note"] is None
+
+    def test_preserved_prior_detects_equal_native_wrappers(self, monkeypatch):
+        previous = _EqualDocument("prior", name="Untitled", is_modified=False)
+        prior_wrapper = _EqualDocument("prior", name="Untitled", is_modified=False)
+        opened = FakeFusionDocument(
+            name="Saved", data_file=FakeDataFile("Saved", file_id=URN), is_modified=False)
+        documents = FakeDocuments([prior_wrapper])
+        fake_app = FakeApplication(active_document=previous, documents=documents)
+        monkeypatch.setattr(od, "app", fake_app)
+        monkeypatch.setattr(w, "app", fake_app)
+        monkeypatch.setattr(od, "_resolve_data_file",
+                            lambda raw: (FakeDataFile("Saved", file_id=URN), raw, [raw]))
+
+        def native_open(_file):
+            documents._items.append(opened)
+            fake_app.activeDocument = opened
+            return opened, "openUsingContext", None
+
+        monkeypatch.setattr(od, "_open_document", native_open)
+        result = od.handler(file_id=URN, force_api_open=True)
+        assert result["isError"] is False
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["previous_active_closed"] is False
+        assert payload["closed_previous_active"] is None
+
+    def test_wrong_lineage_discloses_closed_prior(self, monkeypatch):
+        previous = FakeFusionDocument(name="Untitled", is_modified=False)
+        requested = FakeDataFile("Requested", file_id=URN)
+        opened = FakeFusionDocument(
+            name="SaveAs", data_file=FakeDataFile(
+                "SaveAs", file_id="urn:adsk.wipprod:dm.lineage:other"))
+        documents = FakeDocuments([previous])
+        fake_app = FakeApplication(active_document=previous, documents=documents)
+        monkeypatch.setattr(od, "app", fake_app)
+        monkeypatch.setattr(w, "app", fake_app)
+        monkeypatch.setattr(od, "_resolve_data_file", lambda raw: (requested, raw, [raw]))
+        prior_handle = w.document_handle(previous)
+
+        def native_open(_file):
+            previous._closed = True
+            documents._items = [opened]
+            fake_app.activeDocument = opened
+            return opened, "openUsingContext", None
+
+        monkeypatch.setattr(od, "_open_document", native_open)
+        result = od.handler(file_id=URN, force_api_open=True)
+        assert result["isError"] is True
+        assert prior_handle in result["message"]
+        assert "Call doc_get" in result["message"]
+        assert "not the file asked for" in result["message"]
 
 
 class TestSchema:

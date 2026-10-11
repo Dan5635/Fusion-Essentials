@@ -909,6 +909,24 @@ class TestOrientedAxesAreLiftedIntoTheGeometrySpace:
         assert res["isError"] and "did not invert" in msg and "body 'PlateBody'" in msg
         assert "No single placement answers" not in msg
 
+    def test_a_true_inverse_with_nonfinite_cells_refuses_the_frame(self, monkeypatch):
+        def corrupt_inverse(matrix):
+            matrix._r = ((float("nan"), 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+            return True
+
+        monkeypatch.setattr(FakeMatrix3D, "invert", corrupt_inverse)
+        rig = _rotated_rig(monkeypatch)
+        plate_occ = make_occurrence(path="Plate:1", component=_comp_wrapper("Plate", "PLATE"),
+                                    transform2=FakeMatrix3D(0.0))
+        rig.root.allOccurrencesByComponent = lambda c: {
+            "SLAB": [rig.occ], "PLATE": [plate_occ]}[c.entityToken]
+        self._capture(monkeypatch)
+        monkeypatch.setattr(mi._FRAME, "resolve", lambda raw: (rig.jo, None))
+        res = mi._bbox(None, BRepBody(name="PlateBody",
+                                      parent_component=_comp_wrapper("Plate", "PLATE")),
+                       "body 'PlateBody'", "PartFrame", "mm")
+        assert res["isError"] and "finite matrix" in error_message(res)
+
     def test_an_axis_that_reaches_world_but_not_back_is_an_error(self, monkeypatch):
         # the two legs fail separately: an axis lifted into world and left there would be measured
         # against a native body's component-space geometry - the very mismatch this fixes.

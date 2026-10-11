@@ -191,6 +191,7 @@ class TestCopy:
             end = _lines(plate).item(2).endSketchPoint.geometry
             assert (end.x, end.y, end.z) == pytest.approx((0, 2 ** -0.5, 2 ** -0.5))
             assert out["coordinates_verified"] is True
+            assert "curve interiors were not checked" in out["note"]
             assert source.endSketchPoint.geometry.z == 0.0
 
     def test_disappearing_copied_endpoint_cannot_verify_from_start_alone(self, mod, sketches):
@@ -202,6 +203,13 @@ class TestCopy:
         msg = error_message(mod.handler(entities="line:0", rotation_deg=45,
                                         rotation_axis=[1, 0, 0]))
         assert "endpoint XYZ coordinates did not verify" in msg
+
+    def test_partial_xyz_copy_names_the_requested_curve_count(self, mod, sketches):
+        plate, _ = sketches
+        plate.copy = _copier([], plate, made=[_boxed("OnlyOne", 0.0, 0.0)])
+        msg = error_message(mod.handler(entities="line:0,line:1", rotation_deg=45,
+                                        rotation_axis=[1, 0, 0]))
+        assert "with 2 source curve(s)" in msg and "{len(refs)}" not in msg
 
     def test_copy_returns_the_new_curve_refs_and_the_append_note(self, mod, sketches):
         plate, _ = sketches

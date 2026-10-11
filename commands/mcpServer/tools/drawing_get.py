@@ -6,6 +6,8 @@ Scripts are a poor fallback here: a sys_execute_script that references a Drawing
 .products collection dies at the executeTextCommand level (measured; app.activeProduct is the
 one measured-safe script route in), so this typed read is the reliable read path."""
 
+import re
+
 import adsk.core
 import adsk.drawing
 
@@ -14,8 +16,10 @@ from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe
 from . import _common
+from . import _data_read
 from . import _drawing_common
 from . import _inputs
+from . import _pdf_text
 
 app = adsk.core.Application.get()
 
@@ -121,10 +125,81 @@ _MAX_TABLES_PER_SHEET = 20
 _MAX_TABLE_ROWS = 20
 _MAX_TABLE_COLS = 20
 
-_SLICES = ("views", "curves", "tables", "revisions")
+_MAX_TEXT_PER_SHEET = 200
+_MAX_LABELS_LISTED = 5
+# a PDF page box is whole points, so a page matches its sheet's size to within this
+_PAGE_SIZE_TOLERANCE_MM = 0.5
+
+_SLICES = ("views", "curves", "tables", "revisions", "text")
+
+# a page label of a drawing_export PDF: the page's position in brackets, then its sheet's name
+_PAGE_LABEL = re.compile(r"\[\d+\] (.*)", re.S)
 
 
-def handler(include=None, sheet: str = "", view: int = None) -> dict:
+def _sheet_pages(dwg, path):
+    """({lowered sheet name: the PDF pages labelled with it}, the file's facts, error)."""
+    doc, err = _pdf_text.read(path)
+    if err:
+        return None, None, err
+    names = {(row["name"] or "").lower() for row in _drawing_common.sheet_listing(dwg)} - {""}
+    found = {}
+    for page in doc["pages"]:
+        named = _PAGE_LABEL.fullmatch(page["label"] or "")
+        if named and named.group(1).lower() in names:
+            found.setdefault(named.group(1).lower(), []).append(page)
+    if not found:
+        labels = [repr(page["label"]) for page in doc["pages"]]
+        more = " ..." if len(labels) > _MAX_LABELS_LISTED else ""
+        return None, None, (
+            f"No page of '{path}' is labelled with a sheet of this drawing: its {len(labels)} "
+            f"page label(s) read {', '.join(labels[:_MAX_LABELS_LISTED])}{more}. Export this "
+            "drawing (drawing_export format='pdf') and pass that file.")
+    return found, {"file": path, "modified_utc": _data_read._epoch_iso(doc["modified"]),
+                   "page_count": doc["page_count"]}, None
+
+
+def _sheet_page(facts, pages):
+    """(the one page carrying a sheet's name AND its size, why there is none) - one is None."""
+    if not pages:
+        return None, "no page is labelled with this sheet's name"
+    if len(pages) > 1:
+        return None, f"{len(pages)} pages are labelled with this sheet's name"
+    page, size = pages[0], (facts.get("width"), facts.get("height"))
+    if None in size:
+        return None, "the sheet's size did not read, so its page could not be checked"
+    if any(abs(got - want) > _PAGE_SIZE_TOLERANCE_MM
+           for got, want in zip((page["width"], page["height"]), size)):
+        return None, (f"page {page['page']} carries this sheet's name but is {page['width']} x "
+                      f"{page['height']} mm; the sheet reads {size[0]} x {size[1]} mm")
+    return page, None
+
+
+def _text_facts(facts, pages, layer, unit):
+    """Fold a sheet's one matched PDF page into its row: pdf_page, text_layers and text rows."""
+    page, why = _sheet_page(facts, pages)
+    facts["pdf_page"] = page["page"] if page else None
+    facts["text"] = None
+    if page is None:
+        facts["pdf_page_reason"] = why
+        return
+    census = {}
+    for run in page["runs"]:
+        census[run["layer"]] = census.get(run["layer"], 0) + 1
+    facts["text_layers"] = [{"layer": name, "count": n} for name, n in census.items()]
+    kept = [run for run in page["runs"]
+            if not layer or (run["layer"] or "").lower() == layer.lower()]
+    to_unit = _common.scale(_drawing_common.SHEET_EXTENT_UNIT) * _common.CM_TO_UNIT[unit]
+    facts["text"] = [{"text": run["text"],
+                      "at": [round(run["x"] * to_unit, 3), round(run["y"] * to_unit, 3)],
+                      "angle": run["angle"], "layer": run["layer"]}
+                     for run in kept[:_MAX_TEXT_PER_SHEET]]
+    if len(kept) > _MAX_TEXT_PER_SHEET:
+        facts["text_truncated"] = True
+    facts["text_unit"] = unit
+
+
+def handler(include=None, sheet: str = "", view: int = None, pdf: str = "",
+            layer: str = "") -> dict:
     # include accepts a list or a comma-string, like the family's other rich reads.
     if isinstance(include, str):
         raw = [p.strip().lower() for p in include.split(",") if p.strip()]
@@ -138,6 +213,7 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
     want_curves = "curves" in raw
     want_tables = "tables" in raw
     want_revisions = "revisions" in raw
+    want_text = "text" in raw
     if view is not None:
         # a client holding a stale schema sends a new integer input as a digit string
         index = (_inputs._ascii_int(view) if isinstance(view, str)
@@ -147,6 +223,12 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
         view = index
         if not (want_views or want_curves):
             return error(f"'view'={view} scopes include=['views'] or ['curves'] - add one.")
+    pdf, layer = (pdf or "").strip().strip('"'), (layer or "").strip()
+    if (pdf or layer) and not want_text:
+        return error(f"'{'pdf' if pdf else 'layer'}' scopes include=['text'] - add it.")
+    if want_text and not pdf:
+        return error("include=['text'] reads sheet text off an exported PDF: pass pdf= the "
+                     "file_path drawing_export(format='pdf') returned.")
 
     dd = _drawing_common.active_drawing_document()
     dwg = safe(lambda: dd.drawing) if dd is not None else None
@@ -186,6 +268,13 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
         sheets_to_read = None
     else:
         sheets_to_read = [(i, safe(lambda i=i: sheets.item(i))) for i in range(sheet_count)]
+
+    pages = None
+    if want_text:
+        pages, payload["pdf"], perr = _sheet_pages(dwg, pdf)
+        if perr:
+            return error(perr)
+        text_unit = payload["coordinate_unit"] or _drawing_common.SHEET_EXTENT_UNIT
 
     rows = None if sheets_to_read is None else []
     for idx, s in sheets_to_read or []:
@@ -240,15 +329,29 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
                         facts["revisions"] = rev_rows[:_MAX_TABLE_ROWS]
                         if len(rev_rows) > _MAX_TABLE_ROWS:
                             facts["revisions_truncated"] = True
+        if want_text:
+            _text_facts(facts, pages.get((sheet_name or "").lower()), layer, text_unit)
         rows.append(facts)
     payload["sheets"] = rows
+    paged = [row for row in rows or [] if row and row.get("pdf_page")]
+    if layer and paged and not any(row["text"] for row in paged):
+        seen = sorted({c["layer"] for row in paged for c in row["text_layers"] if c["layer"]})
+        return error(f"No text on layer '{layer}' for the sheet(s) read; their text in this PDF "
+                     f"sits on: {', '.join(seen) or 'no named layer'}.")
 
     payload["note"] = (
         "collection_index is 1-based; export_index is unknown - the PDF shows page order. "
-        "Width/height are mm. include= adds views/curves (view=N scopes one)/tables/revisions. "
-        "Dimension values, symbol text, view scales, parts lists and balloons do not read back - "
-        "the PDF is the read. revisions lists every row, title and header included, at the "
-        "indexes drawing_edit_revisions takes.")
+        "Width/height are mm. include= adds views/curves (view=N scopes one)/tables/revisions/"
+        "text. Dimension values, symbol text, parts lists and balloons read as text: "
+        "include=['text'] with pdf= a drawing_export PDF. View scales do not read. "
+        "revisions rows, title and header included, carry drawing_edit_revisions' indexes.")
+    if want_text:
+        payload["note"] += (
+            " text rows are the pdf file's text runs as exported: export again after an edit. A "
+            "page is matched to a sheet by name and size only, so a PDF of another drawing with "
+            "the same sheet names and sizes reads the same. at is where a run starts, in "
+            "text_unit from the page's lower-left corner; layer is its PDF layer (layer= keeps "
+            "one). pdf_page_reason says why a sheet has no page.")
     if payload["is_modified"] is not True:
         payload["note"] += (" symbol_count is null: its native count read can mark a clean "
                             "drawing modified. Check the exported PDF for symbols.")
@@ -271,6 +374,10 @@ tool = (
             "description": "Sheet name; omit for all."})
     .add_input_property("view", {"type": "integer",
             "description": "0-based; scopes views/curves."})
+    .add_input_property("pdf", {"type": "string",
+            "description": "drawing_export PDF path; text reads it."})
+    .add_input_property("layer", {"type": "string",
+            "description": "Keeps text on one PDF layer."})
     .strict_schema()
 )
 item = Item.create_tool_item(tool=tool, write="read", handler=handler, run_on_main_thread=True)

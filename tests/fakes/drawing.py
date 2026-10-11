@@ -3,8 +3,10 @@
 
 """The drawing world: sheets, views, sketches, images, the create input and the exporters."""
 
+import math
 import sys
 import types
+import zlib
 
 import live_api_facts as _api_facts
 
@@ -846,3 +848,80 @@ def make_drawing_session(monkeypatch, document, **families):
     session = FakeApplication(active_document=document)
     monkeypatch.setattr(sys.modules["adsk"].core.Application, "get", lambda: session)
     return session
+
+
+def export_pdf_code(text):
+    """`text` as the hex codes export_pdf's font shows it with - each one off its Unicode value."""
+    return "".join(f"{ord(ch) + 7:04x}" for ch in text)
+
+
+def _pdf_stream(body, filter_name, predictor):
+    """One stream object's bytes: Flate-compressed under that filter name, raw under any other."""
+    data = zlib.compress(body) if filter_name == "FlateDecode" else body
+    how = "" if filter_name is None else (f" /Filter /{filter_name} /DecodeParms "
+                                          f"<< /Predictor {predictor} >>")
+    return f"<< /Length {len(data)}{how} >>\nstream\n".encode("ascii") + data + b"\nendstream"
+
+
+def export_pdf(pages, content_tail="", page_entries="", font_entries="/ToUnicode 4 0 R",
+               trailer_entries="", filter_name="FlateDecode", predictor=1, xobject=None,
+               cmap_tail=""):
+    """The bytes of a PDF in the shape a drawing_export file has: one page per entry of `pages`
+    ({label, size, origin, runs: [(text, x, y, layer, angle)]}, lengths in points), each run shown
+    through a ToUnicode font inside its layer. The keywords bend one part of that shape apiece."""
+    layers = sorted({run[3] for page in pages for run in page["runs"] if run[3]})
+    chars = sorted({ch for page in pages for run in page["runs"] for ch in run[0]})
+    cmap = ("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n"
+            "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+            f"{len(chars)} beginbfchar\n"
+            + "".join(f"<{export_pdf_code(ch)}> <{ord(ch):04x}>\n" for ch in chars)
+            + "endbfchar\n" + cmap_tail + "endcmap\n")
+    objects = {3: ("<< /Type /Font /Subtype /Type0 /BaseFont /ArialMT /Encoding /Identity-H "
+                   f"{font_entries} >>").encode("ascii"),
+               4: _pdf_stream(cmap.encode("ascii"), filter_name, predictor)}
+    layer_number = {name: 5 + i for i, name in enumerate(layers)}
+    for name, number in layer_number.items():
+        objects[number] = f"<< /Type /OCG /Name ({name}) >>".encode("latin-1")
+    following = 5 + len(layers)
+    resources = ("/Font << /F1 3 0 R >> /Properties << "
+                 + " ".join(f"/oc{n} {n} 0 R" for n in layer_number.values()) + " >>")
+    if xobject:
+        objects[following] = (f"<< /Type /XObject /Subtype /{xobject} /Length 0 >>\nstream\n"
+                              "\nendstream").encode("ascii")
+        resources += f" /XObject << /X1 {following} 0 R >>"
+        following += 1
+    kids, labels = [], []
+    for index, page in enumerate(pages):
+        (width, height), (left, bottom) = page.get("size", (1191, 842)), page.get("origin", (0, 0))
+        ops = ["q", "0.06 0 0 0.06 0 0 cm"] + (["/X1 Do"] if xobject else [])
+        for text, x, y, layer, angle in page["runs"]:
+            cos, sin = (round(f(math.radians(angle)), 6) for f in (math.cos, math.sin))
+            ops += ([f"/OC /oc{layer_number[layer]} BDC"] if layer else []) + [
+                "/F1 230.991 Tf", "BT",
+                f"{cos:.6f} {sin:.6f} {-sin:.6f} {cos:.6f} {x / 0.06:.3f} {y / 0.06:.3f} Tm",
+                "0 Tc", "100 Tz 0 Tr", f"<{export_pdf_code(text)}> Tj", "ET"] + (
+                    ["EMC"] if layer else [])
+        ops += ["Q", content_tail]
+        objects[following] = _pdf_stream("\n".join(ops).encode("ascii"), filter_name, predictor)
+        objects[following + 1] = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [{left} {bottom} {left + width} "
+            f"{bottom + height}] /Contents [{following} 0 R] /Resources << {resources} >> "
+            f"{page_entries} >>").encode("ascii")
+        kids.append(f"{following + 1} 0 R")
+        if page.get("label") is not None:
+            labels.append(f"{index} << /P <feff{page['label'].encode('utf-16-be').hex()}> >>")
+        following += 2
+    objects[1] = ("<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [" + " ".join(labels)
+                  + "] >> >>").encode("ascii")
+    objects[2] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>".encode("ascii")
+    out, offsets = bytearray(b"%PDF-1.7\n%\xde\xad\xbe\xef\n"), {}
+    for number in sorted(objects):
+        offsets[number] = len(out)
+        out += f"{number} 0 obj\n".encode("ascii") + objects[number] + b"\nendobj\n"
+    table = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii")
+    for number in sorted(objects):
+        out += f"{offsets[number]:010d} 00000 n \n".encode("ascii")
+    out += (f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R {trailer_entries} >>\n"
+            f"startxref\n{table}\n%%EOF\n").encode("ascii")
+    return bytes(out)

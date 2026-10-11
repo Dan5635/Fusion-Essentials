@@ -1429,7 +1429,7 @@ tool = (
                 "feed": {"type": ["number", "string"]},
                 "surface_speed": {"type": ["number", "string"]},
                 "feed_per_revolution": {"type": ["number", "string"]}},
-            "description": "Bare numbers: rpm, mm/min, or mm/rev by field. Strings may carry units ('35in/min'). For per-rev use 0.18 or '0.18 mm'; /rev is implicit. Modes must be active."})
+            "description": "Bare spindle_speed: rpm; feed/surface_speed: mm/min; feed_per_revolution: mm/rev. Strings may carry units ('35in/min'). For per-rev use 0.18 or '0.18 mm'; /rev is implicit. Modes must be active."})
     .strict_schema()
 )
 item = Item.create_tool_item(

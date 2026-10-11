@@ -1286,6 +1286,17 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         if any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in act_rows):
             stopped = True
             break
+        if name.startswith("ACT 15 - RENDER: LOCAL "):
+            render_started = time.perf_counter()
+            poll_start = len(rows)
+            facade("poll_render_job")(rows, notes, ctx.get("render_job"), valued=valued)
+            if family_mode:
+                family_events.append({"family": current_family, "phase": "render-job " + name,
+                                      "steps": [list(row) for row in rows[poll_start:]],
+                                      "elapsed_s": max(0.0, time.perf_counter() - render_started)})
+            if any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in rows[poll_start:]):
+                stopped = True
+                break
         if name in POLL_AFTER:
             # one act can leave SEVERAL setups generating, so the boundary poll takes a list as
             # readily as a name and certifies each in turn. 'max_polls' sizes that act's own budget

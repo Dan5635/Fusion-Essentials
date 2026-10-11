@@ -78,8 +78,8 @@ _NO_COUNT_NOTE = (
     "the call's boolean and the document's modified flag are the whole check. Export the sheet "
     "(drawing_export) to see what was placed.")
 _NO_DELETE = "Fusion has no API to delete a placed dimension or read its value"
-_PLACED_NOTE = (_NO_DELETE + "; drawing_export's PDF is the value read. doc_save persists the "
-                "drawing.")
+_PLACED_NOTE = (_NO_DELETE + "; drawing_export a PDF, then drawing_get(include=['text'], pdf=...) "
+                "reads the value drawn. doc_save persists the drawing.")
 
 
 def _count(sheet):

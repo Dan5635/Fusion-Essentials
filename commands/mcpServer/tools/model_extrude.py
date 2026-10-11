@@ -1274,10 +1274,11 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
     if ext_key == "two_side":
         result["distance2"] = _inputs.expression_report(distance2)
         origin, normal = _inputs.placed_datum_frame(sketch, "sketch_plane")
-        result["side_reference"] = {"frame": "world", "origin_cm": origin,
+        result["side_reference"] = {"frame": "world" if origin is not None and normal is not None else None,
+                                     "origin_cm": origin,
                                      "normal_world": normal, "operand": safe(lambda: sketch.name)}
         result["note"] += (" Positive two-sided lengths: distance/taper_deg follow the sketch normal; "
-                           "distance2/taper_two_deg oppose it. side_reference names its world frame.")
+                           "distance2/taper_two_deg oppose it.")
         if normal is None:
             result["note"] += " World sketch frame unavailable; inspect the placed sketch before choosing sides."
         if taper_one_expected_deg is not None and taper_one_landed_deg is None:

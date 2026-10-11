@@ -23,12 +23,13 @@ from verify_acts_doc import _FINALE, _OVERTURE, _SHOWCASE, _SMALL_EDITS
 from verify_acts_derive_edit import _DERIVE_EDITS
 from verify_acts_dump import _HUB_CONTOUR, _HUB_DUMP, _MX_DUMP
 from verify_acts_hub import (
-    HUB_MILL_SETUP, HUB_ROT_SETUP, HUB_TURN_SETUP, _HUB, _HUB_ADDITIVE, _HUB_JOB, _HUB_ROTARY,
+    HUB_MILL_SETUP, HUB_ROT_SETUP, HUB_TURN_SETUP, _FFF_EXPORT, _HUB, _HUB_ADDITIVE, _HUB_JOB, _HUB_ROTARY,
     _HUB_ROTARY_READ, _HUB_TURNED_READ)
 from verify_acts_mesh import _MACHINING, _MESH, _NESTING
 from verify_acts_model import (
     _DETAILS, _DETAILS_FB, _RESIZE, _RESIZE_FB, _SOLIDS, _SOLIDS_FB)
 from verify_acts_motion import _MOTION, _VISE
+from verify_acts_render import _RENDER_JPEG, _RENDER_NAMED, _RENDER_READ, _RENDER_START, _RENDER_TIFF
 from verify_acts_sketch import _SKELETON, _SKETCHWORK
 from verify_acts_sheet import (_SHEET, _SHEET_CAM_READ, _SHEET_DRAWING,
                                _SHEET_CLEANUP, _SHEET_SELECTED, _SHEET_POSITIONS,
@@ -174,6 +175,7 @@ _ACT_PROGRAM = [
     # and the arrange/orient/support families - built and taken back out, so the whole-document
     # tallies the later CAM acts read are the ones the milling and turning jobs leave.
     ("ACT 10c15 - CAM: THE ADDITIVE BUILD", None, _HUB_ADDITIVE, []),
+    ("ACT 10c16 - CAM: FFF EXPORT", None, _FFF_EXPORT, []),
     # The last two acts machine the PART - the flip setup and the program that spans it and the
     # first - so each is gated on the job ACT 10a built, and falls back to nothing rather than to a
     # scratch world: every tool they drive is driven again by the scratch-stock fallbacks above, so
@@ -208,6 +210,11 @@ _ACT_PROGRAM = [
     ("ACT 12g - SHEET METAL FLANGE FAMILY", None, _SHEET_FLANGE, []),
     ("ACT 13 - SMALL EDIT SAFETY", None, _SMALL_EDITS, None),
     ("ACT 14 - LOOKUP TARGETING", None, _CAM_LOOKUP_GUARDS, None),
+    ("ACT 15 - RENDER: LOCAL START", None, _RENDER_START, None),
+    ("ACT 15 - RENDER: LOCAL JPEG", None, _RENDER_JPEG, None),
+    ("ACT 15 - RENDER: LOCAL TIFF", None, _RENDER_TIFF, None),
+    ("ACT 15 - RENDER: LOCAL NAMED", None, _RENDER_NAMED, None),
+    ("ACT 15 - RENDER: SCENE + CANVAS", None, _RENDER_READ, None),
     ("FINALE", None, _FINALE, None),
 ]
 
@@ -542,6 +549,9 @@ STEPS = [s for _, _, narr, fb in ACTS for s in (list(narr) + list(fb or []))
 
 # STORY: each covered tool's ledger shot-list note - the receipt doubles as the demo's shot list.
 STORY = {
+    "render_create": "launch a local PNG job and a locked in-canvas render on an owned coupon",
+    "render_get": "read the terminal local job and its PNG independently; read scene and canvas state",
+    "render_edit": "edit and read back scene fields, reset, activate Render, save canvas and stop unlocked",
     "sheet_get": "read scoped rules, sheet body ownership and flat presence on the coupon",
     "sheet_edit_rule": "copy a library rule locally, then change K and read its numeric settings",
     "sheet_convert": "convert the 1.5 mm blank and check body state plus applied rule thickness",

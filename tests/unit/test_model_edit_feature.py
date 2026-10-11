@@ -1779,3 +1779,165 @@ def test_collection_entities_reads_only_the_two_measured_swig_vectors_by_bounded
     class OtherVector(BaseVector):
         pass
     assert mod._edit.collection_entities(OtherVector([profile])) is None
+
+
+@pytest.fixture
+def grid_scene(monkeypatch, scene):
+    feature, timeline, new_axis, before_axis, design, body = scene
+    line_type = adsk.core.Curve3DTypes.Line3DCurveType
+    second = BRepEdge(SimpleNamespace(curveType=line_type), start=FakePoint(0, 0, 0),
+                      end=FakePoint(0, 1, 0), point_on_edge=SimpleNamespace(x=0, y=.5, z=0),
+                      entity_token="axis-second", body=body)
+    second.startVertex.body = second.endVertex.body = body
+    feature.objectType = "adsk::fusion::RectangularPatternFeature"
+    feature.name = feature.timelineObject.name = "Grid1"
+    feature.directionOneEntity = before_axis
+    feature.directionTwoEntity = second
+    vectors = {id(before_axis): FakeVector3D(1, 0, 0),
+               id(new_axis): FakeVector3D(0, 0, 1),
+               id(second): FakeVector3D(0, 1, 0)}
+    monkeypatch.setattr(type(feature), "directionOne",
+                        property(lambda self: vectors.get(id(self.directionOneEntity))),
+                        raising=False)
+    monkeypatch.setattr(type(feature), "directionTwo", property(
+        lambda self: (vectors.get(id(self.directionTwoEntity))
+                      if self.directionTwoEntity is not None else
+                      FakeVector3D(-1, 0, 0) if self.directionOneEntity is new_axis else
+                      FakeVector3D(0, -1, 0))), raising=False)
+    feature.inputEntities = [body]
+    feature.patternElements = SimpleNamespace(count=6)
+    feature.suppressedElementsIds = []
+    feature.quantityOne = SimpleNamespace(expression="3")
+    feature.quantityTwo = SimpleNamespace(expression="2")
+    feature.distanceOne = SimpleNamespace(expression="10 mm")
+    feature.distanceTwo = SimpleNamespace(expression="8 mm")
+    feature.isSymmetricInDirectionOne = feature.isSymmetricInDirectionTwo = False
+    feature.patternDistanceType = "fixture-distance-type"
+    tokens = {"axis-before": before_axis, "axis-after": new_axis, "axis-second": second}
+    monkeypatch.setattr(mod._inputs, "_resolve_token_entity",
+                        lambda _design, token: tokens.get(token))
+    original = mod._edit.reference_descriptor
+    monkeypatch.setattr(mod._edit, "reference_descriptor", lambda entity, role:
+        ({"handle": "body-token", "kind": "entity", "owner": {"component": "Part"},
+          "geometry": {"volume": 1.0}} if role == "entities" else original(entity, role)))
+    monkeypatch.setattr(mod._edit, "feature_geometry_snapshot", lambda _design: {
+        "bodies": {("body-token", "urn:fixture"): {"component": "Part", "body": "Body1", "shape": {
+            "measure": [feature.directionOneEntity.entityToken,
+                        getattr(feature.directionTwoEntity, "entityToken", None)]}}},
+        "occurrences": {}})
+    return feature, timeline, before_axis, new_axis, second
+
+
+def test_grid_retargets_one_direction_and_keeps_the_other(grid_scene):
+    feature, timeline, _before_axis, new_axis, second = grid_scene
+    result = payload(mod.handler(feature="Part/Grid1@1", action="axis",
+                                 references=[{"direction_one": "axis-after"}]))
+    assert result["edited"] is True and result["definition_matches"] is True
+    assert result["geometry_changed"] is True
+    assert feature.directionOneEntity is new_axis and feature.directionTwoEntity is second
+    after = result["definition_after"]
+    assert after["direction_one"]["handle"].startswith("axis-after")
+    assert after["direction_two"] == result["definition_before"]["direction_two"]
+    assert after["quantity_two"] == "2" and after["distance_two"] == "8 mm"
+    assert timeline.markerPosition == timeline.count
+
+
+def test_grid_retargets_both_directions_in_one_call(grid_scene):
+    feature, _timeline, _before_axis, new_axis, second = grid_scene
+    result = payload(mod.handler(feature="Part/Grid1@1", action="axis", references=[
+        {"direction_one": "axis-second", "direction_two": "axis-after"}]))
+    assert result["edited"] is True and result["definition_matches"] is True
+    assert feature.directionOneEntity is second and feature.directionTwoEntity is new_axis
+    assert result["definition_after"]["direction_two"]["handle"].startswith("axis-after")
+    assert result["definition_before"]["direction_one"]["handle"].startswith("axis-before")
+
+
+@pytest.mark.parametrize("references, token", [
+    ({"direction_one": "axis-second"}, "axis-second"),
+    ({"direction_two": "axis-before"}, "axis-before"),
+    ({"direction_one": "axis-after", "direction_two": "axis-after"}, "axis-after"),
+])
+def test_grid_refuses_colliding_direction_entities_before_setters(
+        grid_scene, monkeypatch, references, token):
+    feature, timeline, before_axis, _new_axis, second = grid_scene
+    monkeypatch.setattr(mod, "_set_directions", lambda *_args: pytest.fail("setter reached"))
+    result = mod.handler(feature="Part/Grid1@1", action="axis", references=[references])
+    message = error_message(result)
+    assert "direction_one and direction_two" in message and token in message
+    assert feature.directionOneEntity is before_axis and feature.directionTwoEntity is second
+    assert timeline.markerPosition == timeline.count
+
+
+def test_grid_direction_the_setter_ignores_is_an_error_and_both_are_restored(grid_scene,
+                                                                           monkeypatch):
+    feature, timeline, before_axis, _new_axis, second = grid_scene
+    del feature.directionTwoEntity
+    feature._direction_two_entity = second
+    feature._drop_next_direction_two = True
+
+    def set_two(self, value):
+        self._direction_two_entity = None if self._drop_next_direction_two else value
+        self._drop_next_direction_two = False
+
+    monkeypatch.setattr(type(feature), "directionTwoEntity", property(
+        lambda self: self._direction_two_entity, set_two), raising=False)
+    result = mod.handler(feature="Part/Grid1@1", action="axis", references=[
+        {"direction_two": "axis-after"}])
+    assert result["isError"] is True
+    assert "requested definition" in error_message(result)
+    assert feature.directionOneEntity is before_axis and feature.directionTwoEntity is second
+    assert result["details"]["edited"] is False and result["details"]["restore_gaps"] == []
+    assert timeline.markerPosition == timeline.count
+
+
+def test_grid_without_a_second_direction_entity_edits_one_and_refuses_two(grid_scene):
+    feature, timeline, _before_axis, new_axis, _second = grid_scene
+    feature.directionTwoEntity = None
+    refused = mod.handler(feature="Part/Grid1@1", action="axis",
+                          references=[{"direction_two": "axis-after"}])
+    assert refused["isError"] is True
+    assert "reads no direction_two entity" in error_message(refused)
+    assert "pass direction_one only" in error_message(refused)
+    assert feature.directionTwoEntity is None and timeline.markerPosition == timeline.count
+    result = payload(mod.handler(feature="Part/Grid1@1", action="axis",
+                                 references=[{"direction_one": "axis-after"}]))
+    assert result["edited"] is True and feature.directionOneEntity is new_axis
+    assert result["definition_after"]["direction_two"] is None
+    assert result["definition_before"]["direction_two_vector"] == [0, -1, 0]
+    assert result["definition_after"]["direction_two_vector"] == [-1, 0, 0]
+    assert result["direction_two_vector_effect"] == {
+        "before": [0, -1, 0], "after": [-1, 0, 0], "changed": True}
+    assert feature.directionTwoEntity is None
+
+
+@pytest.mark.parametrize("references", [[{}], [{"direction_three": "axis-after"}],
+                                        ["axis-after"], [7],
+                                        [{"direction_one": "axis-after", "extra": "x"}]])
+def test_grid_references_must_name_only_the_two_direction_roles(grid_scene, references):
+    feature, _timeline, before_axis, _new_axis, _second = grid_scene
+    value, reason = mod._inputs.FeatureEditOperands("references").resolve_for(
+        references, feature, "axis", mod._edit.FEATURE_EDIT_SUPPORT[feature.objectType])
+    assert value is None
+    assert "direction_one and/or direction_two" in reason
+    assert feature.directionOneEntity is before_axis
+
+
+def test_grid_definition_offers_a_call_with_only_the_direction_entities_it_read(grid_scene):
+    feature, _timeline, _before_axis, _new_axis, _second = grid_scene
+    state, fields, unavailable = mod._edit.feature_edit_state(feature)
+    assert unavailable == {}
+    call = mod._edit.feature_definition_view(feature, state, fields, unavailable)[
+        "supported_edits"][0]["call"]
+    one, two = (fields[role]["handle"] for role in ("direction_one", "direction_two"))
+    assert call == ("model_edit_feature(feature='Part/Grid1@1', action='axis', "
+                    f"references=[{{'direction_one': '{one}', 'direction_two': '{two}'}}])")
+    feature.directionTwoEntity = None
+    state, fields, unavailable = mod._edit.feature_edit_state(feature)
+    call = mod._edit.feature_definition_view(feature, state, fields, unavailable)[
+        "supported_edits"][0]["call"]
+    assert unavailable == {} and call.endswith(f"references=[{{'direction_one': '{one}'}}])")
+    definition = mod._edit.feature_definition_view(feature, state, fields, unavailable)
+    assert definition["direction_two_vector"] == [0, -1, 0]
+    assert "may move with direction_one" in definition["direction_two_note"]
+    assert mod._edit.FEATURE_EDIT_SUPPORT[feature.objectType]["axis"]["example"] == (
+        "references=[{'direction_one': 'z'}]")

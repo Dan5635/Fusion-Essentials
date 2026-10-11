@@ -151,7 +151,8 @@ def _apply_preset_values(preset, spec):
             active = safe(lambda: mode.value.value) if mode is not None else None
             if active is not True:
                 return (f"This preset's {mode_name} reads {active!r}, so '{key}' cannot be "
-                        "used as active cutting data. Choose a tool preset with that mode enabled.")
+                        "used as active cutting data. Use spindle_speed/feed, or choose a tool "
+                        "whose preset mode reads true before editing its preset.")
         verr = _set_preset_param(p, key, value, unit)
         if verr:
             return verr

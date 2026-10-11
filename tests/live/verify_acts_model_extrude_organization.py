@@ -443,6 +443,52 @@ def _extrude_edit_rows():
                    args.get("distance2", 0) * factor if "distance2" in args else None,
                    "cm" if factor == 0.1 else "mm")
         inspect("EditProfile:Body2", placed("definition read preserves " + args["extent"], low, high, volume))
+    def two_to_negative(p):
+        before, after = p.get("definition_before") or {}, p.get("definition_after") or {}
+        first = (before.get("tapers") or [{}])[0].get("name")
+        return _measured("two-sided extrude retains first taper identity on negative one-side edit",
+            {"before": before, "after": after, "definition_matches": p.get("definition_matches")},
+            p.get("edited") is True and p.get("same_feature") is True
+            and p.get("definition_matches") is True and p.get("marker_restored") is True
+            and before.get("extent") == "two_side" and after.get("extent") == "distance"
+            and first is not None and len(after.get("tapers") or []) == 1
+            and after["tapers"][0].get("name") == first
+            and _near(after.get("distance_cm"), -0.8, 1e-6))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_profile", "Extrude"),
+          "action": "extent", "extent": "distance", "distance": 8, "direction": "negative"},
+          two_to_negative)
+    inspect("EditProfile:Body2", placed("two-side to negative distance",
+                                         (20, 0, -8), (30, 10, 0), 800))
+    definition("ee_profile", "distance", -8)
+    edit("ee_profile", {"action": "extent", "extent": "two_side", "distance": 12,
+                        "distance2": 8})
+    inspect("EditProfile:Body2", placed("two-side restored after negative distance",
+                                         (20, 0, -8), (30, 10, 12), 2000))
+    def two_to_symmetric(p):
+        before, after = p.get("definition_before") or {}, p.get("definition_after") or {}
+        facts = {"before": before, "after": after, "same_feature": p.get("same_feature"),
+                 "geometry_changed": p.get("geometry_changed"), "note": p.get("note")}
+        return _measured("two-sided zero taper converts to symmetric with a read-back", facts,
+            p.get("edited") is True and p.get("same_feature") is True
+            and p.get("definition_matches") is True and p.get("marker_restored") is True
+            and p.get("geometry_changed") is True
+            and before.get("extent") == "two_side" and after.get("extent") == "symmetric"
+            and _near(before.get("distance_cm"), 1.2, 1e-6)
+            and _near(before.get("distance2_cm"), 0.8, 1e-6)
+            and _near(after.get("distance_cm"), 1.0, 1e-6)
+            and after.get("distance2_cm") is None
+            and len(before.get("tapers") or []) == 2 and len(after.get("tapers") or []) == 1
+            and "second-side distance and taper parameters no longer read" in (p.get("note") or ""))
+    write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_profile", "Extrude"),
+          "action": "extent", "extent": "symmetric", "distance": 10}, two_to_symmetric)
+    inspect("EditProfile:Body2", placed("two-side to symmetric retains volume",
+                                         (20, 0, -10), (30, 10, 10), 2000))
+    definition("ee_profile", "symmetric", 10)
+    edit("ee_profile", {"action": "extent", "extent": "two_side", "distance": 12,
+                        "distance2": 8})
+    inspect("EditProfile:Body2", placed("two-side restored before to-face",
+                                         (20, 0, -8), (30, 10, 12), 2000))
+    definition("ee_profile", "two_side", 1.2, 0.8, "cm")
     write("model_edit_extrude", lambda c: {"feature": _ctx_get(c, "ee_profile", "Extrude"),
           "action": "extent", "extent": "to_face", "to_object": _ctx_get(c, "ee_roof", "roof")},
           _extrude_edit_landed)

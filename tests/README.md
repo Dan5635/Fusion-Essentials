@@ -55,12 +55,14 @@ are not additive; `cleanup-total` covers teardown and home restoration as one sp
 | `swarf_cam` | cam-tool-library | owned family document -> SwarfFrustum:1, SwarfSetup | none | SwarfFrustum:1 and setup |
 | `hub_cam` | cam-tool-library | owned family document -> hub CAM setup state | none | hub and CAM setup |
 | `small_edits` | small-edits-box | owned family document -> EditTarget | none | EditTarget |
+| `render` | render-box | owned family document -> RenderCoupon | none | RenderCoupon |
 | `lookup` | lookup-box | owned family document -> LookupGuard | none | LookupGuard |
 | `finale` | finale-state | owned family document -> manufacture workspace with sketches hidden | none | authored final scene |
 | `surfaces` | none | owned family document -> family-local act state | none | authored act frames |
 | `mesh` | none | owned family document -> family-local act state | none | authored act frames |
 | `nesting` | none | owned family document -> family-local act state | none | authored act frames |
 | `motion` | none | owned family document -> family-local act state | none | authored act frames |
+| `fff_export` | none | owned family document -> family-local act state | none | authored act frames |
 | `cloud` | none | owned family document -> family-local act state | none | authored act frames |
 | `sheet_coupon` | none | owned family document -> family-local act state | none | authored act frames |
 | `sheet_selected` | none | owned family document -> family-local act state | none | authored act frames |
@@ -111,6 +113,7 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 | `ACT 10c13 - CAM: THE ROTARY FAMILIES` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `{"narrative":"HubRotary","fallback":[],"max_polls":70}` |
 | `ACT 10c14 - CAM: THE ROTARY FAMILIES READ` | `hub_cam` | family default | inherited | `none` | `machining_extension` | `null` |
 | `ACT 10c15 - CAM: THE ADDITIVE BUILD` | `hub_cam` | when machining_extension: swarf-frustum, cam-extension | inherited | `none` | `machining_extension` | `{"narrative":"MultiAxisSetup","fallback":[],"max_polls":70}` |
+| `ACT 10c16 - CAM: FFF EXPORT` | `fff_export` | family default | inherited | `none` | `always` | `null` |
 | `ACT 10d - CAM: THE SECOND SETUP` | `part_cam` | family default | design -> manufacture | `cam_get` | `always` | `{"narrative":"FlipSetup","fallback":[]}` |
 | `ACT 10e - CAM: MULTI-SETUP POST` | `part_cam` | swarf-frustum, cam-scope; when machining_extension: cam-extension | inherited | `cam_get` | `always` | `{"narrative":"document","fallback":[],"max_polls":160}` |
 | `ACT 10f - CAM: THE TREE LEFT BEHIND` | `part_cam` | family default | inherited | `cam_get` | `always` | `null` |
@@ -133,6 +136,11 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 | `ACT 12g - SHEET METAL FLANGE FAMILY` | `sheet_flange` | family default | inherited | `none` | `always` | `null` |
 | `ACT 13 - SMALL EDIT SAFETY` | `small_edits` | family default | inherited | `none` | `always` | `null` |
 | `ACT 14 - LOOKUP TARGETING` | `lookup` | family default | manufacture | `none` | `always` | `null` |
+| `ACT 15 - RENDER: LOCAL START` | `render` | family default | inherited | `none` | `always` | `null` |
+| `ACT 15 - RENDER: LOCAL JPEG` | `render` | family default | inherited | `none` | `always` | `null` |
+| `ACT 15 - RENDER: LOCAL TIFF` | `render` | family default | inherited | `none` | `always` | `null` |
+| `ACT 15 - RENDER: LOCAL NAMED` | `render` | family default | inherited | `none` | `always` | `null` |
+| `ACT 15 - RENDER: SCENE + CANVAS` | `render` | family default | design | `none` | `always` | `null` |
 | `FINALE` | `finale` | family default | design | `none` | `always` | `null` |
 <!-- END GENERATED ACT DEPENDENCIES -->
 

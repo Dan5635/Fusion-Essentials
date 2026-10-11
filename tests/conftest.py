@@ -165,6 +165,7 @@ from tests.fakes.drawing import FakeDrawingSketches, FakeImages, FakeSheet  # no
 from tests.fakes.drawing import FakeSheets, FakeView, FakeViews, drawing_enum  # noqa: E402
 from tests.fakes.drawing import drawing_value, install_drawing, make_drawing  # noqa: E402
 from tests.fakes.drawing import make_drawing_session, make_drawing_views  # noqa: E402
+from tests.fakes.drawing import export_pdf, export_pdf_code  # noqa: E402
 from tests.fakes.pmi import FakePMIAnnotations, FakePMIDisplaySettings  # noqa: E402
 from tests.fakes.pmi import FakePMIGeometricValue  # noqa: E402
 from tests.fakes.pmi import FakePMIGeometricValueTolerance, FakePMIHoleThreadNote  # noqa: E402

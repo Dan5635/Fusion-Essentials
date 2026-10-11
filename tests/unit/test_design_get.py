@@ -47,7 +47,7 @@ def test_unread_hem_operand_points_to_explicit_rollback_read_and_restore(unread_
     assert "note" not in complete
 
 
-@pytest.mark.parametrize("kind", ["HemFeature", "RibFeature"])
+@pytest.mark.parametrize("kind", ["HemFeature", "RibFeature", "RectangularPatternFeature"])
 def test_definition_composer_retains_explicit_operand_recovery(unread_hem, monkeypatch, kind):
     unread_hem.objectType = "adsk::fusion::" + kind
     monkeypatch.setattr(dg._FEATURE, "resolve", lambda raw: ((unread_hem, "Feature1"), None))
@@ -55,6 +55,11 @@ def test_definition_composer_retains_explicit_operand_recovery(unread_hem, monke
         monkeypatch.setattr(dg._edit_feature_common, "feature_definition", lambda feature, factor:
             dg._edit_feature_common.feature_definition_view(feature, {}, {"hem_edge": None},
                 {"hem_edge": "3 : Didn't roll editing feature back."}))
+    if kind == "RectangularPatternFeature":
+        monkeypatch.setattr(dg._edit_feature_common, "feature_definition", lambda feature, factor:
+            dg._edit_feature_common.feature_definition_view(feature, {},
+                {"input_entities": None},
+                {"input_entities": "3 : Didn't roll editing feature back."}))
     row, refusal = dg._slice_definition("Feature1", "mm")
     assert refusal is None and "design_edit_timeline" in row["note"]
     assert "to='before'" in row["note"] and "restore" in row["note"].casefold()

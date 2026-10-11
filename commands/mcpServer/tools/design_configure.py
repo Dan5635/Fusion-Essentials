@@ -45,7 +45,7 @@ def _find_row(table, target):
 
 _ACTIONS = ("create", "activate", "add_configuration", "rename_configuration", "add_parameter",
             "add_suppress", "add_visibility", "set_appearance", "add_material", "add_insert",
-            "delete_configuration", "copy_configuration", "switch_occurrence")
+            "delete_configuration", "copy_configuration", "switch_occurrence", "set_parameter")
 _OCCURRENCE = _inputs.OccurrenceRef("occurrence")
 
 
@@ -567,6 +567,88 @@ def _do_add_parameter(design, table, parameter, values):
                "note": "Parameter column added and per-configuration expressions set. Switch with "
                        "design_configure(action='activate', name=...) - the geometry rebuilds only if this "
                        "parameter drives a dimension."})
+
+
+def _do_set_parameter(table, parameter, values):
+    """Set one existing inactive parameter cell and read its expression back."""
+    if not parameter:
+        return error("Provide 'parameter' - the parameter column to edit.")
+    if not isinstance(values, dict) or len(values) != 1:
+        return error("set_parameter needs 'values' with exactly one {configuration: expression} entry.")
+    target, expression = next(iter(values.items()))
+    if not isinstance(expression, str) or not expression.strip():
+        return error(f"The expression for configuration {target!r} must be a nonempty string; "
+                     f"got {expression!r}.")
+    records, _rows, problem = _row_census(table)
+    if records is None:
+        return error(f"Cannot edit {parameter!r}: {problem}.")
+    position, problem = _one_row(records, target)
+    if problem:
+        return error(problem)
+    row = records[position]
+    if row["active"] is None:
+        return error("The active configuration did not read; switch to a different row and retry.")
+    if row["active"]:
+        return error(f"Configuration '{row['name']}' is active. Activate another row before "
+                     "editing this cell, then activate it again to verify the driven model.")
+    columns = safe(lambda: table.columns)
+    count = _common.counted(lambda: columns.count)
+    if count is None or count > _ROW_CAP:
+        return error(f"The configuration columns did not read within the {_ROW_CAP} column bound.")
+    matches = []
+    for index in range(count):
+        col = safe(lambda index=index: columns.item(index))
+        if col is None:
+            return error(f"Configuration column {index} did not read; cannot establish a unique "
+                         f"'{parameter}' parameter column. Nothing was written.")
+        if type(col).__name__ != "ConfigurationParameterColumn":
+            continue
+        controlled = safe(lambda col=col: col.parameter)
+        controlled_name = safe(lambda controlled=controlled: controlled.name)
+        if controlled_name is None:
+            return error(f"Parameter column {index} did not identify its parameter; cannot "
+                         f"establish a unique '{parameter}' column. Nothing was written.")
+        if controlled_name == parameter:
+            matches.append((col, controlled))
+    if len(matches) != 1:
+        return error(f"Expected one existing parameter column for '{parameter}', found "
+                     f"{len(matches)}. Read design_get(include=['configurations']) to inspect "
+                     "the columns before editing.")
+    col, controlled = matches[0]
+    if safe(lambda: controlled.unit) == _TEXT_UNIT:
+        return error(f"'{parameter}' is a {_TEXT_UNIT} parameter; its configuration cell may "
+                     "discard writes. Vary a numeric parameter instead.")
+    col_id = safe(lambda: col.id)
+    cell = safe(lambda: col.getCellByRowId(row["id"]))
+    before = safe(lambda: cell.expression)
+    if col_id is None or cell is None or before is None:
+        return error(f"The existing '{parameter}' cell for '{row['name']}' did not read its "
+                     "column id and expression. Nothing was written.")
+    if before == expression:
+        return ok({"changed": False, "parameter": parameter, "configuration": _row_ref(row),
+                   "column_id": col_id, "expression": before,
+                   "note": "The cell already has this expression; nothing was written."})
+    try:
+        cell.expression = expression
+    except Exception as exc:
+        after = safe(lambda: cell.expression)
+        return error(f"Setting '{parameter}' cell '{row['name']}' to {expression!r} raised "
+                     f"{exc}; it now reads {after!r} after {before!r} before. "
+                     "Read design_get(include=['configurations']) before retrying.")
+    after = safe(lambda: cell.expression)
+    new_records, _rows, row_problem = _row_census(table)
+    if after != expression or new_records != records:
+        return error(f"The '{parameter}' cell for '{row['name']}' reads {after!r} after "
+                     f"{expression!r} was assigned (before {before!r}); "
+                     + (f"row census changed: {new_records!r}." if new_records is not None else
+                        f"row census did not read: {row_problem}.")
+                     + " Read design_get(include=['configurations']) before retrying.")
+    return ok({"changed": True, "parameter": parameter, "configuration": _row_ref(row),
+               "column_id": col_id, "previous_expression": before, "expression": after,
+               "active_configuration": _active_ref(new_records),
+               "note": "The inactive cell reads the new expression. The active model remains on "
+                       "its prior row; activate this configuration, then read param_get and "
+                       "model_inspect to verify driven geometry."})
 
 
 def _group_members(group, count):
@@ -1213,6 +1295,8 @@ def handler(action: str = "", name: str = "", new_name: str = "", parameter: str
         return _do_delete_configuration(table, name)
     if action == "add_parameter":
         return _do_add_parameter(design, table, parameter, values)
+    if action == "set_parameter":
+        return _do_set_parameter(table, parameter, values)
     if action == "add_suppress":
         return _do_add_suppress(design, table, feature, suppressed_in)
     if action == "add_visibility":
@@ -1241,7 +1325,8 @@ tool = (
     .add_input_property("feature", {"type": "string",
             "description": "Feature/group name or index; qualify features."})
     .add_input_property(*_BODY.as_property())
-    .add_input_property("values", {"type": "object", "description": "{config: expression} (add_parameter)."})
+    .add_input_property("values", {"type": "object",
+                        "description": "{config: expression} (add_parameter/set_parameter)."})
     .add_input_property("suppressed_in", {"type": "array", "items": {"type": "string"},
             "description": "Which configurations (add_suppress)."})
     .add_input_property("hidden_in", {"type": "array", "items": {"type": "string"},

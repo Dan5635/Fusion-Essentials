@@ -2,7 +2,7 @@
 
 _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit by hand — re-run the generator after adding/renaming a tool or kind. `--check` fails the suite if this is stale. This is the batch form of the `sys_find_tool` live lookup: the one place to see what already exists before building it._
 
-**Tools:** 220  |  **Input-kinds:** 33  |  write-status: `·` read · `✎` write · `⚠` destructive
+**Tools:** 224  |  **Input-kinds:** 33  |  write-status: `·` read · `✎` write · `⚠` destructive
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
@@ -174,6 +174,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `cam_edit_operation` | Edit a CAM operation: its parameters (the feeds/speeds/depths no other CAM tool reaches), its cutting tool, preset, name or suppression |
 | ✎ | `cam_edit_setup` | Edit a CAM SETUP: its machine, its model/fixture/stock selections (bodies or occurrence names, each REPLACED), its WCS, any other setup parameter, or its name |
 | ✎ | `cam_edit_tools` | Read and manage CAM TOOL LIBRARIES and their tools - list, add, remove or edit tools, manage presets, or create a library |
+| ✎ | `cam_export_setup` | Write an additive setup's parts, as placed, to a 3MF file; supports and slices are left out |
 | · | `cam_find_holes` | Recognize solid bodies' holes, GROUPED by similar geometry, for cam_select_geometry(selection='holes') |
 | · | `cam_find_pockets` | Recognize solid bodies' pockets down an attack vector, for cam_select_geometry(selection='pocket') |
 | ✎ | `cam_generate` | Launch CAM toolpath (re)generation from the MANUFACTURE workspace |
@@ -370,4 +371,12 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `sys_reload_addin` | Reload the add-in to pick up code changes |
 | ✎ | `sys_request_selection` | Hand the pick to the USER: holds the call, and by default clears their selection |
 | ⚠ | `sys_set_preferences` | SET one APPLICATION preference, by the path sys_get_preferences reports |
+
+### other
+
+| | Tool | Summary |
+|---|---|---|
+| ✎ | `render_create` | Start a local PNG/JPEG/TIFF job or visible in-canvas render |
+| ✎ | `render_edit` | Edit scene or restore defaults; activate Render; stop canvas or save a new image. |
+| · | `render_get` | Read a local render job, settings, scene, environment catalog or canvas state |
 

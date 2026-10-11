@@ -76,10 +76,20 @@ def _mode_value(row, mode):
     return value
 
 
+def _set_directions(feature, row, directions):
+    """Assign each named pattern direction entity; a role left out keeps its entity."""
+    for role, member in row["roles"].items():
+        if directions.get(role) is not None:
+            setattr(feature, member, directions[role])
+
+
 def _restore_value(feature, row, value, before_state=None):
     """Restore the original property value at the feature's edit row."""
     if row.get("setter") == "rib_web_curves":
         feature.curves = list(value)
+        return
+    if row.get("setter") == "pattern_directions":
+        _set_directions(feature, row, value)
         return
     if row.get("setter") == "hem_definition":
         _sheet_edit.write_hem(feature, value)
@@ -156,6 +166,9 @@ def _apply_value(feature, row, resolved, mode, before_state=None):
         if not curves:
             raise RuntimeError("The resolved path has no complete sketch-curve sequence.")
         feature.curves = curves
+        return
+    if row.get("setter") == "pattern_directions":
+        _set_directions(feature, row, resolved)
         return
     if row.get("setter") == "hem_definition":
         _sheet_edit.write_hem(feature, resolved)
@@ -662,6 +675,9 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
             original = (original, before_state["section_type"], before_state["section_size"])
         elif row.get("setter") == "scale_mode":
             original = (before_state["is_uniform"], before_state["scale_expressions"])
+        elif row.get("roles"):
+            original = {role: None if before_state[role] is None else before_state[role][0]
+                        for role in row["roles"]}
         if (row.get("mode_field") == "loop_type"
                 and before_state.get("loop_type") == "manual"):
             raise ValueError("the existing manual Untrim loop selection cannot be read for exact restoration.")
@@ -678,13 +694,31 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
                 new_body = _common.native_identity(safe(lambda: resolved.body))
                 if old_body is None or new_body is None or old_body != new_body:
                     raise ValueError("'references'[0] must belong to the existing Rip body.")
+            if row.get("roles"):
+                unset = [role for role in resolved if before_state[role] is None]
+                if unset:
+                    keep = " or ".join(role for role in row["roles"] if role not in unset)
+                    vector_note = (" The second direction vector may still move with direction_one; "
+                                   "read direction_two_vector before editing it."
+                                   if unset[0] == "direction_two" else "")
+                    raise ValueError(f"'{label}' reads no {unset[0]} entity, so this edit cannot "
+                                     f"retarget it; pass {keep} only.{vector_note}")
+                targets = {role: resolved.get(role, original[role]) for role in row["roles"]}
+                identities = {role: _common.native_identity(target) for role, target in targets.items()}
+                same = identities["direction_one"]
+                if same is not None and same == identities["direction_two"]:
+                    raise ValueError(f"'{label}' direction_one and direction_two would both use "
+                                     f"entityToken {same[0]!r}; choose distinct entities")
             operands = (_edit.path_entities(resolved) if row["reference"] == "path" else
+                        list(resolved.values()) if row.get("roles") else
                         resolved if isinstance(resolved, list) else [resolved])
             later = _edit.later_operand_refusal(label, index, operands)
             if later:
                 raise ValueError(later)
             desired_value = _edit.feature_reference_state(resolved, row["reference"])
-            if row.get("choices"):
+            if row.get("roles"):
+                desired = {"fields": desired_value}
+            elif row.get("choices"):
                 desired = {"fields": {row["field"]: desired_value,
                                       row["mode_field"]: mode}}
             else:
@@ -811,6 +845,12 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
                "new_timeline_errors": new_errors, "new_timeline_warnings": new_warnings,
                "note": meta.get("note") or (
                    "The feature definition and checked body shapes and occurrence frames were read back.")}
+    if row.get("roles") and before_state["direction_two"] is None:
+        old_vector = before.get("direction_two_vector")
+        new_vector = after.get("direction_two_vector")
+        details["direction_two_vector_effect"] = {
+            "before": old_vector, "after": new_vector,
+            "changed": None if old_vector is None or new_vector is None else old_vector != new_vector}
     if surface_targets is not None:
         details["surface_normals_reversed"] = True
     if own_role:

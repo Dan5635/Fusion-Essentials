@@ -8,12 +8,12 @@ sketch geometry and user parameters, never bodies.
 """
 
 import json
-from math import isfinite
+from math import hypot, isfinite
 
 from verify_core import (
     EXPORT_DIR, SVG96_PATH, SVG_PATH, _ctx_get, _datum_plane, _dim_measures, _extruded,
     _made_component, _param_added, _param_favorited, _params_listed, _refused, _svg96_extent,
-    _watch_all, _measured, _RECALL, _recall, _home_document, _home_address,
+    _watch_all, _measured, _RECALL, _recall, _home_document, _home_address, _face_up_at,
     _new_document, _document_closed, _activated, _near, _num, _Refusal)
 from verify_layout import _px, _py
 from verify_acts_model_combine_revolve import _combine_pin
@@ -2672,6 +2672,8 @@ def _pattern_witness_rows():
     return rows
 
 
+
+
 _SKETCHWORK += _pattern_witness_rows()
 
 
@@ -3019,14 +3021,16 @@ def _axis_transform_rows():
     transform = {"rotation_deg": 45, "rotation_axis": [1, 0, 0], "center_z": 5}
     write("sketch_move", {"sketch_name": "AxisMove", "entities": "line:0", **transform},
           lambda p: p.get("moved_entities") == ["line:0"]
-          and p.get("coordinates_verified") is True)
+          and p.get("coordinates_verified") is True
+          and "curve interiors were not checked" in p.get("note", ""))
     read("sketch_get", _xray("AxisMove"),
          lambda p: _axis_at(p, "line:0", (0, 3.5355, 1.4645), "start")
          and _axis_at(p, "line:0", (0, 10.6066, 8.5355)))
     write("sketch_copy", {"sketch_name": "AxisCopy", "entities": "line:0", **transform},
           lambda p: p.get("new_curves") == ["line:1"]
           and p.get("curve_count_after") - p.get("curve_count_before") == 1
-          and p.get("coordinates_verified") is True)
+          and p.get("coordinates_verified") is True
+          and "curve interiors were not checked" in p.get("note", ""))
     read("sketch_get", _xray("AxisCopy"),
          lambda p: _axis_at(p, "line:0", (0, 0, 0), "start")
          and _axis_at(p, "line:0", (0, 10, 0))
@@ -4633,3 +4637,174 @@ def _circle_dimension_flag_rows():
 
 
 _SKETCHWORK += _circle_dimension_flag_rows()
+
+
+def _iso_cylinder_read(heights, linked):
+    """Read cylinder circles and their center points independently from sketch_get."""
+    def check(p):
+        rows = p.get("entities") or []
+        circles = [r for r in rows if r.get("type") == "circle"]
+        points = [r for r in rows if r.get("type") == "point"]
+        centers = sorted((r.get("center") or {}).get("z", 0.0) for r in circles)
+        placed = sorted((r.get("position") or {}).get("z", 0.0) for r in points
+                        if r.get("origin") is not True)
+        return _measured("isoparametric circles and independent center points",
+                         {"circles": circles, "points": points},
+                         p.get("truncated") is False
+                         and p.get("counts", {}).get("circles") == len(heights)
+                         and p.get("counts", {}).get("points") == len(heights) + 1
+                         and len(circles) == len(heights) and len(points) == len(heights) + 1
+                         and sum(r.get("origin") is True for r in points) == 1
+                         and all(_near(a, b, 0.001) for a, b in zip(centers, heights))
+                         and all(_near(a, b, 0.001) for a, b in zip(placed, heights))
+                         and all(_near((r.get("center") or {}).get("x"), 0, 0.001)
+                                 and _near((r.get("center") or {}).get("y"), 0, 0.001)
+                                 and _near(r.get("radius"), 10, 0.001)
+                                 and r.get("linked") is linked and r.get("reference") is False
+                                 for r in circles))
+    return check
+
+
+def _iso_holed_plane_read(p):
+    """One requested position on the holed face reads as two lines and four endpoints."""
+    rows = p.get("entities") or []
+    lines = [r for r in rows if r.get("type") == "line"]
+    points = [r for r in rows if r.get("type") == "point"]
+    ends = [r.get(k) or {} for r in lines for k in ("start", "end")]
+    distances = sorted(hypot(e.get("x", -1000) - 220, e.get("y", -1000)) for e in ends)
+    coordinates = lambda items: sorted((round(e.get("x", -1000), 3),
+                                        round(e.get("y", -1000), 3),
+                                        round(e.get("z", 0), 3)) for e in items)
+    centers = [(r.get("position") or {}) for r in points if r.get("origin") is not True]
+    return _measured("one holed-face position split into two curves",
+                     {"lines": lines, "points": points},
+                     p.get("truncated") is False
+                     and p.get("counts", {}).get("lines") == 2
+                     and p.get("counts", {}).get("points") == 5
+                     and len(lines) == 2 and len(points) == 5 and len(ends) == 4
+                     and sum(r.get("origin") is True for r in points) == 1
+                     and coordinates(centers) == coordinates(ends)
+                     and all(_near(a, b, 0.001) for a, b in zip(distances, (8, 8, 20, 20)))
+                     and all(_near(e.get("z"), 10, 0.001) for e in ends)
+                     and all(r.get("linked") is True and r.get("reference") is False
+                             and _near(hypot((r["start"]["x"] - r["end"]["x"]),
+                                             (r["start"]["y"] - r["end"]["y"])), 12, 0.001)
+                             for r in lines))
+
+
+def _isoparametric_rows():
+    """Build, read, move and remove isoparametric curves in one owned scratch design."""
+    rows, write, read, close = _scratch_rows("iso_doc")
+    write("param_set", {"name": "IsoH", "expression": "30 mm", "create": True},
+          lambda p: p.get("created") is True)
+    write("sketch_create", {"plane": "xy", "name": "IsoBase"})
+    write("sketch_add_geometry", {"sketch_name": "IsoBase", "geometry": [
+        {"kind": "circle", "cx": 0, "cy": 0, "radius": 10}]})
+    write("model_extrude", {"sketch_name": "IsoBase", "profile_index": 0,
+                            "distance": "IsoH", "operation": "new"},
+          _extruded, ("iso_body", _recall("iso_body", lambda p: p["result_bodies"][0])))
+    read("find_geometry", lambda c: {"target": _ctx_get(c, "iso_body", "the cylinder"),
+                                     "kind": "cylinder_face", "max_results": 1},
+         lambda p: _measured("one cylinder face", p.get("matches"),
+                             p.get("match_count") == p.get("returned") == 1
+                             and p["matches"][0].get("kind") == "cylinder_face"),
+         ("iso_face", lambda p: p["matches"][0]["handle"]))
+    for name in ("IsoLinked", "IsoUnlinked", "IsoBounds"):
+        write("sketch_create", {"plane": "xy", "name": name})
+
+    def iso(sketch, check, save=None, **args):
+        write("sketch_project", lambda c: {
+            "action": "isoparametric", "sketch_name": sketch,
+            "target_faces": [_ctx_get(c, "iso_face", "the cylinder face")], **args}, check, save)
+
+    iso("IsoLinked", _refused("needs exactly one of 'quantity'"))
+    iso("IsoLinked", _refused("'at' must be a number from 0 to 1"), at=1.5)
+    iso("IsoLinked", _refused("'quantity' must be a whole number"), quantity=0)
+    read("sketch_get", _xray("IsoLinked"), _iso_cylinder_read([], True))
+    iso("IsoLinked", lambda p: _measured("linked distributed reply", p,
+        p.get("action") == "isoparametric" and p.get("created_count") == 3
+        and p.get("linked") is True and p.get("link_requested") is True
+        and p.get("iso_direction") == "v" and p.get("quantity") == 3
+        and p.get("parameter_expression") == "3"
+        and p.get("entity_refs") == ["circle:0", "circle:1", "circle:2",
+                                       "point:1", "point:2", "point:3"]),
+        iso_direction="v", quantity=3)
+    read("sketch_get", _xray("IsoLinked"), _iso_cylinder_read([7.5, 15, 22.5], True))
+    iso("IsoUnlinked", lambda p: _measured("unlinked distributed reply", p,
+        p.get("created_count") == 3 and p.get("linked") is False
+        and p.get("link_requested") is False
+        and p.get("iso_direction_requested") == "v"
+        and p.get("quantity_requested") == 3 and "parameter" not in p
+        and p.get("entity_refs") == ["circle:0", "circle:1", "circle:2",
+                                       "point:1", "point:2", "point:3"]),
+        iso_direction="v", quantity=3, link=False)
+    read("sketch_get", _xray("IsoUnlinked"), _iso_cylinder_read([7.5, 15, 22.5], False))
+    for at, height in ((0, 0), (1, 30)):
+        iso("IsoBounds", lambda p: p.get("created_count") == 1 and p.get("linked") is True,
+            iso_direction="v", at=at)
+    read("sketch_get", _xray("IsoBounds"), _iso_cylinder_read([0, 30], True))
+    write("param_set", {"name": "IsoH", "expression": "40 mm"},
+          lambda p: p.get("set") is True)
+    read("sketch_get", _xray("IsoLinked"), _iso_cylinder_read([10, 20, 30], True))
+    read("sketch_get", _xray("IsoUnlinked"), _iso_cylinder_read([7.5, 15, 22.5], False))
+    write("sketch_delete_entity", {"sketch_name": "IsoLinked", "target": "circle:0"},
+          lambda p: _measured("linked definition deletion cascades", p,
+                              p.get("deleted") is True and p.get("circles_before") == 3
+                              and p.get("circles_after") == 0))
+    read("sketch_get", _xray("IsoLinked"), _iso_cylinder_read([], True))
+
+    write("sketch_create", {"plane": "xy", "name": "IsoHoleBase"})
+    write("sketch_add_geometry", {"sketch_name": "IsoHoleBase", "geometry": [
+        {"kind": "rectangle", "x1": 200, "y1": -20, "x2": 240, "y2": 20},
+        {"kind": "circle", "cx": 220, "cy": 0, "radius": 8}]})
+    read("sketch_get", {"sketch_name": "IsoHoleBase"}, "ok",
+         ("iso_ring", _profile_with(1398.938, 2)))
+    write("model_extrude", lambda c: {
+        "sketch_name": "IsoHoleBase", "profile_index": _ctx_get(c, "iso_ring", "holed profile"),
+        "distance": 10, "operation": "new"},
+        _extruded, ("iso_ring_body", _recall("iso_ring_body", lambda p: p["result_bodies"][0])))
+    read("find_geometry", lambda c: {"target": _ctx_get(c, "iso_ring_body", "holed body"),
+                                     "kind": "planar_face", "nearest_to": [220, 0, 10],
+                                     "max_results": 1},
+         _face_up_at(220, 0, 10), ("iso_hole_face", lambda p: p["matches"][0]["handle"]))
+    write("sketch_create", {"plane": "xy", "name": "IsoSplit"})
+    write("sketch_project", lambda c: {
+        "action": "isoparametric", "sketch_name": "IsoSplit",
+        "target_faces": [_ctx_get(c, "iso_hole_face", "holed top face")],
+        "iso_direction": "u", "at": 0.5},
+        lambda p: _measured("one position yields two curves", p,
+                            p.get("at") == 0.5 and p.get("created_count") == 2
+                            and "1 position(s) were requested and 2 curve(s) read back."
+                            in (p.get("note") or "")))
+    read("sketch_get", _xray("IsoSplit"), _iso_holed_plane_read)
+    write("model_create_component", {"name": "IsoPlaced", "x": 800, "y": 50,
+                                     "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "IsoPlacedBase"})
+    write("sketch_add_geometry", {"sketch_name": "IsoPlacedBase", "geometry": [
+        {"kind": "circle", "cx": 0, "cy": 0, "radius": 10}]})
+    write("model_extrude", {"sketch_name": "IsoPlacedBase", "profile_index": 0,
+                            "distance": 30, "operation": "new"},
+          _extruded, ("iso_child_body", _recall("iso_child_body", lambda p: p["result_bodies"][0])))
+    read("find_geometry", lambda c: {"target": "IsoPlaced:1:"
+                                     + _ctx_get(c, "iso_child_body", "child cylinder"),
+                                     "kind": "cylinder_face", "max_results": 1},
+         lambda p: _measured("one child cylinder face", p.get("matches"),
+                             p.get("match_count") == p.get("returned") == 1
+                             and p["matches"][0].get("kind") == "cylinder_face"),
+         ("iso_child_face", lambda p: p["matches"][0]["handle"]))
+    write("sketch_create", {"plane": "xy", "name": "IsoPlacedResult"})
+    write("sketch_project", lambda c: {
+        "action": "isoparametric", "sketch_name": "IsoPlacedResult",
+        "target_faces": [_ctx_get(c, "iso_child_face", "child cylinder face")],
+        "iso_direction": "v", "quantity": 3},
+        _refused("non-root sketch can land away from the face", "nothing was added",
+                 "root-owned sketch and root-owned face"))
+    read("sketch_get", _xray("IsoPlacedResult"),
+         lambda p: _measured("placed child refusal left its sketch empty", p.get("counts"),
+                             p.get("counts", {}).get("circles") == 0
+                             and p.get("counts", {}).get("points") == 1))
+    close()
+    return rows
+
+
+_SKETCHWORK += _isoparametric_rows()

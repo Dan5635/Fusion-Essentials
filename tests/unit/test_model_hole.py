@@ -1332,6 +1332,18 @@ class TestWorldPointsIntoANestedComponent:
         assert res["isError"] is True and "did not invert" in res["message"]
         assert _added(d) == []
 
+    def test_a_true_inverse_with_nonfinite_cells_is_refused(self, monkeypatch):
+        def corrupt_inverse(matrix):
+            matrix._r = ((float("nan"), 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+            return True
+
+        monkeypatch.setattr(FakeMatrix3D, "invert", corrupt_inverse)
+        sub = _bracket()
+        d, _sub = self._nested(monkeypatch, occs=[_placing(sub, FakeMatrix3D(90.0))], sub=sub)
+        res = _drill(points=[[40, 20, 10]], points_space="world")
+        assert res["isError"] is True and "finite matrix" in res["message"]
+        assert _added(d) == []
+
 
 class TestSketchSpacePoint:
     """The conversion on its own: (u, v, off_plane) in cm, straight off the sketch's converter."""
