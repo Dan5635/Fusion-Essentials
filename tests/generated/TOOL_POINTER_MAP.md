@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 220  |  **description breadcrumbs:** 349  |  **note/error breadcrumbs:** 753
+**Tools:** 220  |  **description breadcrumbs:** 348  |  **note/error breadcrumbs:** 754
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -2949,13 +2949,17 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - No top-level occurrences to split - the design has no component instances. Export without split_by_component to write the whole design as one file.
 - split export wrote NO files - all
 - occurrence(s) failed:
+- An existing mesh body is already tessellated; refinement and STL tessellation knobs cannot change it. Omit the knobs and use the default refinement to export its exact triangles.
+- . The mesh was already tessellated; refinement did not apply. Re-import with mesh_insert units='
 - export wrote no file for this MESH target: the redirect to its owning component (
 - ) produced no file either. Convert the mesh with mesh_to_brep and export the resulting solid, or place it in a component that exports.
 - Could not create output directory '
 - Export one instance by its occurrence name/fullPathName, or pass a body handle from find_geometry (design_get(include=['tree']) lists the instances).
+- This mesh is not a native root body; its placement in the export frame is not verified. Move or copy it into the root component, then export that body.
 - 'stl_units' ('') applies to format=stl only, and this call asked for format= - refusing rather than dropping it. Export as stl to bake the unit into the file, or omit 'stl_units'.
 - 'target' ('') and split_by_component=true cannot be combined: the split writes one file per TOP-LEVEL occurrence and would not narrow to that target - refusing rather than dropping it. Omit 'target...
 - Export target '' not found. Pass a body HANDLE from find_geometry (precise), a body/mesh/component/occurrence NAME, or omit 'target' to export the whole design.
+- Exported only  as  STL triangles in . The mesh was already tessellated; refinement did not apply. Re-import with mesh_insert units='' to check the file.
 - export wrote no file for this MESH target: the redirect to its owning component () produced no file either. Convert the mesh with mesh_to_brep and export the resulting solid, or place it in a compo...
 - export reported success but . execute() returned True but produced nothing - treating this as a FAILURE, not a false success. Check the target geometry and the output path are valid.
 - MESH target redirected to its owning component: the file holds EVERY body of that component and of the occurrences below it, BRep tessellated. 'component_census' counts its own.

@@ -7,6 +7,8 @@ never modified; a written file is verified against a pre-write snapshot of the o
 
 import os
 import struct
+import math
+import tempfile
 
 import adsk.core
 import adsk.fusion
@@ -85,9 +87,8 @@ def _binary_stl_triangles(path):
 
 # ── mesh_export target resolution (broad: body handle/name, component/occurrence, whole design) ──
 
-def _resolve_export_target(design, target):
-    """Resolve 'target' -> (geometry, description, redirected_from_mesh, error): empty is the root
-    component, a mesh body is redirected to its parent component, all-None is a plain miss."""
+def _resolve_export_target(design, target, fmt):
+    """Resolve one export target, using an exact native root mesh for STL."""
     root = safe(lambda: design.rootComponent)
     name = (target or "").strip() if isinstance(target, str) else ""
     if not name:
@@ -97,13 +98,14 @@ def _resolve_export_target(design, target):
     body, berr = _EXPORT_TARGET.resolve(name)
     if body is not None and berr is None and not isinstance(body, str):
         if _inputs._is_mesh(body):
-            # A bare MeshBody can't be export-written; route to its owning component (which does write
-            # a file). Fall back to root if the parent can't be read.
+            if fmt == "stl" and _native_root_mesh(body, root):
+                return body, f"mesh body '{safe(lambda: body.name) or name}'", False, None
+            # The ExportManager cannot write a MeshBody. Its owning component may be broader.
             mesh_name = safe(lambda: body.name) or name
             comp = safe(lambda: body.parentComponent) or root
             comp_name = safe(lambda: comp.name) or "its component"
-            return comp, (f"component '{comp_name}' (redirected from mesh '{mesh_name}', which cannot "
-                          f"be export-written on its own)"), True, None
+            return comp, (f"component '{comp_name}' (redirected from mesh '{mesh_name}', whose "
+                          f"single-body export is unavailable here)"), True, None
         return body, f"body '{safe(lambda: body.name) or name}'", False, None
 
     comp, comp_err = _export.find_component(design, name)
@@ -129,6 +131,88 @@ def _component_census(comp):
     return {"mesh_bodies": _common.counted(lambda: comp.meshBodies.count),
             "brep_bodies": _common.counted(lambda: comp.bRepBodies.count),
             "child_occurrences": _common.counted(lambda: comp.occurrences.count)}
+
+
+_CM_TO_STL = {"mm": 10.0, "cm": 1.0, "m": 0.01, "in": 1.0 / 2.54,
+              "ft": 1.0 / 30.48}
+
+
+def _native_root_mesh(body, root):
+    """Whether the mesh coordinates belong to the root export frame."""
+    return (safe(lambda: body.assemblyContext, _common._UNREADABLE) is None
+            and _common.same_component(safe(lambda: body.parentComponent), root) is True)
+
+
+def _exact_mesh_stl(body, root, path, unit_key):
+    """Write one root mesh as binary STL and return its verified triangle count and size."""
+    if not _native_root_mesh(body, root):
+        return None, None, ("This mesh is not a native root body; its placement in the export "
+                            "frame is not verified. Move or copy it into the root component, "
+                            "then export that body.")
+    mesh = safe(lambda: body.mesh)
+    if mesh is None:
+        return None, None, "The target mesh geometry did not read; no STL was written."
+    try:
+        counts = (int(mesh.triangleCount), int(mesh.quadCount), int(mesh.polygonCount),
+                  int(mesh.nodeCount))
+    except Exception as exc:
+        return None, None, f"The target mesh counts did not read: {exc}"
+    triangles, quads, polygons, nodes = counts
+    if quads or polygons:
+        return None, None, (f"The target mesh has {quads} quad(s) and {polygons} polygon(s). "
+                            "Exact STL export needs triangles only; triangulate the mesh first.")
+    if triangles > 250000:
+        return None, None, (f"The target mesh has {triangles} triangles; exact STL export is "
+                            "limited to 250000 in one call. Reduce the mesh first.")
+    if triangles < 1 or nodes < 3 or nodes > 3 * 250000:
+        return None, None, "The target mesh has an unsupported node or triangle count; no STL was written."
+    try:
+        coords = list(mesh.nodeCoordinatesAsDouble)
+        indices = list(mesh.triangleNodeIndices)
+    except Exception as exc:
+        return None, None, f"The target mesh triangles did not read: {exc}"
+    if len(coords) != 3 * nodes or len(indices) != 3 * triangles:
+        return None, None, "The target mesh has inconsistent node or triangle counts; no STL was written."
+    try:
+        finite = all(math.isfinite(float(v)) for v in coords)
+    except (TypeError, ValueError, OverflowError):
+        finite = False
+    if not finite:
+        return None, None, "The target mesh has a non-finite coordinate; no STL was written."
+    if any(not isinstance(i, int) or i < 0 or i >= nodes for i in indices):
+        return None, None, "The target mesh has an invalid triangle node index; no STL was written."
+    scale = _CM_TO_STL[unit_key]
+    tmp = None
+    before = _export.snapshot(path)
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", prefix=".mesh-stl-", suffix=".tmp",
+                                         dir=os.path.dirname(path) or ".", delete=False) as out:
+            tmp = out.name
+            out.write(b"Fusion-Essentials exact mesh body".ljust(80, b"\0"))
+            out.write(struct.pack("<I", triangles))
+            for offset in range(0, len(indices), 3):
+                points = [[coords[3 * indices[offset + j] + axis] * scale
+                           for axis in range(3)] for j in range(3)]
+                a = [points[1][i] - points[0][i] for i in range(3)]
+                b = [points[2][i] - points[0][i] for i in range(3)]
+                normal = (a[1] * b[2] - a[2] * b[1],
+                          a[2] * b[0] - a[0] * b[2],
+                          a[0] * b[1] - a[1] * b[0])
+                length = math.sqrt(sum(v * v for v in normal))
+                normal = [v / length for v in normal] if length else [0.0, 0.0, 0.0]
+                out.write(struct.pack("<12fH", *normal, *points[0], *points[1], *points[2], 0))
+        os.replace(tmp, path)
+        tmp = None
+    except (OSError, OverflowError, ValueError, struct.error) as exc:
+        return None, None, f"Exact mesh STL write failed: {exc}"
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
+    size, issue = _export.verify_written(path, before)
+    count = _binary_stl_triangles(path)
+    if issue or count != triangles:
+        return None, None, issue or "The written STL triangle count did not match the target mesh."
+    return count, size, None
 
 
 def _apply_refinement(opts, refine_key):
@@ -336,7 +420,7 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
     if not path.lower().endswith(ext):
         path = path + ext
 
-    geom, desc, redirected_from_mesh, terr = _resolve_export_target(design, target)
+    geom, desc, redirected_from_mesh, terr = _resolve_export_target(design, target, fmt)
     if geom is None:
         return error(terr or
                      (f"Export target '{target}' not found. Pass a body HANDLE from find_geometry "
@@ -350,6 +434,24 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
             os.makedirs(out_dir, exist_ok=True)
         except Exception as e:
             return error(f"Could not create output directory '{out_dir}': {e}")
+
+    if _inputs._is_mesh(geom):
+        if knobs or ref != "medium":
+            return error("An existing mesh body is already tessellated; refinement and STL "
+                         "tessellation knobs cannot change it. Omit the knobs and use the "
+                         "default refinement to export its exact triangles.")
+        triangles, size, issue = _exact_mesh_stl(geom, design.rootComponent, path, unit_key)
+        if issue:
+            return error(issue)
+        return ok({"exported": True, "format": "stl", "target": desc,
+                   "exact_mesh_body": True, "redirected_from_mesh": False,
+                   "frame": "root", "file_path": path, "file_exists": True,
+                   "size_bytes": size, "triangle_count": triangles,
+                   "refinement": None, "refinement_requested": ref,
+                   "stl_coordinate_units": unit_key,
+                   "note": (f"Exported only {desc} as {triangles} STL triangles in {unit_key}. "
+                            f"The mesh was already tessellated; refinement did not apply. "
+                            f"Re-import with mesh_insert units='{unit_key}' to check the file.")})
 
     em = safe(lambda: design.exportManager)
     if em is None:
@@ -460,7 +562,8 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
 # ── tool registration ────────────────────────────────────────────────────────────────────────
 
 TOOL_DESCRIPTION = (
-    "Export geometry to a MESH file on local disk; design_export writes neutral BRep formats."
+    "Export geometry to a MESH file on local disk. STL can target one root mesh body exactly; "
+    "other mesh targets export their whole component."
 )
 
 _EXPORT_SPEC = [_EXPORT_FORMAT, _EXPORT_REFINE, _EXPORT_UNITS, _EXPORT_TARGET]

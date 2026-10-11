@@ -3557,6 +3557,9 @@ def _mesh_data_rows():
           lambda p: p.get("imported") is True and (p.get("vertices"), p.get("triangles")) == (3, 1))
     read("model_inspect", {"target": "W3Open", "units": "mm"},
          lambda p: _mesh_bounds("W3Open", (50, 0, 0), (60, 10, 0))(p) and p.get("is_closed") is False)
+    exact_path = EXPORT_DIR + "/exact_w3tetra.stl"
+    write("mesh_export", {"target": "W3Tetra", "format": "stl", "file_path": exact_path},
+          lambda p: _exact_mesh_stl_file(p, exact_path))
     write("sys_execute_script", {"read_only": True, "script": """import adsk.core, adsk.fusion, json
 def run(context):
     app=adsk.core.Application.get(); d=adsk.fusion.Design.cast(app.activeProduct)
@@ -3599,6 +3602,28 @@ def run(context):
          and p.get("revision") != _RECALL["md_rev"])
     close()
     return rows
+
+
+def _exact_mesh_stl_file(p, path):
+    """Check the exported file's facets and bounds independently of the tool reply."""
+    data = Path(path).read_bytes() if Path(path).is_file() else b""
+    if len(data) < 84:
+        return False
+    count = struct.unpack_from("<I", data, 80)[0]
+    if count != 4 or len(data) != 84 + 50 * count:
+        return False
+    facets = []
+    for offset in range(84, len(data), 50):
+        facet = struct.unpack_from("<12fH", data, offset)
+        if not all(math.isfinite(value) for value in facet[:12]):
+            return False
+        facets.append(tuple(sorted(tuple(round(value, 4) for value in facet[start:start + 3])
+                                   for start in (3, 6, 9))))
+    expected = [tuple(sorted(tuple(float(value) for value in _W3_TETRA["vertices"][index])
+                             for index in face)) for face in _W3_TETRA["triangles"]]
+    return (p.get("exact_mesh_body") is True and p.get("redirected_from_mesh") is False
+            and p.get("triangle_count") == count and p.get("size_bytes") == len(data)
+            and p.get("stl_coordinate_units") == "mm" and sorted(facets) == sorted(expected))
 
 
 _MESH += _mesh_data_rows()

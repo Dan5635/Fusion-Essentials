@@ -53,6 +53,8 @@ _PUBLISHES_OTHERWISE = {
                "translations use caller units, and this pose is not the Design occurrence placement",
     "mesh_find": "publishes a world frame label; refuses meshes not owned by the root, so all "
                  "node, triangle, group, ray and silhouette coordinates have no occurrence transform",
+    "mesh_export": "exact root-mesh STL publishes 'root' as a frame label for its facet "
+                   "coordinates; placed mesh targets retain the disclosed component export",
     "assembly_get": "four row-local shapes: an occurrence's placement basis is merged FLAT into "
                     "the row (origin/x_axis/y_axis/z_axis, no wrapper), a joint row carries its own "
                     "frame, that same joint row carries the motion's headings as BARE directions "

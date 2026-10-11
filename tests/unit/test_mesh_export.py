@@ -157,6 +157,77 @@ class TestExportTarget:
         assert out["redirected_from_mesh"] is True
         assert out["file_exists"] is True
 
+    def test_stl_of_one_mesh_excludes_its_sibling_and_scales_cm_to_mm(self, tmp_path):
+        import struct
+
+        comp = _comp("Root")
+        target = MeshBody("Target", coords=[0, 0, 0, 1, 0, 0, 0, 1, 0],
+                          triangle_indices=[0, 1, 2], mesh_nodes=3, polygons=0, quads=0,
+                          parent=comp)
+        sibling = MeshBody("Sibling", coords=[10, 0, 0, 11, 0, 0, 10, 1, 0],
+                           triangle_indices=[0, 1, 2], mesh_nodes=3, polygons=0, quads=0,
+                           parent=comp)
+        comp.meshBodies = _MeshBodies([target, sibling])
+        des = _wire(comp)
+        path = tmp_path / "one.stl"
+        out = payload(mx.handler(format="stl", target="Target", file_path=str(path)))
+        with path.open("rb") as stream:
+            stream.seek(80)
+            assert struct.unpack("<I", stream.read(4))[0] == 1
+            facet = struct.unpack("<12fH", stream.read(50))
+        assert facet[6:9] == (10.0, 0.0, 0.0)
+        assert out["exact_mesh_body"] is True and out["triangle_count"] == 1
+        assert out["redirected_from_mesh"] is False
+        assert out["stl_coordinate_units"] == "mm"
+        assert "options_verified" not in out
+        assert des.exportManager._calls == []
+
+    def test_exact_mesh_stl_refuses_to_drop_a_quad(self, tmp_path):
+        comp = _comp("Root")
+        target = MeshBody("Mixed", coords=[0, 0, 0, 1, 0, 0, 0, 1, 0],
+                          triangle_indices=[0, 1, 2], mesh_nodes=3, polygons=0, quads=1,
+                          parent=comp)
+        comp.meshBodies = _MeshBodies([target])
+        _wire(comp)
+        path = tmp_path / "mixed.stl"
+        result = mx.handler(format="stl", target="Mixed", file_path=str(path))
+        assert result["isError"] is True and "1 quad(s)" in result["message"]
+        assert not path.exists()
+
+    def test_large_mesh_is_refused_before_reading_its_arrays(self, tmp_path):
+        class CountsOnly:
+            triangleCount = 250001
+            quadCount = 0
+            polygonCount = 0
+            nodeCount = 3
+
+            @property
+            def nodeCoordinatesAsDouble(self):
+                raise AssertionError("large coordinate array was read")
+
+        class LargeBody(MeshBody):
+            @property
+            def mesh(self):
+                return CountsOnly()
+
+        comp = _comp("Root")
+        target = LargeBody("Large", parent=comp)
+        comp.meshBodies = _MeshBodies([target])
+        _wire(comp)
+        result = mx.handler(format="stl", target="Large", file_path=str(tmp_path / "large.stl"))
+        assert result["isError"] is True and "limited to 250000" in result["message"]
+
+    def test_nonroot_mesh_stl_keeps_disclosed_component_export(self, tmp_path):
+        root = _comp("Root")
+        child = _comp("Child")
+        target = MeshBody("Placed", parent=child)
+        child.meshBodies = _MeshBodies([target])
+        des = _wire(root, all_comps=[root, child], handles={"H": target})
+        out = payload(mx.handler(format="stl", target="H", file_path=str(tmp_path / "p.stl")))
+        assert des.exportManager._calls[-1].geom is child
+        assert out["redirected_from_mesh"] is True
+        assert out["component_census"]["mesh_bodies"] == 1
+
     def test_the_redirect_note_names_the_brep_bodies_and_the_children_the_file_carries(self, tmp_path):
         # The component export writes the component's BRep bodies AND the bodies of the occurrences
         # below it into the mesh file, so the note may not promise its mesh bodies alone.
@@ -165,8 +236,8 @@ class TestExportTarget:
         m.parentComponent = comp
         comp.meshBodies = _MeshBodies([m])
         des = _wire(comp, handles={"H": m})
-        out = payload(mx.handler(format="stl", target="H",
-                                         file_path=str(tmp_path / "p.stl")))
+        out = payload(mx.handler(format="3mf", target="H",
+                                         file_path=str(tmp_path / "p.3mf")))
         assert des.exportManager._calls[-1].geom is comp
         note = out["note"]
         assert "EVERY body" in note and "BRep" in note and "tessellated" in note, note
@@ -180,8 +251,8 @@ class TestExportTarget:
         m.parentComponent = comp
         comp.meshBodies = _MeshBodies([m])
         _wire(comp, handles={"H": m})
-        out = payload(mx.handler(format="stl", target="H",
-                                         file_path=str(tmp_path / "p.stl")))
+        out = payload(mx.handler(format="3mf", target="H",
+                                         file_path=str(tmp_path / "p.3mf")))
         # the three counts differ, so reading any census key off another collection goes red
         assert out["component_census"] == {"mesh_bodies": 1, "brep_bodies": 2,
                                            "child_occurrences": 3}
@@ -201,8 +272,8 @@ class TestExportTarget:
         m.parentComponent = comp
         comp.meshBodies = _MeshBodies([m])
         _wire(comp, handles={"H": m})
-        out = payload(mx.handler(format="stl", target="H",
-                                         file_path=str(tmp_path / "p.stl")))
+        out = payload(mx.handler(format="3mf", target="H",
+                                         file_path=str(tmp_path / "p.3mf")))
         assert out["component_census"] == {"mesh_bodies": 1, "brep_bodies": None,
                                            "child_occurrences": 2}
 
@@ -918,12 +989,12 @@ class TestExportNoteBudget:
         comp.meshBodies = _MeshBodies([m])
         des = _wire(comp, handles={"H": m})
         self._worst_options(des)
-        out = payload(mx.handler(format="stl", stl_units="mm", target="H",
+        out = payload(mx.handler(format="stl", stl_units="mm", target="LegBox",
                                          file_path=str(tmp_path / "p.stl")))
-        assert out["redirected_from_mesh"] is True and out["refinement"] is None
+        assert out["redirected_from_mesh"] is False and out["refinement"] is None
         assert out["options_verified"]["stl_units"] is False
         note = out["note"]
-        assert "redirected" in note and "did NOT land" in note and "UNVERIFIED" in note
+        assert "did NOT land" in note and "UNVERIFIED" in note
         assert len(note) <= 400, len(note)          # test_prose_budget.NOTE_BUDGET_CHARS
 
     def test_the_worst_composed_split_note_fits_the_wire_budget(self, tmp_path):

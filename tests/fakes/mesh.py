@@ -43,13 +43,19 @@ def make_face_groups(spec):
 class _FakePolygonMesh:
     """MeshBody.mesh - the flat x,y,z node coordinates a smooth moves and the flat normal
     components a reverse negates, plus the polygon/node census a mesh record publishes."""
-    def __init__(self, coords, normals, polygons=None, nodes=None):
+    def __init__(self, coords, normals, polygons=None, nodes=None,
+                 triangle_indices=None, quads=None):
         self.nodeCoordinatesAsDouble = list(coords)
         self.normalVectorsAsDouble = list(normals)
         if polygons is not None:
             self.polygonCount = polygons
         if nodes is not None:
             self.nodeCount = nodes
+        if quads is not None:
+            self.quadCount = quads
+        if triangle_indices is not None:
+            self.triangleNodeIndices = list(triangle_indices)
+            self.triangleCount = len(triangle_indices) // 3
 
 
 @fusion_fake(live_type="MeshBody",
@@ -90,11 +96,13 @@ class MeshBody:
                  normals=(), token=None, parent=None, counts_readable=True, volume_readable=True,
                  closed_readable=True, mesh_readable=True, lifts=True, area=None, bbox=None,
                  face_groups=(0,), polygons=None, mesh_nodes=None, deletes=True,
-                 display_points=None, display_indices=None):
+                 display_points=None, display_indices=None, triangle_indices=None, quads=None):
         self.name = name
         self.isValid = True
         self._polygons = polygons
         self._mesh_nodes = mesh_nodes
+        self._triangle_indices = triangle_indices
+        self._quads = quads
         self._deletes = deletes
         if area is not None:
             self.area = area
@@ -138,7 +146,8 @@ class MeshBody:
         self._live()
         if not self._mesh_readable:
             raise RuntimeError("3 : the polygon mesh is unavailable")
-        return _FakePolygonMesh(self._coords, self._normals, self._polygons, self._mesh_nodes)
+        return _FakePolygonMesh(self._coords, self._normals, self._polygons, self._mesh_nodes,
+                                self._triangle_indices, self._quads)
 
     @property
     def isClosed(self):

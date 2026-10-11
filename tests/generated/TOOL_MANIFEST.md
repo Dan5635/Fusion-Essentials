@@ -122,7 +122,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 |---|---|---|
 | ✎ | `mesh_combine` | Boolean-combine MESH bodies: 'tools' into 'target', the body that survives; model_combine sees only BRep solids. |
 | ⚠ | `mesh_delete` | Delete a MESH body - design_delete_feature and design_delete_occurrence cannot reach one. |
-| ✎ | `mesh_export` | Export geometry to a MESH file on local disk; design_export writes neutral BRep formats. |
+| ✎ | `mesh_export` | Export geometry to a MESH file on local disk |
 | · | `mesh_find` | Acquire scoped mesh groups, nodes, triangles, ray hits or a silhouette |
 | ✎ | `mesh_generate_face_groups` | Segment a MESH body into planar FACE GROUPS - required before mesh_to_brep(method='prismatic'). |
 | · | `mesh_get` | List the MESH bodies in a component or the whole design - the BRep tools cannot see them |
