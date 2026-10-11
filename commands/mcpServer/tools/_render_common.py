@@ -24,9 +24,7 @@ ASPECT = {
 
 def partial_error(message, payload):
     """Put a partial failure's reason beside its effect in MCP content."""
-    if payload is None:
-        return _common.error(message)
-    return _common.error(message, {"error": message, **payload})
+    return _common.error(message, payload)
 RESOLUTION = {
     "Web800x600": "Web800x600RenderResolution",
     "Web1024x768": "Web1024x768RenderResolution",

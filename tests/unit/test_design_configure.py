@@ -2237,6 +2237,7 @@ class TestCopyConfiguration:
         assert "design_get(include=['configurations'])" in res["message"]
         assert "action='delete_configuration', name='row-B2'" in res["message"]
         out = json.loads(res["content"][0]["text"])
+        assert out["error"] == res["message"]
         assert (out["configuration"], out["id"], out["index"]) == ("B2", "row-B2", 3)
         assert out["verified"] is False and out["cells_differ"] == ["PP_W"]
         assert out["active_before"]["name"] == "A" and out["active_after"]["name"] == "A"
@@ -2443,6 +2444,7 @@ class TestAddSuppressGroup:
         assert ("was added and stays, but 1 of 2 requested cell(s) do not read suppressed: "
                 "'B' (reads False). Cells that do: 'A'.") in res["message"]
         out = json.loads(res["content"][0]["text"])
+        assert out["error"] == res["message"]
         assert out["suppressed_in"] == ["A"] and out["cells_failed"] == ["'B' (reads False)"]
         assert len(table.columns.added) == 1
 
@@ -2477,6 +2479,7 @@ class TestAddSuppressGroup:
         assert ("reads half applied under the active configuration 'A': suppressed PP_Cut1; "
                 "not suppressed PP_Cut2.") in res["message"]
         out = json.loads(res["content"][0]["text"])
+        assert out["error"] == res["message"]
         assert out["members_suppressed_now"] == "mixed"
         assert out["members_differ"] == {"suppressed": ["PP_Cut1"], "not_suppressed": ["PP_Cut2"]}
 

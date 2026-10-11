@@ -70,10 +70,36 @@ class TestResponseBuilders:
 
     def test_error_preserves_structured_partial_effects(self):
         body = {"failed": {"index": 1}, "retained": None, "note": "One entry failed."}
-        result = common.error(body["note"], payload=body)
+        reason = "Entry 1 refused; inspect the retained entries before retrying."
+        result = common.error(reason, payload=body)
         assert result["isError"] is True
-        assert result["message"] == body["note"]
+        assert result["message"] == reason
+        assert json.loads(result["content"][0]["text"]) == {**body, "error": reason}
+        assert list(json.loads(result["content"][0]["text"]))[0] == "error"
+        assert "error" not in body
+
+    def test_partial_payload_cannot_replace_the_failure_reason(self):
+        body = {"error": "Earlier failure", "retained": ["Cut1"]}
+        result = common.error("Restore refused; inspect Cut1.", payload=body)
+        assert json.loads(result["content"][0]["text"]) == {
+            "error": "Restore refused; inspect Cut1.", "retained": ["Cut1"]}
+        assert body == {"error": "Earlier failure", "retained": ["Cut1"]}
+
+    def test_partial_error_does_not_duplicate_an_existing_failure_note(self):
+        body = {"retained": ["Line1"], "note": "Entry 1 failed; read the sketch."}
+        result = common.error(body["note"], payload=body)
         assert json.loads(result["content"][0]["text"]) == body
+        assert list(json.loads(result["content"][0]["text"]))[0] == "note"
+        assert result["message"] == body["note"]
+
+    def test_a_longer_failure_note_keeps_its_additional_guidance_once(self):
+        reason = "Scope finish returned False."
+        body = {"editing": True, "note": reason + " Read the retained scope before retrying."}
+        result = common.error(reason, payload=body)
+        assert json.loads(result["content"][0]["text"]) == body
+        assert list(json.loads(result["content"][0]["text"]))[0] == "note"
+        assert result["content"][0]["text"].count(reason) == 1
+        assert result["message"] == reason
 
     def test_underscore_aliases_are_gone(self):
         # the migration-era _ok/_error/_safe aliases were removed (single public spelling now).

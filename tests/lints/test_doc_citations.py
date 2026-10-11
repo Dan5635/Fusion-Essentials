@@ -1,16 +1,13 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Lint: every file a doc or comment cites exists, every tool name a doc cites is registered, and
-every symbol a dotted citation points at is defined by the module it names.
-A file resolves by BASENAME anywhere under the repo; a tool resolves against the LIVE registry; a
-`<module>.<symbol>` resolves against that module's AST, and an unknown module half is skipped."""
+"""Lint: every cited file is a tracked path, every cited tool is registered, every dotted symbol is defined by the module it names."""
 
 import ast
 import io
 import re
+import subprocess
 import tokenize
-from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
@@ -32,27 +29,41 @@ CONSTITUTION_DOCS = [
 # a file citation: an optional path prefix then a basename ending in .py, .md, or .log (a probe
 # log is EVIDENCE - a comment citing one that was never committed is an unbacked measurement
 # claim, the exact rot this lint exists for).
-_FILE = re.compile(r"[\w./\\-]*[\w-]+\.(?:py|md|log)\b")
+_FILE = re.compile(r"(?:[\w.-]+[/\\])*?[\w-]+\.(?:py|md|log)\b")
 _INLINE_CODE = re.compile(r"`([^`]+)`")
 
 
 # Log files the RUNNING add-in writes (they exist at runtime, never in the repo) - citing one is
 # a pointer to live output, not to committed evidence.
 # backlog.md: plans/ is a private, untracked ledger, absent from a clone.
-_RUNTIME_LOGS = {"futil.log", "app.log", "backlog.md"}
+_RUNTIME_LOGS = {"futil.log", "app.log", "backlog.md", "plans/backlog.md"}
 
 
 @lru_cache(maxsize=None)
 def _present():
-    # basename -> how many files carry it, over the whole repo. .claude/worktrees/ holds agent
-    # checkouts of this same repo, so counting them would answer "that file exists" for a file
-    # deleted here and still present in an abandoned worktree.
-    counts = Counter()
-    worktrees = REPO / ".claude" / "worktrees"
-    for ext in ("*.py", "*.md", "*.log"):
-        counts.update(p.name for p in REPO.rglob(ext) if worktrees not in p.parents)
-    counts.update(_RUNTIME_LOGS)
-    return counts
+    """Return existing tracked files in this checkout's canonical corpus."""
+    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=REPO).decode("utf-8")
+    paths = set()
+    for name in tracked.split("\0"):
+        path = REPO / name
+        if name.startswith((".cache/", "outputs/", ".claude/worktrees/")):
+            continue
+        if path.suffix in {".py", ".md", ".log"} and path.is_file() and path.resolve() == path:
+            paths.add(path)
+    return frozenset(paths)
+
+
+def _file_present(cite, src, present):
+    """True for exempt names, tracked paths from the citing file's folder, repo root or commands/mcpServer, or bare tracked basenames."""
+    cite = cite.replace("\\", "/")
+    if cite in _RUNTIME_LOGS:
+        return True
+    path = Path(cite)
+    if path.is_absolute():
+        return False
+    if any((root / path).resolve() in present for root in (src.parent, REPO, MCP)):
+        return True
+    return "/" not in cite and any(p.name == cite for p in present)
 
 
 MEASURE_ROWS = REPO / "tests" / "live" / "measure_api.py"
@@ -85,10 +96,6 @@ def _row_prose(src):
     return "\n".join(chunks)
 
 
-def _basename(cite):
-    return cite.replace("\\", "/").split("/")[-1]
-
-
 def _inline_code(doc):
     """Every inline-`code` span in one doc, joined - what a tool citation is written in."""
     return " ".join(m.group(1) for m in _INLINE_CODE.finditer(_corpus.text(doc)))
@@ -107,12 +114,13 @@ class TestDocCitations:
         for src in _scanned_files():
             text = _citable_text(src)
             for cite in sorted(set(_FILE.findall(text))):
-                if _basename(cite) not in present:
-                    offenders.append(f"{src.relative_to(REPO)} cites '{cite}' - no file named "
-                                     f"'{_basename(cite)}' exists")
+                if not _file_present(cite, src, present):
+                    offenders.append(f"{src.relative_to(REPO)} cites '{cite}' - no tracked file at "
+                                     "that path from the citing file's folder, the repo root or "
+                                     "commands/mcpServer; cite it repo-relative, or `git add -N` a new file.")
         assert not offenders, (
-            "A doc or source comment cites a file that doesn't exist (renamed/removed? cite the "
-            "current name):\n  " + "\n  ".join(offenders))
+            "A doc or source comment cites an unresolved file (check its path, spelling and "
+            "tracked status):\n  " + "\n  ".join(offenders))
 
 
 # A token counts as a tool citation when it is snake_case AND either its first segment is a known

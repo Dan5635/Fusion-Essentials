@@ -31,7 +31,17 @@ def ok(payload: dict) -> dict:
 
 def error(text: str, payload=None) -> dict:
     """A failed tool result with its message and optional structured partial-effect payload."""
-    content = text if payload is None else json.dumps(payload, indent=2)
+    if payload is None:
+        content = text
+    else:
+        body = dict(payload)
+        note = body.get("note")
+        if isinstance(note, str) and (note == text or note.startswith(text + " ")):
+            body = {"note": body.pop("note"), **body}
+        else:
+            body.pop("error", None)
+            body = {"error": text, **body}
+        content = json.dumps(body, indent=2)
     return {"content": [{"type": "text", "text": content}], "isError": True, "message": text}
 
 

@@ -15,7 +15,7 @@ of them is unguarded: treat that as a defect to ledger, not a freedom.
 | test_bool_returns_checked.py | An adsk call that answers "did it work" may not have its answer thrown away. |
 | test_capability_map_complete.py | Lint: sys_capability_map's authored _FAMILY rows cover EXACTLY the registry's families, and every entry tool they name is a registered tool. |
 | test_dead_code.py | Lint: no dead module-level code under commands/mcpServer/, tests/, or the doc generators. |
-| test_doc_citations.py | Lint: every file a doc or comment cites exists, every tool name a doc cites is registered, and every symbol a dotted citation points at is defined by the module it names. |
+| test_doc_citations.py | Lint: every cited file is a tracked path, every cited tool is registered, every dotted symbol is defined by the module it names. |
 | test_enum_families_measured.py | Lint: every adsk enum family the tools reference is MEASURED - first contact fails loudly. |
 | test_evergreen_no_baggage.py | Lint: the codebase is EVERGREEN (tools/CLAUDE.md, "Module docstrings"). |
 | test_export_knob_preread.py | Lint: an export-options knob is written through ``_export.applied_pair``, never a bare set-then-read-back. |

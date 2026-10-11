@@ -37,7 +37,33 @@ def install_app(monkeypatch):
     return _install
 
 
+@pytest.fixture
+def declined_activation(install_app):
+    def setup(already_active=False):
+        a = _doc("A")
+        b = FakeFusionDocument(name="B", activate_ok=False, is_active=already_active)
+        install_app([a, b], active=b if already_active else a)
+        return b
+    return setup
+
+
 class TestActivateDocument:
+    def test_declined_activation_is_an_error(self, declined_activation):
+        b = declined_activation()
+        result = dm.handler(name="B")
+        assert b._activates == 1
+        assert result["isError"] is True
+        assert "Activate returned False for 'B'" in result["content"][0]["text"]
+        assert "not confirmed active" in result["content"][0]["text"]
+        assert "doc_get" in result["content"][0]["text"]
+
+    def test_already_active_document_is_success_even_if_activation_declines(self, declined_activation):
+        b = declined_activation(already_active=True)
+        out = _payload(dm.handler(name="B"))
+        assert b._activates == 1
+        assert out["activated"] is True and out["is_active"] is True
+        assert out["document_name"] == "B" and "note" not in out
+
     def test_activate_taken_reports_true(self, install_app):
         # the switch propagated (active doc is now B) -> activated:true, is_active:true, no pending note.
         a, b = _doc("A"), _doc("B")

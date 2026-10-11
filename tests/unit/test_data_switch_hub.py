@@ -247,6 +247,7 @@ class TestDocumentPreflight:
         res = dh.handler(action="switch", hub="Contoso Machining")
 
         payload = _error_payload(res)
+        assert "Refusing hub switch: 1 cloud-backed document(s) have unsaved edits" in payload["error"]
         assert data._hub_sets == []
         blocked = payload["modified_cloud_documents"]
         assert len(blocked) == 1

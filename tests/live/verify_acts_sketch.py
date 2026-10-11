@@ -360,7 +360,15 @@ _SKELETON = [
     ("param_add", {"name": "EdgeBreak", "expression": "max(PartHt * 0.075; 2 mm)",
                    "comment": "Break on a handled edge - floored so it stays cuttable"},
      _param_added("EdgeBreak", 3), None),
-    ("param_set_favorite", {"name": "PartLen", "favorite": True}, _param_favorited("PartLen"), None),
+    ("param_set_favorite", {"name": "PartLen", "favorite": True},
+     lambda p: p.get("name") == "PartLen" and p.get("favorite") is True, None),
+    ("param_get", {"name": "PartLen"}, _param_favorited("PartLen", True), None),
+    ("param_set_favorite", {"name": "PartLen", "favorite": False},
+     lambda p: p.get("name") == "PartLen" and p.get("favorite") is False, None),
+    ("param_get", {"name": "PartLen"}, _param_favorited("PartLen", False), None),
+    ("param_set_favorite", {"name": "PartLen", "favorite": True},
+     lambda p: p.get("name") == "PartLen" and p.get("favorite") is True, None),
+    ("param_get", {"name": "PartLen"}, _param_favorited("PartLen", True), None),
     ("param_get", {}, _params_listed("PartLen", "PartWid", "PartHt", "StepDrop", "BoreDia",
                                      "PocketLen", "PocketWid", "PocketDepth", "PocketRad",
                                      "BossDia", "MountDia", "EdgeBreak"), None),
@@ -2458,6 +2466,7 @@ def _partial_witness_rows():
         note = str(p.get("note", ""))
         return _measured("cold native partial witness payload", p,
                          p.get("constrained") == 1 and p.get("requested") == 3
+                         and next(iter(p), None) == "note"
                          and [r.get("index") for r in landed] == [0]
                          and landed[0].get("applied") == "horizontal"
                          and landed[0].get("entity_one") == _RECALL["partial_witness_line_ids"]["horizontal"]

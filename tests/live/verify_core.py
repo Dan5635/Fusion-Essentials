@@ -2018,12 +2018,12 @@ def _param_read(name, value, units="mm"):
 
 
 def _param_favorited(name, favorite=True):
-    """param_set_favorite: 'favorite' is Parameter.isFavorite READ BACK after the set (null when the
-    read declined), so it is the flag the parameter holds, not the flag requested."""
+    """Check the independently read parameter's favorite flag."""
     def check(p):
+        parameter = p.get("parameter") or {}
         return _measured(f"favorite read-back '{name}' (want {favorite})",
-                         {"name": p.get("name"), "favorite": p.get("favorite")},
-                         p.get("name") == name and p.get("favorite") is favorite)
+                         {"name": parameter.get("name"), "favorite": parameter.get("favorite")},
+                         parameter.get("name") == name and parameter.get("favorite") is favorite)
     return check
 
 

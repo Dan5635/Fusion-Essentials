@@ -1213,7 +1213,8 @@ class FakeUserParameter:
         createdBy = _absent_member("createdBy")
 
     def __init__(self, name="d1", expression="10 mm", value=1.0, unit="mm", comment="",
-                 favorite=False, delete_ok=True, text_value=None, dependents=(), dependencies=()):
+                 favorite=False, delete_ok=True, text_value=None, dependents=(), dependencies=(),
+                 favorite_write_ok=True, favorite_read_ok=True, favorite_write_raises=False):
         self.name = name
         self.expression = expression
         self.dependentParameters = _NamedCollection(list(dependents))
@@ -1222,11 +1223,27 @@ class FakeUserParameter:
         self._text = text_value
         self.unit = unit
         self.comment = comment
-        self.isFavorite = favorite
+        self._favorite = favorite
+        self._favorite_write_ok = favorite_write_ok
+        self._favorite_read_ok = favorite_read_ok
+        self._favorite_write_raises = favorite_write_raises
         if text_value is not None:
             self.textValue = text_value
         self._delete_ok = delete_ok
         self._deleted = False
+
+    @property
+    def isFavorite(self):
+        if not self._favorite_read_ok:
+            raise RuntimeError("injected unreadable favorite")
+        return self._favorite
+
+    @isFavorite.setter
+    def isFavorite(self, favorite):
+        if self._favorite_write_raises:
+            raise RuntimeError("injected read-only favorite")
+        if self._favorite_write_ok:
+            self._favorite = favorite
 
     @property
     def value(self):

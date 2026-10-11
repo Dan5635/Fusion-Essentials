@@ -545,6 +545,7 @@ def _hub_edit_preflight_result(value):
     return _measured("real modified cloud source refused before trapped hub assignment", p,
         p.get("is_error") is True and p.get("set_calls") == 0 and p.get("restored") is True
         and p.get("native_documents") is True and p.get("injected_target") is True
+        and next(iter(result), None) == "error" and str(result.get("error", "")).startswith("Refusing hub switch")
         and result.get("blocked_by") == "modified_cloud_documents"
         and result.get("modified_cloud_document_count") == len(rows) >= 1
         and result.get("modified_cloud_documents_truncated") is False

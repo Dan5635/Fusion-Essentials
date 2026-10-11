@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 762
+**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 763
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -1958,6 +1958,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 ### `doc_activate`
 - Switch ACCEPTED but not yet active - activation is async and hasn't propagated. Call doc_get to confirm it took before acting on the new document.
 - Provide 'name' - the open document to activate (a display name, or a lineage URN / web URL to be unambiguous).
+- '; the requested document is not confirmed active. Read doc_get before retrying.
 - Activate failed for '
 
 ### `doc_close`
@@ -4440,6 +4441,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `param_set_favorite`
 - No USER parameter named '
+- ' could not be read after requesting
+- . Read param_get(name='
 - Could not set favorite on '
 
 ### `pmi_create`

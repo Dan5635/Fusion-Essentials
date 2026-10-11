@@ -31,14 +31,17 @@ def handler(name: str = "") -> dict:
     # verified state is reported: 'activated' is "pending" while the foreground has not caught up.
     # EQUALITY, never identity - `is` reads False for the very document that IS active.
     is_active = bool(safe(lambda: app.activeDocument == d, False))
+    if not did and not is_active:
+        return error(f"Activate returned {did!r} for '{safe(lambda: d.name)}'; the requested "
+                     "document is not confirmed active. Read doc_get before retrying.")
     out = {
-        "activated": True if is_active else ("pending" if did else False),
+        "activated": True if is_active else "pending",
         "document_name": safe(lambda: d.name),
         "is_active": is_active,
         "acted_on": ({"name": safe(lambda: d.name), "document_id": safe(lambda: d.dataFile.id)}
                      if is_active else None),
     }
-    if did and not is_active:
+    if not is_active:
         out["note"] = ("Switch ACCEPTED but not yet active - activation is async and hasn't propagated. "
                        "Call doc_get to confirm it took before acting on the new document.")
     return ok(out)
