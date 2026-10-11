@@ -35,7 +35,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from verify_core import (
-    NOTE_MAX, REFUSAL_NOTE_MAX, REPO_ROOT, SRC_ROOT, STEP_SLEEP_S, VERIFIED, _HERE, _RECALL,
+    NOTE_MAX, PROCESS_STARTED, REFUSAL_NOTE_MAX, REPO_ROOT, SRC_ROOT, STEP_SLEEP_S, VERIFIED,
+    _HERE, _RECALL, reap_harness_assets,
     _Refusal, _leaves_no_row, _unparked, capability_met,
     capability_skip_reason, facade, gate_allows, gate_skip_reason, parked_reason, predicate_kind,
     probe_capabilities, step_capability)
@@ -902,6 +903,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         print("run refused: health did not provide a complete loaded attestation")
         return 1
     print(f"server ok: {health.get('server')} v{health.get('version', '?')}")
+    if not (run_id and resume) and selected is None:
+        reap_harness_assets("before the run")
 
     def current_attestation():
         # Fusion's main thread can stay busy past an act's generation launch, so a mid-run /health
@@ -1358,4 +1361,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                 else "; the story document is left open"))
         else:
             print("\nreceipt not written: {0} of {1} acts ran".format(len(acts_done), len(program)))
+    # A chunk the next --resume carries on from keeps its assets; any other ending takes them.
+    if not develop and selected is None and (complete or stopped or not run_id):
+        reap_harness_assets("after the run", own_since=PROCESS_STARTED - 60)
     return 1 if fails else 0

@@ -142,3 +142,32 @@ class TestTheStickyStlRowRestoresTheSession:
         leg = next(n for n in ast.walk(_run_body(self.ROW))
                    if isinstance(n, ast.FunctionDef) and n.name == "leg")
         assert "written.append(p)" in ast.unparse(leg)
+
+
+class TestPlatformSkips:
+    def _projection_of(self, row, status, detail):
+        return measure_api._ledger_projection(measure_api._ledger_row(row, status, detail))[0]
+
+    def test_a_skip_is_accepted_only_on_a_row_that_declares_that_platform(self):
+        skipping = next(r for r in measure_api.ROWS if r.get("skip_on"))
+        running = next(r for r in measure_api.ROWS if not r.get("skip_on"))
+        platform = sorted(skipping["skip_on"])[0]
+        written = self._projection_of(
+            skipping, "SKIP", measure_api._skip_detail(skipping, platform))
+        assert written in measure_api._accepted_ledger_fields(skipping)
+        forged = self._projection_of(running, "SKIP", "not run on " + platform + ": hangs")
+        assert forged not in measure_api._accepted_ledger_fields(running)
+
+    def test_a_skipped_row_runs_on_a_platform_it_does_not_name(self):
+        skipping = next(r for r in measure_api.ROWS if r.get("skip_on"))
+        assert measure_api._skip_detail(skipping, "no-such-platform") is None
+
+    def test_a_carried_fact_missing_from_the_previous_facts_file_carries_nothing(
+            self, tmp_path, monkeypatch):
+        facts = tmp_path / "live_api_facts.py"
+        facts.write_text("BEHAVIOR = {}\n", encoding="utf-8")
+        monkeypatch.setattr(measure_api, "FACTS", str(facts))
+        row = {"facts_on_pass": {"behavior.some_flag": True}}
+        assert measure_api._carried_facts(row) is None
+        facts.write_text("BEHAVIOR = {'some_flag': False}\n", encoding="utf-8")
+        assert measure_api._carried_facts(row) == {"behavior.some_flag": False}

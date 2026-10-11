@@ -4,8 +4,8 @@
 from these values, so the mocks carry measured data, not hand-typed claims. Each value is
 owned by the measurement row of the same name in tests/live/VERIFIED_API_FACTS.md."""
 
-FUSION_VERSION = "2705.1.15"
-VERIFIED_ON = "2026-09-15"
+FUSION_VERSION = "2705.1.30"
+VERIFIED_ON = "2026-10-11"
 
 # '<adsk namespace>.<Class>' -> {member: int} - seeded onto the mock adsk modules.
 ENUMS = {
@@ -363,6 +363,11 @@ ENUMS = {
         "DefaultLinearDiameterDimensionPreferenceType": 0,
         "PreferLinearDiameterDimensionPreferenceType": 1,
         "AvoidLinearDiameterDimensionPreferenceType": 2,
+    },
+    "fusion.LoftRailEdgeConditions": {
+        "G0LoftRailEdgeCondition": 0,
+        "G1LoftRailEdgeCondition": 1,
+        "G2LoftRailEdgeCondition": 2,
     },
     "fusion.MeshCombineAlgorithmTypes": {
         "LegacyMeshCombineAlgorithmType": 0,
@@ -975,6 +980,17 @@ SHAPES = {
         "torusFeatures", "trimFeatures", "unfoldFeatures", "unstitchFeatures", "untrimFeatures", "volumetricCustomFeatures",
         "volumetricModelFeatures", "volumetricModelToMeshFeatures", "webFeatures",
     ],
+    "FormFeature": [
+        "assemblyContext", "attributes", "baseFeature", "bodies", "cast", "classType",
+        "deleteMe", "dissolve", "entityToken", "errorOrWarningMessage", "faces", "finishEdit",
+        "healthState", "isParametric", "isSuppressed", "isValid", "linkedFeatures", "name",
+        "objectType", "parentComponent", "startEdit", "tSplineBodies", "this", "thisown",
+        "timelineObject",
+    ],
+    "FormFeatures": [
+        "add", "cast", "classType", "count", "isValid", "item",
+        "itemByName", "objectType", "this", "thisown",
+    ],
     "FusionDocument": [
         "activate", "advanceToLatest", "allDocumentReferences", "attributes", "canAdvanceToLatest", "cast",
         "classType", "close", "creationId", "dataFile", "design", "designDataFile",
@@ -1418,6 +1434,14 @@ SHAPES = {
         "cast", "classType", "copy", "create", "evaluator", "getData",
         "isValid", "objectType", "origin", "radius", "set", "surfaceType",
         "this", "thisown", "transformBy",
+    ],
+    "TSplineBodies": [
+        "addByTSMDescription", "addByTSMFile", "cast", "classType", "count", "isValid",
+        "item", "itemByName", "objectType", "this", "thisown",
+    ],
+    "TSplineBody": [
+        "cast", "classType", "entityToken", "getTSMDescription", "isValid", "name",
+        "objectType", "parentFormFeature", "saveAsTSMFile", "textureMapControl", "this", "thisown",
     ],
     "Timeline": [
         "cast", "classType", "count", "deleteAllAfterMarker", "isValid", "item",

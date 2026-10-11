@@ -950,8 +950,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - chain_groups requires selection='chain' and replaces handles.
 - chain_groups must contain nonempty lists of edge handles.
 - No cylinder faces left after the diameter filter.
+- ' parameter, so 'probing_type' cannot be set on it. Drop 'probing_type'. Nothing was changed.
 - ' and no 'probing_type' was given - generation would land 'No valid probe operations found.'. Pass 'probing_type' (this operation's own
 - choices - cam_get(include=['operations'])). Nothing was changed.
+- item(s)) was applied before this failure and REMAINS on the operation.
 - ' already separates each reference; use handles here.
 - chain_groups did not resolve one edge per handle; refresh the handles.
 - 'handles' cannot be checked for one chain - an edge's vertices did not read. Pass chain_groups, one list per contour. No heights or selections were changed.
