@@ -169,9 +169,26 @@ class TestOrientationRead:
         counted, bare, unread = _sheet("Counted"), _sheet("Bare"), _sheet("Unread")
         counted.drawingSymbols = types.SimpleNamespace(count=2)
         unread.drawingSymbols = _UnreadCount()
-        install([counted, bare, unread])
+        install([counted, bare, unread], is_modified=True)
         out = payload(dg.handler())
         assert [r["symbol_count"] for r in out["sheets"]] == [2, None, None]
+
+    def test_clean_drawing_does_not_read_mutating_symbol_count(self, install):
+        sheet = _sheet("Clean")
+        drawing = install([sheet], is_modified=False)
+
+        class DirtyingCount:
+            @property
+            def count(self):
+                drawing.parentDocument.isModified = True
+                return 2
+
+        sheet.drawingSymbols = DirtyingCount()
+        out = payload(dg.handler())
+        assert out["sheets"][0]["symbol_count"] is None
+        assert drawing.parentDocument.isModified is False
+        assert out.get("modified_by_read") is None
+        assert "Check the exported PDF for symbols" in out["note"]
 
     def test_the_read_never_touches_the_mutating_tidyup_property(self, install):
         # reading Sheet.tidyUp TIDIES the sheet, so a READ tool that touched it would mutate the

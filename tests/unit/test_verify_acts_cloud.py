@@ -483,52 +483,6 @@ class TestTheSourceTipGate:
             acts._tip_advanced("source_tip_before")({"versions": {"available": True}})
 
 
-class TestFilesGone:
-    """The file listing's THIRD way of not looking: a folder whose enumeration raised is counted,
-    and 'truncated' stays false."""
-
-    NAMES = ("SweepCloudSource x", "SweepCloudCopy x", "SweepCloudHost x",
-             "SweepCloudDerive x", "SweepCloudLink x")
-
-    def _payload(self, **over):
-        base = {"file_count": 0, "files": [], "truncated": False, "time_truncated": False}
-        base.update(over)
-        return base
-
-    def test_an_empty_listing_fully_read_is_the_files_gone(self):
-        assert acts._files_gone(*self.NAMES)(self._payload()) is True
-
-    def test_a_file_still_listed_fails(self):
-        with pytest.raises(AssertionError, match="still_there"):
-            acts._files_gone(*self.NAMES)(
-                self._payload(file_count=1, files=[{"name": self.NAMES[0]}]))
-
-    def test_a_folder_whose_enumeration_raised_fails_with_truncated_false(self):
-        # the exact shape: the walk never opened one folder, published the count and WHERE, and left
-        # 'truncated' false - a file of these names could be sitting in precisely that folder.
-        with pytest.raises(AssertionError, match="folders_unreadable"):
-            acts._files_gone(*self.NAMES)(
-                self._payload(folders_unreadable=1, folders_unreadable_at=["Somewhere/Locked"]))
-
-    def test_the_size_and_time_caps_still_fail(self):
-        for flag in ("truncated", "time_truncated"):
-            with pytest.raises(AssertionError, match=flag):
-                acts._files_gone(*self.NAMES)(self._payload(**{flag: True}))
-
-    def _witness(self):
-        """The tier's closing folder read - the delete receipt standing apart from the deletes."""
-        reads = [s for s in acts._CLOUD_DRAWING if s[0] == "data_get"
-                 and isinstance(s[1], dict) and s[1].get("folder") == acts.FOLDER]
-        assert len(reads) == 1
-        return reads[0]
-
-    def test_the_step_reads_the_configured_folder_ITSELF(self):
-        # MEASURED: recursive over a working folder walks every run that ever used it - 49 files
-        # across 30-odd subfolders, past the 20 s budget, which reds this row for the folder's size
-        # rather than for a file left behind. The tier's documents sit in the folder itself.
-        assert self._witness()[1].get("recursive") is False
-
-
 class TestTheSavedDocumentUrn:
     """A saveAs holds a LOCAL cache path under document_id until the cloud id arrives, and the read
     that must refuse it is this one."""

@@ -849,28 +849,6 @@ def _known_child_excluded(p, polls=_SETTLE_POLLS):
         and not p.get("folders_unreadable"))
 
 
-def _files_gone(*names):
-    """data_get(project, folder): none of the run's documents is left in the configured folder - the
-    read-back standing apart from what the delete calls reported about themselves.
-
-    This listing has THREE ways of not looking, not two: the size and time caps set 'truncated', and
-    a folder whose enumeration RAISED is counted in 'folders_unreadable' (named in
-    folders_unreadable_at) while 'truncated' stays false. A file of these names could be sitting in
-    exactly that folder, so an unreadable one is a hole in the search space and not an absence."""
-    def check(p):
-        seen = [str(r.get("name")) for r in (p.get("files") or [])]
-        left = [n for n in names if n in seen]
-        return _measured(f"the configured folder no longer holds {list(names)}, and was fully read",
-                         {"file_count": p.get("file_count"), "still_there": left,
-                          "truncated": p.get("truncated"),
-                          "time_truncated": p.get("time_truncated"),
-                          "folders_unreadable": p.get("folders_unreadable"),
-                          "folders_unreadable_at": p.get("folders_unreadable_at")},
-                         not left and not p.get("truncated") and not p.get("time_truncated")
-                         and not p.get("folders_unreadable"))
-    return check
-
-
 def _cloud_processing_read(p):
     """True when the save PUBLISHED what DataFile.isComplete read: the flag, whether this call saw
     it false first, and the seconds the bounded settle spent.
@@ -1689,13 +1667,19 @@ def _drawing_persisted_counts(sheet):
 
 
 def _drawing_persistence_sheets(p, compare=False):
-    """The plate's sheet/view identities; compare=True also holds them and both counts to recall."""
+    """The plate's sheet/view identities; compare=True checks retained readable counts."""
     _sheets_answer(p)
     rows = p.get("sheets") or []
     sheet = rows[0]
     drawing = _RECALL.get("drawing") or [None, None]
     counts, want = _drawing_persisted_counts(sheet)
     values = {**_drawing_persistence_sheet_values(p), "expected_counts": want}
+    clean = p.get("is_modified") is False
+    counts_match = (type(want["dimension_count"]) is int
+                    and counts["dimension_count"] == want["dimension_count"]
+                    and (counts["symbol_count"] is None and p.get("modified_by_read") is None
+                         if clean else type(want["symbol_count"]) is int
+                         and counts["symbol_count"] == want["symbol_count"]))
     return _measured("the plate drawing's readable sheet and view identities", values,
                      bool(drawing[0]) and p.get("drawing") == drawing[1]
                      and (p.get("active_document") or {}).get("document_id") == drawing[0]
@@ -1713,8 +1697,7 @@ def _drawing_persistence_sheets(p, compare=False):
                      and (not compare or (_drawing_persistence_structure(p)
                                           == _drawing_persistence_structure(
                                               _RECALL.get("drawing_persist_sheets") or {})
-                                          and all(type(v) is int for v in want.values())
-                                          and counts == want)))
+                                          and counts_match)))
 
 
 def _drawing_overall_requested(view):
@@ -2095,13 +2078,16 @@ def _drawing_persistence_version(p, unchanged=False,
                      and (not unchanged or snap == _RECALL.get(saved_key)))
 
 
-def _drawing_dirtied_by_read(p):
-    """drawing_get on the clean reopened drawing: the read reports the false-to-true isModified flip."""
-    return _measured("the read reports leaving the reopened drawing modified",
+def _drawing_stays_clean_after_read(p):
+    """A drawing_get on the clean reopened drawing leaves its saved state intact."""
+    sheets = p.get("sheets")
+    return _measured("the read leaves the reopened drawing unmodified",
                      {k: p.get(k) for k in ("is_modified", "modified_by_read", "sheet_count")},
-                     p.get("is_modified") is False and p.get("modified_by_read") is True
+                     p.get("is_modified") is False and p.get("modified_by_read") is None
                      and p.get("sheet_count") == 2
-                     and "read false before this read and true after it" in str(p.get("note")))
+                     and isinstance(sheets, list) and len(sheets) == 2
+                     and all(isinstance(row, dict) and row.get("symbol_count") is None
+                             for row in sheets))
 
 
 def _drawing_persistence_absent(p, handle_key="drawing_persist_opened",
@@ -3878,6 +3864,8 @@ _CLOUD_DRAWING = [
      ("drawing_persist_reopened", _recall("drawing_persist_reopened", lambda p: p["document_handle"]))),
     ("doc_get", {}, _drawing_persistence_document("drawing_persist_reopened", version=True), None),
     ("drawing_get", {"include": ["views"]}, lambda p: _drawing_persistence_sheets(p, compare=True), None),
+    ("doc_get", {}, _drawing_persistence_document("drawing_persist_reopened", version=True,
+                                                   clean=True), None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_AFTER_PDF),
      _drawing_persistence_pdf(_DRAWING_AFTER_PDF),
      ("drawing_persist_after_pdf", _recall("drawing_persist_after_pdf", _drawing_pdf_record))),
@@ -3928,11 +3916,11 @@ _CLOUD_DRAWING = [
         "drawing_two_reopened", version=True, version_key="drawing_two_saved")(p)
      and _measured("the reopened drawing reads clean", (p.get("active") or {}).get("is_modified"),
                    (p.get("active") or {}).get("is_modified") is False), None),
-    ("drawing_get", {"include": ["views", "revisions", "tables"]}, _drawing_dirtied_by_read, None),
+    ("drawing_get", {"include": ["views", "revisions", "tables"]}, _drawing_stays_clean_after_read, None),
     ("doc_get", {}, lambda p: _drawing_persistence_document(
         "drawing_two_reopened", version=True, version_key="drawing_two_saved")(p)
-     and _measured("the read left the drawing modified", (p.get("active") or {}).get("is_modified"),
-                   (p.get("active") or {}).get("is_modified") is True), None),
+     and _measured("the read left the drawing unmodified", (p.get("active") or {}).get("is_modified"),
+                   (p.get("active") or {}).get("is_modified") is False), None),
     ("drawing_get", {"include": ["views"]}, lambda p: _drawing_two_sheets(p, compare=True), None),
     ("drawing_export", _drawing_deferred_export_args(
         _DRAWING_TWO_AFTER_PDF, _DRAWING_TWO_AFTER_KEY, "drawing_two_reopened"),
@@ -4219,12 +4207,15 @@ _CLOUD_DRAWING = [
      _file_settled(FOLDER), None),
     ("data_delete_file", lambda c: {"document_id": _ctx_get(c, "source_urn", "the source"),
                                     "confirm_name": SOURCE_DOC}, _file_deleted, None),
-    # the witness standing apart from the deletes' own reports: the configured folder read back.
-    # NOT recursive - the tier's documents were saved into the folder ITSELF, and a recursive walk of a
-    # working folder is a walk of every run that ever used it (measured: 49 files over 30-odd
-    # subfolders, past the 20 s budget, which would red this row for the folder's size).
-    ("data_get", {"project": PROJECT, "folder": FOLDER, "recursive": False},
-     _files_gone(SOURCE_DOC, COPY_DOC, HOST_DOC, DERIVE_DOC, LINK_DOC), None),
+    # Independent reads of exact lineages avoid the configured folder's capped listing.
+    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
+     _refused("No cloud file resolves from"), None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "copy_urn", "the copy")},
+     _refused("No cloud file resolves from"), None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "host_urn", "the host")},
+     _refused("No cloud file resolves from"), None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "derive_urn", "the derive host")},
+     _refused("No cloud file resolves from"), None),
 ]
 
 

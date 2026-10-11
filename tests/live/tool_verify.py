@@ -140,7 +140,7 @@ from verify_acts_cloud import (  # noqa: F401
     RUN_FOLDER, MOVED_FOLDER, SOURCE_DOC, COPY_DOC, HOST_DOC, RUN_PATH, MOVED_PATH,
     RESTORE_VERSION, _CLOUD_DATA, _CLOUD_DOC, _CLOUD_LINK, _CLOUD_DRAWING,
     _CLOUD_COMPONENT_COPY,
-    _lit, _files_gone, _xrefs)
+    _lit, _xrefs)
 
 from verify_acts_hub import (  # noqa: F401
     HUB_COMP, HUB_MILL_SETUP, HUB_TURN_SETUP, _HUB, _HUB_JOB, _fully_constrained, _hub_box,

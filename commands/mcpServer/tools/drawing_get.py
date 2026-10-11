@@ -203,7 +203,9 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
         if custom is not None and facts.get("sheet_size") is None:
             facts["custom_size"] = dict(custom, unit=_drawing_common.coordinate_unit(dwg))
         facts["dimension_count"] = _common.counted(lambda: s.drawingDimensions.count)
-        facts["symbol_count"] = _common.counted(lambda: s.drawingSymbols.count)
+        # On a clean drawing, this native count read marks the document modified.
+        facts["symbol_count"] = (_common.counted(lambda: s.drawingSymbols.count)
+                                 if payload["is_modified"] is True else None)
         if want_views or want_curves:
             n = facts.get("views")
             if view is not None and n is not None and view >= n:
@@ -247,6 +249,9 @@ def handler(include=None, sheet: str = "", view: int = None) -> dict:
         "Dimension values, symbol text, view scales, parts lists and balloons do not read back - "
         "the PDF is the read. revisions lists every row, title and header included, at the "
         "indexes drawing_edit_revisions takes.")
+    if payload["is_modified"] is not True:
+        payload["note"] += (" symbol_count is null: its native count read can mark a clean "
+                            "drawing modified. Check the exported PDF for symbols.")
     if payload["is_modified"] is False and _common.read_flag(lambda: dd.isModified) is True:
         payload["modified_by_read"] = True
         payload["note"] += (" isModified read false before this read and true after it; this read "

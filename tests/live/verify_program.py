@@ -1300,8 +1300,8 @@ STORY = {
                  "with it - what the drawing generator needs true of its source); and the two "
                  "read-backs standing apart from the deletes' own reports: the run folder addressed "
                  "DIRECTLY, where the project answers that it holds no such subfolder - a refusal a "
-                 "budget cut cannot produce - and the configured folder's own file listing, scoped "
-                 "to that folder and failing on any listing that did not fully read"),
+                 "budget cut cannot produce - and four exact owned lineages queried after their "
+                 "deletes, each requiring an independent not-found refusal"),
     "data_create_folder": ("a run-stamped folder under the configured one and a move target inside "
                            "it, each re-listed under the parent asked for with NOTHING auto-created "
                            "on the way there - a run that had to invent the operator's folder is "
