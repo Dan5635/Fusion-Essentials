@@ -814,13 +814,20 @@ class TestCustomSheetSize:
         assert out["settings_requested"]["sheet_size"] == "custom"
 
     def test_an_asme_custom_size_is_written_in_inches(self, install):
-        # the document unit follows the STANDARD: inches under ASME, so 508 mm is 20 in
         dm = install()
-        out = _payload(dc.handler(standard="asme", sheet_size="custom",
+        out = _payload(dc.handler(standard="asme", units="inch", sheet_size="custom",
                                   custom_width_mm=508, custom_height_mm=254))
         assert dm._input.customSize.width == pytest.approx(20.0)
         assert dm._input.customSize.height == pytest.approx(10.0)
         assert out["settings_requested"]["custom_size"]["unit"] == "in"
+
+    def test_an_asme_custom_size_in_mm_does_not_use_the_coordinate_unit(self, install):
+        dm = install()
+        out = _payload(dc.handler(standard="asme", units="mm", sheet_size="custom",
+                                  custom_width_mm=508, custom_height_mm=254))
+        assert dm._input.customSize.width == pytest.approx(508.0)
+        assert dm._input.customSize.height == pytest.approx(254.0)
+        assert out["settings_requested"]["custom_size"]["unit"] == "mm"
 
     def test_both_zone_counts_are_raised_to_the_minimum_the_api_takes(self, install):
         # a CustomSheetSize created with fewer than 2 zones each way is refused at creation, so an
@@ -891,7 +898,7 @@ class TestCustomSheetSize:
         install()
         out = _payload(dc.handler(sheet_size="custom", custom_width_mm=500, custom_height_mm=333))
         tail = out["note"].partition("Custom sheet size:")[2].partition("If a client call")[0]
-        assert "500.0 x 333.0 mm" in tail and "'iso'" in tail
+        assert "500.0 x 333.0 mm" in tail and "display unit" in tail
         assert "drawing_get" in tail and "drawing_edit_sheet" not in tail
 
     def test_the_off_switch_refuses_custom_and_creates_nothing(self, install, monkeypatch):

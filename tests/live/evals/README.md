@@ -37,6 +37,12 @@ Every run lands in `results/<set>/<scenario>_<nn>/`: `prompt.txt` (the exact byt
 output tokens, how the run ended, the saved document's URN and web link). One line per run is
 appended to `results/index.md`. The saved document is named `<scenario>_<nn>` in the set folder.
 
+The agent is launched with every built-in tool of the CLI switched off, and the run ends at its
+first line, as `blocked init`, when the CLI's own start record lists a second server or any tool
+that is not the Fusion server's. `run.json` keeps that record under `start`: the CLI version, the
+model it resolved, the server's status and the tools held beside the Fusion ones. A run the CLI
+ended itself (a usage limit, a lost login) carries the CLI's message in `ended`.
+
 ## A/B
 
 Three axes, one switch each, all recorded in `run.json` and the index:
@@ -46,8 +52,10 @@ Three axes, one switch each, all recorded in `run.json` and the index:
 - **The tooling.** `--deny mcp__fusion-essentials__<tool>` withholds one tool for a run (to see
   whether the run needs that tool).
 - **The harness.** `--model`; `--skill <name>` (appends a design-practice skill's body after the
-  brief); `--tool-search` (the CLI defers tool schemas, a few per turn instead of all of them; a
-  spawn that comes up with no Fusion tools ends the run at once); `--preamble <file>` (another
+  brief); `--tool-search` (the CLI defers tool schemas, a few per turn instead of all of them; the
+  built-in tools stay on for it apart from the ones denied by name, the start record lists no
+  Fusion tool yet and may read the server as pending, so nothing about tools is checked at start
+  and `run.json` shows what was held); `--preamble <file>` (another
   harness-rules file, such as `preamble-lean.md`, which drops the cold-start reads). There is no
   switch for the CLI's thinking budget, and that budget does not limit how long a turn runs.
   `run.json` records the seconds at which every tool call landed, so a long first pause is visible.

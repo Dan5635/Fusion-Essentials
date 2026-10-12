@@ -38,6 +38,11 @@ def _color(color):
     return values if all(type(value) is int and 0 <= value <= 255 for value in values) else None
 
 
+def _unsigned_zero(value):
+    """Return value with a negative zero published as 0.0."""
+    return 0.0 if value == 0 else value
+
+
 def scene_row(settings, units="mm"):
     """Read the full scene, marking unreadable fields null."""
     factor = CM_TO_UNIT.get(units)
@@ -65,7 +70,7 @@ def scene_row(settings, units="mm"):
         "focus": _point(safe(lambda: settings.centerOfFocus), factor),
         "dof_blur": measured(lambda: settings.depthOfFieldBlur),
         "dof_enabled": read_flag(lambda: settings.isDepthOfFieldEnabled),
-        "ground_offset": measured(lambda: settings.groundOffset, factor),
+        "ground_offset": _unsigned_zero(measured(lambda: settings.groundOffset, factor)),
         "ground_position": _point(safe(lambda: settings.groundPosition), factor),
         "ground_roughness": measured(lambda: settings.groundRoughness),
         "show_ground": read_flag(lambda: settings.isGroundDisplayed),

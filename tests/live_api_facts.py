@@ -523,6 +523,12 @@ ENUMS = {
         "PreferLinearDiameterDimensionPreferenceType": 1,
         "AvoidLinearDiameterDimensionPreferenceType": 2,
     },
+    "fusion.LocalRenderStates": {
+        "QueuedLocalRenderState": 0,
+        "ProcessingLocalRenderState": 1,
+        "FinishedLocalRenderState": 2,
+        "FailedLocalRenderState": 3,
+    },
     "fusion.LoftEdgeAlignments": {
         "FreeEdgesLoftEdgeAlignment": 0,
         "AlignEdgesLoftEdgeAlignment": 1,

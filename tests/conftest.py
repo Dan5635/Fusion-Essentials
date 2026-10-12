@@ -175,6 +175,7 @@ from tests.fakes.pmi import FakePMILeaderLineNotes, FakePMILineBreakSegment  # n
 from tests.fakes.pmi import FakePMISegmentVector, FakePMISymbolSegment  # noqa: E402
 from tests.fakes.pmi import FakePMITextSegment, make_pmi_component  # noqa: E402
 from tests.fakes.pmi import make_pmi_tolerance, make_pmi_value  # noqa: E402
+from tests.fakes.render import GroundOffsetScene  # noqa: E402
 
 
 # ── adsk mock installation ─────────────────────────────────────────────────

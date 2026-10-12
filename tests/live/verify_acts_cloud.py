@@ -3962,14 +3962,17 @@ _CLOUD_DRAWING = [
      _drawing_persistence_pdf(_DRAWING_NAMED_AFTER_PDF),
      ("drawing_persist_named_after_pdf", _recall("drawing_persist_named_after_pdf",
       _drawing_pdf_record))),
-    # The value read: the dimension text of that PDF's page for the original sheet, each string and
-    # the layer count read again by pypdf, the linear dimension's value being the plate edge.
+    # DRAWING-PDF-COPIED-SHEET-LABEL-1: Fusion labels both PDF pages with the original sheet name.
     ("drawing_get", _drawing_text_args(_DRAWING_NAMED_AFTER_PDF),
-     _drawing_text_read(_DRAWING_NAMED_AFTER_PDF), None),
-    ("drawing_get", lambda c: {"include": ["text"], "pdf": _DRAWING_NAMED_AFTER_PDF,
-                               "layer": "No Such Layer",
-                               "sheet": _drawing_original_sheet(c)["name"]},
-     _refused("No text on layer 'No Such Layer'", "FD_Dimensions"), None),
+     lambda p: _measured("the drawing read refuses ambiguous PDF page attribution", p,
+         len(p.get("sheets") or []) == 1
+         and p["sheets"][0].get("name") == _drawing_original_sheet()["name"]
+         and p["sheets"][0].get("pdf_page") is None
+         and p["sheets"][0].get("text") is None
+         and p["sheets"][0].get("pdf_page_reason") == "2 pages are labelled with this sheet's name"
+         and (p.get("pdf") or {}).get("file") == _DRAWING_NAMED_AFTER_PDF
+         and _pdf_layer_strings(_DRAWING_NAMED_AFTER_PDF,
+             _drawing_original_sheet()["name"], "FD_Dimensions")[0] == [1, 2]), None),
     ("drawing_edit_sheet", _drawing_delete_copy_args, _drawing_copy_delete_requested, None),
     ("drawing_get", {"include": ["views"]}, _drawing_original_settled, None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_BEFORE_PDF),
@@ -4012,6 +4015,10 @@ _CLOUD_DRAWING = [
     # modified, and the saved linear dimension still draws the plate edge.
     ("drawing_get", _drawing_text_args(_DRAWING_AFTER_PDF),
      _drawing_text_read(_DRAWING_AFTER_PDF, clean=True), None),
+    ("drawing_get", lambda c: {"include": ["text"], "pdf": _DRAWING_AFTER_PDF,
+                               "layer": "No Such Layer",
+                               "sheet": _drawing_original_sheet(c)["name"]},
+     _refused("No text on layer 'No Such Layer'", "FD_Dimensions"), None),
     ("data_get", lambda c: _version_args("drawing_persist_saved")(
         {"source_urn": _ctx_get(c, "drawing", "the drawing")[0]}),
      lambda p: _drawing_persistence_version(p, unchanged=True), None),
@@ -4360,6 +4367,192 @@ _CLOUD_DRAWING = [
     ("data_get", lambda c: {"file": _ctx_get(c, "derive_urn", "the derive host")},
      _refused("No cloud file resolves from"), None),
 ]
+
+
+def _drawing_custom_size_rows():
+    """Compare mixed standard/display-unit custom sheets against native reads and PDF pages."""
+    prefix = "drawing_custom_"
+    name = "TestDetritus-CustomSheet." + _STAMP
+    cases = (("inch", "asme", "inch"), ("mm", "asme", "mm"), ("iso_inch", "iso", "inch"))
+
+    def key(suffix):
+        return prefix + suffix
+
+    def value(ctx, suffix):
+        return _ctx_get(_RECALL, key(suffix), "the custom-sheet " + suffix)
+
+    def documents(p):
+        rows = p.get("open_documents")
+        if (not isinstance(rows, list) or p.get("truncated") is not False
+                or p.get("open_count") != len(rows)):
+            raise AssertionError("the custom-sheet document census is incomplete")
+        result = {}
+        for row in rows:
+            handle = row.get("document_handle")
+            flags = (row.get("is_saved", True), row.get("is_modified", False))
+            if (not isinstance(handle, str) or not handle.startswith("session:")
+                    or handle in result or any(type(flag) is not bool for flag in flags)):
+                raise AssertionError("the custom-sheet census has unread document identity or flags")
+            result[handle] = (row.get("name"), *flags)
+        return result
+
+    def start(ctx):
+        for values in (ctx, _RECALL):
+            for item in list(values):
+                if item.startswith(prefix):
+                    values.pop(item)
+        return {"max_results": 1000}
+
+    def baseline(p):
+        original = documents(p)
+        home = (p.get("active") or {}).get("document_handle")
+        if home not in original:
+            raise AssertionError("the custom-sheet home is absent")
+        _RECALL[key("baseline")] = original
+        _RECALL[key("home")] = home
+        return _measured("the custom-sheet opening census is complete", original, True)
+
+    def census(active, owned, dependency=False):
+        def check(p):
+            current = documents(p)
+            original = _RECALL[key("baseline")]
+            expected = set(original) | {_RECALL[key(item)] for item in owned}
+            if dependency:
+                extras = set(current) - expected
+                if len(extras) != 1:
+                    raise AssertionError("expected one source dependency; attribution is unresolved")
+                _RECALL[key("dependency")] = next(iter(extras))
+                expected |= extras
+            return _measured("custom-sheet census preserves all opening documents", current,
+                set(current) == expected
+                and all(current.get(handle) == flags for handle, flags in original.items())
+                and (p.get("active") or {}).get("document_handle") == _RECALL[key(active)])
+        return check
+
+    def sheet(standard, unit, pdf=False):
+        def check(p):
+            rows = p.get("sheets") or []
+            row = rows[0] if len(rows) == 1 else {}
+            custom = row.get("custom_size") or {}
+            expected = (20.0, 10.0) if unit == "inch" else (508.0, 254.0)
+            label = "in" if unit == "inch" else "mm"
+            return _measured("custom sheet reads 508 x 254 mm with the requested display unit", p,
+                p.get("standard") == standard and p.get("dimension_display_unit") == label
+                and p.get("coordinate_unit") == ("in" if standard == "asme" else "mm")
+                and p.get("sheet_count") == 1
+                and row.get("width_height_unit") == "mm"
+                and _near(row.get("width"), 508, 0.01) and _near(row.get("height"), 254, 0.01)
+                and custom.get("unit") == label
+                and _near(custom.get("width"), expected[0], 0.01)
+                and _near(custom.get("height"), expected[1], 0.01)
+                and (row.get("pdf_page") == 1 if pdf else
+                     row.get("views") == 4 and len(row.get("view_rows") or []) == 4))
+        return check
+
+    def physical_pdf(path):
+        def check(p):
+            from pypdf import PdfReader
+            if not _exported(p) or os.path.normpath(p.get("file_path", "")) != os.path.normpath(path):
+                return False
+            pages = PdfReader(path).pages
+            sizes = [(float(page.mediabox.width) * 25.4 / 72,
+                      float(page.mediabox.height) * 25.4 / 72) for page in pages]
+            return _measured("the custom sheet's physical PDF page is 508 x 254 mm", sizes,
+                len(sizes) == 1 and _near(sizes[0][0], 508, 0.36)
+                and _near(sizes[0][1], 254, 0.36))
+        return check
+
+    rows = [
+        ("doc_get", start, baseline, None),
+        ("doc_new", lambda c: {"expect_document": value(c, "home")}, _new_document,
+         (key("source"), _recall(key("source"), lambda p: p["document_handle"]))),
+        ("model_create_component", lambda c: {"name": "TestDetritus-Part", "activate": True,
+            "expect_document": value(c, "source")}, _made_component, None),
+        ("sketch_create", lambda c: {"plane": "xy", "name": "TestDetritus-Sketch",
+            "expect_document": value(c, "source")}, lambda p: bool(p.get("sketch_name")), None),
+        ("sketch_add_geometry", lambda c: {"sketch_name": "TestDetritus-Sketch", "units": "mm",
+            "geometry": [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 23, "y2": 11}],
+            "expect_document": value(c, "source")},
+         lambda p: p.get("drawn") == 1 and p.get("requested") == 1
+            and p.get("curve_count_after") == 4, None),
+        ("model_extrude", lambda c: {"sketch_name": "TestDetritus-Sketch", "profile_index": 0,
+            "distance": 7, "units": "mm", "operation": "new", "expect_document": value(c, "source")},
+         _extruded, None),
+        ("model_inspect", {"target": "TestDetritus-Part:1", "include": ["mass"],
+            "accuracy": "very_high", "units": "mm"},
+         lambda p: _measured("the custom drawing source has 1771 mm3 volume", p,
+            _near((p.get("mass") or {}).get("volume"), 1771, 0.01)), None),
+        ("doc_save_as", lambda c: {"name": name, "project": PROJECT, "folder": FOLDER,
+            "create_path": False, "allow_duplicate_name": False,
+            "expect_document": value(c, "source")}, _saved_as(name, FOLDER),
+         (key("source_urn"), _recall(key("source_urn"), lambda p: p["document_id"]))),
+        ("doc_get", {"max_results": 1000},
+         lambda p: census("source", ("source",))(p)
+            and _measured("the owned source reads its saved lineage", p,
+                (p.get("active") or {}).get("document_id") == _RECALL[key("source_urn")]), None),
+        ("data_get", lambda c: {"file": value(c, "source_urn")},
+         _file_settled(FOLDER, polls=4, file_key=key("source_urn"), file_name=name), None),
+        _dwell(45.0), _dwell(45.0),
+    ]
+    for tag, standard, unit in cases:
+        rows.append(("drawing_create", lambda c, s=standard, u=unit: {"standard": s, "units": u,
+            "sheet_size": "custom", "custom_width_mm": 508, "custom_height_mm": 254,
+            "auto_dimension": "off", "creation_mode": "automatic",
+            "expect_document": value(c, "source")}, _drawing_created,
+            (key(tag + "_urn"), _recall(key(tag + "_urn"), lambda p: p["file_id"]))))
+    opened = ["source"]
+    previous = "source"
+    for tag, standard, unit in cases:
+        opened.append(tag)
+        rows += [
+            ("doc_open", lambda c, t=tag, prior=previous: {"file_id": value(c, t + "_urn"),
+                "force_api_open": True, "expect_document": value(c, prior)},
+             _opened(lambda: name + " Drawing", lambda t=tag: _RECALL[key(t + "_urn")]),
+             (key(tag), _recall(key(tag), lambda p: p["document_handle"]))),
+            _dwell(4.0),
+            ("doc_get", {"max_results": 1000}, census(tag, tuple(opened),
+                dependency=tag == "inch"), None),
+        ]
+        if tag == "inch":
+            opened.append("dependency")
+            rows += [
+                ("doc_activate", lambda c: {"name": value(c, "dependency"),
+                    "expect_document": value(c, "inch")}, _activated(), None),
+                ("doc_get", {"max_results": 1000},
+                 lambda p: census("dependency", ("source", "inch", "dependency"))(p)
+                    and _measured("the dependency is the exact saved custom-sheet source", p,
+                        (p.get("active") or {}).get("document_id") == _RECALL[key("source_urn")]), None),
+                ("doc_activate", lambda c: {"name": value(c, "inch"),
+                    "expect_document": value(c, "dependency")}, _activated(), None),
+            ]
+        rows.append(("drawing_get", {"include": ["views"]}, sheet(standard, unit), None))
+        previous = tag
+    for tag, standard, unit in reversed(cases):
+        path = DOWNLOAD_DIR + "/custom_" + tag + "_" + _STAMP + ".pdf"
+        if previous != tag:
+            rows.append(("doc_activate", lambda c, t=tag, prior=previous: {"name": value(c, t),
+                "expect_document": value(c, prior)}, _activated(), None))
+        rows += [
+            ("drawing_export", lambda c, t=tag, f=path: {"format": "pdf", "file_path": f,
+                "expect_document": value(c, t)}, physical_pdf(path), None),
+            ("drawing_get", {"include": ["text"], "pdf": path}, sheet(standard, unit, pdf=True), None),
+        ]
+        previous = tag
+    rows.append(("doc_activate", lambda c: {"name": value(c, "home"),
+        "expect_document": value(c, "inch")}, _activated(), None))
+    remaining = ["source", "dependency", "inch", "mm", "iso_inch"]
+    for target in ("iso_inch", "mm", "inch", "dependency", "source"):
+        remaining.remove(target)
+        rows += [
+            ("doc_close", lambda c, t=target: {"name": value(c, t), "save_changes": False,
+                "expect_document": value(c, "home")},
+             lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
+            ("doc_get", {"max_results": 1000}, census("home", tuple(remaining)), None),
+        ]
+    return rows
+
+
+_CLOUD_DRAWING += _drawing_custom_size_rows()
 
 
 # --- ACT 11d: CAM TEMPLATE PERSISTENCE ---------------------------------------------------------
@@ -4937,7 +5130,7 @@ def _lineage_open_rows():
                 "project_id": project.get("id"), "project": project.get("name"),
                 "folder": folder.get("name")}
 
-    def source_args(key):
+    def source_args(key, name=None):
         def args(c):
             urn = _ctx_get(c, key, "the configured source")
             missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
@@ -4949,7 +5142,9 @@ def _lineage_open_rows():
                 else:
                     _measured("the source read resolves the exact retained lineage", last,
                               (last.get("file") or {}).get("id") == urn)
-                    if all(isinstance(v, str) and v for v in source_state(last).values()):
+                    state = source_state(last)
+                    if (all(isinstance(v, str) and v for v in state.values())
+                            and (name is None or state["name"] == name)):
                         return {"file": urn}
                 if i + 1 < min(_SETTLE_POLLS, 16):
                     time.sleep(_SETTLE_GAP_S)
@@ -5052,7 +5247,7 @@ def _lineage_open_rows():
          lambda p: p.get("parameter") == "ProbeW" and p.get("set") == 1, None),
         ("doc_save", write({"description": "lineage replay: in-place save after conversion"}), moved,
          ("lin_inplace", _recall("lin_inplace", lambda p: p["lineage_changed"]["to"]))),
-        ("data_get", source_args("lin_first"), prior_backing, None),
+        ("data_get", source_args("lin_first", name="Configuration 1"), prior_backing, None),
         ("data_get", source_args("lin_inplace"), source_before,
          ("lin_source_before", _recall("lin_source_before", source_state))),
         ("doc_save_as", write({"name": second, "project": PROJECT, "folder": FOLDER, "create_path": False}),

@@ -1,9 +1,15 @@
+# Copyright (c) Fusion-Essentials contributors
+# Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
+
 """Read rendered image dimensions and file completeness without image libraries."""
 
 from pathlib import Path
 import struct
 import zlib
 
+
+MAP_BLURB = ("inspect_image_file: a PNG, JPEG or TIFF file's status, format, dimensions and byte "
+             "count read from its own bytes, for a render whose image must be proven on disk")
 
 _PNG = b"\x89PNG\r\n\x1a\n"
 _JPEG = b"\xff\xd8"

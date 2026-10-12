@@ -74,6 +74,9 @@ When the brief gives you a worktree, it is yours and the main checkout is not.
 
 ## Scope and shared surfaces
 
+- A command the permission layer refuses is a stop for that action. Report its exact text to the
+  session that briefed you and carry on only with work that does not need it. Reach the same
+  effect by no other route: not a script, not another tool, not a different spelling.
 - A backlog row is proven still open first: reproduce the reported behaviour through the fake or
   read the exact line, and live where the row is live-flavored and you hold the lease. An
   unverified API contract is probed live or reported as PROBE NEEDED - never coded from a guess.

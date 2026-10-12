@@ -140,6 +140,7 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 | `ACT 15 - RENDER: LOCAL JPEG` | `render` | family default | inherited | `none` | `always` | `null` |
 | `ACT 15 - RENDER: LOCAL TIFF` | `render` | family default | inherited | `none` | `always` | `null` |
 | `ACT 15 - RENDER: LOCAL NAMED` | `render` | family default | inherited | `none` | `always` | `null` |
+| `ACT 15 - RENDER: LOCAL TRANSPARENT` | `render` | family default | inherited | `none` | `always` | `null` |
 | `ACT 15 - RENDER: SCENE + CANVAS` | `render` | family default | design | `none` | `always` | `null` |
 | `FINALE` | `finale` | family default | design | `none` | `always` | `null` |
 <!-- END GENERATED ACT DEPENDENCIES -->

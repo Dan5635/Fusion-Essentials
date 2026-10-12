@@ -45,10 +45,7 @@ def _view_type_label(value):
 
 
 def _custom_size_facts(sheet):
-    """The sheet's customSize record when the build exposes it - {width, height, unit} in the
-    drawing's own coordinate unit - or None. Read defensively: an earlier build RAISED on this
-    property (the repo's measured note), the current API doc declares it gettable, so the read
-    is trusted only when it answers."""
+    """The readable customSize width and height in display units, or None."""
     cs = safe(lambda: sheet.customSize)
     if cs is None:
         return None
@@ -290,7 +287,7 @@ def handler(include=None, sheet: str = "", view: int = None, pdf: str = "",
                               else active_name == sheet_name)
         custom = _custom_size_facts(s)
         if custom is not None and facts.get("sheet_size") is None:
-            facts["custom_size"] = dict(custom, unit=_drawing_common.coordinate_unit(dwg))
+            facts["custom_size"] = dict(custom, unit=payload["dimension_display_unit"])
         facts["dimension_count"] = _common.counted(lambda: s.drawingDimensions.count)
         # On a clean drawing, this native count read marks the document modified.
         facts["symbol_count"] = (_common.counted(lambda: s.drawingSymbols.count)

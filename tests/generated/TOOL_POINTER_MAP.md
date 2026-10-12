@@ -2396,7 +2396,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - '' needs , which is not available on this Fusion version - the setting could not be applied, so no drawing was created. Retry with a different .
 - template_file '' could not be resolved to a file. Tried: . Pass a DataFile id/versionId or a fusionWebURL from data_get / design_get(include=['tree']).
 - creation_mode 'manual' requires template_file, which was empty.  This call stops here without creating anything. Pass the template's DataFile id/URL as template_file, or use creation_mode 'automatic'.
-- Custom sheet size:  x   (unit follows standard ''),  x  zones requested. The created sheet's own size is not read here: doc_open it, then drawing_get gives it in mm.
+- Custom sheet size:  x   (display unit),  x  zones requested. The created sheet's own size is not read here: doc_open it, then drawing_get gives it in mm.
 
 ### `drawing_delete_sketch`
 - Provide 'sketch' - the exact name of the drawing sketch to delete.
@@ -4546,8 +4546,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `render_create`
 - Render settings did not keep  after the last setter. The renderer may have changed. Before: ; now: . Read render_get(include=['settings']).
-- 32 local render jobs are still retained and none has been read as finished or failed. Read them with render_get(job_id=...) before starting another.
-- aspect_ratio and resolution_preset can change each other; choose one or specify width and height with aspect_ratio='custom'.
+- local render jobs are still retained and none has been read as finished or failed. Read them with render_get(job_id=...) before starting another.
+- resolution_preset='custom' cannot be combined with one dimension; send both width and height, or omit resolution_preset.
+- aspect_ratio= cannot be combined with resolution_preset=; send one of them, or width and height with aspect_ratio='custom'.
 - In-canvas renderer did not read. Activate the Render workspace with view_switch_workspace(workspace='Render'), then retry.
 
 ### `render_edit`
@@ -4555,6 +4556,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - focal_length_mm requires camera_type='perspective'; set it in this scene edit or switch the camera first.
 - ground_roughness requires ground_reflect=true; set it in this scene edit or enable ground reflections first.
 - Scene read-back matches the requested fields.
+- background_type follows the background written: background_rgb gives solid_color; environment_id or environment_name gives environment.
 - Scene field(s)  cannot be written: Fusion can show a blocking depth-of-field warning while ray tracing is off. Read them with render_get instead.
 - reset_scene returned true but no scene field changed; reset effect was not verified. Read render_get(include=['scene']).
 

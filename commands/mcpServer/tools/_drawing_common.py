@@ -104,9 +104,8 @@ def standard_label(dwg):
     return None
 
 
-# standard label -> the length unit a drawing's OWN numbers are authored in: DrawingSketch
-# coordinates are millimetres when the standard includes ISO and inches when it is ASME without ISO,
-# and CreateDrawingInput's CustomSheetSize takes the same unit for its width and height.
+# DrawingSketch coordinates follow the standard; custom sheet sizes follow display units.
+# ISO coordinates are millimetres; ASME coordinates are inches.
 DOCUMENT_UNIT = {"iso": "mm", "asme": "in"}
 
 
@@ -119,9 +118,7 @@ def coordinate_unit(dwg):
 
 
 def _length_unit(dwg, standard):
-    """The coordinate length unit dwg's own standard fixes, or DOCUMENT_UNIT[standard] before a
-    drawing exists yet (drawing_create, sizing a sheet it has not created); None when neither
-    resolves one."""
+    """The coordinate length unit from a drawing or standard, or None when neither resolves."""
     return coordinate_unit(dwg) if dwg is not None else DOCUMENT_UNIT.get(standard)
 
 

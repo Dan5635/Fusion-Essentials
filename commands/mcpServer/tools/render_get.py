@@ -11,7 +11,6 @@ from ._common import counted, error, measured, ok, read_flag, safe
 
 
 _SLICES = ("job", "settings", "scene", "environments", "canvas")
-_STATE = {0: "queued", 1: "processing", 2: "finished", 3: "failed"}
 
 
 def _job_row(job_id):
@@ -22,8 +21,7 @@ def _job_row(job_id):
                       "restart loses process-local render jobs; inspect the requested output path.")
     future = entry["future"]
     valid = read_flag(lambda: future.isValid)
-    state_value = counted(lambda: future.renderState)
-    state = _STATE.get(state_value)
+    state, state_value = _render_common.job_state(future)
     width = counted(lambda: future.imageWidth)
     height = counted(lambda: future.imageHeight)
     native_filename = safe(lambda: future.filename)

@@ -9,6 +9,42 @@ from conftest import load_tool_verify as _load_verify
 
 
 class TestToolVerifyProgram:
+    def test_matching_fixture_is_not_republished(self, monkeypatch, tmp_path):
+        verify = _load_verify().verify_core
+        path = tmp_path / "fixture.svg"
+        original = b"<svg>unchanged</svg>"
+        path.write_bytes(original)
+
+        def unexpected_publish(*args, **kwargs):
+            raise AssertionError("an identical fixture was opened for publication")
+
+        monkeypatch.setattr(verify.tempfile, "NamedTemporaryFile", unexpected_publish)
+        monkeypatch.setattr(verify.os, "replace", unexpected_publish)
+        assert verify._write_fixture(str(path), original) == str(path)
+        assert path.read_bytes() == original
+
+    def test_changed_fixture_stays_complete_until_atomic_publication(self, monkeypatch, tmp_path):
+        verify = _load_verify().verify_core
+        path = tmp_path / "fixture.svg"
+        original, changed = b"<svg>old complete</svg>", b"<svg>new complete</svg>"
+        path.write_bytes(original)
+        real_replace = verify.os.replace
+        published = []
+
+        def inspect_publish(source, target):
+            from pathlib import Path
+            assert path.read_bytes() == original
+            assert Path(source).read_bytes() == changed
+            assert str(target) == str(path)
+            published.append(source)
+            real_replace(source, target)
+
+        monkeypatch.setattr(verify.os, "replace", inspect_publish)
+        assert verify._write_fixture(str(path), changed) == str(path)
+        assert len(published) == 1
+        assert path.read_bytes() == changed
+        assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
     def test_authored_act_dependencies_and_producer_saves_are_complete(self):
         verify = _load_verify()
         acts = {row[0] for row in verify.ACTS}

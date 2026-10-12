@@ -30,6 +30,7 @@ from verify_acts_model import (
     _DETAILS, _DETAILS_FB, _RESIZE, _RESIZE_FB, _SOLIDS, _SOLIDS_FB)
 from verify_acts_motion import _MOTION, _VISE
 from verify_acts_render import _RENDER_JPEG, _RENDER_NAMED, _RENDER_READ, _RENDER_START, _RENDER_TIFF
+from verify_acts_render import _RENDER_TRANSPARENT
 from verify_acts_sketch import _SKELETON, _SKETCHWORK
 from verify_acts_sheet import (_SHEET, _SHEET_CAM_READ, _SHEET_DRAWING,
                                _SHEET_CLEANUP, _SHEET_SELECTED, _SHEET_POSITIONS,
@@ -214,6 +215,7 @@ _ACT_PROGRAM = [
     ("ACT 15 - RENDER: LOCAL JPEG", None, _RENDER_JPEG, None),
     ("ACT 15 - RENDER: LOCAL TIFF", None, _RENDER_TIFF, None),
     ("ACT 15 - RENDER: LOCAL NAMED", None, _RENDER_NAMED, None),
+    ("ACT 15 - RENDER: LOCAL TRANSPARENT", None, _RENDER_TRANSPARENT, None),
     ("ACT 15 - RENDER: SCENE + CANVAS", None, _RENDER_READ, None),
     ("FINALE", None, _FINALE, None),
 ]

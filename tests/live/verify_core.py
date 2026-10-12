@@ -624,14 +624,35 @@ def predicate_kind(expect):
 EXPORT_DIR = os.path.join(tempfile.gettempdir(), "eval_sweep_exports").replace("\\", "/")
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
+
+def _write_fixture(path, data):
+    """Publish complete fixture bytes only when the existing file differs."""
+    try:
+        with open(path, "rb") as current:
+            if current.read() == data:
+                return path
+    except FileNotFoundError:
+        pass
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(path), delete=False) as staged:
+            temporary = staged.name
+            staged.write(data)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
+    return path
+
+
 # The one fixture the harness AUTHORS rather than builds through a tool: no tool writes an SVG and
 # there is no SVG exporter to round-trip through the way mesh_export -> mesh_insert does. 36 x 16 SVG
 # user units - importSVG ignores the file's width/height and viewBox, so at scale=3.7795 (1 user unit
 # = 1 mm) this art lands about 36 x 16 mm, which is the band the insert beat measures.
 SVG_PATH = EXPORT_DIR + "/eval_logo.svg"
-with open(SVG_PATH, "w", encoding="utf-8") as _svg_fixture:
-    _svg_fixture.write('<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="20mm" '
-                       'viewBox="0 0 40 20"><rect x="2" y="2" width="36" height="16"/></svg>')
+_write_fixture(SVG_PATH, b'<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="20mm" '
+                        b'viewBox="0 0 40 20"><rect x="2" y="2" width="36" height="16"/></svg>')
 
 # The SK-5 closure fixture: a 96-user-unit square at the SVG origin. At 1/96 inch per user unit and
 # scale=1 that is exactly one inch, and the art lands y-DOWN from the sketch origin - so the sketch's
@@ -641,9 +662,8 @@ with open(SVG_PATH, "w", encoding="utf-8") as _svg_fixture:
 # FILLS a viewBox is the one shape that cannot tell a top-left anchor from a bottom-left one - so
 # stating them here would make the fixture disagree with the measurement it exists to close.
 SVG96_PATH = EXPORT_DIR + "/eval_square96.svg"
-with open(SVG96_PATH, "w", encoding="utf-8") as _svg96_fixture:
-    _svg96_fixture.write('<svg xmlns="http://www.w3.org/2000/svg">'
-                         '<rect x="0" y="0" width="96" height="96"/></svg>')
+_write_fixture(SVG96_PATH, b'<svg xmlns="http://www.w3.org/2000/svg">'
+                          b'<rect x="0" y="0" width="96" height="96"/></svg>')
 
 
 def write_png(path, size=64, rgb=(255, 140, 0)):
@@ -657,15 +677,11 @@ def write_png(path, size=64, rgb=(255, 140, 0)):
         return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
     ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
     row = b"\x00" + bytes(rgb) * size
-    with open(path, "wb") as fh:
-        fh.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
-                 + chunk(b"IDAT", zlib.compress(row * size)) + chunk(b"IEND", b""))
-    return path
+    return _write_fixture(path, b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+                          + chunk(b"IDAT", zlib.compress(row * size)) + chunk(b"IEND", b""))
 
 
-# A STABLE path, rewritten in place on every import: a stamped name would leave one more file in
-# EXPORT_DIR per pytest run. The cloud file it becomes needs no stamp either - each run uploads it
-# into a run-stamped folder of its own.
+# Stable fixture paths keep imports from accumulating files; identical bytes need no write.
 MARKER_PNG = write_png(EXPORT_DIR + "/sweep_marker.png")
 
 

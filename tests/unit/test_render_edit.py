@@ -1,11 +1,12 @@
 """Scene and in-canvas edits report the final observed state."""
 
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import load_tool
+from conftest import GroundOffsetScene, load_tool
 
 
 edit = load_tool("render_edit")
@@ -64,18 +65,141 @@ def test_depth_of_field_write_refused_before_context(monkeypatch):
     assert "blocking" in result["message"]
 
 
-def test_unverified_ground_position_write_refused_before_context(monkeypatch):
+def test_ground_position_write_refused_as_read_only_before_context(monkeypatch):
     monkeypatch.setattr(edit._render_common, "context", lambda: pytest.fail("context called"))
-    refused = edit.handler("scene", {"ground_position": [0, 0, 1]})
+    refused = edit.handler("scene", {"ground_position": [0, 0, 1], "brightness_lux": 25})
     assert refused["isError"] is True
-    assert "ground_position" in refused["message"]
+    assert "ground_position are read-only" in refused["message"]
+    assert "render_get(include=['scene'])" in refused["message"]
+
+
+_UNITS_REMEDY = "render_edit's own input beside scene"
+_BACKGROUND_REMEDY = "background_rgb gives solid_color; environment_id or environment_name gives"
+
+
+@pytest.mark.parametrize("field,value,remedies", [
+    ("units", "in", (_UNITS_REMEDY,)),
+    ("background_type", "environment", (_BACKGROUND_REMEDY,)),
+    ("environment_custom", True, ()),
+])
+def test_returned_only_scene_key_is_refused_with_its_own_remedy_before_context(
+        monkeypatch, field, value, remedies):
+    monkeypatch.setattr(edit._render_common, "context", lambda: pytest.fail("context called"))
+    message = edit.handler("scene", {field: value, "brightness_lux": 25})["message"]
+    assert f"Scene field(s) {field} are read-only" in message
+    assert "render_get(include=['scene'])" in message
+    for remedy in (_UNITS_REMEDY, _BACKGROUND_REMEDY):
+        assert (remedy in message) is (remedy in remedies)
+
+
+def test_mixed_request_names_every_read_only_key_and_each_remedy(monkeypatch):
+    monkeypatch.setattr(edit._render_common, "context", lambda: pytest.fail("context called"))
+    message = edit.handler("scene", {"units": "in", "environment_custom": False, "exposure_ev": 3,
+                                     "background_type": "solid_color",
+                                     "aspect_ratio": "custom"})["message"]
+    assert "aspect_ratio, background_type, environment_custom, units are read-only" in message
+    assert _UNITS_REMEDY in message and _BACKGROUND_REMEDY in message
+
+
+@pytest.fixture
+def ground(monkeypatch):
+    def install(settings):
+        monkeypatch.setattr(edit._render_common, "context", lambda: (
+            object(), SimpleNamespace(sceneSettings=settings), None))
+        return settings
+    return install
+
+
+def test_top_level_units_input_scales_a_scene_length_both_ways(ground):
+    settings = ground(GroundOffsetScene(held_cm=1.27))
+    result = edit.handler("scene", {"ground_offset": 1}, units="in")
+    assert result["isError"] is False
+    assert settings.sent == [pytest.approx(1.27)] and settings.held == pytest.approx(2.54)
+    row = _payload(result)
+    assert row["before"]["ground_offset"] == 0.5
+    assert row["after"]["units"] == "in" and row["after"]["ground_offset"] == 1
+
+
+def test_ground_offset_write_assigns_the_difference_to_the_held_offset(ground):
+    settings = ground(GroundOffsetScene(held_cm=0.5))
+    result = edit.handler("scene", {"ground_offset": 7})
+    assert result["isError"] is False
+    assert settings.sent == [pytest.approx(0.2)]
+    row = _payload(result)
+    assert row["before"]["ground_offset"] == 5 and row["after"]["ground_offset"] == 7
+    assert row["applied"] == ["ground_offset"] and "already_set" not in row
+
+
+def test_ground_offset_zero_is_reached_and_published_unsigned(ground):
+    settings = ground(GroundOffsetScene(held_cm=1.2))
+    result = edit.handler("scene", {"ground_offset": 0})
+    assert result["isError"] is False and settings.sent == [-1.2]
+    assert math.copysign(1, settings.groundOffset) == -1
+    assert math.copysign(1, _payload(result)["after"]["ground_offset"]) == 1
+    assert "-0.0" not in result["content"][0]["text"]
+
+
+@pytest.mark.parametrize("held_mm,wanted,sent_count", [(5, 5, 0), (1e-5, 0, 0), (2e-5, 0, 1)])
+def test_ground_offset_within_the_read_back_tolerance_assigns_nothing(
+        ground, held_mm, wanted, sent_count):
+    settings = ground(GroundOffsetScene(held_cm=held_mm / 10))
+    result = edit.handler("scene", {"ground_offset": wanted})
+    assert result["isError"] is False and len(settings.sent) == sent_count
+    row = _payload(result)
+    assert row["applied"] == ["ground_offset"] * sent_count
+    assert row.get("already_set") == (None if sent_count else ["ground_offset"])
+
+
+def test_ground_offset_difference_uses_the_offset_read_after_an_earlier_field_moved_it(ground):
+    settings = ground(GroundOffsetScene(held_cm=0.5, injected_shift_on="isGroundFlattened"))
+    result = edit.handler("scene", {"ground_offset": 7, "flatten_ground": True})
+    assert result["isError"] is False
+    assert settings.sent == [pytest.approx(0.1)]
+    row = _payload(result)
+    assert row["applied"] == ["flatten_ground", "ground_offset"]
+    assert row["after"]["ground_offset"] == 7 and row["after"]["flatten_ground"] is True
+
+
+def test_ground_offset_left_alone_is_still_judged_by_the_final_read(ground):
+    settings = ground(GroundOffsetScene(held_cm=0.5, injected_shift_on="lightAngle"))
+    result = edit.handler("scene", {"ground_offset": 5, "light_angle_deg": 90})
+    assert result["isError"] is True and settings.sent == []
+    row = _payload(result)
+    assert row["applied"] == ["light_angle_deg"] and row["already_set"] == ["ground_offset"]
+    assert row["mismatches"] == {"ground_offset": 6.0}
+    assert "scene.ground_offset=5 read back 6.0" in row["error"]
+
+
+@pytest.mark.parametrize("unread", [RuntimeError("no read"), float("nan")])
+def test_unread_current_ground_offset_fails_the_field_without_assigning(ground, unread):
+    sent = ground(GroundOffsetScene(injected_read=unread)).sent
+    result = edit.handler("scene", {"flatten_ground": True, "ground_offset": 7})
+    assert result["isError"] is True and sent == []
+    row = _payload(result)
+    assert row["applied"] == ["flatten_ground"]
+    assert row["failed"] == {"field": "ground_offset",
+                             "reason": "the current ground offset did not read"}
+    assert row["error"].startswith(
+        "scene.ground_offset=7 was not assigned: the current ground offset did not read; "
+        "read render_get(include=['scene'])")
+
+
+def test_ground_offset_setter_that_adds_nothing_is_a_mismatch_error(ground):
+    ground(GroundOffsetScene(held_cm=0.5, injected_setter_adds_nothing=True))
+    result = edit.handler("scene", {"ground_offset": 7})
+    assert result["isError"] is True
+    row = _payload(result)
+    assert row["applied"] == ["ground_offset"] and row["mismatches"] == {"ground_offset": 5.0}
+    assert row["before"]["ground_offset"] == row["after"]["ground_offset"] == 5.0
+    assert "scene.ground_offset=7 read back 5.0" in row["error"]
 
 
 def test_custom_environment_file_write_refused_before_context(monkeypatch):
     monkeypatch.setattr(edit._render_common, "context", lambda: pytest.fail("context called"))
     refused = edit.handler("scene", {"environment_file": "C:/scratch/studio.hdr"})
     assert refused["isError"] is True
-    assert "environment_file" in refused["message"]
+    assert "Unknown scene field(s): environment_file" in refused["message"]
+    assert "read-only" not in refused["message"]
     assert "environment_file" not in edit.tool.to_dict()["inputSchema"]["properties"]["scene"]["properties"]
 
 
@@ -181,7 +305,31 @@ def test_camera_type_is_set_before_focal_length(monkeypatch):
     result = edit.handler("scene", {"camera_type": "perspective", "focal_length_mm": 50})
     assert result["isError"] is False
     assert events == ["cameraType", "cameraFocalLength"]
-    assert "New documents open with this camera type" in _payload(result)["note"]
+    row = _payload(result)
+    assert "New documents open with this camera type" in row["note"]
+    assert row["camera_type_before"] == "orthographic"
+    assert "It was 'orthographic' before this edit" in row["note"]
+    scene_schema = edit.tool.to_dict()["inputSchema"]["properties"]["scene"]["properties"]
+    assert "camera_type_before" in scene_schema["camera_type"]["description"]
+
+
+def test_unread_prior_camera_type_is_reported_as_unread(monkeypatch):
+    perspective = edit.adsk.core.CameraTypes.PerspectiveCameraType
+    settings = SimpleNamespace(cameraType=None)
+    monkeypatch.setattr(edit._render_common, "context", lambda: (
+        object(), SimpleNamespace(sceneSettings=settings), None))
+    monkeypatch.setattr(edit._render_scene, "scene_row", lambda s, units="mm": {
+        "camera_type": "perspective" if s.cameraType == perspective else None})
+    result = edit.handler("scene", {"camera_type": "perspective"})
+    assert result["isError"] is False
+    row = _payload(result)
+    assert row["camera_type_before"] is None and row["after"]["camera_type"] == "perspective"
+    assert "before this edit did not read" in row["note"] and "None" not in row["note"]
+
+
+def test_edit_without_camera_type_carries_no_prior_camera_key(scene_context):
+    row = _payload(edit.handler("scene", {"brightness_lux": 25}))
+    assert "camera_type_before" not in row and "camera type" not in row["note"]
 
 
 def test_aspect_write_is_refused_before_any_scene_setter(scene_context):
@@ -189,7 +337,7 @@ def test_aspect_write_is_refused_before_any_scene_setter(scene_context):
     result = edit.handler("scene", {"aspect_ratio": "custom", "aspect_width": 4,
                                     "aspect_height": 3})
     assert result["isError"] is True
-    assert "aspect" in result["message"]
+    assert "aspect_height, aspect_ratio, aspect_width are read-only" in result["message"]
     assert settings.brightness == 10
     scene_schema = edit.tool.to_dict()["inputSchema"]["properties"]["scene"]["properties"]
     assert not {"aspect_ratio", "aspect_width", "aspect_height"} & set(scene_schema)

@@ -114,8 +114,8 @@ generates both from `_inputs.py` and each helper's `MAP_BLURB`; don't edit betwe
 | `_pmi` | the PMI substrate. walk_annotations/find_annotation - the design-wide walk and the resolve-one REFUSING a shared name; build_segments/segments_markup/annotation_record - the {symbol} markup codec and light record; readable_warning - errorOrWarningMessage as one bounded line; build_tolerance/build_display - the tolerance/display codecs; apply_*/normalize_extension/set_* - the writers, each re-read |
 | `_read_primitives` | safe - per-field reads below design and typed inputs. |
 | `_relations` | the substrate assembly_get's relations slice and assembly_edit_relations share. all_relations - the ONE walk over a design's rigid groups / motion links / assembly constraints; relation_names/find_relation - the names for an error message and the EXACT resolve-one that REFUSES a duplicate; rigid_group_members - member paths |
-| `_render_common` | RenderManager access and local image setting rows for render_create/render_get |
-| `_render_file` | Read rendered image dimensions and file completeness without image libraries. |
+| `_render_common` | RenderManager access, local image setting rows and job_state (a local job's state by enum member name) for render_create/render_get |
+| `_render_file` | inspect_image_file: a PNG, JPEG or TIFF file's status, format, dimensions and byte count read from its own bytes, for a render whose image must be proven on disk |
 | `_render_jobs` | local render job IDs and bounded in-process RenderFuture retention |
 | `_render_scene` | scene_row/environment_rows: bounded passive scene and environment reads. |
 | `_rib_common` | body_census/rib_definition - owner-local shape witnesses and passive Rib/Web definitions. |

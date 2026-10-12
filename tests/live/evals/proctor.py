@@ -302,6 +302,40 @@ def executor_login(env, creds=CREDENTIALS):
     return {"CLAUDE_CODE_OAUTH_TOKEN": oauth_token(creds)}
 
 
+# With only this server configured, the client's resource readers and its wait-for-servers tool
+# reach nothing but this server, so they count with its tools.
+SAME_SERVER = ("ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool", "WaitForMcpServers")
+
+
+def tools_beside_fusion(init):
+    """The tools a start record lists that reach anything but the Fusion server, sorted."""
+    return sorted(tool for tool in init.get("tools") or [] if isinstance(tool, str)
+                  and not tool.startswith(MCP_PREFIX) and tool not in SAME_SERVER)
+
+
+def start_verdict(init, tool_search):
+    """'' when the client's start record is fit to run on, else the reason the run ends there."""
+    servers = [row for row in init.get("mcp_servers") or [] if isinstance(row, dict)]
+    fusion = [row for row in servers if row.get("name") == "fusion-essentials"]
+    status = fusion[0].get("status") if len(fusion) == 1 else "missing"
+    if len(servers) > len(fusion):
+        others = sorted(str(row.get("name")) for row in servers if row.get("name") != "fusion-essentials")
+        return "blocked init: a second server is configured: " + ", ".join(others)
+    if tool_search:
+        # Deferred loading lists no Fusion tool at start and can read pending while the server
+        # finishes connecting; the stall watch ends a run that never reaches a tool.
+        return "" if status in ("connected", "pending") else f"blocked init: fusion-essentials status {status}"
+    if status != "connected":
+        return f"blocked init: fusion-essentials status {status}"
+    tools = [tool for tool in init.get("tools") or [] if isinstance(tool, str)]
+    if not any(tool.startswith(MCP_PREFIX) for tool in tools):
+        return "blocked init: no fusion-essentials tools"
+    beside = tools_beside_fusion(init)
+    if beside:
+        return "blocked init: tools held beside the Fusion ones: " + ", ".join(beside)
+    return ""
+
+
 def launch(prompt, run_dir, model, deny=(), tool_search=False):
     """Run the executor from a disposable directory outside the repository."""
     with tempfile.TemporaryDirectory(prefix="fusion-eval-") as cwd:
@@ -322,6 +356,9 @@ def _launch(prompt, run_dir, model, deny, tool_search, cwd):
     cmd = [exe, "-p", "--model", model, "--mcp-config", mcp_config, "--strict-mcp-config",
            "--allowedTools", allowed, "--disallowedTools", disallowed,
            "--output-format", "stream-json", "--verbose", "--max-turns", str(MAX_TURNS)]
+    if not tool_search:
+        # No built-in tool at all: a deny list typed by name misses the tools a newer CLI adds.
+        cmd += ["--tools", ""]
     env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = CONFIG_DIR
     env.update(login)
@@ -371,18 +408,9 @@ def _launch(prompt, run_dir, model, deny, tool_search, cwd):
                             init = {}
                         if init.get("type") == "system" and init.get("subtype") == "init":
                             init_seen = True
-                            servers = init.get("mcp_servers") or []
-                            fusion = [row for row in servers if isinstance(row, dict)
-                                      and row.get("name") == "fusion-essentials"]
-                            tools = init.get("tools") or []
-                            if len(fusion) != 1 or fusion[0].get("status") != "connected":
-                                status = fusion[0].get("status") if len(fusion) == 1 else "missing"
-                                ended = f"blocked init: fusion-essentials status {status}"
-                            elif not tool_search and not any(isinstance(tool, str) and
-                                                             tool.startswith(MCP_PREFIX) for tool in tools):
-                                ended = "blocked init: no fusion-essentials tools"
-                            else:
-                                print(f"  executor up ({len(tools)} tools)", flush=True)
+                            ended = start_verdict(init, tool_search)
+                            if not ended:
+                                print(f"  executor up ({len(init.get('tools') or [])} tools)", flush=True)
                     live.read(line, time.time())
                 now = time.time()
                 if not ended and not init_seen and now - start > INIT_DEADLINE_S:
@@ -431,6 +459,31 @@ def audit(transcript):
                 final = ev.get("result") or ""
                 tokens = int((ev.get("usage") or {}).get("output_tokens") or 0)
     return calls, tokens, final
+
+
+def run_facts(transcript):
+    """(what the client's start record listed, the client's own error text) read off the transcript.
+    The error text is the result event's message when the client marked it an error: a usage limit
+    or a lost login ends a run there, with nothing on stderr."""
+    start, said = None, ""
+    with open(transcript, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            if start is None and ev.get("type") == "system" and ev.get("subtype") == "init":
+                tools = [tool for tool in ev.get("tools") or [] if isinstance(tool, str)]
+                start = {"client_version": ev.get("claude_code_version"), "model": ev.get("model"),
+                         "servers": {str(row.get("name")): row.get("status")
+                                     for row in ev.get("mcp_servers") or [] if isinstance(row, dict)},
+                         "fusion_tools": sum(tool.startswith(MCP_PREFIX) for tool in tools),
+                         "tools_beside_fusion": tools_beside_fusion(ev)}
+            elif ev.get("type") == "result" and ev.get("is_error"):
+                said = " ".join(str(ev.get("result") or "").split())
+    return start, said
 
 
 # --- the record ------------------------------------------------------------------------------------
@@ -487,7 +540,7 @@ def index_row(rec):
     link = saved.get("web_url") or saved.get("document_id") or saved.get("error") or "(not saved)"
     return (f"| {rec['started']} | {rec['set']} | {rec['variant']} | {rec['model']} | "
             f"{harness_label(rec)} | {', '.join(rec['denied']) or '-'} | {rec['calls']} | "
-            f"{rec['output_tokens']} | {rec['ended']} | {link} |\n")
+            f"{rec['output_tokens']} | {rec['ended'].replace('|', '/')} | {link} |\n")
 
 
 def next_run_dir(set_dir, scenario_id):
@@ -564,6 +617,9 @@ def main():
         if outcome != "executor_completed":
             cli_status = 1
         calls, tokens, final = audit(os.path.join(run_dir, "transcript.jsonl"))
+        start, said = run_facts(os.path.join(run_dir, "transcript.jsonl"))
+        if said and ended.startswith("executor exited"):
+            ended = f"{ended}: {said[:160]}"
         with open(os.path.join(run_dir, "report.txt"), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(final)
         blocked_init = ended.startswith("blocked init:")
@@ -576,7 +632,7 @@ def main():
                     "execution_state": ("blocked_init" if blocked_init else
                                         "completed" if outcome == "executor_completed" else
                                         ("staged_only" if calls == 0 else "partial_failed")),
-                    "call_times_s": call_times, "saved": saved})
+                    "call_times_s": call_times, "start": start, "saved": saved})
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as fh:
             json.dump(rec, fh, indent=1)
         os.makedirs(RESULTS, exist_ok=True)

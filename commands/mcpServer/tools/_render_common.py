@@ -9,7 +9,8 @@ from . import _common
 from ._common import safe, read_flag
 
 
-MAP_BLURB = "RenderManager access and local image setting rows for render_create/render_get"
+MAP_BLURB = ("RenderManager access, local image setting rows and job_state (a local job's state by "
+             "enum member name) for render_create/render_get")
 
 ASPECT = {
     "viewport": "CurrentViewportRenderAspectRatio",
@@ -45,6 +46,12 @@ RESOLUTION = {
     "Video1920x1080": "Video1920x1080RenderResolution",
     "custom": "CustomRenderResolution",
 }
+JOB_STATES = {
+    "queued": "QueuedLocalRenderState",
+    "processing": "ProcessingLocalRenderState",
+    "finished": "FinishedLocalRenderState",
+    "failed": "FailedLocalRenderState",
+}
 
 
 def context():
@@ -72,6 +79,13 @@ def enum_label(family, mapping, value):
         if enum_member(family, mapping, key) == value:
             return key
     return None
+
+
+def job_state(future):
+    """Return a local render future's (state name, native value); the name is None when unlisted."""
+    value = safe(lambda: future.renderState)
+    number = value if isinstance(value, int) and not isinstance(value, bool) else None
+    return enum_label(adsk.fusion.LocalRenderStates, JOB_STATES, value), number
 
 
 def settings_row(rendering):

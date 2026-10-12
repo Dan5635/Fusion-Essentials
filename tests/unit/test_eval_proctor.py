@@ -279,8 +279,17 @@ class TestWatch:
         ({"name": "fusion-essentials", "status": "connected"}, ["DesignSync"], False,
          "blocked init: no fusion-essentials tools"),
         ({"name": "fusion-essentials", "status": "connected"},
-         ["DesignSync", "mcp__fusion-essentials__workspace_orient"], False, "report"),
+         ["DesignSync", "mcp__fusion-essentials__workspace_orient", "Bash"], False,
+         "blocked init: tools held beside the Fusion ones: Bash, DesignSync"),
+        ({"name": "fusion-essentials", "status": "connected"},
+         ["mcp__fusion-essentials__workspace_orient", "ListMcpResourcesTool", "ReadMcpResourceTool",
+          "ReadMcpResourceDirTool", "WaitForMcpServers"], False, "report"),
         ({"name": "fusion-essentials", "status": "connected"}, [], True, "report"),
+        ({"name": "fusion-essentials", "status": "pending"}, ["DesignSync", "ToolSearch"], True, "report"),
+        ({"name": "fusion-essentials", "status": "pending"}, [], False,
+         "blocked init: fusion-essentials status pending"),
+        ({"name": "fusion-essentials", "status": "failed"}, [], True,
+         "blocked init: fusion-essentials status failed"),
     ])
     def test_launch_validates_exact_init_even_after_quick_exit(self, tmp_path, monkeypatch,
                                                                 server, tools, tool_search, expected):
@@ -307,6 +316,38 @@ class TestWatch:
         assert (ended, calls, code) == (expected, [], 0)
         assert killed == [True]
 
+    def test_a_second_server_at_start_blocks_the_run_by_name(self):
+        init = {"tools": ["mcp__fusion-essentials__doc_get"],
+                "mcp_servers": [{"name": "fusion-essentials", "status": "connected"},
+                                {"name": "fusion-spatial", "status": "connected"}]}
+        for tool_search in (False, True):
+            assert proctor.start_verdict(init, tool_search) == (
+                "blocked init: a second server is configured: fusion-spatial")
+
+    @pytest.mark.parametrize("tool_search", [False, True])
+    def test_built_in_tools_are_switched_off_unless_tool_search_needs_its_own(self, tmp_path, monkeypatch,
+                                                                              tool_search):
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setattr(proctor.shutil, "which", lambda name: "claude")
+        monkeypatch.setattr(proctor, "CONFIG_DIR", str(tmp_path / "config"))
+        monkeypatch.setattr(proctor, "executor_login", lambda env: {})
+        monkeypatch.setattr(proctor, "kill_tree", lambda proc: None)
+        lines = []
+
+        def spawn(cmd, **kwargs):
+            lines.append(cmd)
+            return types.SimpleNamespace(stdin=io.StringIO(), stderr=io.StringIO(),
+                                         poll=lambda: 0, wait=lambda: 0, returncode=0)
+
+        monkeypatch.setattr(proctor.subprocess, "Popen", spawn)
+        proctor._launch("prompt", str(run_dir), "opus", (), tool_search, str(tmp_path))
+        cmd = lines[0]
+        assert ("--tools" in cmd) is (not tool_search)
+        if not tool_search:
+            assert cmd[cmd.index("--tools") + 1] == ""
+        assert cmd[cmd.index("--allowedTools") + 1] == "mcp__fusion-essentials__*"
+
     def test_blocked_init_records_artifacts_without_save_or_next_run(self, tmp_path, monkeypatch):
         scenario = tmp_path / "S99_Widget.md"
         scenario.write_text(_SCENARIO, encoding="utf-8")
@@ -325,6 +366,7 @@ class TestWatch:
         monkeypatch.setattr(proctor, "build_prompt", lambda *args, **kwargs: "prompt")
         monkeypatch.setattr(proctor, "launch", lambda *args: ("blocked init: fusion-essentials status failed", [], 0))
         monkeypatch.setattr(proctor, "audit", lambda transcript: (0, 0, ""))
+        monkeypatch.setattr(proctor, "run_facts", lambda transcript: (None, ""))
         saves = []
         monkeypatch.setattr(proctor, "save_result", lambda *args: saves.append(args))
         monkeypatch.setattr(proctor.sys, "argv", ["proctor.py", "S99_Widget", "--runs", "3"])
@@ -365,6 +407,9 @@ class TestWatch:
                             lambda prompt, run_dir, model, deny, tool_search: next(outcomes)[:3])
         monkeypatch.setattr(proctor, "audit",
                             lambda transcript: (next_audit.pop(0), 0, ""))
+        said = ["You've hit your weekly limit | resets 11pm", "", "ignored on a report"]
+        monkeypatch.setattr(proctor, "run_facts",
+                            lambda transcript: ({"tools_beside_fusion": []}, said.pop(0) if said else ""))
         next_audit = [0, 2, 2]
         monkeypatch.setattr(proctor.sys, "argv",
                             ["proctor.py", "S99_Widget", "--runs", "3"])
@@ -377,6 +422,13 @@ class TestWatch:
             "staged_only", "partial_failed", "completed"]
         assert records[0]["executor_exit"] == 1 and records[0]["calls"] == 0
         assert records[1]["calls"] == 2 and records[2]["executor_exit"] == 0
+        # The client's own error text joins a failed exit, in the record and on one index line.
+        assert [record["ended"] for record in records] == [
+            "executor exited 1: You've hit your weekly limit | resets 11pm", "executor exited 1", "report"]
+        assert records[0]["start"] == {"tools_beside_fusion": []}
+        index = (results / "index.md").read_text(encoding="utf-8").splitlines()
+        assert "| executor exited 1: You've hit your weekly limit / resets 11pm |" in index[2]
+        assert index[2].count("|") == index[1].count("|")
         outcomes = iter([("report", [], 0)])
         next_audit[:] = [0]
         monkeypatch.setattr(proctor.sys, "argv",
@@ -402,6 +454,20 @@ class TestRecord:
                 {"type": "tool_use", "name": "mcp__fusion-essentials__model_extrude"}]}},
             {"type": "result", "result": "Built it.", "usage": {"output_tokens": 1234}}])
         assert proctor.audit(path) == (2, 1234, "Built it.")
+
+    def test_run_facts_read_the_start_record_and_only_an_error_result(self, tmp_path):
+        init = {"type": "system", "subtype": "init", "claude_code_version": "2.1.197",
+                "model": "claude-opus-4-8", "tools": ["mcp__fusion-essentials__doc_get", "DesignSync"],
+                "mcp_servers": [{"name": "fusion-essentials", "status": "pending"}]}
+        start = {"client_version": "2.1.197", "model": "claude-opus-4-8",
+                 "servers": {"fusion-essentials": "pending"}, "fusion_tools": 1,
+                 "tools_beside_fusion": ["DesignSync"]}
+        limit = {"type": "result", "is_error": True, "result": "You've hit your weekly limit\n resets 11pm"}
+        assert proctor.run_facts(self._transcript(tmp_path, [init, limit])) == (
+            start, "You've hit your weekly limit resets 11pm")
+        report = {"type": "result", "is_error": False, "result": "Built it."}
+        assert proctor.run_facts(self._transcript(tmp_path, [init, report])) == (start, "")
+        assert proctor.run_facts(self._transcript(tmp_path, [report])) == (None, "")
 
     def test_save_reports_the_refusal_and_still_takes_the_screenshot(self, tmp_path):
         call = _wire({"doc_save_as": (True, "Fusion declined to save"),

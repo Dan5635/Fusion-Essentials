@@ -2306,7 +2306,9 @@ class _DocumentWire:
         self.seen.append((tool, dict(args)))
         if tool == "doc_get":
             self.doc_reads += 1
-            active = dict(self.documents[self.active], document_handle=self.active)
+            active = dict(self.documents[self.active], document_handle=self.active,
+                          is_saved=bool(self.documents[self.active].get("document_id")),
+                          is_modified=False)
             rows = [{"name": value["name"], "document_handle": handle,
                      "open_index": index, "is_active": handle == self.active}
                     for index, (handle, value) in enumerate(self.documents.items())]
@@ -2397,6 +2399,95 @@ def _run_document_program(monkeypatch, tmp_path, wire, acts, writes, run_id=None
     tool_verify._RECALL.clear()
     code = tool_verify.run(write_json=False, run_id=run_id, shots_dir=shots_dir)
     return code, wrote
+
+
+class TestAttributedDrawingDependency:
+    @pytest.mark.parametrize("lineage,already_open,admitted", [
+        ("urn:source", False, True), ("urn:foreign", False, False),
+        ("urn:source", True, False)])
+    def test_only_a_new_dependency_with_a_proven_owned_lineage_can_close(
+            self, monkeypatch, lineage, already_open, admitted):
+        wire = _DocumentWire()
+        dependency = "session:dependency"
+        if already_open:
+            wire.documents[dependency] = {"name": "SameSource", "document_id": lineage}
+
+        def call(tool, args):
+            failed, payload = wire(tool, args)
+            if tool == "doc_new":
+                wire.documents[payload["document_handle"]]["document_id"] = "urn:source"
+            elif tool == "doc_open" and not already_open:
+                wire.documents[dependency] = {"name": "SameSource", "document_id": lineage}
+            return failed, payload
+
+        monkeypatch.setattr(tool_verify, "call", call)
+        monkeypatch.setattr(verify_runner, "time", _Clock(1.0))
+        steps = [
+            ("doc_new", {}, "ok", None),
+            ("doc_get", {}, "ok", None),
+            ("doc_open", {"file_id": "urn:drawing", "force_api_open": True}, "ok", None),
+            ("doc_activate", {"name": dependency}, "ok", None),
+            ("doc_get", {}, "ok", None),
+            ("doc_activate", {"name": "session:home"}, "ok", None),
+            ("doc_close", {"name": dependency, "save_changes": False}, "ok", None),
+        ]
+        pin = {"track_owned_open": True}
+        rows = verify_runner.run_steps(steps, {}, document_pin=pin,
+            guarded_tools={"doc_new", "doc_open", "doc_activate", "doc_close"},
+            stop_on_failure=True, sleep_s=0)
+        assert (rows[-1][1] == "pass") is admitted
+        assert (dependency not in wire.documents) is admitted
+        assert (dependency in pin["owned_documents"]) is admitted
+        assert pin["owned_lineages"] == ["urn:source"]
+        assert "session:home" in wire.documents and "session:intruder" in wire.documents
+        if not admitted:
+            assert rows[-1] == ("doc_close", "blocked", "family cannot close a document it did not open")
+            assert not any(tool == "doc_close" for tool, _args in wire.seen)
+
+    def test_a_failed_lineage_read_cannot_admit_a_dependency(self, monkeypatch):
+        wire = _DocumentWire()
+        wire.documents["session:dependency"] = {"name": "SameSource", "document_id": "urn:source"}
+        wire.active = "session:dependency"
+        monkeypatch.setattr(tool_verify, "call", wire)
+        pin = {"state": "known", "handle": wire.active,
+               "snapshot": {"state": "known", "document_handle": wire.active},
+               "track_owned_open": True, "owned_documents": ["session:source"],
+               "owned_lineages": ["urn:source"], "dependency_candidates": [wire.active]}
+        rows = verify_runner.run_steps([("doc_get", {}, lambda p: False, None)], {},
+            document_pin=pin, guarded_tools={"doc_close"}, stop_on_failure=True, sleep_s=0)
+        assert rows[0][1] == "FAIL"
+        assert pin["owned_documents"] == ["session:source"]
+        assert pin["dependency_candidates"] == [wire.active]
+
+    @pytest.mark.parametrize("fault", ["truncated", "count", "active_flag", "row_flag"])
+    def test_a_partial_passing_read_cannot_admit_a_dependency(self, monkeypatch, fault):
+        wire = _DocumentWire()
+        wire.documents["session:dependency"] = {"name": "SameSource", "document_id": "urn:source"}
+        wire.active = "session:dependency"
+
+        def call(tool, args):
+            failed, payload = wire(tool, args)
+            if tool == "doc_get":
+                if fault == "truncated":
+                    payload["truncated"] = True
+                elif fault == "count":
+                    payload["open_count"] = len(payload["open_documents"]) - 1
+                elif fault == "active_flag":
+                    payload["active"]["is_saved"] = None
+                else:
+                    payload["open_documents"][0]["is_modified"] = None
+            return failed, payload
+
+        monkeypatch.setattr(tool_verify, "call", call)
+        pin = {"state": "known", "handle": wire.active,
+               "snapshot": {"state": "known", "document_handle": wire.active},
+               "track_owned_open": True, "owned_documents": ["session:source"],
+               "owned_lineages": ["urn:source"], "dependency_candidates": [wire.active]}
+        rows = verify_runner.run_steps([("doc_get", {}, "ok", None)], {},
+            document_pin=pin, guarded_tools={"doc_close"}, stop_on_failure=True, sleep_s=0)
+        assert rows[0][1] == "pass"
+        assert pin["owned_documents"] == ["session:source"]
+        assert pin["dependency_candidates"] == [wire.active]
 
 
 class TestWithinActDocumentPin:

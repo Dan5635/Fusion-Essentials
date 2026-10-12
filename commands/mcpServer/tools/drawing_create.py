@@ -174,7 +174,7 @@ _TIMEOUT_IS_NOT_A_VERDICT = (
 
 # CreateDrawingInput.customSize hands out a DEFAULT CustomSheetSize that takes effect only when it
 # is assigned BACK through the setter; its width/height are unitless numbers in the drawing's own
-# document unit, and its two zone counts must each be at least 2. False refuses 'custom' outright.
+# display unit, and its two zone counts must each be at least 2. False refuses 'custom' outright.
 _CUSTOM_SIZE_ENABLED = True
 _CUSTOM_ZONES = 2
 
@@ -188,7 +188,7 @@ _CUSTOM_DISABLED_REFUSAL = (
 def _apply_custom_size(di, cfg):
     """Write the requested custom sheet size onto the input and assign it BACK through the setter:
     '' or the refusal text (nothing is created on a refusal). The getter returns a COPY, so mutating
-    it alone changes nothing; width/height are unitless numbers in cfg's document unit, and both
+    it alone changes nothing; width/height are unitless numbers in cfg's display unit, and both
     zone counts must be at least 2 at creation."""
     spec = cfg["custom_size"]
     cs = safe(lambda: di.customSize)
@@ -455,12 +455,11 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
                          f"{custom_width_mm!r} / {custom_height_mm!r}).")
         if w_mm <= 0 or h_mm <= 0:
             return error(f"custom_width_mm and custom_height_mm must be positive (got {w_mm} / {h_mm}).")
-        # The inputs are millimetres; CustomSheetSize takes the DOCUMENT unit, which the standard
-        # fixes - through the same helper the sheet-extent bound converts with, keyed by standard
-        # label since no drawing exists yet to read coordinate_unit off.
-        unit = _drawing_common.DOCUMENT_UNIT[std]
-        custom_size = {"width": round(_drawing_common.extent_in_coordinates(w_mm, standard=std), 6),
-                       "height": round(_drawing_common.extent_in_coordinates(h_mm, standard=std), 6),
+        # CustomSheetSize uses display units, independently of drawing coordinates.
+        unit = "in" if units_v == "inch" else "mm"
+        factor = _common.scale("mm") * _common.CM_TO_UNIT[unit]
+        custom_size = {"width": round(w_mm * factor, 6),
+                       "height": round(h_mm * factor, 6),
                        "unit": unit, "zone_minimum": _CUSTOM_ZONES}
     elif custom_width_mm is not None or custom_height_mm is not None:
         return error("custom_width_mm/custom_height_mm only apply when sheet_size='custom'.")
@@ -567,8 +566,8 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
         note += f" creation_mode was 'manual', which Fusion gates on the template: {_MANUAL_GATE}"
     if custom_size is not None:
         note += (f" Custom sheet size: {custom_size['width_applied']} x "
-                 f"{custom_size['height_applied']} {custom_size['unit']} (unit follows standard "
-                 f"'{std}'), {custom_size['horizontal_zones_applied']} x "
+                 f"{custom_size['height_applied']} {custom_size['unit']} (display unit), "
+                 f"{custom_size['horizontal_zones_applied']} x "
                  f"{custom_size['vertical_zones_applied']} zones requested. The created sheet's "
                  "own size is not read here: doc_open it, then drawing_get gives it in mm.")
     note += " " + _TIMEOUT_IS_NOT_A_VERDICT

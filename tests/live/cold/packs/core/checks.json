@@ -1,0 +1,56 @@
+{
+  "pack": "core",
+  "needs_tools": ["doc_new", "doc_get", "doc_activate", "doc_close", "param_add", "param_set_favorite",
+                  "param_get", "sketch_create", "sketch_add_geometry", "sketch_constrain", "sketch_get"],
+  "max_calls": 75,
+  "max_seconds": 1500,
+  "outcomes": [
+    {
+      "id": "favorite",
+      "title": "A parameter's favorite flag is set true, false, true and each state is read back",
+      "checks": [
+        {"kind": "write_then_read",
+         "write": {"tool": "param_set_favorite", "where": {"name": "ColdLength"}, "value": "favorite"},
+         "read": {"tool": "param_get", "where": {"name": "ColdLength"}, "path": "parameter.favorite"},
+         "expect": [true, false, true]},
+        {"kind": "read_field",
+         "read": {"tool": "param_get", "arguments": {"name": "ColdLength"}},
+         "path": "parameter.favorite", "equals": true}
+      ]
+    },
+    {
+      "id": "activation",
+      "title": "Two owned documents are activated by handle and each switch is read back",
+      "checks": [
+        {"kind": "write_then_read",
+         "write": {"tool": "doc_activate", "value": "name"},
+         "read": {"tool": "doc_get", "path": "active.document_handle"},
+         "distinct": 2, "values_in": "owned"},
+        {"kind": "read_field",
+         "read": {"tool": "doc_get", "arguments": {}},
+         "path": "active.document_handle", "in": "owned"}
+      ]
+    },
+    {
+      "id": "partial_batch",
+      "title": "A constraint batch that half lands says so, and the sketch holds what landed",
+      "checks": [
+        {"kind": "failed_call", "tool": "sketch_constrain", "where": {"sketch_name": "ColdBatch"},
+         "first_key": ["note", "error"],
+         "fields": {"constrained": 1, "requested": 2, "failed.index": 1}},
+        {"kind": "count_step",
+         "around": {"tool": "sketch_constrain", "where": {"sketch_name": "ColdBatch"}},
+         "read": {"tool": "sketch_get", "where": {"sketch_name": "ColdBatch"}, "path": "constraint_count"},
+         "step": 1},
+        {"kind": "read_agrees",
+         "read": {"tool": "sketch_get", "where": {"sketch_name": "ColdBatch"},
+                  "arguments": {"sketch_name": "ColdBatch", "include_entities": true, "units": "mm"}},
+         "path": "constraint_count"},
+        {"kind": "read_fields_equal",
+         "read": {"tool": "sketch_get", "where": {"sketch_name": "ColdBatch"},
+                  "arguments": {"sketch_name": "ColdBatch", "include_entities": true, "units": "mm"}},
+         "paths": ["entities[type=line].start.y", "entities[type=line].end.y"], "within": 0.001}
+      ]
+    }
+  ]
+}

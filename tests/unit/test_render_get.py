@@ -9,6 +9,7 @@ from conftest import load_tool
 
 
 rg = load_tool("render_get")
+STATES = rg._render_common.adsk.fusion.LocalRenderStates
 
 
 @pytest.fixture
@@ -16,7 +17,8 @@ def rig(monkeypatch, tmp_path):
     """A completed future with its exact requested output path."""
     path = str(tmp_path / "render.png")
     future = SimpleNamespace(filename=path, imageWidth=256, imageHeight=256,
-                             renderState=2, progress=1.0, isValid=True)
+                             renderState=STATES.FinishedLocalRenderState, progress=1.0,
+                             isValid=True)
     monkeypatch.setattr(rg._render_jobs, "get", lambda job_id: {
         "future": future, "path": path, "terminal": False} if job_id == "render:test:1" else None)
     monkeypatch.setattr(rg._render_jobs, "set_terminal", lambda job_id: None)
@@ -30,6 +32,17 @@ def test_native_finished_without_file_is_not_complete(rig):
     assert payload["job"]["state"] == "finished"
     assert payload["job"]["complete"] is False
     assert payload["job"]["file"]["status"] == "missing"
+
+
+def test_failed_member_is_named_and_an_unlisted_state_is_reported_unknown(rig):
+    future = rg._render_jobs.get("render:test:1")["future"]
+    future.renderState = STATES.FailedLocalRenderState
+    failed = json.loads(rg.handler(job_id="render:test:1")["content"][0]["text"])["job"]
+    assert failed["state"] == "failed" and "failed" in failed["problem"]
+    future.renderState = -1
+    unlisted = json.loads(rg.handler(job_id="render:test:1")["content"][0]["text"])["job"]
+    assert unlisted["state"] is None and unlisted["state_value"] == -1
+    assert "valid known state" in unlisted["problem"] and unlisted["complete"] is False
 
 
 def test_unknown_job_refuses_after_reload(rig):

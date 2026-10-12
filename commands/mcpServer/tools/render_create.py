@@ -54,7 +54,8 @@ def _set_rendering(rendering, *, width, height, quality, transparent, aspect_rat
     """Apply local settings and verify their final combined read-back."""
     requested = {}
     setters = []
-    if resolution_preset:
+    # 'custom' with both dimensions is the width-and-height job: the two setters carry it.
+    if resolution_preset and (resolution_preset != "custom" or width is None or height is None):
         value = _render_common.enum_member(adsk.fusion.RenderResolutions,
                                            _render_common.RESOLUTION, resolution_preset)
         if value is None:
@@ -105,38 +106,54 @@ def handler(mode: str = "local", file_path: str = "", width=None, height=None, q
     """See TOOL_DESCRIPTION."""
     mode = mode or "local"
     if mode not in ("local", "canvas"):
-        return error(f"mode '{mode}' must be local or canvas.")
-    local_fields = (width, height, quality, transparent, aspect_ratio, resolution_preset, view_name)
-    canvas_fields = (advanced, canvas_quality, resolution_pct, lock_view)
-    if mode == "canvas" and (file_path or any(value is not None and value != "" for value in local_fields)):
-        return error("Canvas mode does not take local image settings or file_path; use render_edit "
-                     "action='canvas_save' after it starts.")
-    if mode == "local" and any(value is not None for value in canvas_fields):
-        return error("Local mode does not take in-canvas settings; use mode='canvas' for those inputs.")
+        return error(f"mode={mode!r} must be local or canvas.")
+    local_fields = {"file_path": file_path, "width": width, "height": height, "quality": quality,
+                    "transparent": transparent, "aspect_ratio": aspect_ratio,
+                    "resolution_preset": resolution_preset, "view_name": view_name}
+    canvas_fields = {"advanced": advanced, "canvas_quality": canvas_quality,
+                     "resolution_pct": resolution_pct, "lock_view": lock_view}
+    if mode == "canvas":
+        stray = [f"{name}={value!r}" for name, value in local_fields.items()
+                 if value is not None and value != ""]
+        remedy = "render_edit(action='canvas_save') saves the canvas image"
+    else:
+        stray = [f"{name}={value!r}" for name, value in canvas_fields.items() if value is not None]
+        remedy = "mode='canvas' takes in-canvas settings"
+    if stray:
+        return error(f"{', '.join(stray)} cannot be combined with mode='{mode}'; omit "
+                     f"{'it' if len(stray) == 1 else 'them'}. {remedy}.")
     if mode == "local":
         path, problem = _output_path(file_path)
         if problem:
             return error(problem)
         if not _render_jobs.capacity():
-            return error("32 local render jobs are still retained and none has been read as finished "
-                         "or failed. Read them with render_get(job_id=...) before starting another.")
+            return error(f"{_render_jobs._LIMIT} local render jobs are still retained and none has "
+                         "been read as finished or failed. Read them with render_get(job_id=...) "
+                         "before starting another.")
         for name, value, low, high in (("width", width, 108, 4000), ("height", height, 108, 4000),
                                        ("quality", quality, 25, 100)):
             if value is not None and (type(value) is not int or not low <= value <= high):
                 return error(f"{name}={value!r} must be an integer {low}..{high}.")
         if transparent is not None and type(transparent) is not bool:
             return error(f"transparent={transparent!r} must be true or false.")
-        if resolution_preset and (width is not None or height is not None):
-            return error("resolution_preset cannot be combined with width or height; choose one.")
         if aspect_ratio and aspect_ratio not in _render_common.ASPECT:
-            return error(f"Unknown aspect_ratio '{aspect_ratio}'.")
+            return error(f"aspect_ratio={aspect_ratio!r} is not a listed aspect ratio.")
         if resolution_preset and resolution_preset not in _render_common.RESOLUTION:
-            return error(f"Unknown resolution_preset '{resolution_preset}'.")
-        if aspect_ratio and resolution_preset:
-            return error("aspect_ratio and resolution_preset can change each other; choose one or "
-                         "specify width and height with aspect_ratio='custom'.")
-        if width is not None and height is not None and aspect_ratio not in ("", "custom"):
-            return error("Both dimensions require aspect_ratio='custom' or its omission.")
+            return error(f"resolution_preset={resolution_preset!r} is not a listed preset.")
+        sized = width is not None and height is not None
+        if resolution_preset == "custom" and (width is None) != (height is None):
+            return error("resolution_preset='custom' cannot be combined with one dimension; send "
+                         "both width and height, or omit resolution_preset.")
+        if resolution_preset not in ("", "custom") and (width is not None or height is not None):
+            return error(f"resolution_preset={resolution_preset!r} cannot be combined with width or "
+                         "height; omit resolution_preset, or omit width and height.")
+        if aspect_ratio and resolution_preset and not sized:
+            return error(f"aspect_ratio={aspect_ratio!r} cannot be combined with resolution_preset="
+                         f"{resolution_preset!r}; send one of them, or width and height with "
+                         "aspect_ratio='custom'.")
+        if sized and aspect_ratio not in ("", "custom"):
+            return error(f"aspect_ratio={aspect_ratio!r} cannot be combined with both width and "
+                         "height; omit aspect_ratio, or send aspect_ratio='custom'.")
     else:
         for name, value, low, high in (("canvas_quality", canvas_quality, 0, 1),
                                        ("resolution_pct", resolution_pct, 20, 100)):
@@ -239,11 +256,12 @@ def handler(mode: str = "local", file_path: str = "", width=None, height=None, q
     if job_id is None:
         return error(f"Local render started for '{path}' but its future could not be retained. "
                      "Check the output path later; no job_id is available.")
+    state, state_value = _render_common.job_state(future)
     observed = {"filename": safe(lambda: future.filename),
                 "width": safe(lambda: future.imageWidth), "height": safe(lambda: future.imageHeight),
-                "state": safe(lambda: future.renderState),
+                "state": state, "state_value": state_value,
                 "valid": read_flag(lambda: future.isValid)}
-    if observed["valid"] is not True or observed["state"] not in (0, 1, 2):
+    if observed["valid"] is not True or state not in ("queued", "processing", "finished"):
         return _render_common.partial_error(
             f"Local render did not return a valid queued, processing or finished future. "
             f"Use render_get(job_id='{job_id}') to inspect it.",

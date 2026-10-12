@@ -11,7 +11,7 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, ok, read_flag, safe, scale
+from ._common import CM_TO_UNIT, error, measured, ok, read_flag, safe, scale
 from . import _render_common, _render_scene
 from ._render_file import inspect_image_file
 
@@ -38,11 +38,17 @@ _NUMBER_KEYS = ("brightness_lux", "exposure_ev", "focal_length_mm",
 _BOOL_KEYS = ("show_ground", "flatten_ground", "ground_reflect")
 _SCALAR_ATTRS = {
     "brightness_lux": "brightness", "exposure_ev": "cameraExposure",
-    "focal_length_mm": "cameraFocalLength",
-    "ground_offset": "groundOffset", "ground_roughness": "groundRoughness",
+    "focal_length_mm": "cameraFocalLength", "ground_roughness": "groundRoughness",
     "show_ground": "isGroundDisplayed", "flatten_ground": "isGroundFlattened",
     "ground_reflect": "isGroundReflections",
     "light_angle_deg": "lightAngle",
+}
+_READ_ONLY_KEYS = ("aspect_ratio", "aspect_width", "aspect_height", "ground_position",
+                   "background_type", "environment_custom", "units")
+_READ_ONLY_REMEDIES = {
+    "background_type": " background_type follows the background written: background_rgb gives "
+                       "solid_color; environment_id or environment_name gives environment.",
+    "units": " units is render_edit's own input beside scene (mm, cm or in), not a scene field.",
 }
 
 
@@ -54,6 +60,11 @@ def _validate_scene(scene):
     if blocked:
         return (f"Scene field(s) {', '.join(blocked)} cannot be written: Fusion can show a blocking "
                 "depth-of-field warning while ray tracing is off. Read them with render_get instead.")
+    read_only = sorted(set(scene) & set(_READ_ONLY_KEYS))
+    if read_only:
+        return (f"Scene field(s) {', '.join(read_only)} are read-only: render_edit does not write "
+                "them. Read them with render_get(include=['scene'])."
+                + "".join(_READ_ONLY_REMEDIES.get(key, "") for key in read_only))
     unknown = sorted(set(scene) - set(_SCENE_KEYS))
     if unknown:
         return f"Unknown scene field(s): {', '.join(unknown)}."
@@ -115,8 +126,23 @@ def _environment(manager, scene):
     return None, None
 
 
-def _set_scene_value(settings, key, value, environment, unit_to_cm):
-    """Assign one validated scene field through its installed property."""
+def _set_ground_offset(settings, wanted, units):
+    """Make groundOffset read wanted; return 'assigned', 'held' when it already did, or 'unread'."""
+    current = safe(lambda: settings.groundOffset)
+    held = measured(lambda: current, CM_TO_UNIT[units])
+    if held is None:
+        return "unread"
+    if not _differences({"ground_offset": wanted}, {"ground_offset": held}, None):
+        return "held"
+    # Assigning groundOffset adds to the current offset.
+    settings.groundOffset = wanted * scale(units) - current
+    return "assigned"
+
+
+def _set_scene_value(settings, key, value, environment, units):
+    """Assign one validated scene field; return 'assigned', or why ground_offset was not."""
+    if key == "ground_offset":
+        return _set_ground_offset(settings, value, units)
     if key.startswith("environment_"):
         settings.backgroundEnvironment = environment
     elif key == "background_rgb":
@@ -124,9 +150,9 @@ def _set_scene_value(settings, key, value, environment, unit_to_cm):
     elif key == "camera_type":
         settings.cameraType = getattr(adsk.core.CameraTypes, _render_scene.CAMERAS[value])
     else:
-        native = (value * unit_to_cm if key == "ground_offset" else
-                  value * math.pi / 180 if key == "light_angle_deg" else value)
+        native = value * math.pi / 180 if key == "light_angle_deg" else value
         setattr(settings, _SCALAR_ATTRS[key], native)
+    return "assigned"
 
 
 def _differences(scene, after, environment):
@@ -169,19 +195,24 @@ def _edit_scene(manager, scene, units):
     if "ground_roughness" in scene and scene.get("ground_reflect", before.get("ground_reflect")) is not True:
         return error("ground_roughness requires ground_reflect=true; set it in this scene edit or "
                      "enable ground reflections first.")
-    applied = []
-    failure = None
+    applied, already_set = [], []
+    failure, how = None, "raised"
     for key in _ORDER:
         if key not in scene:
             continue
         try:
-            _set_scene_value(settings, key, scene[key], environment, scale(units))
-            applied.append(key)
+            state = _set_scene_value(settings, key, scene[key], environment, units)
         except Exception as exc:
             failure = {"field": key, "reason": str(exc) or type(exc).__name__}
             break
+        if state == "unread":
+            failure = {"field": key, "reason": "the current ground offset did not read"}
+            how = "was not assigned:"
+            break
+        (applied if state == "assigned" else already_set).append(key)
     after = _render_scene.scene_row(settings, units)
-    mismatches = _differences({key: scene[key] for key in applied}, after, environment)
+    mismatches = _differences({key: scene[key] for key in applied + already_set},
+                              after, environment)
     requested = set(scene)
     if requested & {"environment_id", "environment_name"}:
         requested |= {"environment_id", "environment_name", "environment_custom", "background_type"}
@@ -191,15 +222,21 @@ def _edit_scene(manager, scene, units):
     payload = {"before": before, "after": after, "applied": applied,
                "failed": failure, "mismatches": mismatches,
                "changed_unrequested": changed_unrequested}
+    if already_set:
+        payload["already_set"] = already_set
     camera_reach = ""
     if "camera_type" in applied:
+        prior = before.get("camera_type")
+        payload["camera_type_before"] = prior
         camera_reach = (" New documents open with this camera type until it is changed back."
                         if after.get("camera_type") == scene["camera_type"] else
                         " New-document camera type is unverified; read it before another edit.")
+        camera_reach += (f" It was {prior!r} before this edit." if prior is not None else
+                         " Its value before this edit did not read.")
     if failure or mismatches:
         if failure:
             key = failure["field"]
-            reason = f"scene.{key}={scene[key]!r} raised {failure['reason']}"
+            reason = f"scene.{key}={scene[key]!r} {how} {failure['reason']}"
         else:
             key = next(iter(mismatches))
             reason = f"scene.{key}={scene.get(key)!r} read back {mismatches[key]!r}"
@@ -337,7 +374,9 @@ tool = (
                                "minItems": 3, "maxItems": 3},
             "brightness_lux": {"type": "number"}, "exposure_ev": {"type": "number"},
             "focal_length_mm": {"type": "number"},
-            "camera_type": {"type": "string", "enum": list(_render_scene.CAMERAS)},
+            "camera_type": {"type": "string", "enum": list(_render_scene.CAMERAS),
+                            "description": "Also sets the camera type new documents open with; "
+                                           "write the reply's camera_type_before back to restore it."},
             "ground_offset": {"type": "number"},
             "ground_roughness": {"type": "number"}, "show_ground": {"type": "boolean"},
             "flatten_ground": {"type": "boolean"}, "ground_reflect": {"type": "boolean"},

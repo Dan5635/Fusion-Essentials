@@ -207,6 +207,20 @@ class TestOrientationRead:
         assert row["sheet_size"] is None
         assert row["custom_size"] == {"width": 320.0, "height": 200.0, "unit": "mm"}
 
+    @pytest.mark.parametrize("units,expected", [("mm", "mm"), ("in", "in"), ("unreadable", None)])
+    def test_custom_size_uses_display_units_without_changing_coordinate_units(self, install,
+                                                                             units, expected):
+        width, height = (20.0, 10.0) if expected == "in" else (508.0, 254.0)
+        install([_sheet("Custom", size=_CUSTOM, width=508.0, height=254.0,
+                        custom_size=FakeCustomSheetSize(width, height))],
+                standard="asme", units=units)
+        out = payload(dg.handler())
+        row = out["sheets"][0]
+        assert row["custom_size"] == {"width": width, "height": height, "unit": expected}
+        assert out["dimension_display_unit"] == expected
+        assert out["coordinate_unit"] == "in"
+        assert (row["width"], row["height"], row["width_height_unit"]) == (508.0, 254.0, "mm")
+
     def test_a_build_whose_customSize_raises_omits_the_key(self, install):
         install([_sheet("Old", size=_CUSTOM,
                         custom_size_raises="customSize is not readable on this build")])

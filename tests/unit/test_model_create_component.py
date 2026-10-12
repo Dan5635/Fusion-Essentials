@@ -165,11 +165,11 @@ class FakeDesign(MakeDesign):
         self.intent_sets.append(self._intent)
 
 
-def _parent_occurrence():
+def _parent_occurrence(path="Frame:1"):
     """The occurrence 'parent' resolves to, whose component receives the new child."""
-    comp = MakeComp(name="Frame")
+    comp = MakeComp(name=path.split(":")[0])
     comp.occurrences = FakeParentOccurrences()
-    return make_occurrence(path="Frame:1", component=comp)
+    return make_occurrence(path=path, component=comp)
 
 
 def _install(intent=None):
@@ -361,6 +361,29 @@ class TestNestedParent:
         assert "Nonexistent" in res["message"]
         # nothing was created on root as a fallback
         assert cc.app.activeProduct.rootComponent.occurrences.count == 0
+
+    def test_a_missed_parent_in_an_empty_design_says_to_omit_it_for_the_root(self):
+        design = _install()
+        res = cc.handler(name="Host", parent="root")
+        assert res["isError"] is True
+        assert "matching 'root'" in res["message"]
+        assert res["message"].endswith("To create at the root, omit 'parent'.")
+        assert design.rootComponent.occurrences.count == 0
+
+    def test_an_occurrence_named_root_is_still_the_parent(self):
+        design = _install()
+        named_root = _parent_occurrence(path="root:1")
+        design.rootComponent.allOccurrences = [named_root]
+        out = _payload(cc.handler(name="Child", parent="root"))
+        assert out["nested_in"] == "root:1"
+        assert design.rootComponent.occurrences.count == 0
+
+    def test_an_ambiguous_parent_is_not_told_to_omit_it(self):
+        design = _install()
+        design.rootComponent.allOccurrences = [_parent_occurrence(), _parent_occurrence()]
+        res = cc.handler(name="Child", parent="Frame:1")
+        assert res["isError"] is True
+        assert "2 occurrences" in res["message"] and "omit 'parent'" not in res["message"]
 
     def test_nested_path_constructed_when_proxy_unavailable(self):
         # If createForAssemblyContext yields no proxy, the handler still reports the nested path by

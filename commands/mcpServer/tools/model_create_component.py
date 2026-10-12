@@ -119,6 +119,9 @@ def handler(name: str = "", x: float = 0.0, y: float = 0.0, z: float = 0.0,
     if (parent or "").strip():
         parent_occ, perr = _PARENT.resolve(parent)
         if perr:
+            # The root is no occurrence, so no value of 'parent' names it; a miss says how to get it.
+            if _inputs.OCCURRENCE_MISS in perr:
+                perr += " To create at the root, omit 'parent'."
             return error(perr)
 
     if sheet_metal and parent_occ is not None:

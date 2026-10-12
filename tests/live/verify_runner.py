@@ -528,6 +528,40 @@ def _confirm_transition(document_pin, expected, *aliases, polls=12):
     return document_pin["blocked_transition"]
 
 
+def _observe_owned_lineage(document_pin, payload):
+    """Admit a new open dependency only after its checked lineage matches an owned source."""
+    if not document_pin.get("track_owned_open"):
+        return
+    active = payload.get("active") or {}
+    rows = payload.get("open_documents")
+    count = payload.get("open_count")
+    if (not isinstance(rows, list) or payload.get("truncated") is not False
+            or type(count) is not int or count != len(rows)
+            or active.get("is_saved") is not True or type(active.get("is_modified")) is not bool
+            or any(not isinstance(row, dict)
+                   or not _valid_session_handle(row.get("document_handle"))
+                   or any(type(row.get(flag, default)) is not bool for flag, default in
+                          (("is_saved", True), ("is_modified", False), ("is_active", False)))
+                   for row in rows)):
+        return
+    handle, lineage = active.get("document_handle"), active.get("document_id")
+    handles = [row["document_handle"] for row in rows]
+    if (len(set(handles)) != len(rows)
+            or [row["document_handle"] for row in rows if row.get("is_active") is True] != [handle]):
+        return
+    if not _valid_session_handle(handle) or not isinstance(lineage, str) or not lineage.startswith("urn:"):
+        return
+    owned = document_pin.setdefault("owned_documents", [])
+    lineages = document_pin.setdefault("owned_lineages", [])
+    candidates = document_pin.setdefault("dependency_candidates", [])
+    if handle in owned:
+        if lineage not in lineages:
+            lineages.append(lineage)
+    elif handle in candidates and lineage in lineages:
+        owned.append(handle)
+        candidates.remove(handle)
+
+
 def _observe_doc_get(document_pin, payload):
     """Refresh a same-pin doc_get row, or block on unreadable or changed identity."""
     if document_pin.get("blocked_transition"):
@@ -824,6 +858,17 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
                 elif tool == "doc_new" or (tool == "doc_open" and pre_open_handles is not None
                                            and expected not in pre_open_handles):
                     document_pin.setdefault("owned_documents", []).append(expected)
+                    if tool == "doc_open":
+                        after, _active, problem = _complete_open_documents()
+                        if problem:
+                            _invalidate_pin(document_pin, problem)
+                            status, note = "blocked", problem
+                        else:
+                            candidates = document_pin.setdefault("dependency_candidates", [])
+                            extra = {row["document_handle"] for row in after} - pre_open_handles - {expected}
+                            for handle in sorted(extra):
+                                if handle not in candidates:
+                                    candidates.append(handle)
             elif tool == "doc_activate":
                 problem = (_confirm_transition(document_pin, intended_handle)
                            if _valid_session_handle(intended_handle)
@@ -842,6 +887,9 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
                         alias: handle for alias, handle in known.items() if handle != target}
                 if closes_active or recovery:
                     _invalidate_pin(document_pin, "the active document was closed")
+
+        if status == "pass" and tool == "doc_get" and not is_error:
+            _observe_owned_lineage(document_pin, payload)
 
         if status == "pass" and save is not None and not is_error:
             key, extract = save
@@ -1112,7 +1160,9 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         "snapshot": document if prior.get("document") or current_document else None,
         "blocked_transition": False,
         "known_documents": dict(prior.get("document_handles") or {}),
-        "owned_documents": list(prior.get("owned_documents") or [])}
+        "owned_documents": list(prior.get("owned_documents") or []),
+        "owned_lineages": list(prior.get("owned_lineages") or []),
+        "dependency_candidates": list(prior.get("dependency_candidates") or [])}
     if family_mode:
         document_pin["track_owned_open"] = True
         document_pin["lifecycle_owned_documents"] = list(
@@ -1182,6 +1232,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             "family": current_family, "family_events": family_events,
             "family_open_handles": sorted(family_open_handles),
             "owned_documents": list(document_pin.get("owned_documents") or []),
+            "owned_lineages": list(document_pin.get("owned_lineages") or []),
+            "dependency_candidates": list(document_pin.get("dependency_candidates") or []),
             "lifecycle_owned_documents": list(
                 document_pin.get("lifecycle_owned_documents") or []),
             "fusion_version": fusion_version, "anchor_document": anchor_document,
@@ -1322,6 +1374,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                 "complete": True, "documents": final_census, "active": final_active,
                 "open_count": len(final_census)}
         document_pin["owned_documents"] = []
+        document_pin["owned_lineages"] = []
+        document_pin["dependency_candidates"] = []
         family_events.append({"family": family, "phase": "after-census",
                               "documents": sorted(open_handles), "active": home})
         family_events.append({"family": family, "phase": "cleanup-total",
