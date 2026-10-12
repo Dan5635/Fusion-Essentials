@@ -13,6 +13,7 @@ boundary can fall between them and a partial run leaves the session where it fou
 
 import hashlib
 import json
+import math
 import os
 import time
 import copy
@@ -25,7 +26,8 @@ from verify_acts_model_solids import _edge_extent_geometry, _symmetric_target_bo
 from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_material_state
 from verify_acts_sketch import _script_reply
 from verify_core import (
-    EXPORT_DIR, MARKER_PNG, NOTE_MAX, _RECALL, _Refusal, _activated, _ctx_get, _document_closed,
+    EXPORT_DIR, MARKER_PNG, NOTE_MAX, Independent, _RECALL, _Refusal, _activated, _ctx_get,
+    _document_closed,
     _driven_slide, _dwell, _extruded, _face_up_at, _fg, _home_address, _home_document, _jointed,
     _made_component, _measured, _motion_linked, _new_document, _near, _num, _recall, _refused,
     _watch, facade)
@@ -6144,6 +6146,175 @@ def _cr_pose_rows(p, key="occurrences", count_key="occurrence_count"):
     return rows if isinstance(rows, list) and len(rows) == p.get(count_key) else None
 
 
+# Part A's box in its own frame, as its sketch and extrude author it, and where the story's local
+# component stands in the host. The two placements below are both off the origin and turned.
+_CR_PART_A = ((0.0, 0.0, 0.0), (20.0, 20.0, 10.0))
+_CR_LOCAL_AT = (0.0, 60.0, 0.0)
+_CR_AT_ROOT = {"x": 300, "y": -40, "z": 15, "rotate_deg": 30, "rotate_axis": "z"}
+# mm for a pose origin (read to 3 places) and for a body box; a cosine for an axis (4 places).
+_CR_POSE_TOL, _CR_AXIS_TOL, _CR_BOUNDS_TOL = 0.0015, 0.001, 0.01
+
+
+def _cr_requested_frame(placement, owner_at=(0.0, 0.0, 0.0)):
+    """(origin, [x axis, y axis, z axis]) in mm a placement asks for, seen from the host: a
+    right-hand turn about the named axis through the owner's origin, then the offset, for an owner
+    standing unrotated at `owner_at`."""
+    turn = math.radians(placement["rotate_deg"])
+    first, second = {"x": (1, 2), "y": (2, 0), "z": (0, 1)}[placement["rotate_axis"]]
+    axes = [[float(row == col) for row in range(3)] for col in range(3)]
+    axes[first][first], axes[first][second] = math.cos(turn), math.sin(turn)
+    axes[second][first], axes[second][second] = -math.sin(turn), math.cos(turn)
+    return [placement[key] + owner_at[n] for n, key in enumerate("xyz")], axes
+
+
+def _cr_requested_bounds(placement, owner_at=(0.0, 0.0, 0.0)):
+    """(min corner, max corner, centre of mass) of part A's box in the host under a placement."""
+    origin, axes = _cr_requested_frame(placement, owner_at)
+
+    def placed(point):
+        return [origin[n] + sum(point[col] * axes[col][n] for col in range(3)) for n in range(3)]
+
+    corners = [placed([_CR_PART_A[bit >> n & 1][n] for n in range(3)]) for bit in range(8)]
+    return ([min(corner[n] for corner in corners) for n in range(3)],
+            [max(corner[n] for corner in corners) for n in range(3)],
+            placed([(low + high) / 2 for low, high in zip(*_CR_PART_A)]))
+
+
+def _cr_all_near(got, want, tol):
+    """Whether a read list matches a wanted one, number by number."""
+    return (isinstance(got, list) and len(got) == len(want)
+            and all(_near(g, w, tol) for g, w in zip(got, want)))
+
+
+def _cr_part_a_box(p):
+    """model_inspect on the unlinked part A at x=50 mm: the box the placement rows compute from."""
+    low, high = p.get("min_point") or {}, p.get("max_point") or {}
+    return _measured("part A is its authored 20 x 20 x 10 mm box, standing at x=50 mm",
+                     {"min_point": low, "max_point": high, "box_read": p.get("box_read")},
+                     all(_near(low.get(key), _CR_PART_A[0][n] + (50.0 if n == 0 else 0.0),
+                               _CR_BOUNDS_TOL)
+                         and _near(high.get(key), _CR_PART_A[1][n] + (50.0 if n == 0 else 0.0),
+                                   _CR_BOUNDS_TOL) for n, key in enumerate("xyz")))
+
+
+def _cr_insert_landed(p):
+    """doc_insert_occurrence: an occurrence was made and it is a reference. Where it stands is
+    judged by the two reads after it, which are told what this reply claimed."""
+    name = p.get("new_occurrence_name")
+    return _measured("the insert made a referenced occurrence with a name",
+                     {key: p.get(key) for key in ("is_reference", "new_occurrence_name",
+                                                  "into_component", "placement_matches",
+                                                  "placed_at")},
+                     p.get("is_reference") is True and isinstance(name, str) and bool(name.strip()))
+
+
+def _cr_insert_claim(owner_key=None):
+    """A save extractor: the inserted occurrence's path in the host, and the placement the reply
+    claimed exactly as replied (placement_matches true, false or null; placed_at or null)."""
+    def take(p):
+        name = p["new_occurrence_name"]
+        return {"path": f"{_RECALL[owner_key]}+{name}" if owner_key else name,
+                "placement_matches": p.get("placement_matches"), "placed_at": p.get("placed_at")}
+    return take
+
+
+# What a read says of an insert, by what the insert claimed and whether the read bears the request
+# out. A row raises its sentence, so a failed row names which of the two is wrong.
+_CR_VERDICT = {
+    ("match", True): "claim true, geometry right",
+    ("match", False): ("claim true, geometry WRONG: the insert claimed a match this read does not "
+                       "bear out"),
+    ("mismatch", True): ("claim FALSE, geometry right: the insert reported a mismatch this read "
+                         "does not bear out"),
+    ("mismatch", False): ("claim false, geometry wrong: the insert told the truth about a "
+                          "placement that did not land, which is still not a passing read"),
+    ("unread", True): ("claim NULL, geometry right: the insert read no placement where this read "
+                       "finds the request"),
+    ("unread", False): ("claim null, geometry wrong: the insert read no placement, and it did not "
+                        "land as requested"),
+    ("inconsistent", True): ("claim true beside a placed_at that is NOT the request, geometry "
+                             "right"),
+    ("inconsistent", False): ("claim true beside a placed_at that is not the request, geometry "
+                              "WRONG"),
+}
+
+
+def _cr_claim(key, placement):
+    """(word, the claim as replied) for the insert saved under `key`: match, mismatch, unread, or
+    inconsistent when it claims a match beside a placed_at that is not the request."""
+    said = _RECALL.get(key) or {}
+    matches, at = said.get("placement_matches"), said.get("placed_at")
+    claimed = {"placement_matches": matches, "placed_at": at}
+    if matches is True:
+        told = isinstance(at, dict) and all(_near(at.get(k), placement[k], 0.0001) for k in "xyz")
+        return ("match" if told else "inconsistent"), claimed
+    return ("mismatch" if matches is False else "unread"), claimed
+
+
+def _cr_placed_pose(key, placement, owner_key=None):
+    """assembly_get all_occurrences: the inserted occurrence's world origin, axes and body box
+    against the request composed onto where its owner stands. It passes on that geometry alone;
+    on a miss its message says what the insert had claimed."""
+    def check(p):
+        path, owner_path = (_RECALL.get(key) or {}).get("path"), _RECALL.get(owner_key)
+        rows = _cr_pose_rows(p, "all_occurrences", "all_occurrence_count") or []
+        mine = [row for row in rows if row.get("full_path") == path]
+        owners = [row for row in rows if owner_key and row.get("full_path") == owner_path]
+        owner_at = _CR_LOCAL_AT if owner_key else (0.0, 0.0, 0.0)
+        origin, axes = _cr_requested_frame(placement, owner_at)
+        low, high, _centre = _cr_requested_bounds(placement, owner_at)
+        # An unrotated owner off the origin is what makes its frame differ from the host's.
+        owner_stands = not owner_key or (
+            len(owners) == 1
+            and _cr_all_near(owners[0].get("origin"), list(_CR_LOCAL_AT), _CR_POSE_TOL)
+            and all(_cr_all_near(owners[0].get(axis), [float(n == m) for m in range(3)],
+                                 _CR_AXIS_TOL)
+                    for n, axis in enumerate(("x_axis", "y_axis", "z_axis"))))
+        _measured("this read cannot judge the insert: it needs one row at the insert's path, a "
+                  "whole listing and the owner where the story put it",
+                  {"path": path, "rows_at_path": len(mine),
+                   "truncated": p.get("all_occurrences_truncated"),
+                   "owner": [(r.get("full_path"), r.get("origin"), r.get("x_axis"))
+                             for r in owners]},
+                  len(mine) == 1 and p.get("all_occurrences_truncated") is False and owner_stands)
+        row = mine[0]
+        wanted = {"origin": origin, "x_axis": axes[0], "y_axis": axes[1], "z_axis": axes[2],
+                  "bbox_center": [(a + b) / 2 for a, b in zip(low, high)],
+                  "bbox_size": [b - a for a, b in zip(low, high)]}
+        bands = {"origin": _CR_POSE_TOL, "bbox_center": _CR_BOUNDS_TOL, "bbox_size": _CR_BOUNDS_TOL}
+        right = all(_cr_all_near(row.get(k), want, bands.get(k, _CR_AXIS_TOL))
+                    for k, want in wanted.items())
+        word, claimed = _cr_claim(key, placement)
+        return _measured(_CR_VERDICT[(word, right)],
+                         {"claimed": claimed, "read": [row.get(k) for k in wanted],
+                          "wanted": [[round(v, 4) for v in want] for want in wanted.values()]},
+                         right)
+    return check
+
+
+def _cr_placed_bounds(key, placement, owner_key=None):
+    """model_inspect on the inserted occurrence: its body's world box, volume and centre of mass
+    against part A's own box carried through the request. The last word on the insert: it passes
+    only when this geometry is right AND the insert had claimed a match."""
+    def check(p):
+        low, high, centre = _cr_requested_bounds(placement,
+                                                 _CR_LOCAL_AT if owner_key else (0.0, 0.0, 0.0))
+        mass = p.get("mass") or {}
+        lo, hi = p.get("min_point") or {}, p.get("max_point") or {}
+        read = [[lo.get(axis) for axis in "xyz"], [hi.get(axis) for axis in "xyz"],
+                mass.get("center_of_mass")]
+        right = (all(_cr_all_near(got, want, _CR_BOUNDS_TOL)
+                     for got, want in zip(read, (low, high, centre)))
+                 and _near(mass.get("volume"), 4000.0, 0.5))
+        word, claimed = _cr_claim(key, placement)
+        return _measured(_CR_VERDICT[(word, right)],
+                         {"claimed": claimed, "read": read + [mass.get("volume")],
+                          "wanted": [[round(v, 4) for v in want] for want in (low, high, centre)]
+                          + [4000.0], "box_read": p.get("box_read")},
+                         right and word == "match")
+    return check
+
+
 def _cr_collision_break_probe(ctx):
     """Break one inserted PartB link without renaming it, recording before and after state."""
     urn = json.dumps(_ctx_get(ctx, "cr_urn_B", "the saved PartB lineage"))
@@ -6568,6 +6739,27 @@ def _component_reference_rows():
                              and p.get("all_occurrences_truncated") is False
                              and p.get("occurrence_count") == p.get("all_occurrence_count") == 6
                              and collision_claim(p, "all_occurrences", "all_occurrence_count")))
+
+    # 6. Part A is inserted at the root, off the origin and turned. Its placement claim is judged
+    # against independent pose and body reads, not the requested matrix echoed in the reply.
+    read("model_inspect", lambda c: {"target": _ctx_get(c, "cr_loose", "the unlinked part A"),
+                                     "units": "mm"}, _cr_part_a_box)
+    for key, owner_key, placement in (("cr_at_root", None, _CR_AT_ROOT),):
+        write("doc_insert_occurrence", lambda c, owner_key=owner_key, placement=placement: {
+            "document_id": _ctx_get(c, "cr_urn_A", "the saved PartA lineage"), "units": "mm",
+            **placement,
+            **({"into_component": _ctx_get(c, owner_key, "the local component")}
+               if owner_key else {})},
+            _cr_insert_landed, (key, _recall(key, _cr_insert_claim(owner_key))))
+        read("assembly_get", {"include": ["poses", "all_occurrences"], "max_occurrences": 100,
+                              "max_all_occurrences": 100, "max_joints": 100, "units": "mm"},
+             Independent(_cr_placed_pose(key, placement, owner_key),
+                         ("doc_insert_occurrence",), "tool:assembly_get"))
+        read("model_inspect", lambda c, key=key: {
+            "target": _ctx_get(c, key, "the inserted occurrence")["path"],
+            "include": ["default", "mass"], "units": "mm"},
+            Independent(_cr_placed_bounds(key, placement, owner_key), ("doc_insert_occurrence",),
+                        "tool:model_inspect"))
     rows.extend([
         ("doc_activate", lambda c: {"name": home(c), "expect_document": host(c)}, _activated(), None),
         ("doc_close", lambda c: {"name": host(c), "save_changes": False,

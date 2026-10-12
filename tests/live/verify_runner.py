@@ -310,13 +310,18 @@ def load_run_state(run_id):
         return json.load(fh)
 
 
+_NO_ACTIVE_DOCUMENT = "No active document. Open or create one first"
+
+
 def _document_now():
     """Read the active document handle and design count used by resume at a chunk boundary."""
     call = facade("call")
     is_error, doc = call("doc_get", {})
     if is_error or not isinstance(doc, dict):
+        # doc_get's own no-document refusal is the one error that means Fusion holds none.
+        none = is_error and str(doc).startswith(_NO_ACTIVE_DOCUMENT)
         return {"name": None, "document_id": None, "document_handle": None,
-                "feature_count": None, "state": "unknown"}
+                "feature_count": None, "state": "none" if none else "unknown"}
     active = doc.get("active")
     if active is not None and not isinstance(active, dict):
         active = {}

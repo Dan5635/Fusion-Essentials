@@ -329,20 +329,27 @@ def _apply_output_params(params, number, out_dir, comment, units_key):
 
 def _cam_log_root(temp_dir):
     """The Fusion360CAM tree post logs land in: temp_dir's own 'Fusion360CAM' ancestor when the process
-    temp dir already sits inside one, else <temp_dir>/Fusion360CAM."""
+    temp dir already sits inside one, else <temp_dir>/Neutron/Fusion360CAM where that folder
+    exists, else <temp_dir>/Fusion360CAM."""
     path = os.path.normpath(temp_dir)
     while True:
         if os.path.basename(path).lower() == "fusion360cam":
             return path
         parent = os.path.dirname(path)
         if parent == path:
-            return os.path.join(os.path.normpath(temp_dir), "Fusion360CAM")
+            break
         path = parent
+    # On macOS the process temp dir is the bare $TMPDIR and the logs sit under its Neutron tree.
+    # A Windows 2706.0.116 temp dir holds a Neutron folder with no Fusion360CAM in it.
+    neutron = os.path.join(os.path.normpath(temp_dir), "Neutron")
+    in_neutron = os.path.isdir(os.path.join(neutron, "Fusion360CAM"))
+    base = neutron if in_neutron else os.path.normpath(temp_dir)
+    return os.path.join(base, "Fusion360CAM")
 
 
-# Fusion writes the DETAILED post error to <TEMP>/Fusion360CAM/<session>/<n>/<program>.log - NOT the
-# output folder (there it leaves only a '.failed' stub that says "See log for details"). Inside the
-# Fusion process tempfile.gettempdir() is <TEMP>/Fusion360CAM/<session> on 2705.1.11 (measured live).
+# The DETAILED post error is in <program>.log under this tree; the output folder gets a '.failed'
+# stub. In-process gettempdir() is <TEMP>/Fusion360CAM/<session> on Windows 2705.1.11, the bare
+# <TEMP> on Windows 2706.0.116, the bare $TMPDIR on macOS 2705.1.30 (logs under its Neutron tree).
 _CAM_LOG_ROOT = _cam_log_root(tempfile.gettempdir())
 
 

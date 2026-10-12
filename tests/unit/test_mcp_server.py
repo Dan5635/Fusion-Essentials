@@ -1271,7 +1271,9 @@ class TestTheBoundAddressIsPublished:
         assert result == {"status": mcp.START_PORT_IN_USE, "port": 40001}
         assert fake.made == [("127.0.0.1", 40001)], "one bind attempt, on exactly the asked port"
         assert mcp.endpoint.bound() is None
-        assert fake.real.allow_reuse_address is False, "a taken port must refuse the bind"
+        # Off Windows the bind reuses the address and server_bind probes the port instead.
+        if mcp.os.name == "nt":
+            assert fake.real.allow_reuse_address is False, "a taken port must refuse the bind"
 
 
 class _Reply:

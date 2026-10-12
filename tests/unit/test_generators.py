@@ -277,7 +277,8 @@ class TestApiSurfaceCheckNeedsBindings:
         assert "Explicit --bindings-dir is invalid" in str(exc.value)
 
     @pytest.mark.parametrize("pattern", gen_api_surface._BINDING_GLOBS,
-                             ids=["windows-production", "windows-preview", "macos-production"])
+                             ids=["windows-production", "windows-preview", "macos-production",
+                                  "macos-production-renamed"])
     def test_build_label_uses_the_hash_for_each_declared_binding_layout(self, pattern):
         path = pattern.replace("*", "probe-build-hash")
         assert gen_api_surface._build_id(path) == "probe-build-hash"

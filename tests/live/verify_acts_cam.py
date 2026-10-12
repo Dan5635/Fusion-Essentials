@@ -3764,6 +3764,9 @@ def _generation_identity_probe(rows, setup, operation, max_polls=40, document_pi
                   f"{operation!r} retained stepover={expression!r} after setup reconciliation")
 
 
+_UNRUN_READ = "cancelled before it started running"
+
+
 def poll_generation(rows, notes, setup, max_polls=40, valued=None, document_pin=None):
     """Read cam_get_status until completed (bounded). Generation free-runs in the background and a
     status read returns immediately, so real wall-clock sits between reads. An errored op, an EMPTY
@@ -3779,13 +3782,17 @@ def poll_generation(rows, notes, setup, max_polls=40, valued=None, document_pin=
         if i:
             time.sleep(5)
         is_error, payload = call("cam_get_status", {"target": setup})
+        # A read queued behind a busy main thread is cancelled unrun - a missed read, not a verdict.
+        if is_error and _UNRUN_READ in str(payload) and i + 1 < max_polls:
+            continue
         if is_error:
             rows.append(("cam_get_status", "FAIL", str(payload)[:NOTE_MAX]))
             return
         states = payload.get("live_states", {})
         if states.get("errored"):
             rows.append(("cam_get_status", "FAIL",
-                         f"{states['errored']} operation(s) errored during generation"))
+                         f"{states['errored']} operation(s) errored during generation: "
+                         f"{states.get('samples')}"[:NOTE_MAX]))
             return
         if payload.get("completed"):
             empty = payload.get("empty_toolpaths") or []

@@ -2913,9 +2913,9 @@ ROWS = [
         "encoded_in": "tests/unit/test_design_export.py; design_export.py/_export.py",
         "need_box": True,
         "body": """
-    import os
+    import os, tempfile
     em = des.exportManager
-    base = os.path.join(os.getenv("TEMP") or "", "fe_measure_api")
+    base = os.path.join(tempfile.gettempdir(), "fe_measure_api")
     stl_path = base + ".stl"
     step_path = base + ".step"
     for p in (stl_path, step_path):
@@ -6779,10 +6779,12 @@ ROWS = [
                     stack.append((p.children, depth + 1))
         return rpm
 
+    # A Haas from either location before any other vendor: the operator's Local library may hold
+    # only cloud-linked machines, which assign with their simulation model and read infinite axes.
     candidates = []
-    for loc in (adsk.cam.LibraryLocations.LocalLibraryLocation,
-                adsk.cam.LibraryLocations.Fusion360LibraryLocation):
-        for vendor in ("Haas", ""):
+    for vendor in ("Haas", ""):
+        for loc in (adsk.cam.LibraryLocations.LocalLibraryLocation,
+                    adsk.cam.LibraryLocations.Fusion360LibraryLocation):
             try:
                 candidates.extend(lib.createQuery(loc, vendor, "").execute() or [])
             except Exception:
@@ -6834,6 +6836,7 @@ ROWS = [
         "encoded_in": ("_cam_common._LIBRARY_LOCATIONS and cam_edit_setup's "
                        "machine_strip_simulation refusal hint, which names the simulation model "
                        "and not the location it was read from"),
+        "skip_on": {"darwin": "hangs the add-in on macOS"},
         "body": """
     lib = adsk.cam.CAMManager.get().libraryManager.machineLibrary
     machines = lib.createQuery(adsk.cam.LibraryLocations.Fusion360LibraryLocation,
@@ -6933,10 +6936,12 @@ ROWS = [
                 every_part = False
         return rpm, axes, (every_part, stations)
 
+    # A Haas from either location before any other vendor: the operator's Local library may hold
+    # only cloud-linked machines, which assign with their simulation model and read infinite axes.
     candidates = []
-    for loc in (adsk.cam.LibraryLocations.LocalLibraryLocation,
-                adsk.cam.LibraryLocations.Fusion360LibraryLocation):
-        for vendor in ("Haas", ""):
+    for vendor in ("Haas", ""):
+        for loc in (adsk.cam.LibraryLocations.LocalLibraryLocation,
+                    adsk.cam.LibraryLocations.Fusion360LibraryLocation):
             try:
                 candidates.extend(lib.createQuery(loc, vendor, "").execute() or [])
             except Exception:
@@ -8338,7 +8343,10 @@ ROWS = [
         ci = cp.createInput(coll, root.zConstructionAxis)
         ci.quantity = adsk.core.ValueInput.createByReal(6)
         ci.totalAngle = adsk.core.ValueInput.createByString("360 deg")
-        circ = cp.add(ci).patternElements.count
+        # The feature is held: patternElements read off an unheld add() result raises
+        # 'InternalValidationError : dcPatternData'.
+        circ_feature = cp.add(ci)
+        circ = circ_feature.patternElements.count
         bodies = root.bRepBodies.count
         rp = root.features.rectangularPatternFeatures
         ri = rp.createInput(coll, root.xConstructionAxis, adsk.core.ValueInput.createByReal(2),
@@ -8346,7 +8354,8 @@ ROWS = [
                             adsk.fusion.PatternDistanceType.SpacingPatternDistanceType)
         ri.setDirectionTwo(root.yConstructionAxis, adsk.core.ValueInput.createByReal(3),
                            adsk.core.ValueInput.createByReal(5.0))
-        rect = rp.add(ri).patternElements.count
+        rect_feature = rp.add(ri)
+        rect = rect_feature.patternElements.count
         emit(circ == 6 and bodies == 6 and rect == 6,
              "pattern-elements-count-equals-quantity: circular quantity 6 -> elements "
              + str(circ) + " bodies " + str(bodies) + " | rectangular 2x3 -> elements " + str(rect))
@@ -8826,6 +8835,7 @@ ROWS = [
         "encoded_in": ("design_export.py's no-dxf_units comment and _write_dxf (which never reads "
                        "units); tests/unit/test_design_export.py's DXF options fake"),
         "facts_on_pass": {"behavior.dxf_sketch_options_units_read_raises": True},
+        "skip_on": {"darwin": "the units read kills the whole Fusion process on macOS"},
         "body": """
     import json, os, tempfile
     _probe_path = "__FE_DXF_MARKER_PATH__"
@@ -8942,6 +8952,7 @@ ROWS = [
                   "detail records which; an open edit is left for the owner to close"),
         "encoded_in": ("_form_common.py finish_edit and create_form's open branch; "
                        "tests/unit/test_form_create.py"),
+        # The CAM rows leave the scratch in Manufacture, where activeProduct is not a Design.
         "wire_before": [("view_switch_workspace", {"workspace": "design"})],
         "body": """
     import json
@@ -9385,6 +9396,12 @@ def _ledger_row(row, status="PASS", detail=""):
     return "| " + " | ".join(_ledger_fields(row, result)) + " |"
 
 
+def _accepted_ledger_fields(row, platform):
+    """The ledger projections a row may carry when checked on `platform`: PASS, or its SKIP there."""
+    skip = _skip_detail(row, platform)
+    return [_ledger_fields(row)] + ([_ledger_fields(row, "SKIP: " + skip)] if skip else [])
+
+
 def _ledger_projection(text):
     projection = []
     for line in text.splitlines():
@@ -9588,8 +9605,10 @@ def write_ledger(results, fusion_version, stamp_date, source_hash, attestation):
         fh.write("\n".join(lines) + "\n")
 
 
-def check():
-    """Stamp gate; measures nothing. Exit 0 = current with every row PASS or CARRIED."""
+def check(platform=None):
+    """Stamp gate; measures nothing. Exit 0 = current with every row PASS, CARRIED, or SKIP declared
+    for `platform` (the checking machine's sys.platform when not given)."""
+    platform = platform or sys.platform
     if not os.path.exists(LEDGER):
         print("VERIFIED_API_FACTS.md does not exist - run measure_api.py once against live Fusion.")
         return 1
@@ -9612,14 +9631,22 @@ def check():
     ] + [
         "non-PASS row: " + ln
         for ln in table_lines
-        if not ln.startswith(("| PASS ", "| CARRIED: "))
+        if not ln.startswith(("| PASS ", "| CARRIED: ", "| SKIP: "))
     ]
     health = health_gate()
     current_attestation = _current_attestation(health)
     live = _fusion_version(health)
-    if ([cells[1:] for cells in _ledger_projection(text)]
+    projection = _ledger_projection(text)
+    if ([cells[1:] for cells in projection]
             != [_ledger_fields(row)[1:] for row in ROWS]):
         problems.append("ledger rows do not match the current ROWS registry (id/claim/source/order)")
+    else:
+        # A SKIP stands only on the platform its row declares: a darwin skip is no result here.
+        problems.extend(
+            "row {0} is SKIP, and declares no such skip_on for {1}".format(got[1], platform)
+            for got, row in zip(projection, ROWS)
+            if got[0].startswith("SKIP: ") and got not in _accepted_ledger_fields(row, platform))
+    skipped = [got[1] for got in projection if got[0].startswith("SKIP: ")]
     if live != stamped_version:
         problems.append("stamp is Fusion {0} (verified {1}) but the installed Fusion is {2} - "
                         "re-run the measurements to refresh the stamp".format(
@@ -9640,6 +9667,9 @@ def check():
         detail = "exact loaded implementation/schema identity matches the historical run"
     carried_ids = [proj[1] for proj in _ledger_projection(text) if proj[0].startswith("CARRIED: ")]
     status_note = "all rows PASS" if not carried_ids else "PASS except CARRIED: " + ", ".join(carried_ids)
+    if skipped:
+        status_note = "{0}; {1} not run on {2}: {3}".format(
+            status_note.replace("all rows PASS", "PASS"), len(skipped), platform, ", ".join(skipped))
     print("contracts current: Fusion {0}, verified {1}, {2}; {3}".format(
         live, stamped_date, status_note, detail))
     return 0
@@ -9653,6 +9683,30 @@ def cloud_rows():
         body = row["body_fn"]() if "body_fn" in row else row.get("body", "")
         if "CLOUD_PROJECT" in body:
             out.append(row["id"])
+    return out
+
+
+def _skip_detail(row, platform):
+    """The ledger detail for a row skipped on platform, or None when the row runs there."""
+    reason = (row.get("skip_on") or {}).get(platform)
+    if not reason:
+        return None
+    carried = " - facts carried from the previous ledger" if row.get("facts_on_pass") else ""
+    return "not run on {0}: {1}{2}".format(platform, reason, carried)
+
+
+def _carried_facts(row):
+    """A skipped row's facts_on_pass keys valued from the current live_api_facts.py, or None if any is absent."""
+    spec = importlib.util.spec_from_file_location("_previous_api_facts", FACTS)
+    previous = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(previous)
+    out = {}
+    for key in row.get("facts_on_pass") or {}:
+        family, _, name = key.partition(".")
+        table = getattr(previous, family.upper(), {}) if family == "behavior" else {}
+        if name not in table:
+            return None
+        out[key] = table[name]
     return out
 
 
@@ -9697,6 +9751,16 @@ def run_measurements(write_json, only=None):
             sys.exit("run scratch handle could not be activated before first row")
         for row in ROWS:
             if only and row["id"] not in only:
+                continue
+            skip = _skip_detail(row, sys.platform)
+            if skip:
+                carried = _carried_facts(row)
+                status = "SKIP" if carried is not None else "ERROR"
+                if carried is None:
+                    skip += " - but live_api_facts.py lacks its facts, so none can be carried"
+                facts.update(carried or {})
+                results.append((row, status, skip))
+                print("  {0:6} {1:28} {2}".format(status, row["id"], skip[:90]))
                 continue
             if row.get("needs") == "cam" and not cam_world["built"]:
                 cam_world["err"] = _build_cam_world(scratch)
@@ -9773,7 +9837,7 @@ def run_measurements(write_json, only=None):
         # all-PASS gate cannot see the difference between "skipped" and "absent".
         print("\n{0} and live_api_facts.py NOT rewritten - this was a --only run of {1} row(s). "
               "Run the full sweep to republish.".format(os.path.basename(LEDGER), len(results)))
-    elif all(s in ("PASS", "CARRIED") for _, s, _ in results):
+    elif all(s in ("PASS", "CARRIED", "SKIP") for _, s, _ in results):
         try:
             extra_shapes = _resolve_carried_shapes(carried)
         except ValueError as exc:
@@ -9794,7 +9858,7 @@ def run_measurements(write_json, only=None):
                       sum(1 for k in facts if k.startswith("behavior.")),
                       len(shapes)))
     else:
-        failed = [r["id"] for r, s, _ in results if s not in ("PASS", "CARRIED")]
+        failed = [r["id"] for r, s, _ in results if s not in ("PASS", "CARRIED", "SKIP")]
         print("\n{0} and live_api_facts.py NOT rewritten - {1} non-PASS row(s): {2}".format(
             os.path.basename(LEDGER), len(failed), ", ".join(failed[:12])
             + (", ..." if len(failed) > 12 else "")))
@@ -9812,7 +9876,8 @@ def run_measurements(write_json, only=None):
             json.dump({"fusion_version": fusion_version, "date": stamp_date, "rows": rows_out},
                       fh, indent=2)
         print("wrote {0}".format(path))
-    return 1 if write_failed or any(s not in ("PASS", "CARRIED") for _, s, _ in results) else 0
+    return 1 if write_failed or any(
+        s not in ("PASS", "CARRIED", "SKIP") for _, s, _ in results) else 0
 
 
 if __name__ == "__main__":

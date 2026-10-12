@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 766
+**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 767
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,8 +17,8 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (8)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `mesh_find`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (61)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_export_setup`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_edit_plastic_rule`, `design_edit_reference_image`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_create_rib`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `render_edit`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (60)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_export_setup`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_edit_plastic_rule`, `design_edit_reference_image`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_create_rib`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_set_favorite`, `render_edit`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
 - **59x** across 58 module(s): "No active design. Create or open a document first (see doc_new)."
@@ -399,11 +399,13 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Provide a translation (dx/dy/dz), rotate_deg, or rotate_x/y/z - no movement specified.
 - Use EITHER rotate_deg (single axis) OR rotate_x/y/z (multi-axis), not both.
 - No active design with components.
+- ' did not read its current transform, so a relative move has nothing to compose onto - nothing was moved. Re-read it with assembly_get and retry.
 - Move was accepted but '
 - ' reads an unchanged transform - it did not move. A grounded/jointed occurrence can snap back: free it (assembly_ground false) or pose it through its joint (joint_drive).
 - ' was moved but its transform could not be read
 - the change, so the move is UNCONFIRMED - nothing here confirms the occurrence actually moved, and it may have snapped back. Re-read the position with assembly_get (occurrence origin) or model_inspect.
 - ' reads a CHANGED transform but its body geometry did NOT move - the reposition did not reach the part, and the transform it now reads is a claim nothing carried out. A pattern/mirror FEATURE re-de...
+- '' did not read its current transform, so a relative move has nothing to compose onto - nothing was moved. Re-read it with assembly_get and retry.
 - Move was accepted but '' reads an unchanged transform - it did not move. A grounded/jointed occurrence can snap back: free it (assembly_ground false) or pose it through its joint (joint_drive).
 - '' was moved but its transform could not be read  the change, so the move is UNCONFIRMED - nothing here confirms the occurrence actually moved, and it may have snapped back. Re-read the position wi...
 - '' reads a CHANGED transform but its body geometry did NOT move - the reposition did not reach the part, and the transform it now reads is a claim nothing carried out. A pattern/mirror FEATURE re-d...
@@ -2161,7 +2163,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - addByInsert returned nothing (the insert did not produce an occurrence).
 - addByInsert returned an occurrence but it reads isValid=false - the insert did not land.
 - Insert landed but the occurrence is NOT an external reference (isReferencedComponent=false) - the associative link did not form. Confirm the source and host share a project, then retry.
-- Inserted at the requested placement, from the source's last SAVED cloud version. bound_version is the version this reference holds - null where none read it or two disagree; bound_is_tip whether it...
+- , from the source's last SAVED cloud version. bound_version is the version this reference holds - null where none read it or two disagree; bound_is_tip whether it is the source's latest - null if e...
 - ' has no component to insert into.
 - Unknown rotate_axis '
 - ) was refused - the placement rotation could not be built, so nothing was inserted or removed.
@@ -4379,6 +4381,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - must be JSON true or false. No parameters added; omit favorite to keep the default false.
 - '. No parameters added.
 - is empty. No parameters added.
+- adding '' introduced a timeline error () and its rollback did not confirm, so '' may remain - remove it with param_delete.
 
 ### `param_delete`
 - Provide 'name' - the parameter to delete.

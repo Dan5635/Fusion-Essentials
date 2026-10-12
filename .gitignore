@@ -157,6 +157,7 @@ cython_debug/
 # settings.json (a worked example of scoping agent tool-call approvals) and the role files under
 # .claude/agents/ (how the team of agents that built the server works) are deliberately tracked.
 .claude/settings.local.json
+.claude/skills/fe-review-*/
 CLAUDE.local.md
 
 # Local backlog and short-lived plans are private; keep open work in plans/backlog.md.

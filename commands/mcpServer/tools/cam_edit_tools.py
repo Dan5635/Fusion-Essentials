@@ -1255,6 +1255,7 @@ def _do_create_library(scope, name, seed_tools):
         if terr:
             return error(terr)
         resolved.append(t)
+    # A ToolLibrary's truth is its tool count, so a new empty one reads False: test for None.
     lib = safe(lambda: _empty_library())
     if lib is None:
         return error("Could not create an empty tool library.")
