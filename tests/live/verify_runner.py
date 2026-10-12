@@ -28,13 +28,15 @@ import re
 import sys
 import tempfile
 import time
+import urllib.error
 
 # Fusion payloads carry non-ASCII (PMI symbols); the Windows console default cannot encode them.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from verify_core import (
-    NOTE_MAX, REFUSAL_NOTE_MAX, REPO_ROOT, SRC_ROOT, STEP_SLEEP_S, VERIFIED, _HERE, _RECALL,
+    NOTE_MAX, PROCESS_STARTED, REFUSAL_NOTE_MAX, REPO_ROOT, SRC_ROOT, STEP_SLEEP_S, VERIFIED,
+    _HERE, _RECALL, reap_harness_assets,
     _Refusal, _leaves_no_row, _unparked, capability_met,
     capability_skip_reason, facade, gate_allows, gate_skip_reason, parked_reason, predicate_kind,
     probe_capabilities, step_capability)
@@ -45,6 +47,7 @@ from verify_core import (
 # to one invalidate a receipt its content takes no part in.
 _NOT_THE_SWEEP = ("measure_api.py", "drawing_verify.py")
 _ATTESTATION_TCB = ("Fusion-Essentials.py", "lib/loaded_attestation.py")
+_BUSY_HEALTH_WINDOW_S = 120
 
 
 def source_hash(root=None):
@@ -252,13 +255,18 @@ def load_run_state(run_id):
         return json.load(fh)
 
 
+_NO_ACTIVE_DOCUMENT = "No active document. Open or create one first"
+
+
 def _document_now():
     """Read the active document handle and design count used by resume at a chunk boundary."""
     call = facade("call")
     is_error, doc = call("doc_get", {})
     if is_error or not isinstance(doc, dict):
+        # doc_get's own no-document refusal is the one error that means Fusion holds none.
+        none = is_error and str(doc).startswith(_NO_ACTIVE_DOCUMENT)
         return {"name": None, "document_id": None, "document_handle": None,
-                "feature_count": None, "state": "unknown"}
+                "feature_count": None, "state": "none" if none else "unknown"}
     active = doc.get("active")
     if active is not None and not isinstance(active, dict):
         active = {}
@@ -895,9 +903,20 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         print("run refused: health did not provide a complete loaded attestation")
         return 1
     print(f"server ok: {health.get('server')} v{health.get('version', '?')}")
+    if not (run_id and resume) and selected is None:
+        reap_harness_assets("before the run")
 
     def current_attestation():
-        return attestation_identity(health_gate())
+        # Fusion's main thread can stay busy past an act's generation launch, so a mid-run /health
+        # that times out is retried for a bounded window before it fails the run.
+        deadline = time.time() + _BUSY_HEALTH_WINDOW_S
+        while True:
+            try:
+                return attestation_identity(health_gate())
+            except (TimeoutError, urllib.error.URLError):
+                if time.time() >= deadline:
+                    raise
+                time.sleep(10)
 
     current_document = _document_now() if run_id and resume else None
     if run_id and resume:
@@ -1342,4 +1361,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                 else "; the story document is left open"))
         else:
             print("\nreceipt not written: {0} of {1} acts ran".format(len(acts_done), len(program)))
+    # A chunk the next --resume carries on from keeps its assets; any other ending takes them.
+    if not develop and selected is None and (complete or stopped or not run_id):
+        reap_harness_assets("after the run", own_since=PROCESS_STARTED - 60)
     return 1 if fails else 0

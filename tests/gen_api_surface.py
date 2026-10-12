@@ -28,6 +28,8 @@ _BINDING_GLOBS = (
     os.path.expanduser("~/AppData/Local/Autodesk/webdeploy/pre-production/*/Api/Python/packages/adsk"),
     os.path.expanduser("~/Library/Application Support/Autodesk/webdeploy/production/*/Autodesk "
                        "Fusion 360.app/Contents/Api/Python/packages/adsk"),
+    os.path.expanduser("~/Library/Application Support/Autodesk/webdeploy/production/*/Autodesk "
+                       "Fusion.app/Contents/Api/Python/packages/adsk"),
 )
 
 _MODULES = ("core", "fusion", "cam", "drawing")

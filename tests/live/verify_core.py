@@ -151,7 +151,8 @@ def attestation_identity(health):
 
 
 def health_gate():
-    with urllib.request.urlopen(BASE + "/health", timeout=5) as resp:
+    # /health recomputes the loaded attestation on every call - seconds - so 5 s reads a live server as absent.
+    with urllib.request.urlopen(BASE + "/health", timeout=10) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     if data.get("server") != SERVER_NAME:
         sys.exit(f"Refusing to run: {BASE} is answering as {data.get('server')!r}, "
@@ -185,6 +186,93 @@ def registered_tools(health=None, include_rows=False):
             sys.exit("Refusing to run: tools/list does not match the attested schema fingerprint.")
     names = sorted(row["name"] for row in rows)
     return (names, tuple(rows)) if include_rows else names
+
+
+# --- harness leftovers ------------------------------------------------------------------------
+# The Local machine and template assets the sweep and measure_api create, by exact leaf name. A run
+# that dies before its teardown leaves them in the operator's library, so each run reaps them.
+
+PROCESS_STARTED = time.time()
+_STAMPED_LEFTOVER = re.compile(r"^(?:SweepMach3Axis|SweepMach4Axis|SweepTmpl) (\d{8}-\d{6})$")
+_UNSTAMPED_LEFTOVER = re.compile(
+    r"^(?:MeasureDeleteMe|MeasureQKey|MeasureKeepsCopy|MeasureTmplDel|MeasureTmplRaise_[0-9a-f]{32})$")
+# A stamped asset younger than this and not this process's own may belong to a run still going.
+LEFTOVER_MIN_AGE_S = 12 * 3600
+
+_LIST_LOCAL_ASSETS = """import json, adsk.core, adsk.cam
+def run(context):
+    lm = adsk.cam.CAMManager.get().libraryManager
+    out = []
+    for kind, lib in (("machine", lm.machineLibrary), ("template", lm.templateLibrary)):
+        stack = [lib.urlByLocation(adsk.cam.LibraryLocations.LocalLibraryLocation)]
+        while stack:
+            folder = stack.pop()
+            out.extend([kind, a.toString(), a.leafName] for a in lib.childAssetURLs(folder))
+            stack.extend(lib.childFolderURLs(folder))
+    print("ASSETS " + json.dumps(out))
+"""
+
+_DELETE_LOCAL_ASSETS = """import json, adsk.core, adsk.cam
+def run(context):
+    lm = adsk.cam.CAMManager.get().libraryManager
+    libs = {{"machine": lm.machineLibrary, "template": lm.templateLibrary}}
+    done = []
+    for kind, url in {targets}:
+        try:
+            done.append([url, bool(libs[kind].deleteAsset(adsk.core.URL.create(url)))])
+        except Exception as exc:
+            done.append([url, str(exc).strip().splitlines()[-1][:120]])
+    print("DELETED " + json.dumps(done))
+"""
+
+
+def harness_leftovers(assets, now, own_since=None, min_age_s=LEFTOVER_MIN_AGE_S):
+    """The (kind, url, leaf) assets a harness made and no live run still needs."""
+    out = []
+    for kind, url, leaf in assets:
+        stem = os.path.splitext(leaf)[0]
+        if _UNSTAMPED_LEFTOVER.match(stem):
+            out.append((kind, url, leaf))
+            continue
+        m = _STAMPED_LEFTOVER.match(stem)
+        if not m:
+            continue
+        stamped = time.mktime(time.strptime(m.group(1), "%Y%m%d-%H%M%S"))
+        if now - stamped >= min_age_s or (own_since is not None and stamped >= own_since):
+            out.append((kind, url, leaf))
+    return out
+
+
+def _local_assets():
+    is_error, payload = call("sys_execute_script", {"script": _LIST_LOCAL_ASSETS, "read_only": True})
+    m = None if is_error else re.search(r"^ASSETS (.*)$", str(payload), re.M)
+    if not m:
+        raise RuntimeError("listing the Local machine/template libraries failed: "
+                           + str(payload)[:200])
+    return [tuple(row) for row in json.loads(m.group(1))]
+
+
+def reap_harness_assets(when, own_since=None):
+    """Delete harness leftovers from the Local libraries; print what went and what did not."""
+    if "sys_execute_script" not in registered_tools():
+        print(f"harness leftovers ({when}): NOT reaped - sys_execute_script is not registered")
+        return False
+    try:
+        targets = harness_leftovers(_local_assets(), time.time(), own_since)
+        if not targets:
+            print(f"harness leftovers ({when}): none in the Local libraries")
+            return True
+        script = _DELETE_LOCAL_ASSETS.format(targets=repr([[k, u] for k, u, _ in targets]))
+        is_error, payload = call("sys_execute_script", {"script": script})
+        remaining = {u for _, u, _ in harness_leftovers(_local_assets(), time.time(), own_since)}
+    except Exception as exc:
+        print(f"harness leftovers ({when}): NOT reaped - {exc}")
+        return False
+    gone = [leaf for _, u, leaf in targets if u not in remaining]
+    kept = [leaf for _, u, leaf in targets if u in remaining]
+    print(f"harness leftovers ({when}): deleted {len(gone)} ({', '.join(gone) or '-'})"
+          + (f"; STILL PRESENT {', '.join(kept)}: {str(payload)[:200]}" if kept else ""))
+    return not kept
 
 
 # --- the DAG ----------------------------------------------------------------------------------
