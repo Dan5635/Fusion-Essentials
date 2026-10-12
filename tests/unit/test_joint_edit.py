@@ -358,13 +358,34 @@ class TestFlip:
         assert joint.isFlipped is False
 
     def test_a_flip_that_turns_the_child_in_place_is_published_as_moved(self):
-        pad = make_occurrence("Pad:1", transform2=FakeMatrix3D())
-        frame = make_occurrence("Frame:1", transform2=FakeMatrix3D())
+        pad = make_occurrence("Pad:1", component=MakeComp(name="Pad", entity_token="pad-component"),
+                              transform2=FakeMatrix3D())
+        frame = make_occurrence("Frame:1", component=MakeComp(name="Frame", entity_token="frame-component"),
+                                transform2=FakeMatrix3D())
         joint = _joint(occurrence_one=pad, occurrence_two=frame)
         design = _install_joints([joint])
+        design.rootComponent.occurrences = _NamedCollection([pad, frame])
+        design.rootComponent.allOccurrences = [pad, frame]
         design.computeAll = lambda: setattr(pad, "transform2", FakeMatrix3D(deg=180.0))
         out = _payload(jt.handler(joint_name="BoomPivot", flip=True))
         assert [(m["occurrence"], m["rotation_deg"]) for m in out["moved"]] == [("Pad:1", 180.0)]
+
+    def test_a_bare_native_child_keeps_movement_unknown(self):
+        comp = MakeComp(name="Pad", entity_token="nested-pad-component")
+        native = make_occurrence("Pad:1", component=comp, transform2=FakeMatrix3D(t=(2, 3, 4)))
+        host = make_occurrence("Host:1", component=MakeComp(name="Host", occurrences=[native]),
+                               transform2=FakeMatrix3D(t=(10, 20, 5)))
+        proxy = make_occurrence("Host:1+Pad:1", component=comp, assembly_context=host,
+                                transform2=FakeMatrix3D(t=(7, 22, 9)))
+        joint = _joint(occurrence_one=native, parent_component=host.component)
+        host.component.joints = _NamedCollection([joint])
+        root = _root()
+        root.occurrences = _NamedCollection([host])
+        root.allOccurrences = [host, proxy]
+        install(jt, make_design(comp=root, all_components=[root, host.component, comp]))
+        out = _payload(jt.handler(joint_name="BoomPivot", flip=True))
+        assert out["flipped"] is True and joint.isFlipped is True
+        assert out["moved"] is None and "'moved' is null" in out["note"]
 
     def test_a_second_flip_true_leaves_it_flipped_rather_than_toggling_back(self):
         # 'flip' is a SET, so repeating a value is a no-op - a toggle would swing it back and the

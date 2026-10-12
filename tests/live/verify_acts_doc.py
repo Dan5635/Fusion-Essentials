@@ -14,6 +14,7 @@ import json
 import math
 import os
 import time
+import urllib.error
 import urllib.request
 
 from verify_core import (
@@ -266,6 +267,14 @@ def _handle_args(ctx, key, name, expression):
             "expect_document": _ctx_get(ctx, key, "the exact owned document handle")}
 
 
+def _other_case(ctx, key):
+    """The document name saved in key with its letter case swapped; raises when the swap is a no-op."""
+    name = _ctx_get(ctx, key, "the active document's display name")
+    if not isinstance(name, str) or name.swapcase() == name:
+        raise ValueError(f"document name {name!r} has no letter whose case can differ")
+    return name.swapcase()
+
+
 def _camera_target(p):
     """Return the independently read camera target, or None."""
     target = (p.get("view") or {}).get("target") or {}
@@ -438,6 +447,12 @@ _SCRATCH_DOCUMENT = [
     ("param_get", {"name": "HandleRecovered"}, _param_read("HandleRecovered", 2), None),
     ("param_delete", {"name": "HandleRecovered"}, _param_deleted("HandleRecovered"), None),
     ("param_get", {"name": "HandleRecovered"}, _refused("HandleRecovered"), None),
+    # The active document's own name in the other letter case: refused toward the handle, unwritten.
+    ("doc_get", {}, _scratch_gone_story_active, ("story_name", lambda p: p["active"]["name"])),
+    ("param_add", lambda c: {"name": "CaseOnly", "expression": "1 mm",
+                             "expect_document": _other_case(c, "story_name")},
+     _refused("active_document_changed", "letter case", "document_handle"), None),
+    ("param_get", {"name": "CaseOnly"}, _refused("CaseOnly"), None),
 ]
 
 
@@ -2319,6 +2334,48 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
         return False, "fresh scratch cleanup was not read back", fresh
     return True, "fresh scratch handle recovered and stale handle refused", fresh
 
+def _reload_session_probe(previous_session, old_document_handle):
+    """Require stale transport refusal and a fresh-session document read."""
+    read = {"jsonrpc": "2.0", "id": "reload-session-read", "method": "tools/call",
+            "params": {"name": "doc_get", "arguments": {}}}
+    request = urllib.request.Request(
+        MCP, data=json.dumps(read).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream",
+                 "Mcp-Session-Id": previous_session})
+    try:
+        with urllib.request.urlopen(request, timeout=20):
+            raise RuntimeError("retained transport session was admitted after reload")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise RuntimeError("retained transport session refused with " + str(exc.code)) from exc
+        if exc.read() != b"":
+            raise RuntimeError("stale transport refusal carried an unexpected body")
+    initialized, fresh_session = facade("_post")(
+        {"jsonrpc": "2.0", "id": "reload-session-init", "method": "initialize",
+         "params": {"protocolVersion": "2025-03-26"}}, with_session=True)
+    result = initialized.get("result", {})
+    if (not fresh_session or fresh_session == previous_session
+            or result.get("serverInfo", {}).get("name") != SERVER_NAME):
+        raise RuntimeError("fresh initialize did not identify the restarted server")
+    request = urllib.request.Request(
+        MCP, data=json.dumps(read).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream",
+                 "Mcp-Session-Id": fresh_session})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        reply = json.loads(response.read().decode("utf-8"))
+    result = reply.get("result", {})
+    if result.get("isError") is not False:
+        raise RuntimeError("fresh transport session did not complete doc_get")
+    content = result.get("content") or []
+    payload = json.loads(content[0]["text"]) if content else {}
+    handle = (payload.get("active") or {}).get("document_handle")
+    if not _reload_handle(handle) or handle == old_document_handle:
+        raise RuntimeError("fresh-session doc_get did not read a new document handle")
+    return handle
+
+
 def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
                  up_polls=_RELOAD_UP_POLLS, expected_attestation=None):
     """Reload the add-in and verify a run-owned document survives with fresh identity."""
@@ -2362,6 +2419,12 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
         if (is_error or not isinstance(par, dict) or par.get("name") != nonce_name
                 or par.get("value") != 17):
             raise RuntimeError("owned scratch nonce did not read back before reload")
+        initialized, old_session = facade("_post")(
+            {"jsonrpc": "2.0", "id": "reload-session-before", "method": "initialize",
+             "params": {"protocolVersion": "2025-03-26"}}, with_session=True)
+        if (not old_session or initialized.get("result", {}).get("serverInfo", {}).get("name")
+                != SERVER_NAME):
+            raise RuntimeError("pre-reload initialize did not identify the serving session")
         is_error, payload = call("sys_reload_addin", {})
         if is_error or "Reload scheduled" not in str(payload):
             raise RuntimeError(f"no reload was scheduled - {str(payload)[:NOTE_MAX]}")
@@ -2393,6 +2456,7 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
             if not _poll_health(True, up_polls):
                 raise RuntimeError(f"/health did not answer again within {up_polls} probes")
             restart_note = f"/health stopped answering and answered again as {SERVER_NAME}"
+        transport_handle = _reload_session_probe(old_session, canary)
         try:
             found = call("sys_find_tool", {"query": _RELOAD_SMOKE_QUERY})[1]
         except Exception as e:
@@ -2409,6 +2473,8 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
         ok, note, fresh = _reload_document_probe(call, canary, home, nonce_name)
         if not ok:
             raise RuntimeError(note)
+        if fresh != transport_handle:
+            raise RuntimeError("fresh-session read disagreed with the owned scratch census")
         cleanup_ok, cleanup_note = _reload_cleanup(call, fresh, home)
         if not cleanup_ok:
             raise RuntimeError(cleanup_note)
@@ -2416,7 +2482,8 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
                      f"{restart_note}; the restarted "
                      f"registry returned {len(names)} match(es) for '{_RELOAD_SMOKE_QUERY}', "
                      f"sys_reload_addin among them; /health and sys_capability_map both publish "
-                     f"{MCP} as bound"))
+                     f"{MCP} as bound; retained transport refused with empty 404 and fresh "
+                     "initialize/read recovered the owned scratch"))
         notes["sys_reload_addin"] = STORY.get("sys_reload_addin", "")
         if valued is not None:
             valued.add("sys_reload_addin")

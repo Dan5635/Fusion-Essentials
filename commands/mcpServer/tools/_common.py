@@ -1199,6 +1199,41 @@ def ptxyz(p, f):
     return {"x": round(scaled[0], 6), "y": round(scaled[1], 6), "z": round(scaled[2], 6)}
 
 
+def occurrence_world_translation(occ, factor=1.0):
+    """A current-assembly occurrence's world translation, scaled by factor, or None."""
+    unknown = object()
+    context = safe(lambda: occ.assemblyContext, unknown)
+    if context is unknown:
+        return None
+    if context is None:
+        comp = safe(lambda: occ.component)
+        path = safe(lambda: occ.fullPathName)
+        current = safe(design)
+        if comp is None or not isinstance(path, str) or not path or current is None:
+            return None
+        placed = safe(lambda: current.rootComponent.allOccurrencesByComponent(comp))
+        count = counted(lambda: placed.count)
+        if count is None or count < 0:
+            return None
+        matches = []
+        for index in range(count):
+            candidate = safe(lambda: placed.item(index))
+            parent = safe(lambda: candidate.assemblyContext, unknown)
+            if parent is unknown:
+                return None
+            if parent is not None:
+                continue
+            candidate_path = safe(lambda: candidate.fullPathName)
+            if not isinstance(candidate_path, str) or not candidate_path:
+                return None
+            if candidate_path == path:
+                matches.append(candidate)
+        if len(matches) != 1:
+            return None
+        occ = matches[0]
+    return ptxyz(safe(lambda: occ.transform2.translation), factor)
+
+
 def box_extent(box, f):
     """{x, y[, z]} - a bounding box's own SIZE per axis, scaled by ``f``, an axis that will not read
     left OUT (a BoundingBox2D carries Point2Ds, whose .z raises). None when no axis reads."""

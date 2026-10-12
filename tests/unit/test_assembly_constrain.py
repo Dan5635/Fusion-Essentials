@@ -11,7 +11,7 @@ import pytest
 import live_api_facts as _api_facts
 from conftest import (BRepFace, FakeMatrix3D, FakeSelection, FakeSelections, FakeTimeline, FakeTimelineObject,
                       FakeUserInterface, MakeComp, _NamedCollection,
-                      install, load_tool, make_design, make_placed_occurrence, payload)
+                      install, load_tool, make_design, make_occurrence, make_placed_occurrence, payload)
 
 ja = load_tool("assembly_constrain")
 
@@ -134,8 +134,31 @@ def constrain(monkeypatch):
         ac = FakeAssemblyConstraints(**ac_kwargs)
         # a spec is (name, pos) or (name, pos, fullPathName) - the third form is a NESTED occurrence,
         # whose leaf name differs from the path that names it uniquely
-        occs = [_part(s[2] if len(s) > 2 else s[0], s[1]) for s in occ_specs]
-        comp = MakeComp(occurrences=occs)
+        occs, roots, parents = [], [], {}
+        for index, spec in enumerate(occ_specs):
+            path = spec[2] if len(spec) > 2 else spec[0]
+            parent = None
+            if "+" in path:
+                parent_path = path.rsplit("+", 1)[0]
+                if parent_path not in parents:
+                    parents[parent_path] = make_occurrence(parent_path,
+                        component=MakeComp(name="Host", entity_token=f"constraint-host-{index}"),
+                        transform2=FakeMatrix3D())
+                    roots.append(parents[parent_path])
+                parent = parents[parent_path]
+            comp = MakeComp(name=path.split("+")[-1].split(":")[0],
+                            entity_token=f"constraint-component-{index}")
+            occ = make_occurrence(path, component=comp, assembly_context=parent,
+                        transform2=FakeMatrix3D(t=spec[1]) if spec[1] is not None else None,
+                        raises_on={"transform2": "transform unreadable"} if spec[1] is None else None)
+            occs.append(occ)
+            if parent is None:
+                roots.append(occ)
+            else:
+                parent.childOccurrences._items.append(occ)
+                parent.component.occurrences._items.append(make_occurrence(occ.name, component=comp,
+                    transform2=FakeMatrix3D(t=spec[1]) if spec[1] is not None else None))
+        comp = MakeComp(occurrences=roots, all_occurrences=occs + list(parents.values()))
         comp.assemblyConstraints = ac
         timeline = FakeTimeline(timeline_items) if timeline_items is not None else None
         design = make_design(comp=comp, timeline=timeline)
@@ -217,7 +240,7 @@ def test_nested_selection_owner_is_matched_by_a_unique_path(constrain, monkeypat
     # Nested placements carry no entityToken here: their native identity does not read.
     specs = [("RP:1+Leaf:1", _ORIGIN), ("RP:2+Leaf:1", (4, 0, 0)), ("Anchor:1", (8, 0, 0))]
     design, ac = constrain(occ_specs=specs)
-    occs = list(design.rootComponent.occurrences)
+    occs = list(design.rootComponent.allOccurrences)
     occs[2].entityToken = "occ-anchor"
     one = "RP:2+Leaf:1" if request_path == "root" else request_path
     if duplicate:

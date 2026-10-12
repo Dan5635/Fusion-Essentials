@@ -12,7 +12,7 @@ import json
 import adsk.core
 import adsk.fusion
 
-from ._common import counted, measured, read_flag, safe
+from ._common import counted, measured, occurrence_world_translation, read_flag, safe
 
 app = adsk.core.Application.get()
 
@@ -458,14 +458,9 @@ class ChildGeometryMoved(Postcondition):
     _MOVE_TOL_CM = 0.01                   # 0.1 mm - below this a "move" is joint-solver noise
 
     def _translation(self, occ):
-        """The occurrence's WORLD translation, compared below against a world-space geometry point."""
-        # .transform on a nested proxy is the LOCAL matrix; .transform2 composes the parent in.
-        m = safe(lambda: occ.transform2) or safe(lambda: occ.transform)
-        t = safe(lambda: m.translation) if m is not None else None
-        if t is None:
-            return None
-        return (safe(lambda: t.x, 0.0) or 0.0, safe(lambda: t.y, 0.0) or 0.0,
-                safe(lambda: t.z, 0.0) or 0.0)
+        """A placed occurrence's world translation in cm, or None."""
+        point = occurrence_world_translation(occ)
+        return tuple(point.values()) if point is not None else None
 
     def _deep_body_point(self, occ):
         """A WORLD-space bbox-min corner of a body on occ's DEEPEST descendant occurrence that owns
@@ -519,7 +514,7 @@ class ChildGeometryMoved(Postcondition):
                 continue
             tr = self._translation(occ)
             pt = self._deep_body_point(occ)
-            if tr is None or pt is None:
+            if pt is None:
                 continue
             entries.append((occ, tr, pt))
         return entries
@@ -535,7 +530,7 @@ class ChildGeometryMoved(Postcondition):
         for occ, tr0, pt0 in before:
             tr1 = self._translation(occ)
             pt1 = self._deep_body_point(occ)
-            if tr1 is None or pt1 is None:
+            if tr0 is None or tr1 is None or pt1 is None:
                 unverified.append(safe(lambda occ=occ: occ.name) or "an unnamed occurrence")
                 continue
             parent_moved = self._dist(tr0, tr1)

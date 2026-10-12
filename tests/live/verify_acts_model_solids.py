@@ -360,6 +360,9 @@ def _loft_curve_refusal_rows():
                      ("lcr_sketch_" + name, _recall("lcr_sketch_" + name, lambda p: p))))
     rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, "ok",
                  ("lcr_rows", _recall("lcr_rows", lambda p: p["timeline"])) ))
+    write("model_loft", lambda c: {"component": "LoftCurveRefs", "as_surface": True,
+        "profiles": _ctx_get(c, "lcr_curvea", "CurveA line handle")},
+        _refused("'profiles'", "array", "array entry"))
     write("model_loft", lambda c: {"component": "LoftCurveRefs", "as_surface": True, "profiles": [
         _ctx_get(c, "lcr_curvea", "CurveA line handle"),
         _ctx_get(c, "lcr_curveb", "CurveB line handle")]},

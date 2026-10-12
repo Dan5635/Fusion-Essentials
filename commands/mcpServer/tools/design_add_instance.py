@@ -68,6 +68,34 @@ def _rigid_inverse(m):
     return [*rot[0], back[0], *rot[1], back[1], *rot[2], back[2], 0.0, 0.0, 0.0, 1.0]
 
 
+def _world_at_path(design, comp, path):
+    """World cells of one uniquely addressed component placement, or None."""
+    if comp is None or not isinstance(path, str) or not path:
+        return None
+    occs = safe(lambda: design.rootComponent.allOccurrencesByComponent(comp))
+    count = _common.counted(lambda: occs.count)
+    if count is None or count < 0:
+        return None
+    matches = []
+    for index in range(count):
+        occ = safe(lambda: occs.item(index))
+        found = safe(lambda: occ.fullPathName)
+        if not isinstance(found, str) or not found:
+            return None
+        if found == path:
+            matches.append(occ)
+    return _cells(safe(lambda: matches[0].transform2)) if len(matches) == 1 else None
+
+
+def _landed_local(design, comp, path, host, host_path):
+    """Current landed local cells derived from exact placed and host world poses, or None."""
+    world = _world_at_path(design, comp, path)
+    host_world = _world_at_path(design, host, host_path) if host is not None else _IDENTITY
+    if world is None or host_world is None:
+        return None
+    return _mul(_rigid_inverse(host_world), world)
+
+
 def _first_world(design, comp):
     """World cells of the occurrence of `comp` the assembly walk lists first, or None when unread."""
     occs = safe(lambda: design.rootComponent.allOccurrencesByComponent(comp))
@@ -284,7 +312,7 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
     landed = full_path.split("+")[-1] or safe(lambda: occ.name)
 
     # The landed local matrix is read back and judged against the request, never the passed matrix.
-    got = _cells(safe(lambda: occ.transform))
+    got = _landed_local(design, safe(lambda: occ.component), full_path, nested_host, host_path)
     frame = _frame(got, k) if got is not None else None
     placed = bool(x or y or z or rotate_deg)
     off = want is not None and frame is not None and _off_request(want, got)
@@ -333,7 +361,8 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
         note += f" No placement was requested; it reads at ({ox}, {oy}, {oz}) {units} in {host_label}."
     if want is None or frame is None:
         note += (" The landed placement was not compared with the request: "
-                 + ("its transform" if frame is None else "the requested matrix") + " did not read.")
+                 + ("its local frame could not be read." if frame is None
+                    else "the requested matrix did not read."))
 
     out = {
         "created": True,

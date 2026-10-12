@@ -169,6 +169,7 @@ def _moving_occ(name, pos, local=None):
     proxy's local matrix leaves its parent's placement out, so the two disagree the moment an
     ancestor is not identity."""
     return make_occurrence(path=name, transform2=_at(pos),
+                           assembly_context=make_occurrence('Host:1'),
                            transform=_at(local if local is not None else pos))
 
 
@@ -621,10 +622,9 @@ class TestHandler:
         out = _payload(jg.handler(handle_one="a", handle_two="b", motion="rigid"))
         assert out["moved_by"]["distance_mm"] == 30.0
 
-    def test_transform_is_the_fallback_when_transform2_will_not_read(self, monkeypatch):
-        # An occurrence whose transform2 DECLINES must still be watched off its LOCAL .transform,
-        # not silently dropped to "no move".
+    def test_unreadable_transform2_discloses_incomplete_movement_without_local_fallback(self, monkeypatch):
         moving = make_occurrence("Rod:1", transform=_at((0.0, 0.0, 0.0)),
+                                 assembly_context=make_occurrence('Host:1'),
                                  raises_on={"transform2": "3 : the placement is unavailable"})
         face_a = _face(_ST.PlaneSurfaceType); face_a.assemblyContext = moving
         face_b = _face(_ST.PlaneSurfaceType)
@@ -634,7 +634,20 @@ class TestHandler:
             j = orig_add(ji); moving.transform = _at((3.0, 0.0, 0.0)); return j
         joints.add = moving_add
         out = _payload(jg.handler(handle_one="a", handle_two="b", motion="rigid"))
-        assert out["moved_by"]["distance_mm"] == 30.0
+        assert 'moved_by' not in out and 'move_warning' not in out
+        assert 'translation was not read' in out['movement_warning']
+
+    @pytest.mark.parametrize('coordinate', [None, float('inf'), True])
+    def test_unreadable_translation_coordinate_discloses_incomplete_movement(self, monkeypatch, coordinate):
+        moving = _moving_occ('Rod:1', (0.0, 0.0, 0.0))
+        matrix, getter = moving.transform2, FakeMatrix3D.translation.fget
+        monkeypatch.setattr(FakeMatrix3D, 'translation', property(
+            lambda current: FakeVector3D(coordinate, 0.0, 0.0) if current is matrix else getter(current)))
+        face = _face(_ST.PlaneSurfaceType)
+        face.assemblyContext = moving
+        _install_design(monkeypatch, {'a': face, 'b': _face(_ST.PlaneSurfaceType)})
+        out = _payload(jg.handler(handle_one='a', handle_two='b', motion='rigid'))
+        assert 'moved_by' not in out and 'translation was not read' in out['movement_warning']
 
     def test_no_moved_by_when_part_stays_put(self, monkeypatch):
         # a well-matched pair whose keypoints already coincide does not move -> no moved_by / warning.
@@ -644,6 +657,37 @@ class TestHandler:
         _install_design(monkeypatch, {"a": face_a, "b": face_b})       # add() leaves the position unchanged
         out = _payload(jg.handler(handle_one="a", handle_two="b", motion="rigid"))
         assert "moved_by" not in out and "move_warning" not in out
+
+    def test_shared_constraint_sampler_withholds_unreadable_translation(self):
+        sampler = load_tool('_assembly_common')
+        occurrence = make_occurrence('Rod:1', transform=_at((3.0, 0.0, 0.0)),
+                                     assembly_context=make_occurrence('Host:1'),
+                                     raises_on={'transform2': 'unreadable'})
+        assert sampler._constraint_positions({'rod': occurrence}) == {}
+        assert sampler._constraint_moves({'rod': ((0.0, 0.0, 0.0), None)},
+                                         {'rod': occurrence}) == ([], False)
+
+    def test_root_occurrence_is_sampled_in_world_coordinates(self, monkeypatch):
+        component = MakeComp(name='Host', entity_token='root-host')
+        native = make_occurrence('Host:1', component=component, transform2=_at((10, 20, 5)))
+        root = MakeComp(occurrences_by_component={'Host': [native]})
+        monkeypatch.setattr(jg._common, 'design', lambda: make_design(comp=root))
+        assert jg._occ_origin(native) == (10, 20, 5)
+        sampler = load_tool('_assembly_common')
+        assert sampler._constraint_positions({'host': native})['host'][0] == (10, 20, 5)
+
+    def test_successful_native_local_translation_is_withheld_by_all_movement_consumers(self, monkeypatch):
+        native = make_occurrence('Leaf:1', transform2=_at((2.0, 3.0, 4.0)))
+        face = _face(_ST.PlaneSurfaceType)
+        face.assemblyContext = native
+        _install_design(monkeypatch, {'a': face, 'b': _face(_ST.PlaneSurfaceType)})
+        out = _payload(jg.handler(handle_one='a', handle_two='b', motion='rigid'))
+        assert jg._occ_origin(native) is None
+        assert 'moved_by' not in out and 'translation was not read' in out['movement_warning']
+        sampler = load_tool('_assembly_common')
+        assert sampler._constraint_positions({'leaf': native}) == {}
+        assert sampler._constraint_moves({'leaf': ((0.0, 0.0, 0.0), None)},
+                                         {'leaf': native}) == ([], False)
 
     def test_motion_setter_failure_reports_error(self, monkeypatch):
         # if the motion setter raises (e.g. incompatible geometry), the handler returns an error

@@ -96,11 +96,13 @@ class _NamedCollection:
     iteration each throw that message, which is not the same answer as an empty walk. A test flips
     `_raises` on the instance to break the reads mid-flight. `item_raises` is the NARROWER state -
     the walk counts, but reaching for a member throws - which is what a collection whose length
-    survives a stale read while its items do not answers."""
-    def __init__(self, items=(), raises=None, item_raises=None):
+    survives a stale read while its items do not answers. `injected_item_faults` is an INJECTED
+    fault, {position: message}: item() throws at those positions only, the rest of the walk reads."""
+    def __init__(self, items=(), raises=None, item_raises=None, injected_item_faults=None):
         self._items = list(items)
         self._raises = raises
         self._item_raises = item_raises
+        self._injected_item_faults = dict(injected_item_faults or {})
 
     def _live(self):
         if self._raises:
@@ -115,6 +117,8 @@ class _NamedCollection:
         self._live()
         if self._item_raises:
             raise RuntimeError(self._item_raises)
+        if i in self._injected_item_faults:
+            raise RuntimeError(self._injected_item_faults[i])
         if 0 <= i < len(self._items):
             return self._items[i]
         if _api_facts.BEHAVIOR["collection_item_out_of_range_raises"]:

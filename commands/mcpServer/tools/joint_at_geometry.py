@@ -62,15 +62,9 @@ def _joint_input_for(entity):
 
 
 def _occ_origin(occ):
-    """The moving occurrence's origin as (x,y,z) cm in WORLD space, None if unreadable."""
-    # transform2, not transform: .transform is the occurrence's LOCAL matrix with no parent
-    # composed in, so the two agree only while every ancestor is identity. .transform is the
-    # fallback for a build that does not carry transform2.
-    m = safe(lambda: occ.transform2) or safe(lambda: occ.transform)
-    t = safe(lambda: m.translation) if m is not None else None
-    if t is None:
-        return None
-    return (safe(lambda: t.x, 0.0) or 0.0, safe(lambda: t.y, 0.0) or 0.0, safe(lambda: t.z, 0.0) or 0.0)
+    """A placed occurrence's world translation in cm, or None."""
+    point = _common.occurrence_world_translation(occ)
+    return tuple(point.values()) if point is not None else None
 
 
 # Above this the reposition is reported as moved_by. 0.005 cm = 0.05 mm - below it the move is joint
@@ -305,8 +299,14 @@ def handler(handle_one: str = "", handle_two: str = "", motion: str = "revolute"
     # Report how far a part was repositioned to align the keypoints. The move is legitimate joint
     # behavior (keypoints align at a face CENTROID / edge MIDPOINT) - flagging it just ends the silence
     # that let a mismatched-size pair teleport a part unnoticed. Whichever occurrence moved more wins.
-    candidates = [(o1, _move_delta(before_one, _occ_origin(occ_one))),
-                  (o2, _move_delta(before_two, _occ_origin(occ_two)))]
+    after_one, after_two = _occ_origin(occ_one), _occ_origin(occ_two)
+    if any(occ is not None and (before is None or after is None)
+           for occ, before, after in ((occ_one, before_one, after_one),
+                                      (occ_two, before_two, after_two))):
+        out["movement_warning"] = ("Occurrence translation was not read on both sides; moved_by "
+                                   "is incomplete. Re-read positions with assembly_get.")
+    candidates = [(o1, _move_delta(before_one, after_one)),
+                  (o2, _move_delta(before_two, after_two))]
     moved_name, moved = max(((n, m) for n, m in candidates if m),
                             key=lambda nm: nm[1]["distance_mm"], default=(None, None))
     if moved:

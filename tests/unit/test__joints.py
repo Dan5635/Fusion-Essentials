@@ -115,7 +115,18 @@ class TestFindJoint:
                           tokens={"J" * 48: joint, "F" * 48: face})
         assert jt.find_joint(des, "J" * 48, component=grip) == (joint, None)
         found, err = jt.find_joint(des, "F" * 48, component=grip)
-        assert found is None and "joint handle" in err
+        assert found is None and ("F" * 48) in err and "not a joint" in err
+
+    def test_a_long_unknown_name_is_an_ordinary_miss(self):
+        # 41+ characters only LOOKS like a token; nothing resolved, so each caller words its miss.
+        des = make_design(comp=_comp([_joint("Revolute1", "t1", "Arm")]), tokens={})
+        assert jt.find_joint(des, "LongDescriptiveJointNameThatDoesNotExistAnywhere") == (None, None)
+
+    def test_a_typed_handle_that_no_longer_resolves_names_the_remedy(self):
+        des = make_design(comp=_comp([_joint("Revolute1", "t1", "Arm")]), tokens={})
+        stale = "S" * 48 + "|@joint:Revolute9"
+        found, err = jt.find_joint(des, stale)
+        assert found is None and stale in err and "assembly_get" in err
 
     def test_no_hit_is_none_with_no_error(self):
         # A miss carries no error text: each caller words its own not-found message.

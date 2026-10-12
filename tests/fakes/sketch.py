@@ -89,6 +89,9 @@ class SketchCurves:
         return iter(self._flat())
 
 
+INJECTED_SKETCH_FAULTS = ("name_write_ignored", "visible_write_ignored", "visible_unreadable")
+
+
 @fusion_fake(live_type="Sketch",
              facts=("shape-dump-design-world", "sketch-profiles-under-compute-deferred"))
 class Sketch:
@@ -98,10 +101,21 @@ class Sketch:
     `is_visible` is the browser bulb a tool hides a helper sketch behind. `entity_token` is the
     identity half two sketch references are compared on and `timeline_object` the timeline entry a
     sketch is addressed by; both are set only when given, since a sketch whose token or timeline
-    item does not read is its own tested state."""
+    item does not read is its own tested state.
+
+    `injected` names INJECTED_SKETCH_FAULTS entries, faults no live measurement backs.
+    `taken_names` are names a sibling sketch holds: writing one adopts '<name> (1)', as measured."""
     def __init__(self, name="Sketch1", curves=None, points=(), profiles=(),
                  is_compute_deferred=False, parent_component=None, is_visible=True,
-                 entity_token=None, timeline_object=None, transform=None):
+                 entity_token=None, timeline_object=None, transform=None, injected=(),
+                 taken_names=()):
+        self._taken_names = frozenset(taken_names)
+        unknown = sorted(set(injected) - set(INJECTED_SKETCH_FAULTS))
+        if unknown:
+            raise ValueError(f"unknown injected sketch fault(s) {unknown}; "
+                             f"known: {list(INJECTED_SKETCH_FAULTS)}")
+        # The seed values are not assignments a fault swallows, so the faults arm last.
+        self._injected = frozenset()
         self.name = name
         if entity_token is not None:
             self.entityToken = entity_token
@@ -116,6 +130,27 @@ class Sketch:
         self.isComputeDeferred = is_compute_deferred
         self.parentComponent = parent_component
         self.isVisible = is_visible
+        self._injected = frozenset(injected)
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, value):
+        if "name_write_ignored" not in self._injected:
+            self._name = value + " (1)" if value in self._taken_names else value
+
+    @property
+    def isVisible(self):
+        if "visible_unreadable" in self._injected:
+            raise RuntimeError("injected unreadable isVisible")
+        return self._visible
+
+    @isVisible.setter
+    def isVisible(self, value):
+        if "visible_write_ignored" not in self._injected:
+            self._visible = value
 
 
 @fusion_fake(live_type="SketchPoint", facts=("shape-dump-timeline-world",))

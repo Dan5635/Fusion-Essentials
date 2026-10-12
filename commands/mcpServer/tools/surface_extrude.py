@@ -140,7 +140,7 @@ def handler(sketch_name: str = "", curves=None, distance: float = 0.0,
 
 
 TOOL_DESCRIPTION = (
-"Extrude an open profile into a sheet body; model_extrude makes a capped solid."
+"Extrude an open profile into a sheet body; model_extrude takes closed regions (solid, or as_surface)."
 )
 
 tool = (

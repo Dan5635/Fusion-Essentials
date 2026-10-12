@@ -712,8 +712,11 @@ def find_joint(design, name, component=None):
         candidates = all_joints(design)
         hits = [joint for joint in candidates if any(
             joint == entity for entity in token_hits)]
-        if not hits:
-            return None, f"'{name}' does not resolve to a joint handle."
+        if not hits and token_hits:
+            return None, f"'{name}' is a handle to an entity that is not a joint."
+        if not hits and "|@" in want:
+            return None, (f"'{name}' is a joint handle that no longer resolves; read assembly_get "
+                          "for the current joints.")
     if component is not None:
         scoped = []
         unreadable = []

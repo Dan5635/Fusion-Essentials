@@ -630,8 +630,12 @@ class TestJointedPoses:
     def test_a_child_turned_in_place_is_published_as_moved(self, monkeypatch):
         _d, coll = _install_create(monkeypatch)
         coll._new = FakeJoint(name="Joint1", health=_HEALTH.HealthyFeatureHealthState)
-        pad = make_occurrence("Pad:1", transform2=FakeMatrix3D())
-        frame = make_occurrence("Frame:1", transform2=FakeMatrix3D(t=(5.0, 0.0, 0.0)))
+        pad = make_occurrence("Pad:1", component=MakeComp(name="Pad", entity_token="pad-component"),
+                              transform2=FakeMatrix3D())
+        frame = make_occurrence("Frame:1", component=MakeComp(name="Frame", entity_token="frame-component"),
+                                transform2=FakeMatrix3D(t=(5.0, 0.0, 0.0)))
+        _d.rootComponent.occurrences = _NamedCollection([pad, frame])
+        _d.rootComponent.allOccurrences = [pad, frame]
         inputs = {"A": SimpleNamespace(assemblyContext=pad),
                   "B": SimpleNamespace(assemblyContext=frame)}
         monkeypatch.setattr(joint, "_resolve_input", lambda d, spec: (inputs[spec], spec, None))
@@ -649,8 +653,12 @@ class TestJointedPoses:
     def test_moved_is_null_when_no_jointed_occurrence_reads(self, monkeypatch):
         _d, coll = _install_create(monkeypatch)
         coll._new = FakeJoint(name="Joint1", health=_HEALTH.HealthyFeatureHealthState)
+        unread = make_occurrence("Pad:1", component=MakeComp(name="Pad", entity_token="unread-component"),
+                                 raises_on={"transform2": "world pose unreadable"})
+        _d.rootComponent.occurrences = _NamedCollection([unread])
+        _d.rootComponent.allOccurrences = [unread]
         monkeypatch.setattr(joint, "_resolve_input",
-                            lambda d, spec: (SimpleNamespace(), spec, None))
+                            lambda d, spec: (SimpleNamespace(assemblyContext=unread), spec, None))
         out = _payload(joint.handler(occurrence_one="A", occurrence_two="B"))
         assert out["moved"] is None and "'moved' is null" in out["note"]
 

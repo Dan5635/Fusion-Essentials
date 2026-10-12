@@ -807,6 +807,104 @@ class TestTaskManager:
         with task_manager._tasks_lock:
             assert tid not in task_manager._pending_tasks
 
+    def test_nested_deliveries_wait_and_drain_once_in_delivery_order(
+            self, task_manager, mcp_server_module):
+        import sys
+        app = sys.modules[task_manager.__module__].app
+        ran = []
+
+        def first(data):
+            ran.append('first_begin')
+            _notify(task_manager, mcp_server_module, third)
+            ran.append('first_end')
+
+        first_id = task_manager.post('first', first, {})
+        second = task_manager.post('second', lambda data: ran.append('second'), {})
+        third = task_manager.post('third', lambda data: ran.append('third'), {})
+
+        def outer(data):
+            ran.append('outer_begin')
+            fired = app.fireCustomEvent.call_count
+            for tid in (second, first_id, second):
+                _notify(task_manager, mcp_server_module, tid)
+            assert task_manager.get_pending_task_count() == 3
+            assert ran == ['outer_begin']
+            assert app.fireCustomEvent.call_count == fired
+            ran.append('outer_end')
+
+        outer_id = task_manager.post('outer', outer, {})
+        _notify(task_manager, mcp_server_module, outer_id)
+        assert ran == ['outer_begin', 'outer_end', 'second', 'first_begin', 'first_end', 'third']
+        assert task_manager.get_pending_task_count() == 0
+        assert not task_manager._dispatching and not task_manager._deferred_tasks
+
+    @pytest.mark.parametrize('disposition', ['cancel', 'reap', 'stop'])
+    def test_removed_deferred_work_never_executes(
+            self, task_manager, mcp_server_module, disposition):
+        ran, dropped = [], []
+        deferred = task_manager.post('deferred', lambda data: ran.append('deferred'), {},
+                                     on_drop=dropped.append)
+
+        def outer(data):
+            _notify(task_manager, mcp_server_module, deferred)
+            assert deferred in task_manager._pending_tasks
+            if disposition == 'cancel':
+                assert task_manager.cancel(deferred) is True
+            elif disposition == 'reap':
+                task_manager._pending_tasks[deferred]['created'] -= 301
+                assert task_manager._reap_stale() == 1
+            else:
+                assert task_manager.stop() is True
+            ran.append('outer_end')
+
+        outer_id = task_manager.post('outer', outer, {})
+        _notify(task_manager, mcp_server_module, outer_id)
+        _notify(task_manager, mcp_server_module, deferred)
+        assert ran == ['outer_end']
+        expected = {'cancel': [], 'reap': ['pending_task_reaped'],
+                    'stop': ['task_manager_stopped_before_claim']}
+        assert dropped == expected[disposition]
+        assert task_manager.get_pending_task_count() == 0
+
+    @pytest.mark.parametrize('age, executes', [(300.0, True), (300.001, False)])
+    def test_deferred_claim_checks_expiry_at_the_ttl_boundary(
+            self, task_manager, mcp_server_module, monkeypatch, age, executes):
+        import sys
+        clock, ran, dropped = [1000.0], [], []
+        monkeypatch.setattr(sys.modules[task_manager.__module__].time,
+                            'monotonic', lambda: clock[0])
+        deferred = task_manager.post('deferred', lambda data: ran.append('deferred'), {},
+                                     on_drop=dropped.append)
+
+        def outer(data):
+            _notify(task_manager, mcp_server_module, deferred)
+            clock[0] += age
+            ran.append('outer_end')
+
+        outer_id = task_manager.post('outer', outer, {})
+        _notify(task_manager, mcp_server_module, outer_id)
+        assert ran == ['outer_end'] + (['deferred'] if executes else [])
+        assert dropped == ([] if executes else ['pending_task_reaped'])
+        assert task_manager.get_pending_task_count() == 0
+
+    def test_callback_error_is_reported_and_deferred_work_still_drains(
+            self, task_manager, mcp_server_module, monkeypatch):
+        import sys
+        errors, ran = [], []
+        monkeypatch.setattr(sys.modules[task_manager.__module__].futil,
+                            'handle_error', errors.append)
+        deferred = task_manager.post('deferred', lambda data: ran.append('deferred'), {})
+
+        def outer(data):
+            _notify(task_manager, mcp_server_module, deferred)
+            raise RuntimeError('outer failed')
+
+        outer_id = task_manager.post('outer', outer, {})
+        _notify(task_manager, mcp_server_module, outer_id)
+        assert errors == ['TaskManager.callback[outer]']
+        assert ran == ['deferred'] and task_manager.get_pending_task_count() == 0
+        assert not task_manager._dispatching
+
     def test_post_refuses_a_non_callable(self, task_manager):
         assert task_manager.post("cmd", "not-callable", {}) is None
 
@@ -834,6 +932,7 @@ class _PostProbe:
         self.wfile = io.BytesIO()
         self.errors = []
         self.responses = []
+        self.response_headers = []
 
         async def _accept(_request):
             return None                 # a notification - do_POST answers 202 with no body
@@ -852,18 +951,75 @@ class _PostProbe:
     def send_response(self, code, message=None):
         self.responses.append(code)
 
-    def send_header(self, *_args):
-        pass
+    def send_header(self, name, value):
+        self.response_headers.append((name, value))
 
     def end_headers(self):
         pass
 
 
-def _post(mcp_server_module, body: bytes, server=None):
+def _post(mcp_server_module, body: bytes, server=None, headers=None):
     """The real do_POST driven over `body`; returns the probe it wrote its answer into."""
     probe = _PostProbe(body, server)
+    probe.headers.update(headers or {})
     mcp_server_module.MCPHandler.do_POST(probe)
     return probe
+
+
+class TestSessionHeader:
+    @pytest.mark.parametrize('session', ['stale-session', ''])
+    @pytest.mark.parametrize('path', ['/mcp', '/'])
+    def test_stale_header_refuses_before_native_dispatch(
+            self, mcp_server_module, server, monkeypatch, session, path):
+        posted, ran = [], []
+        server.register(_bare_tool_item('native_probe', lambda: ran.append('ran') or _ok(),
+                                       run_on_main_thread=True))
+
+        async def execute(handler, arguments, enforce_timeout=True):
+            posted.append(arguments)
+            return handler(**arguments)
+
+        monkeypatch.setattr(server, '_execute_on_main_thread', execute)
+        body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                           'params': {'name': 'native_probe', 'arguments': {}}}).encode()
+        probe = _PostProbe(body, server)
+        probe.path = path
+        probe.headers[mcp_server_module.SESSION_HEADER] = session
+        mcp_server_module.MCPHandler.do_POST(probe)
+        assert probe.responses == [404] and probe.errors == []
+        assert probe.response_headers == [('Content-Length', '0')]
+        assert probe.wfile.getvalue() == b''
+        assert posted == [] and ran == []
+
+    @pytest.mark.parametrize('session', [None, 'fresh'])
+    def test_headerless_and_fresh_calls_remain_admitted(
+            self, mcp_server_module, server, session):
+        ran = []
+        server.register(_bare_tool_item('read_probe', lambda: ran.append('read') or _ok()))
+        body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                           'params': {'name': 'read_probe', 'arguments': {}}}).encode()
+        headers = {} if session is None else {mcp_server_module.SESSION_HEADER: server.session_id}
+        probe = _post(mcp_server_module, body, server, headers)
+        assert probe.errors == [] and probe.responses == [200] and ran == ['read']
+
+    @pytest.mark.parametrize('session', [None, 'stale-session', 'fresh'])
+    def test_initialize_remains_admitted(
+            self, mcp_server_module, server, session):
+        body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                           'params': {'protocolVersion': '2025-03-26'}}).encode()
+        value = server.session_id if session == 'fresh' else session
+        headers = {} if value is None else {mcp_server_module.SESSION_HEADER: value}
+        probe = _post(mcp_server_module, body, server, headers)
+        assert probe.errors == [] and probe.responses == [200]
+        assert json.loads(probe.wfile.getvalue())['result']['serverInfo']['name'] == server.name
+
+    def test_health_diagnostic_still_answers_a_stale_header(self, mcp_server_module, server):
+        probe = _PostProbe(b'', server)
+        probe.path = '/health'
+        probe.headers[mcp_server_module.SESSION_HEADER] = 'stale-session'
+        mcp_server_module.MCPHandler.do_GET(probe)
+        assert probe.errors == [] and probe.responses == [200]
+        assert json.loads(probe.wfile.getvalue())['session_id'] == server.session_id
 
 
 class TestJsonConstantRefusal:

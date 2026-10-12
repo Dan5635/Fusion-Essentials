@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 763
+**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 766
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -17,8 +17,8 @@ close orphans, factor duplicated guards into shared helpers.
 **Read/Acquire (8)** - higher concern, a check-your-work tool nothing points to:
   `cam_compare_operations`, `cam_find_holes`, `cam_find_pockets`, `cam_inspect_toolpaths`, `mesh_find`, `model_compute_holder`, `model_measure_relation`, `sys_get_api_doc`
 
-**Edit (62)** - usually leaf actions, scan for genuine gaps:
-  `cam_activate_setup`, `cam_delete_template`, `cam_export_setup`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_edit_plastic_rule`, `design_edit_reference_image`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_create_rib`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `render_edit`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_edit`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
+**Edit (61)** - usually leaf actions, scan for genuine gaps:
+  `cam_activate_setup`, `cam_delete_template`, `cam_export_setup`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_edit_plastic_rule`, `design_edit_reference_image`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_create_rib`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_delete`, `param_set_favorite`, `render_edit`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
 - **59x** across 58 module(s): "No active design. Create or open a document first (see doc_new)."
@@ -47,7 +47,7 @@ close orphans, factor duplicated guards into shared helpers.
 - `cam_get`  <- 36  (desc 16, note 20)
 - `view_screenshot`  <- 36  (desc 6, note 30)
 - `model_inspect`  <- 34  (desc 6, note 28)
-- `sketch_get`  <- 30  (desc 9, note 21)
+- `sketch_get`  <- 31  (desc 9, note 22)
 - `data_get`  <- 28  (desc 10, note 18)
 - `doc_open`  <- 27  (desc 5, note 22)
 - `sketch_create`  <- 26  (desc 7, note 19)
@@ -359,8 +359,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - joints_unverified=true means native occurrence membership could not be established; that row's joints list may be incomplete.
 
 ### `assembly_ground`
-- Parent lock set. isGroundToParent relocks to the TIMELINE placement and discards free moves. assembly_get's grounded_occurrences lists only the UI Ground/Fix flag (not settable here), so it stays e...
-- Specify 'ground_to_parent' (true/false). true locks the occurrence to its timeline placement; false releases it.
+- Parent lock set. Parametric re-locks discard free moves; direct-mode re-locks keep the current position. assembly_get's grounded_occurrences lists only the UI Ground/Fix flag (not settable here), s...
+- Specify 'ground_to_parent' (true/false): true locks the occurrence to its parent; false releases it.
 - No active design with components.
 - isGroundToParent cannot be read on '
 - ' after setting it to
@@ -370,7 +370,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - - the flag did not take.
 - Could not set isGroundToParent on '
 - isGroundToParent cannot be read on '' after setting it to , so the change is UNCONFIRMED. Re-read the occurrence with assembly_get.
-- Grounding SNAPPED '' back to its timeline placement ( mm, was  mm) - the prior free move is discarded. To keep a moved position, leave the part free and capture the position instead.
+- Grounding SNAPPED '' to a different placement ( mm, was  mm) - the prior free move is discarded. To keep a moved position, leave the part free and capture the position instead.
 
 ### `assembly_inspect_interference`
 - interfering occurrence pair(s) - bodies overlap or meet at coincident faces. Each lists the two occurrences and readable overlap volume from analysed body pairs; fix positioning/sizing/joints. (A s...
@@ -2396,7 +2396,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - '' needs , which is not available on this Fusion version - the setting could not be applied, so no drawing was created. Retry with a different .
 - template_file '' could not be resolved to a file. Tried: . Pass a DataFile id/versionId or a fusionWebURL from data_get / design_get(include=['tree']).
 - creation_mode 'manual' requires template_file, which was empty.  This call stops here without creating anything. Pass the template's DataFile id/URL as template_file, or use creation_mode 'automatic'.
-- Custom sheet size:  x   (the document unit),  x  zones - all four read back off the input before the create. The created SHEET's own width/height are not readable from here, so open it and read the...
+- Custom sheet size:  x   (unit follows standard ''),  x  zones requested. The created sheet's own size is not read here: doc_open it, then drawing_get gives it in mm.
 
 ### `drawing_delete_sketch`
 - Provide 'sketch' - the exact name of the drawing sketch to delete.
@@ -2807,6 +2807,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Joint origin landed at
 - but the computed anchor was
 - 'component': anchor='' places the frame from WORLD coordinates, but a joint origin inside a component is positioned in THAT component's own space, and the placement transform of '' . Anchor on geom...
+- The helper sketch this call drew for the bbox_center anchor reads name=, visible=; this call assigns name='', visible=False. sketch_get lists the sketches with is_visible; sketch_edit renames or hi...
 - The hidden helper sketch this call drew for the bbox_center anchor was not removed; design_get(include=['timeline']) lists it.
 - The origin's own parentComponent , so which component it belongs to is UNVERIFIED - a joint origin on another component cannot serve as this one's side of a joint. Confirm with assembly_get(include...
 - This origin lives in component '' - its offsets are measured from THAT component's origin, so it can serve as that component's side of a joint.

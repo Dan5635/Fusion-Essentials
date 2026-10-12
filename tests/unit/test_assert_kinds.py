@@ -29,6 +29,9 @@ from conftest import (
     FakeMatrix3D,
     FakeTimeline,
     FakeTimelineObject,
+    FakeVector3D,
+    MakeComp,
+    MakeDesign,
     load_tool,
     make_occurrence,
 )
@@ -698,7 +701,9 @@ def _coll(items):
 
 
 def _occ(name, transl, bodies=None, children=None):
-    return make_occurrence(path=name, transform=types.SimpleNamespace(translation=transl),
+    matrix = types.SimpleNamespace(translation=transl)
+    return make_occurrence(path=name, transform=matrix, transform2=matrix,
+                           assembly_context=make_occurrence('Host:1'),
                            bodies=bodies or [], children=children or [])
 
 
@@ -977,21 +982,60 @@ class TestChildGeometryMoved:
         assert res["isError"] is True                  # the world move did NOT reach the geometry
         assert "did not propagate" in res["message"].lower()
 
-    def test_transform_is_the_fallback_when_transform2_answers_nothing(self, monkeypatch):
-        # An occurrence whose transform2 answers nothing must still be gated, not silently skipped.
+    def test_missing_transform2_discloses_an_unverified_move_without_local_fallback(self, monkeypatch):
         cbody = _body(_pt(0, 0, 0))
         child = _occ("Child:1", _pt(0, 0, 0), bodies=[cbody])
         wrapper = _occ("Wrapper:1", _pt(0, 0, 0), children=[child])
-        assert wrapper.transform2 is None
+        wrapper.transform2 = None
         p = self._wire(monkeypatch, [wrapper])
 
         def handler(**kw):
             wrapper.transform.translation = _pt(8.5, 8.5, 0)
             return _ok({"created": True})
 
-        res = kernel.wrap(handler, [p])()
-        assert res["isError"] is True
-        assert "did not propagate" in res["message"].lower()
+        out = _payload(kernel.wrap(handler, [p])())
+        assert out["child_geometry_move_verified"] is False
+        assert out["child_geometry_unverified"] == ["Wrapper:1"]
+
+    @pytest.mark.parametrize('coordinate', [None, float('nan'), True])
+    def test_unreadable_translation_coordinate_is_not_zeroed(self, monkeypatch, coordinate):
+        wrapper = _occ('Wrapper:1', _pt(coordinate, 2.0, 3.0), bodies=[_body(_pt(0, 0, 0))])
+        p = self._wire(monkeypatch, [wrapper])
+        out = _payload(kernel.wrap(lambda **kw: _ok({'created': True}), [p])())
+        assert out['child_geometry_move_verified'] is False
+        assert out['child_geometry_unverified'] == ['Wrapper:1']
+
+    def test_successful_native_local_translation_is_withheld(self, monkeypatch):
+        native = make_occurrence('Leaf:1', transform2=FakeMatrix3D(t=(2.0, 3.0, 4.0)),
+                                 bodies=[_body(_pt(1.0, 3.0, 4.0))])
+        p = self._wire(monkeypatch, [native])
+        out = _payload(kernel.wrap(lambda **kw: _ok({'created': True}), [p])())
+        assert p._translation(native) is None
+        assert out['child_geometry_move_verified'] is False
+        assert out['child_geometry_unverified'] == ['Leaf:1']
+
+    @pytest.mark.parametrize('geometry_follows', [True, False])
+    def test_root_motion_is_judged_against_its_world_geometry(self, monkeypatch, geometry_follows):
+        component = MakeComp(name='RootPart', entity_token='root-part')
+        body = _body(_pt(0, 0, 0))
+        native = make_occurrence('RootPart:1', component=component, bodies=[body],
+                                 transform2=FakeMatrix3D())
+        root = MakeComp(occurrences_by_component={'RootPart': [native]})
+        monkeypatch.setattr(load_tool('_common'), 'design', lambda: MakeDesign(comp=root))
+        condition = self._wire(monkeypatch, [native])
+
+        def handler(**kw):
+            native.transform2.translation = FakeVector3D(5, 0, 0)
+            if geometry_follows:
+                body.boundingBox.minPoint = _pt(5, 0, 0)
+            return _ok({'created': True})
+
+        result = kernel.wrap(handler, [condition])()
+        assert result['isError'] is not geometry_follows
+        if geometry_follows:
+            out = _payload(result)
+            assert out['child_geometry_move_verified'] is True
+            assert out['repositioned_occurrences'] == ['RootPart:1']
 
     def test_an_unreadable_occurrence_walk_is_disclosed_not_silently_passed(self, monkeypatch):
         # no part was sampled before the mutation, so nothing was gated - the flag reports that the

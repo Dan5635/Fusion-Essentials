@@ -2226,8 +2226,22 @@ class TestSliceConfigurations:
 
     def _design(self, rows, active=None, cols=()):
         table = SimpleNamespace(name="Table1", id="t1", activeRow=active,
-                                rows=list(rows), columns=list(cols))
+                                rows=_NamedCollection(rows), columns=_NamedCollection(cols))
         return SimpleNamespace(configurationTopTable=table)
+
+    def _delivered(self, monkeypatch, rows, cols):
+        """The slice as the handler delivers it, over the given row and column collections."""
+        table = SimpleNamespace(name="Table1", id="t1", activeRow=None, rows=rows, columns=cols)
+        monkeypatch.setattr(dg._common, "design",
+                            lambda: SimpleNamespace(configurationTopTable=table))
+        return _payload(dg.handler(include=["configurations"]))["configurations"]
+
+    def _rows(self, n, **faults):
+        return _NamedCollection([self._row(f"R{i}", f"r{i}", i) for i in range(n)], **faults)
+
+    def _cols(self, n, **faults):
+        return _NamedCollection([SimpleNamespace(title=f"C{i}", id=f"c{i}", index=i)
+                                 for i in range(n)], **faults)
 
     def test_not_configured_design_errors(self):
         out, err = dg._slice_configurations(SimpleNamespace(configurationTopTable=None))
@@ -2243,11 +2257,37 @@ class TestSliceConfigurations:
         assert out["configuration_count"] == 2 and "truncated" not in out
         assert out["columns"][0]["title"] == "Length"   # ConfigurationColumn exposes .title, not .name
 
-    def test_row_cap_truncates(self, monkeypatch):
-        monkeypatch.setattr(dg, "_CONFIG_MAX_ROWS", 1)
-        out, _ = dg._slice_configurations(self._design([self._row("A", "r1", 0),
-                                                        self._row("B", "r2", 1)]))
-        assert out["truncated"] is True and out["configuration_count"] == 1
+    @pytest.mark.parametrize("cap, listed, truncated", [(2, 2, False), (1, 1, True)])
+    def test_a_capped_read_reports_the_tables_count(self, monkeypatch, cap, listed, truncated):
+        monkeypatch.setattr(dg, "_CONFIG_MAX_ROWS", cap)
+        out = self._delivered(monkeypatch, self._rows(2), self._cols(1))
+        assert out["configuration_count"] == 2 and len(out["configurations"]) == listed
+        assert ("truncated" in out) is truncated and "configurations_unread" not in out
+
+    def test_a_row_that_raises_mid_walk_is_not_listed_as_the_whole_table(self, monkeypatch):
+        # The mid-walk raise is injected on the fake collection.
+        rows = self._rows(3, injected_item_faults={1: "3 : row gone"})
+        out = self._delivered(monkeypatch, rows, self._cols(1))
+        assert [r["name"] for r in out["configurations"]] == ["R0"]
+        assert out["configuration_count"] == 3 and "truncated" not in out
+        assert "3 : row gone" in out["configurations_unread"]
+        assert len(out["columns"]) == 1 and "columns_unread" not in out
+
+    def test_a_row_count_that_does_not_read_is_not_invented(self, monkeypatch):
+        out = self._delivered(monkeypatch, self._rows(2, raises="3 : rows unavailable"),
+                              self._cols(1))
+        assert out["configuration_count"] is None and out["configurations"] is None
+        assert out["configurations_unread"] and "truncated" not in out
+
+    @pytest.mark.parametrize("faults, listed, named", [
+        ({"injected_item_faults": {1: "3 : column gone"}}, ["C0"], "3 : column gone"),
+        ({"raises": "3 : columns unavailable"}, None, "column")])
+    def test_a_column_walk_that_fails_is_disclosed(self, monkeypatch, faults, listed, named):
+        out = self._delivered(monkeypatch, self._rows(2), self._cols(2, **faults))
+        columns = out["columns"]
+        assert (columns if columns is None else [c["title"] for c in columns]) == listed
+        assert named in out["columns_unread"]
+        assert out["configuration_count"] == 2 and "configurations_unread" not in out
 
 
 def _cfg_cell(kind, **fields):

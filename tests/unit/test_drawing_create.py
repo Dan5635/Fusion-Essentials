@@ -885,7 +885,14 @@ class TestCustomSheetSize:
         out = _payload(dc.handler(sheet_size="custom", custom_width_mm=500, custom_height_mm=333))
         assert "500.0 x 333.0 mm" in out["note"]
         assert "2 x 2 zones" in out["note"]
-        assert "not readable from here" in out["note"]
+
+    def test_the_custom_note_names_the_unit_source_and_the_read_tool(self, install):
+        # drawing_edit_sheet has no read action, so the confirming read is drawing_get
+        install()
+        out = _payload(dc.handler(sheet_size="custom", custom_width_mm=500, custom_height_mm=333))
+        tail = out["note"].partition("Custom sheet size:")[2].partition("If a client call")[0]
+        assert "500.0 x 333.0 mm" in tail and "'iso'" in tail
+        assert "drawing_get" in tail and "drawing_edit_sheet" not in tail
 
     def test_the_off_switch_refuses_custom_and_creates_nothing(self, install, monkeypatch):
         # the one constant to throw if a live create stops landing the requested extents: custom

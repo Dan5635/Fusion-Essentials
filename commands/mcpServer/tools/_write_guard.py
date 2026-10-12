@@ -188,6 +188,15 @@ def _refusal(expect, name, urn):
                  "writing. Switch with doc_activate, then retry. (Omit expect_document to write the "
                  "current active doc regardless.)"),
     }
+    wanted = (expect or "").strip()
+    # doc_activate ignores letter case in a name, so it cannot clear a case-only mismatch.
+    if isinstance(name, str) and wanted != name and wanted.lower() == name.lower():
+        payload["requires"] = {"tool": "doc_get", "result": "open_documents[].document_handle"}
+        payload["note"] = (
+            f"expect_document '{wanted}' differs from the active document's name '{name}' only in "
+            "letter case; a name must match exactly. Refused WITHOUT writing. Call doc_get and "
+            "retry with the target row's document_handle, activating that handle first if it is "
+            "not the active document.")
     return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
             "isError": True, "message": "active_document_changed: expected %r, active is %r"
             % (expect, name)}

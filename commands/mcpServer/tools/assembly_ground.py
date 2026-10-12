@@ -12,13 +12,9 @@ from . import _inputs
 
 
 def _occ_translation_mm(occ):
-    """The occurrence's transform translation as [x,y,z] mm, or None."""
-    t = safe(lambda: occ.transform.translation)
-    if t is None:
-        return None
-    return [round((safe(lambda: t.x, 0.0) or 0.0) * 10.0, 3),
-            round((safe(lambda: t.y, 0.0) or 0.0) * 10.0, 3),
-            round((safe(lambda: t.z, 0.0) or 0.0) * 10.0, 3)]
+    """A placed occurrence's world translation in mm, or None."""
+    point = _common.occurrence_world_translation(occ, 10.0)
+    return [round(v, 3) for v in point.values()] if point is not None else None
 
 
 # Only isGroundToParent is settable here. The other grounding flag, isGrounded (the UI Ground/Fix),
@@ -27,12 +23,10 @@ def _occ_translation_mm(occ):
 
 
 def handler(occurrence: str = "", ground_to_parent=None) -> dict:
-    """Set an occurrence's isGroundToParent flag (the stateless parent lock). true RE-LOCKS the
-    part at its timeline-defined placement, DISCARDING any free move, captured or not; false frees
-    it to move/joint. Both grounding flags are read back and reported. WRITES."""
+    """Set the parent lock and report the flags and world positions read on both sides."""
     if ground_to_parent is None:
-        return error("Specify 'ground_to_parent' (true/false). true locks the occurrence to its "
-                     "timeline placement; false releases it.")
+        return error("Specify 'ground_to_parent' (true/false): true locks the occurrence to its "
+                     "parent; false releases it.")
     design = _common.design()
     if not design:
         return error("No active design with components.")
@@ -61,21 +55,23 @@ def handler(occurrence: str = "", ground_to_parent=None) -> dict:
         "occurrence": safe(lambda: occ.name),
         "isGroundToParent": bool(now),
         "isGrounded": _common.read_flag(lambda: occ.isGrounded),
-        "note": "Parent lock set. isGroundToParent relocks to the TIMELINE placement and discards "
-                "free moves. assembly_get's grounded_occurrences lists only the UI Ground/Fix flag "
+        "note": "Parent lock set. Parametric re-locks discard free moves; direct-mode re-locks "
+                "keep the current position. assembly_get's grounded_occurrences lists only the UI Ground/Fix flag "
                 "(not settable here), so it stays empty for agent-grounded builds - read the "
-                "per-occurrence ground_to_parent flag instead. To fix a part at a moved position, "
+                "per-occurrence ground_to_parent flag instead. To keep a moved parametric pose, "
                 "leave it FREE and assembly_move + assembly_capture_position.",
     }
-    # The parent lock snaps the part back to its timeline placement, silently discarding free
-    # moves; report that move with numbers.
+    # A parametric re-lock can discard a free move; direct-mode re-locks keep the current pose.
     pos_after = _occ_translation_mm(occ)
+    out["position_read"] = {"coordinate_space": "world", "before_mm": pos_before, "after_mm": pos_after}
+    if pos_before is None or pos_after is None:
+        out["note"] += " World position was not read on both sides; compare with assembly_get."
     if (pos_before is not None and pos_after is not None
             and any(abs(a - b) > 0.01 for a, b in zip(pos_before, pos_after))):
-        out["position_reset"] = {"from_mm": pos_before, "to_mm": pos_after}
+        out["position_reset"] = {"coordinate_space": "world", "from_mm": pos_before, "to_mm": pos_after}
         if ground_to_parent:
             out["position_warning"] = (
-                f"Grounding SNAPPED '{safe(lambda: occ.name)}' back to its timeline placement "
+                f"Grounding SNAPPED '{safe(lambda: occ.name)}' to a different placement "
                 f"({pos_after} mm, was {pos_before} mm) - the prior free move is discarded. To "
                 "keep a moved position, leave the part free and capture the position instead.")
         else:
@@ -86,8 +82,8 @@ def handler(occurrence: str = "", ground_to_parent=None) -> dict:
 
 
 TOOL_DESCRIPTION = (
-"Lock an occurrence to its parent (isGroundToParent): true re-locks it at its TIMELINE placement, "
-"DISCARDING any free move; false frees it to move or joint."
+"Lock an occurrence to its parent (isGroundToParent). Parametric re-locks discard free moves; "
+"direct-mode re-locks keep the current position. false frees it."
 )
 tool = (
     Tool.create_simple(name="assembly_ground", description=TOOL_DESCRIPTION)

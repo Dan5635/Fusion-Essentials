@@ -3495,6 +3495,15 @@ class TestProfileSelectorSketchScope:
 
 
 class TestProfileRefList:
+    @pytest.mark.parametrize("kind", [inp.ProfileRefList, inp.LoftSectionList])
+    def test_a_scalar_composite_handle_is_refused_before_any_resolution(self, monkeypatch, kind):
+        reference = "TOKEN|@edge:0.000000,1.000000,2.000000"
+        resolver = kind("sections")
+        monkeypatch.setattr(inp, "_resolve_one_profile", lambda *a: pytest.fail("scalar resolved"))
+        monkeypatch.setattr(inp.LoftSectionList, "_section", lambda *a: pytest.fail("scalar split"))
+        value, why = resolver.resolve(reference)
+        assert value is None and "'sections'" in why and "array" in why
+
     def test_resolves_handles_in_order(self):
         p0, p1, p2 = Profile("0"), Profile("1"), Profile("2")
         _install_profiles(handle_map={"A": p0, "B": p1, "C": p2})

@@ -1980,6 +1980,9 @@ _MOTION = (
     # arm that moved because the base drifted would read as the joint working.
     ("assembly_ground", {"occurrence": "JointBase:1", "ground_to_parent": True}, _grounded, None),
 ] + _joint_bench() + [
+    ("joint_edit", {"joint_name": "W7UnknownJointNameThatIsLongerThanFortyCharacters", "joint_type": "rigid"},
+     _refused("No joint named", "W7UnknownJointNameThatIsLongerThanFortyCharacters", "design_get"), None),
+    ("assembly_get", {}, _joint_is("JRev", "revolute"), None),
     # LIMITS on the revolute station, set AFTER the bench's own pass has swung it 90 deg and put it
     # back. Every published limit is read BACK off the live JointLimits, so an empty
     # 'limits_unverified' beside real numbers is the write confirmed.
@@ -2746,6 +2749,140 @@ def _joint_identity_rows():
     return rows
 
 
+_GROUND_FRAME_SETUP = """import adsk.core, adsk.fusion, json, math
+def run(context):
+    app = adsk.core.Application.get()
+    assert not app.activeDocument.isSaved
+    root = adsk.fusion.Design.cast(app.activeProduct).rootComponent
+    assert root.occurrences.count == root.bRepBodies.count == root.sketches.count == 0
+    def matrix(x, y, z, deg):
+        m = adsk.core.Matrix3D.create()
+        assert m.setToRotation(math.radians(deg), adsk.core.Vector3D.create(0, 0, 1),
+                               adsk.core.Point3D.create(0, 0, 0))
+        m.translation = adsk.core.Vector3D.create(x, y, z)
+        return m
+    host = root.occurrences.addNewComponent(matrix(10, 20, 5, 90))
+    host.component.name = 'GroundHost'
+    leaf = host.component.occurrences.addNewComponent(matrix(2, 3, 4, 30))
+    leaf.component.name = 'GroundLeaf'
+    comp = leaf.component
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0, 0, 0),
+                                                   adsk.core.Point3D.create(1, 2, 0))
+    ex = comp.features.extrudeFeatures
+    inp = ex.createInput(sk.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    extent = adsk.fusion.DistanceExtentDefinition.create(adsk.core.ValueInput.createByReal(3))
+    assert inp.setOneSideExtent(extent, adsk.fusion.ExtentDirections.PositiveExtentDirection)
+    assert ex.add(inp) is not None
+    print(json.dumps({'root_count': root.occurrences.count, 'body_count': comp.bRepBodies.count,
+                      'volume_cm3': comp.bRepBodies.item(0).volume}))
+"""
+
+
+def _ground_frame_poses(origin, grounded):
+    """Check the placed origin and the asymmetric body's independent world bounds."""
+    def check(p):
+        rows = p.get('all_occurrences') or []
+        hosts = [r for r in rows if r.get('full_path') == 'GroundHost:1']
+        leaves = [r for r in rows if r.get('full_path') == 'GroundHost:1+GroundLeaf:1']
+        valid = (p.get('units') == 'mm' and p.get('all_occurrences_truncated') is False
+                 and p.get('occurrence_count') == 1 and p.get('all_occurrence_count') == len(rows) == 2
+                 and len(hosts) == len(leaves) == 1 and hosts[0].get('origin') == [100, 200, 50])
+        if valid:
+            leaf = leaves[0]
+            center = [origin[0] - 11.160254, origin[1] - .669873, origin[2] + 15]
+            valid = (leaf.get('origin') == origin and leaf.get('ground_to_parent') is grounded
+                     and leaf.get('body_count') == 1
+                     and len(leaf.get('bbox_center') or []) == len(leaf.get('bbox_size') or []) == 3
+                     and all(_near(a, b, .01) for a, b in zip(leaf['bbox_center'], center))
+                     and all(_near(a, b, .01) for a, b in zip(leaf['bbox_size'], [22.320508, 18.660254, 30])))
+        return _measured('placed grounding origin and own-body world bounds', p, valid)
+    return check
+
+
+def _ground_frame_rows(mode):
+    """Release, move and re-lock a rotated nested placement in both design modes."""
+    initial, moved = [70, 220, 90], [140, 200, 100]
+    final = initial if mode == 'parametric' else moved
+    path = 'GroundHost:1+GroundLeaf:1'
+    poses = {'include': ['poses', 'all_occurrences'], 'units': 'mm', 'max_all_occurrences': 10}
+    def ground(before, after, flag):
+        return lambda p: (p.get('isGroundToParent') is flag and p.get('position_read') == {
+            'coordinate_space': 'world', 'before_mm': before, 'after_mm': after})
+    def relocked(p):
+        reset = {'coordinate_space': 'world', 'from_mm': moved, 'to_mm': final}
+        return (ground(moved, final, True)(p)
+                and (p.get('position_reset') == reset if mode == 'parametric'
+                     else 'position_reset' not in p and 'position_warning' not in p))
+    return _scratch('ground_frames_' + mode, [
+        ('design_set_mode', {'target': mode, 'confirm_history_loss': mode == 'direct'},
+         lambda p: (p.get('now') == mode or p.get('converted') is False
+                    and p.get('from') == p.get('to') == mode), None),
+        ('sys_execute_script', {'script': _GROUND_FRAME_SETUP, 'read_only': False},
+         lambda p: p.get('root_count') == p.get('body_count') == 1 and _near(p.get('volume_cm3'), 6, .0001), None),
+        ('assembly_get', poses, _ground_frame_poses(initial, True), None),
+        ('assembly_ground', {'occurrence': 'GroundHost:1', 'ground_to_parent': True},
+         ground([100, 200, 50], [100, 200, 50], True), None),
+        ('assembly_get', poses, _ground_frame_poses(initial, True), None),
+        ('assembly_ground', {'occurrence': path, 'ground_to_parent': False}, ground(initial, initial, False), None),
+        ('assembly_get', poses, _ground_frame_poses(initial, False), None),
+        ('assembly_move', {'occurrence': path, 'dx': 70, 'dy': -20, 'dz': 10, 'units': 'mm'},
+         lambda p: p.get('moved') is True, None),
+        ('assembly_get', poses, _ground_frame_poses(moved, False), None),
+        ('assembly_ground', {'occurrence': path, 'ground_to_parent': True}, relocked, None),
+        ('assembly_get', poses, _ground_frame_poses(final, True), None),
+    ])
+
+
+def _instance_frame_geometry(bounds):
+    """Check the acquired occurrence's own-body world box and volume."""
+    def check(p):
+        mass = p.get('mass') or {}
+        valid = (p.get('units') == mass.get('units') == 'mm'
+                 and _near(mass.get('volume'), 6000, .001))
+        for key, wanted in zip(('min_point', 'max_point'), bounds):
+            point = p.get(key) or {}
+            valid = valid and all(_near(point.get(axis), value, .01) for axis, value in zip('xyz', wanted))
+        return _measured('instance own-body world box and volume', p, valid)
+    return check
+
+
+def _instance_frame_rows(mode):
+    """Verify current local placement for both instance factories through world geometry."""
+    source = 'GroundHost:1+GroundLeaf:1'
+    original = [[47.679492, 210, 90], [70, 228.660254, 120]]
+    landed = [[44.195296, 185, 49.047635], [75, 195, 84.689234]]
+    inspection = {'units': 'mm', 'include': ['default', 'mass'], 'accuracy': 'very_high'}
+    rows = [
+        ('design_set_mode', {'target': mode, 'confirm_history_loss': mode == 'direct'},
+         lambda p: (p.get('now') == mode or p.get('converted') is False
+                    and p.get('from') == p.get('to') == mode), None),
+        ('sys_execute_script', {'script': _GROUND_FRAME_SETUP, 'read_only': False},
+         lambda p: p.get('root_count') == p.get('body_count') == 1 and _near(p.get('volume_cm3'), 6, .0001), None),
+        ('model_inspect', {'target': source, **inspection}, _instance_frame_geometry(original), None),
+    ]
+    def placed(p):
+        return (p.get('created') is True and isinstance(p.get('full_path'), str)
+                and p['full_path'].startswith('GroundHost:1+') and p.get('position') == {
+                    'x': -15, 'y': 25, 'z': 7.5}
+                and p.get('axes') == {'x': [1, 0, 0], 'y': [0, .906308, -.422618],
+                                       'z': [0, .422618, .906308]})
+    for independent in (False, True):
+        key = 'instance_frame_' + mode + ('_copy' if independent else '_shared')
+        rows += [
+            ('design_add_instance', {'component': source, 'into_component': 'GroundHost:1',
+                'independent': independent, 'x': -15, 'y': 25, 'z': 7.5, 'units': 'mm',
+                'rotate_deg': -25, 'rotate_axis': 'x'}, placed,
+             (key, _recall(key, lambda p: p['full_path']))),
+            ('model_inspect', lambda c, key=key: {'target': _ctx_get(c, key, 'acquired instance'), **inspection},
+             _instance_frame_geometry(landed), None),
+            ('model_inspect', {'target': source, **inspection}, _instance_frame_geometry(original), None),
+        ]
+    return _scratch('instance_frames_' + mode, rows)
+
+
+_MOTION += _ground_frame_rows('parametric') + _ground_frame_rows('direct')
+_MOTION += _instance_frame_rows('parametric') + _instance_frame_rows('direct')
 _MOTION += _joint_identity_rows()
 _MOTION += _selected_owner_rows()
 

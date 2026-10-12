@@ -725,6 +725,24 @@ def _cell_table(table, max_results):
     return out
 
 
+_CONFIG_REREAD = " Read include=['configurations'] again."
+
+
+def _config_walk(collection, what, summarize, cap=None):
+    """(records, count, why): the members read up to `cap`, the collection's count, why it fell short."""
+    count = _common.counted(lambda: collection.count)
+    if count is None:
+        return None, None, f"the configuration {what}s did not count." + _CONFIG_REREAD
+    records = []
+    for i in range(count if cap is None else min(count, cap)):
+        member, why = _common.read_optional(lambda i=i: collection.item(i))
+        if why:
+            return records, count, (f"{i} of {count} {what}s read; item {i} did not ({why})."
+                                    + _CONFIG_REREAD)
+        records.append(summarize(member))
+    return records, count, None
+
+
 def _slice_configurations(design, max_results=0):
     """The configuration table, READ side. Returns (payload, error); a non-configured design errors
     (the router degrades that to a {configured: False} marker rather than failing the read)."""
@@ -734,26 +752,19 @@ def _slice_configurations(design, max_results=0):
                            "table) - e.g. a design with Variant A/Variant B style options.")
     active_row = safe(lambda: table.activeRow)
     active_id = safe(lambda: active_row.id) if active_row else None
-    rows, truncated = [], False
-    try:
-        for r in table.rows:
-            if len(rows) >= _CONFIG_MAX_ROWS:
-                truncated = True
-                break
-            rows.append(_row_summary(r, active_id))
-    except Exception:
-        pass
-    columns = []
-    try:
-        for c in table.columns:
-            columns.append(_column_summary(c))
-    except Exception:
-        pass
+    rows, count, rows_unread = _config_walk(safe(lambda: table.rows), "row",
+                                            lambda r: _row_summary(r, active_id), _CONFIG_MAX_ROWS)
+    columns, _column_count, columns_unread = _config_walk(safe(lambda: table.columns), "column",
+                                                          _column_summary)
     out = {"table_name": safe(lambda: table.name), "table_id": safe(lambda: table.id),
            "active_configuration": safe(lambda: active_row.name) if active_row else None,
-           "configuration_count": len(rows), "configurations": rows, "columns": columns}
-    if truncated:
+           "configuration_count": count, "configurations": rows, "columns": columns}
+    if count is not None and count > _CONFIG_MAX_ROWS:
         out["truncated"] = True
+    if rows_unread:
+        out["configurations_unread"] = rows_unread
+    if columns_unread:
+        out["columns_unread"] = columns_unread
     out.update(_cell_table(table, max_results))
     return out, None
 

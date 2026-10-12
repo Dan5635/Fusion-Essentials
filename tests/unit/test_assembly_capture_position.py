@@ -157,6 +157,8 @@ def capture():
     """
     def _make(pending=False, occurrences=(), snapshot_items=(), snapshots=True, **snapshot_kwargs):
         snaps = FakeSnapshots(pending=pending, items=snapshot_items, **snapshot_kwargs)
+        for index, occ in enumerate(occurrences):
+            occ.component.entityToken = f"capture-component-{index}"
         design = make_design(occurrences=list(occurrences),
                              snapshots=snaps if snapshots else None)
         install(ja, design)

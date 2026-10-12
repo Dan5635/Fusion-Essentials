@@ -4225,7 +4225,9 @@ class ProfileRefList(ProfileRef):
             if self.required:
                 return None, f"'{self.name}' needs at least one profile (handle or selector)."
             return [], None
-        items = raw if isinstance(raw, (list, tuple)) else [s.strip() for s in str(raw).split(",") if s.strip()]
+        if not isinstance(raw, (list, tuple)):
+            return None, f"'{self.name}' needs an array of references; put each handle or selector in its own array entry."
+        items = raw
         scope = component if self.scope_input else ""
         out = []
         for i, item in enumerate(items):
@@ -4510,7 +4512,9 @@ class LoftSectionList(ProfileRefList):
             if self.required:
                 return None, f"'{self.name}' needs at least one section."
             return [], None
-        items = raw if isinstance(raw, (list, tuple)) else [s.strip() for s in str(raw).split(",") if s.strip()]
+        if not isinstance(raw, (list, tuple)):
+            return None, f"'{self.name}' needs an array of references; put each handle or selector in its own array entry."
+        items = raw
         scope = component if self.scope_input else ""
         out = []
         for i, item in enumerate(items):

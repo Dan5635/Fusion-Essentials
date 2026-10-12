@@ -11,10 +11,35 @@ from types import SimpleNamespace
 import pytest
 
 import live_api_facts
-from conftest import (BRepBody, MakeComp, _NamedCollection, body_proxy, entity_proxy, load_tool,
+from conftest import (BRepBody, FakeMatrix3D, MakeComp, MakeDesign, _NamedCollection, body_proxy, entity_proxy, load_tool,
                       make_occurrence, make_sketch, make_sketch_curve, make_source_document)
 
 common = load_tool("_common")
+
+
+@pytest.mark.parametrize('case', ['root', 'contextual', 'nested_native', 'ambiguous', 'unreadable'])
+def test_world_translation_recognizes_roots_without_treating_native_local_as_world(monkeypatch, case):
+    component = MakeComp(name='Part', entity_token='world-part')
+    host = make_occurrence('Host:1')
+    root_placement = make_occurrence('Part:1', component=component,
+                                    transform2=FakeMatrix3D(t=(10, 20, 5)))
+    proxy = make_occurrence('Host:1+Part:1', component=component, assembly_context=host,
+                           transform2=FakeMatrix3D(t=(14, 20, 10)))
+    query = (proxy if case == 'contextual' else make_occurrence('Part:1', component=component,
+             transform2=FakeMatrix3D(t=(2, 3, 4) if case == 'nested_native' else (10, 20, 5))))
+    candidates = [proxy] if case == 'nested_native' else [root_placement]
+    if case == 'ambiguous':
+        candidates.append(make_occurrence('Part:1', component=component,
+                                          transform2=FakeMatrix3D(t=(10, 20, 5))))
+    if case == 'unreadable':
+        candidates.append(make_occurrence('Part:2', component=component,
+                                          raises_on={'assemblyContext': 'unreadable'}))
+    root = MakeComp(occurrences_by_component={'Part': candidates})
+    monkeypatch.setattr(common, 'design', lambda: MakeDesign(comp=root))
+    got = common.occurrence_world_translation(query, 10)
+    expected = ({'x': 100, 'y': 200, 'z': 50} if case == 'root' else
+                {'x': 140, 'y': 200, 'z': 100} if case == 'contextual' else None)
+    assert got == expected
 
 
 def test_optional_none_keeps_a_reason_and_false_remains_an_answer():

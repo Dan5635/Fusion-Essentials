@@ -1047,6 +1047,27 @@ def _wcs_origin_at(recall_key):
     return check
 
 
+def _origin_with_helper(name):
+    """joint_create_origin(bbox_center): the origin lands on its computed anchor and the reply
+    publishes the helper sketch it drew, named and hidden."""
+    landed = _joint_origin_computed(name)
+
+    def check(p):
+        return landed(p) and _measured(
+            "the reply publishes its helper sketch named and hidden", p.get("helper_sketch"),
+            p.get("helper_sketch") == {"name": "JointOriginAnchor", "visible": False})
+    return check
+
+
+def _anchor_helper_hidden(p):
+    """sketch_get list: the one helper sketch a bbox_center joint origin drew reads the name the
+    tool assigns and hidden - the independent read behind the reply's own helper_sketch."""
+    rows = [r for r in p.get("sketches", []) if r.get("name") == "JointOriginAnchor"]
+    return _measured("the bbox_center helper sketch reads named and hidden", rows,
+                     p.get("truncated") is not True and len(rows) == 1
+                     and rows[0].get("is_visible") is False)
+
+
 # ACT 10a: CAM on the REAL part in the REAL fixture - job built and generated. The scratch-stock
 # rows remain as this act's fallback, so the CAM family stays covered when the story world
 # could not build.
@@ -1704,8 +1725,10 @@ _CAM_STORY = _setup_preflight_rows() + _chain_transformed_rows() + [
     # setup WCS; the bound_entities read-back lands in ctx as the receipt's evidence.
     ("joint_create_origin", {"anchor": "bbox_center", "bbox_target": STOCK_COMP + ":1",
                              "orient_axis": "z", "name": "StockWCS"},
-     _joint_origin_computed("StockWCS"),
+     _origin_with_helper("StockWCS"),
      ("stock_wcs_point", _recall("stock_wcs_point", lambda p: p.get("origin_readback")))),
+    # the first bbox_center anchor in this document, so exactly one helper sketch stands in it
+    ("sketch_get", {"max_results": 1000}, _anchor_helper_hidden, None),
     ("cam_edit_setup", {"setup": CAM_SETUP, "wcs": {"origin": "StockWCS"}}, "ok",
      ("wcs_bound_entities", lambda p: p["wcs_set"]["origin"]["bound_entities"])),
     # the setup's published WCS frame reads the point the joint origin above computed and landed

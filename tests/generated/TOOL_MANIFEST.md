@@ -98,7 +98,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `surface_create_ruled` | Create a ruled surface off an edge chain. |
 | ✎ | `surface_delete_face` | Delete faces from their bodies; 'heal'=false leaves the opening, turning a solid into a surface |
 | ✎ | `surface_extend` | Extend an open surface outward from its open edges. |
-| ✎ | `surface_extrude` | Extrude an open profile into a sheet body; model_extrude makes a capped solid. |
+| ✎ | `surface_extrude` | Extrude an open profile into a sheet body; model_extrude takes closed regions (solid, or as_surface). |
 | ✎ | `surface_fill` | Seal the volume enclosed by several surface and/or solid bodies into a solid |
 | ✎ | `surface_offset` | Offset faces into another surface body. |
 | ✎ | `surface_patch` | Patch closed loops; read per-edge conditions; compare seam normals at matching points. |
@@ -198,7 +198,7 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ⚠ | `assembly_edit_contacts` | Maintain the design's contact sets - the named groups of occurrences/bodies Fusion checks for contact. |
 | ⚠ | `assembly_edit_relations` | Edit or remove an existing assembly relation; create one with assembly_rigid_group / joint_motion_link / assembly_constrain. |
 | · | `assembly_get` | Read assembly occurrences, grounding, body counts, joints and health |
-| ✎ | `assembly_ground` | Lock an occurrence to its parent (isGroundToParent): true re-locks it at its TIMELINE placement, DISCARDING any free move; false frees it to move or joint. |
+| ✎ | `assembly_ground` | Lock an occurrence to its parent (isGroundToParent) |
 | · | `assembly_inspect_interference` | Solid overlap/contact; hidden bodies count |
 | ✎ | `assembly_move` | Move an occurrence by editing its transform - a free reposition, no joint |
 | ✎ | `assembly_rigid_group` | Lock two or more component occurrences together as a single rigid unit (Rigid Group). |

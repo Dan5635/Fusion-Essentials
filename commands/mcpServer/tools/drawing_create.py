@@ -567,12 +567,10 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
         note += f" creation_mode was 'manual', which Fusion gates on the template: {_MANUAL_GATE}"
     if custom_size is not None:
         note += (f" Custom sheet size: {custom_size['width_applied']} x "
-                 f"{custom_size['height_applied']} {custom_size['unit']} (the document unit), "
-                 f"{custom_size['horizontal_zones_applied']} x "
-                 f"{custom_size['vertical_zones_applied']} zones - all four read back off the input "
-                 "before the create. The created SHEET's own width/height are not readable from "
-                 "here, so open it and read them with drawing_edit_sheet to confirm the sheet "
-                 "Fusion built.")
+                 f"{custom_size['height_applied']} {custom_size['unit']} (unit follows standard "
+                 f"'{std}'), {custom_size['horizontal_zones_applied']} x "
+                 f"{custom_size['vertical_zones_applied']} zones requested. The created sheet's "
+                 "own size is not read here: doc_open it, then drawing_get gives it in mm.")
     note += " " + _TIMEOUT_IS_NOT_A_VERDICT
     return ok({
         "created": True,

@@ -39,7 +39,7 @@ class SnappingOcc(FakeOccurrence):
     def isGroundToParent(self, value):
         FakeOccurrence.isGroundToParent.fset(self, value)
         if value:
-            self.transform.translation = FakeVector3D(0.0, 0.0, 0.0)
+            self.transform2.translation = FakeVector3D(7.0, 22.0, 9.0)
 
 
 @pytest.fixture
@@ -67,6 +67,16 @@ class TestGround:
         out = payload(asm.handler(occurrence="Block:1", ground_to_parent=False))
         assert occ.isGroundToParent is False
         assert out["isGroundToParent"] is False
+
+    def test_root_lock_keeps_its_known_world_position(self, wire):
+        occ = _occurrence('Host:1', component=MakeComp(name='Host', entity_token='root-host'),
+                          transform2=FakeMatrix3D(t=(10, 20, 5)))
+        wire(occ)
+        result = asm.handler(occurrence='Host:1', ground_to_parent=True)
+        out = payload(result)
+        assert result['isError'] is False and out['isGroundToParent'] is True
+        assert out['position_read'] == {'coordinate_space': 'world',
+                                       'before_mm': [100, 200, 50], 'after_mm': [100, 200, 50]}
 
     def test_stuck_flag_bites(self, wire):
         # the assignment is accepted but the flag still reads its prior value -> error, not ok
@@ -96,9 +106,13 @@ class TestGround:
         # Setting ground_to_parent=true snaps the part back to its timeline placement, discarding
         # free moves captured or not (live-verified) - the payload must report the snap, not let the
         # caller discover a teleported part later.
-        wire(_occurrence(cls=SnappingOcc, transform=FakeMatrix3D(t=(2.0, 0.0, 0.0))))
+        wire(_occurrence(cls=SnappingOcc, transform=FakeMatrix3D(t=(0.0, -4.0, 5.0)),
+                         transform2=FakeMatrix3D(t=(14.0, 20.0, 10.0)),
+                         assembly_context=_occurrence('Host:1')))
         out = payload(asm.handler(occurrence="Block:1", ground_to_parent=True))
-        assert out["position_reset"] == {"from_mm": [20.0, 0.0, 0.0], "to_mm": [0.0, 0.0, 0.0]}
+        assert out["position_reset"] == {"coordinate_space": "world", "from_mm": [140.0, 200.0, 100.0],
+                                         "to_mm": [70.0, 220.0, 90.0]}
+        assert out["position_read"]["coordinate_space"] == "world"
         assert "SNAPPED" in out["position_warning"]
 
     def test_no_snap_reports_no_reset(self, wire):
@@ -106,6 +120,24 @@ class TestGround:
         wire(_occurrence(transform=FakeMatrix3D(t=(2.0, 0.0, 0.0))))
         out = payload(asm.handler(occurrence="Block:1", ground_to_parent=True))
         assert "position_reset" not in out and "position_warning" not in out
+
+    @pytest.mark.parametrize('placement', ['native', 'missing_transform2', 'missing_coordinate'])
+    def test_unknown_world_position_does_not_hide_a_verified_parent_lock(self, wire, monkeypatch, placement):
+        point = FakeMatrix3D(t=(2.0, 3.0, 4.0))
+        if placement == 'missing_coordinate':
+            getter = FakeMatrix3D.translation.fget
+            monkeypatch.setattr(FakeMatrix3D, 'translation', property(
+                lambda matrix: FakeVector3D(None, 3.0, 4.0) if matrix is point else getter(matrix)))
+        occ = _occurrence(transform=FakeMatrix3D(t=(9.0, 8.0, 7.0)),
+                          transform2=point,
+                          assembly_context=None if placement == 'native' else _occurrence('Host:1'),
+                          raises_on={'transform2': 'unreadable'} if placement == 'missing_transform2' else {})
+        wire(occ)
+        result = asm.handler(occurrence='Block:1', ground_to_parent=True)
+        out = payload(result)
+        assert result['isError'] is False and out['isGroundToParent'] is True
+        assert out['position_read'] == {'coordinate_space': 'world', 'before_mm': None, 'after_mm': None}
+        assert 'position_reset' not in out and 'World position was not read' in out['note']
 
     def test_isGrounded_is_never_written(self, wire):
         # The tool sets ONLY isGroundToParent; the UI Ground/Fix flag (isGrounded) is not settable

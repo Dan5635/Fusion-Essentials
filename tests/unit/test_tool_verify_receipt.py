@@ -12,6 +12,7 @@ runs: red when the receipt is missing, stampless, or the source has moved since 
 
 import ast
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -1875,6 +1876,10 @@ class TestReloadBeat:
     @staticmethod
     def _drive(monkeypatch, call, answers, story="stubbed reload story", health_bound=None):
         monkeypatch.setattr(tool_verify, "call", call)
+        monkeypatch.setattr(tool_verify, "_post", lambda *a, **kw: (
+            {"result": {"serverInfo": {"name": tool_verify.SERVER_NAME}}}, "session-before"))
+        monkeypatch.setattr(verify_acts_doc, "_reload_session_probe", lambda *a:
+                            call("doc_get", {})[1]["active"]["document_handle"])
         monkeypatch.setattr(tool_verify, "_server_answers", answers)
         monkeypatch.setattr(tool_verify, "_health_bound",
                             lambda: health_bound or _harness_bound())
@@ -2046,6 +2051,10 @@ class TestReloadBeat:
             return wire(tool, args)
 
         monkeypatch.setattr(tool_verify, "call", call)
+        monkeypatch.setattr(tool_verify, "_post", lambda *a, **kw: (
+            {"result": {"serverInfo": {"name": tool_verify.SERVER_NAME}}}, "session-before"))
+        monkeypatch.setattr(verify_acts_doc, "_reload_session_probe", lambda *a:
+                            call("doc_get", {})[1]["active"]["document_handle"])
         monkeypatch.setattr(tool_verify, "_server_answers", _health(True, False, True))
         monkeypatch.setattr(tool_verify, "_health_bound", _harness_bound)
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
@@ -2610,6 +2619,50 @@ class TestActualSchemaBinding:
 
 
 class TestDocumentHandleLifecycleRows:
+    @pytest.mark.parametrize("case", [
+        "good", "stale_admitted", "stale_400", "stale_body", "init_same",
+        "init_wrong_server", "fresh_error", "fresh_old_handle",
+    ])
+    def test_reload_transport_requires_refusal_then_fresh_identity(self, monkeypatch, case):
+        requests, initialized = [], []
+
+        def post(payload, with_session=False):
+            initialized.append(payload)
+            assert with_session and payload["method"] == "initialize"
+            server = "wrong-server" if case == "init_wrong_server" else tool_verify.SERVER_NAME
+            session = "old-session" if case == "init_same" else "new-session"
+            return {"result": {"serverInfo": {"name": server}}}, session
+
+        def opened(request, timeout=None):
+            requests.append(request)
+            headers = {k.lower(): v for k, v in request.header_items()}
+            sent = json.loads(request.data)
+            assert sent["params"] == {"name": "doc_get", "arguments": {}}
+            if len(requests) == 1:
+                assert headers["mcp-session-id"] == "old-session"
+                if case == "stale_admitted":
+                    return _urlopen({})(request, timeout)
+                raise urllib.error.HTTPError(request.full_url,
+                    400 if case == "stale_400" else 404, "expired", {},
+                    io.BytesIO(b"html" if case == "stale_body" else b""))
+            assert headers["mcp-session-id"] == "new-session"
+            handle = "session:old-document" if case == "fresh_old_handle" else "session:new-document"
+            return _urlopen({"result": {"isError": case == "fresh_error", "content": [
+                {"type": "text", "text": json.dumps({"active": {"document_handle": handle}})}
+            ]}})(request, timeout)
+
+        monkeypatch.setattr(tool_verify, "_post", post)
+        monkeypatch.setattr(verify_acts_doc.urllib.request, "urlopen", opened)
+        if case == "good":
+            assert verify_acts_doc._reload_session_probe(
+                "old-session", "session:old-document") == "session:new-document"
+            assert len(requests) == 2 and len(initialized) == 1
+        else:
+            with pytest.raises(RuntimeError):
+                verify_acts_doc._reload_session_probe("old-session", "session:old-document")
+            assert len(requests) == (2 if case.startswith("fresh_") else 1)
+            assert len(initialized) == (1 if case.startswith(("init_", "fresh_")) else 0)
+
     def test_capped_scratch_row_uses_the_preceding_full_read(self, monkeypatch):
         recall = {"story_doc": "session:story", "open_before": 2}
         monkeypatch.setattr(verify_core, "_RECALL", recall)
@@ -2656,7 +2709,7 @@ class TestDocumentHandleLifecycleRows:
             "doc_activate", "param_add", "param_get", "doc_activate", "param_get",
             "doc_activate", "doc_close", "param_add",
             "param_get", "doc_get", "param_add", "param_get", "param_delete",
-            "param_get",
+            "param_get", "doc_get", "param_add", "param_get",
         ]
         ctx = {"story_doc": "session:A", "scratch_doc": "session:B",
                "recovered_doc": "session:B"}
@@ -2680,6 +2733,13 @@ class TestDocumentHandleLifecycleRows:
              "value": 2, "value_units": "mm"}})
         assert rows[18][2].__name__ == "check"
         assert rows[19][2].fragments == ("HandleRecovered",)
+        assert rows[20][3][1]({"active": {"name": "Untitled"}}) == "Untitled"
+        assert rows[21][1]({"story_name": "Untitled"})["expect_document"] == "uNTITLED"
+        with pytest.raises(ValueError, match="no letter whose case can differ"):
+            rows[21][1]({"story_name": "2026-10"})
+        assert rows[21][2].fragments == ("active_document_changed", "letter case",
+                                         "document_handle")
+        assert rows[22][2].fragments == ("CaseOnly",)
 
 
     def test_reload_probe_requires_fresh_handle_and_restores_home(self):
@@ -3075,3 +3135,42 @@ def test_vise_and_cam_producers_stop_at_their_consumed_boundaries():
                      and isinstance(row[2], verify_core._Refusal))
     assert ambiguous[1]({"setup2_op": "fixture-op"})["bodies"] == ["Body1"]
     assert "component" not in ambiguous[1]({"setup2_op": "fixture-op"})
+
+
+def test_grounding_witness_requires_the_placed_body_not_only_a_reported_origin():
+    check = verify_acts_motion._ground_frame_poses([70, 220, 90], True)
+    payload = {'units': 'mm', 'all_occurrences_truncated': False, 'occurrence_count': 1,
+               'all_occurrence_count': 2, 'all_occurrences': [
+                   {'full_path': 'GroundHost:1', 'origin': [100, 200, 50]},
+                   {'full_path': 'GroundHost:1+GroundLeaf:1', 'origin': [70, 220, 90],
+                    'ground_to_parent': True, 'body_count': 1,
+                    'bbox_center': [58.84, 219.33, 105], 'bbox_size': [22.321, 18.66, 30]}]}
+    assert check(payload)
+    payload['all_occurrences'][1]['bbox_center'][0] += 70
+    with pytest.raises(AssertionError, match='own-body world bounds'):
+        check(payload)
+    payload['all_occurrences'][1]['bbox_center'][0] -= 70
+    payload['all_occurrences'][1]['origin'] = [20, 30, 40]
+    with pytest.raises(AssertionError, match='own-body world bounds'):
+        check(payload)
+
+
+def test_instance_geometry_witness_reads_nested_mass_and_keeps_world_bounds():
+    check = verify_acts_motion._instance_frame_geometry(
+        [[47.679492, 210, 90], [70, 228.660254, 120]])
+    payload = {'units': 'mm', 'kind': 'occurrence',
+               'min_point': {'x': 47.679492, 'y': 210.0, 'z': 90.0},
+               'max_point': {'x': 70.0, 'y': 228.660254, 'z': 120.0},
+               'mass': {'units': 'mm', 'volume': 6000.0}}
+    assert check(payload)
+    payload['mass']['volume'] = 5999.0
+    with pytest.raises(AssertionError, match='own-body world box and volume'):
+        check(payload)
+    payload['mass']['volume'] = 6000.0
+    payload['mass']['units'] = 'cm'
+    with pytest.raises(AssertionError, match='own-body world box and volume'):
+        check(payload)
+    payload['mass']['units'] = 'mm'
+    payload['min_point']['x'] += 70
+    with pytest.raises(AssertionError, match='own-body world box and volume'):
+        check(payload)

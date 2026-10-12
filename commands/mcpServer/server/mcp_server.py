@@ -779,6 +779,14 @@ class MCPHandler(BaseHTTPRequestHandler):
             self.send_error(400, f"Invalid JSON: {detail}")
             return
 
+        session_id = self.headers.get(SESSION_HEADER)
+        initializing = isinstance(request_data, dict) and request_data.get('method') == 'initialize'
+        if not initializing and session_id is not None and session_id != self.mcp_server.session_id:
+            self.send_response(404)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
         try:
             response = asyncio.run(self.mcp_server.handle_request(request_data))
         except Exception as e:

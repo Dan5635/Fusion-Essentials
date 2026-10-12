@@ -136,6 +136,26 @@ class TestFindOpenDocument:
         assert ambiguous is False           # a URN that matches nothing is a miss, not an ambiguity
 
 
+class TestNamesDifferingOnlyByCase:
+    """A display name matches with letter case ignored, so two open documents whose names differ
+    only by case are one ambiguity to this resolve."""
+
+    def test_a_spelling_that_is_neither_twins_name_acts_on_neither(self, open_session):
+        # 'BRACKET' equals no open name exactly and folds onto both: a resolve that tried the exact
+        # spelling and then took the first folded hit would activate, or close, the saved one.
+        saved = _doc("Bracket", urn="urn:adsk.wipprod:dm.lineage:AAA")
+        unsaved = _doc("bracket")
+        open_session([saved, unsaved])
+        for tool, verb in ((da, "activate"), (dcl, "close")):
+            res = tool.handler(name="BRACKET")
+            text = res["content"][0]["text"]
+            assert res["isError"] is True, verb
+            assert "Bracket (urn:adsk.wipprod:dm.lineage:AAA)" in text
+            assert "bracket (no lineage URN - open:1)" in text
+        assert saved._activates == 0 and unsaved._activates == 0
+        assert saved._closes == [] and unsaved._closes == []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # unsaved-doc addressability (open:N) + close_all skipping dead reference proxies
 # ─────────────────────────────────────────────────────────────────────────────

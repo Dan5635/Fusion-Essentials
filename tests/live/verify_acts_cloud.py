@@ -4708,6 +4708,7 @@ def _configure_table_state(p, active="B"):
                    or r["is_active"] != (r.get("name") == table.get("active_configuration")) for r in rows)
             or len({r["id"] for r in rows}) != 2 or sum(r["is_active"] for r in rows) != 1
             or not isinstance(columns, list) or not columns or table.get("truncated")
+            or "configurations_unread" in table or "columns_unread" in table
             or any(not c.get("id") or not c.get("title") or not c.get("type") for c in columns)
             or len({c["id"] for c in columns}) != len(columns)):
         return None
