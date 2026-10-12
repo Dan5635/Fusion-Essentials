@@ -177,7 +177,7 @@ class FakeComp(MakeComp):
 
 class FakeDesign(MakeDesign):
     """The shared design plus the computeAll a parametric recompute calls, recorded in `computed`.
-    resolve_sketch (used by the create path) searches rootComponent + all_components."""
+    find_sketch (used by the create path) searches rootComponent + all_components."""
     def __init__(self, comps, design_type=1):
         super().__init__(comp=comps[0] if comps else None, all_components=list(comps),
                          design_type=design_type)

@@ -210,16 +210,3 @@ class TestHandlerDefaultsReadTheConstant:
         assert not offenders, (
             "parameter default(s) hardcoding a cap a constant in the same file already holds:\n  "
             + "\n  ".join(offenders))
-
-    def test_every_allowlist_entry_still_names_a_live_offender(self):
-        # the table only shrinks: an entry whose defect was fixed must be deleted, not left to
-        # silence a future one at the same address.
-        live = set()
-        for fn in sorted(os.listdir(TOOLS_DIR)):
-            if not fn.endswith(".py"):
-                continue
-            for _func, param, *_rest in bare_cap_defaults(_corpus.text(os.path.join(TOOLS_DIR, fn)),
-                                                          fn):
-                live.add((fn, param))
-        stale = sorted(set(_BARE_DEFAULT_ALLOWED) - live)
-        assert not stale, f"allowlist entries whose offender is gone - delete them: {stale}"

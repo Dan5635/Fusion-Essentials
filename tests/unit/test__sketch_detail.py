@@ -316,7 +316,7 @@ def _install_face_sketch(sketch, marker=2, move_ok=True):
 def _install_subcomponent(sketch):
     """A design whose sketch lives in an ACTIVATED SUB-COMPONENT, with the root component EMPTY - the
     normal assembly workflow (model_create_component(activate=true) + sketch_create). A lookup that
-    only checks rootComponent.sketches cannot resolve this shape; resolve_sketch must find it."""
+    only checks rootComponent.sketches cannot resolve this shape; find_sketch must find it."""
     root, sub = MakeComp(name="Root"), MakeComp(name="Sub", sketches=[sketch])
     # allComponents lives on the DESIGN in the live API (Component has no such attribute)
     design = make_design(comp=root, all_components=[root, sub])

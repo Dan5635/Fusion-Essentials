@@ -4,6 +4,7 @@
 """Live stories for measured model_edit_feature fields."""
 
 from verify_core import (
+    Independent,
     _RECALL, _ctx_get, _document_closed, _extruded, _home_address, _home_document,
     _made_component, _matched, _measured, _near, _new_document, _recall, _refused, _revolved, _drafted, _fg)
 
@@ -573,7 +574,8 @@ def _transition(rows, case, feature_key, action, field, mode=None, candidate_key
              ("design_edit_timeline", _roll_end(), _roll_landed("end"), None),
              ("model_inspect", lambda c: {"target": _ctx_get(c, case + "_component", "owned component"),
                  "include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True},
-              _shape_changed(shape_key, case + " changed", expected_shape), None),
+              Independent(_shape_changed(shape_key, case + " changed", expected_shape),
+                          ("model_edit_feature",), "tool:model_inspect"), None),
              ("model_inspect", lambda c: {"target": _ctx_get(c, case + "_control", "control body"),
                  "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
               _control_same(control_key, case + " changed"), None),

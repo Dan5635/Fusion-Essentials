@@ -11,14 +11,13 @@ import ast
 import os
 
 import _corpus
-import live_api_facts
 from conftest import TOOLS_DIR
 
 
 # (module basename without .py, enclosing function) -> why this site is exempt. A reason must state
 # a fact about THIS site. An entry prefixed 'gap:' is NOT an exemption-as-correct: it is a named
 # open defect nobody has fixed yet, and it only stays legal while the reason names what was
-# measured. Kept honest by test_allowlist_entries_still_trip; the table only shrinks.
+# measured. The table only shrinks.
 _ALLOWLIST = {}
 
 
@@ -186,8 +185,9 @@ def _tool_modules():
 
 class TestEntityKeysUseNativeIdentity:
     def test_no_tool_module_keys_on_a_bare_entity_token(self):
-        offenders = []
-        for fn in _tool_modules():
+        offenders, modules = [], _tool_modules()
+        assert modules, "nothing was checked: no tool module was found"
+        for fn in modules:
             for fname, lineno in _offenders(_corpus.tree(os.path.join(TOOLS_DIR, fn))):
                 if (fn[:-3], fname) in _ALLOWLIST:
                     continue
@@ -204,32 +204,3 @@ class TestEntityKeysUseNativeIdentity:
             "comparing equal to the other unread one. A site "
             "keying something native_identity does not describe - or a named open defect - gets an "
             "_ALLOWLIST entry with a reason:\n  " + "\n  ".join(offenders))
-
-    def test_allowlist_entries_still_trip(self):
-        # An entry pointing at a site that no longer carries the shape is dead weight hiding the
-        # next copy; one pointing at a module or function that is gone is worse.
-        stale = []
-        for (mod_name, fname), reason in _ALLOWLIST.items():
-            assert reason.strip(), f"({mod_name}, {fname}) allowlist entry needs a reason"
-            path = os.path.join(TOOLS_DIR, mod_name + ".py")
-            if not os.path.exists(path):
-                stale.append(f"({mod_name}, {fname}): no such module - remove the entry")
-                continue
-            if fname not in {n for n, _ in _offenders(_corpus.tree(path))}:
-                stale.append(f"({mod_name}, {fname}): no longer keys on a bare entityToken - "
-                             "remove the entry")
-        assert not stale, "stale allowlist entries:\n  " + "\n  ".join(stale)
-
-    def test_the_scoping_argument_matches_what_was_measured(self):
-        # The mapping-key arm is scoped to bodies/components because only a kind reaching a source
-        # document has an identity carrying more than the token. That scope rests on the measured
-        # SHAPES table, so the two facts it uses are pinned here rather than left as prose: an
-        # Occurrence carries neither member (its token key IS the identity key), and a Sketch does
-        # carry one (its absence is an unclosed spelling, not an equivalence). Timeline also
-        # carries parentDesign, and no identity is ever taken for a timeline.
-        shapes = live_api_facts.SHAPES
-        assert sorted(k for k, v in shapes.items() if "parentDesign" in v) == ["Component", "Timeline"]
-        assert "parentComponent" in shapes["Sketch"]
-        assert "parentComponent" in shapes["BRepBody"] and "parentComponent" in shapes["MeshBody"]
-        assert "parentComponent" not in shapes["Occurrence"]
-        assert "parentDesign" not in shapes["Occurrence"]

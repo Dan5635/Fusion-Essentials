@@ -606,7 +606,7 @@ def test_path_reader_and_typed_resolver_roundtrip_one_edge(scene, monkeypatch):
                               isOrientationAlongPath=False,
                               timelineObject=FakeTimelineObject("Pattern1", 2))
     monkeypatch.setattr(mod._inputs, "operand_in", lambda _label, value, *_args: (value, None))
-    monkeypatch.setattr(mod._inputs._common, "build_path", lambda *_args: (path, "edge", None))
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (path, "edge", None))
     resolved, reason = mod._inputs.FeatureEditOperands("references").resolve_for(
         ["edge-handle"], pattern, "path", mod._edit.FEATURE_EDIT_SUPPORT[pattern.objectType])
     assert reason is None and resolved is path

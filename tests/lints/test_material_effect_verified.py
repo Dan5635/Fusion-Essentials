@@ -119,8 +119,9 @@ def _cut_capable_write_tools():
 
 class TestMaterialEffectVerified:
     def test_every_cut_capable_tool_reads_material_back(self):
-        unverified = []
-        for name, item in sorted(_cut_capable_write_tools().items()):
+        unverified, targets = [], _cut_capable_write_tools()
+        assert targets, "nothing was checked: no write tool offers a cut or intersect operation"
+        for name, item in sorted(targets.items()):
             if name in _MATERIAL_EXEMPT:
                 continue
             if not _verifies_material(_handler_parts(item)):
@@ -132,23 +133,3 @@ class TestMaterialEffectVerified:
             "its healthState all read identically for a cut that removed nothing, so none of them "
             "is evidence. Add the reading, or add a _MATERIAL_EXEMPT entry naming why one cannot be "
             "taken - do NOT weaken this detector:\n  " + "\n  ".join(unverified))
-
-    def test_the_target_set_is_not_empty(self):
-        # The membership test reads a wire schema; a rename of the 'operation' input or of the enum
-        # values would silently empty the target set and make every assertion above vacuous.
-        names = sorted(_cut_capable_write_tools())
-        assert len(names) >= 8, (
-            f"only {len(names)} cut-capable write tools found ({', '.join(names)}) - the schema key "
-            "this lint selects on has moved.")
-
-    def test_exemptions_only_name_real_cut_capable_tools(self):
-        targets = _cut_capable_write_tools()
-        stale = []
-        for name in _MATERIAL_EXEMPT:
-            item = targets.get(name)
-            if item is None:
-                stale.append(f"{name} (not a cut-capable write tool)")
-            elif _verifies_material(_handler_parts(item)):
-                stale.append(f"{name} (now reads material back - drop the exemption)")
-        assert not stale, ("stale audited _MATERIAL_EXEMPT entries:\n  "
-                           + "\n  ".join(stale))

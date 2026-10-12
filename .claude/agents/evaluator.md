@@ -8,6 +8,10 @@ description: >
   under a lease.
 ---
 
+If this file was handed to you as your instructions, you are the Evaluator: follow it. If you
+were told to use it, start the agent that will hold this seat, as a session of its own where
+this file says so, with this file as its brief.
+
 You are the Evaluator for the Fusion-Essentials MCP server. Your judgment is kept separate from
 the Devs' so that a candidate is tested by someone who did not build it. Read CLAUDE.md at the
 repo root, and `tests/live/evals/README.md` for the proctor. Your first message names the channel

@@ -19,6 +19,7 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, scale, target_component
 from . import _common
+from . import _path_common
 from . import _geom
 from . import _inputs
 from . import _joints
@@ -425,13 +426,13 @@ def _on_path_distance(comp, design, k, path_raw, at_raw, dtype_raw, m):
         member = adsk.fusion.PathDistanceTypes.ProportionalPathDistanceType
         val, extra = adsk.core.ValueInput.createByReal(v), {"at_ratio": v}
     left_out = []
-    path, label, perr = _common.build_path(comp, path_raw, left_out=left_out)
+    path, label, perr = _inputs.build_path(comp, path_raw, left_out=left_out)
     if perr:
         return None, None, None, None, perr
     extra["path"] = label
     extra["distance_type"] = dtype
-    warning = _common.path_chain_warning(
-        safe(lambda: path.count), _common.path_sketch_curve_count(comp, path_raw), "datum", left_out)
+    warning = _path_common.path_chain_warning(
+        safe(lambda: path.count), _path_common.path_sketch_curve_count(comp, path_raw), "datum", left_out)
     if warning:
         extra["path_warning"] = warning
     return path, member, val, extra, None
@@ -757,7 +758,7 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
             if verr:
                 return None, None, verr
             left_out = []
-            path, label, perr = _common.build_path(comp, path_raw, left_out=left_out)
+            path, label, perr = _inputs.build_path(comp, path_raw, left_out=left_out)
             if perr:
                 return None, None, perr
             cpi = comp.constructionPlanes.createInput()
@@ -772,8 +773,8 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
             # reading and the same off-path disclosure.
             extra = {"path": label, "to_object": True, "offset": _inputs.expression_report(offset),
                      "path_extrapolates": True}
-            warning = _common.path_chain_warning(
-                safe(lambda: path.count), _common.path_sketch_curve_count(comp, path_raw),
+            warning = _path_common.path_chain_warning(
+                safe(lambda: path.count), _path_common.path_sketch_curve_count(comp, path_raw),
                 "datum", left_out)
             if warning:
                 extra["path_warning"] = warning

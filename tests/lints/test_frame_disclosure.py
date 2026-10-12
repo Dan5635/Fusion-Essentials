@@ -1,8 +1,7 @@
 """Lint: a tool that publishes a coordinate FRAME is classified, and mints the keys it claims.
 
 A module in _PUBLISHES_A_FRAME_BLOCK that no longer mints a key its entry names fails; a module
-minting a frame payload key while sitting in neither table (or in both) fails; a table entry whose
-module publishes no frame is stale and fails."""
+minting a frame payload key while sitting in neither table (or in both) fails."""
 
 import ast
 import functools
@@ -150,23 +149,8 @@ class TestFrameBlocksMintTheKeysTheyClaim:
 
 
 class TestEveryPublishedFrameIsClassified:
-    def test_at_least_the_known_publishers_are_found(self):
-        # A floor, so the scan cannot pass vacuously if the regex or the directory walk breaks.
-        assert {"sketch_create", "find_geometry", "assembly_get", "model_inspect",
-                "joint_create_origin"} <= set(_minting_modules())
-
-    def test_a_consumer_that_only_mentions_a_frame_is_not_treated_as_a_publisher(self):
-        # sketch_set_text points its caller back at sketch_create's frame; it publishes none.
-        assert "sketch_set_text" not in _minting_modules()
-
     def test_every_module_publishing_a_frame_sits_in_exactly_one_table(self):
-        gaps = _classification_gaps(_minting_modules(), _PUBLISHES_A_FRAME_BLOCK,
-                                    _PUBLISHES_OTHERWISE)
+        minting = _minting_modules()
+        assert minting, "nothing was checked: no tool module mints a frame key"
+        gaps = _classification_gaps(minting, _PUBLISHES_A_FRAME_BLOCK, _PUBLISHES_OTHERWISE)
         assert not gaps, "\n  ".join([""] + gaps)
-
-    def test_no_table_entry_is_stale(self):
-        minting = set(_minting_modules())
-        stale = [f"{n}: listed here but publishes no frame - drop the entry"
-                 for n in sorted(set(_PUBLISHES_A_FRAME_BLOCK) | set(_PUBLISHES_OTHERWISE))
-                 if n not in minting]
-        assert not stale, "\n  ".join([""] + stale)

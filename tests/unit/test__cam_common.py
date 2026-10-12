@@ -13,7 +13,7 @@ machine-changed flag), ``op_primary_state`` (the one-bucket-per-op priority orde
 -> h:m:s), and the machining-time estimate's feed_scale/rapid_feed/tool_change constants.
 
 Plus the shared CAM tree walk + resolvers - walk_cam_tree / resolve_cam_node / operations_under and
-the find_setup / find_operation / setup_names wrappers. This is the ONE traversal + by-name
+the find_setup / setup_names wrappers. This is the ONE traversal + by-name
 resolution every CAM tool shares: case-insensitive EXACT, a miss lists the available names, and a
 DUPLICATED name is REFUSED naming each hit's setup path (operation names legitimately collide
 across setups).
@@ -1597,7 +1597,7 @@ class TestTurningDimensions:
         assert out["diameter"] == 10.0 and "insert_type" not in out
 
 
-# ── find_setup (setup, available_names, error) / find_operation (obj, available_names) / setup_names ──
+# ── find_setup (setup, available_names, error) / setup_names ──
 
 
 class TestFindSetup:
@@ -1668,30 +1668,6 @@ class TestWalkOperations:
 
     def test_empty_setup_walks_to_nothing(self):
         assert cc.walk_operations(make_cam(FakeSetup("S1"))) == []
-
-
-class TestFindOperation:
-    def test_found_case_insensitive_across_setups(self):
-        cam = make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")]),
-                       FakeSetup("S2", ops=[FakeOperation("Drill1")]))
-        op, avail = cc.find_operation(cam, "drill1")     # lowercase input resolves 'Drill1'
-        assert op is not None and op.name == "Drill1"
-        assert avail == ["Face1", "Drill1"]
-
-    def test_not_found_returns_available(self):
-        cam = make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")]))
-        op, avail = cc.find_operation(cam, "Ghost")
-        assert op is None and avail == ["Face1"]
-
-    def test_duplicate_name_is_refused_with_setup_paths(self):
-        # a name duplicated across setups returns NO op (refusal, never first-match) and each
-        # duplicate's 'Setup / op' path as the available list, so even a plain not-found error
-        # surfaces the collision.
-        cam = make_cam(FakeSetup("S1", ops=[FakeOperation("Drill1")]),
-                       FakeSetup("S2", ops=[FakeOperation("Drill1")]))
-        op, avail = cc.find_operation(cam, "Drill1")
-        assert op is None
-        assert avail == ["S1 / Drill1", "S2 / Drill1"]
 
 
 # ── walk_cam_tree / resolve_cam_node / operations_under: the shared traversal + refusal resolver ──
@@ -2407,17 +2383,17 @@ class TestResolveOperationOnePool:
                                   folders=[FakeCAMFolder("Holes", ops=[FakeOperation("Face1")])]),
                         FakeSetup("S2", ops=[FakeOperation("Drill1")]))
 
-    def test_a_duplicate_lists_exactly_what_find_operation_lists(self):
+    def test_a_duplicate_lists_each_duplicates_setup_path(self):
         cam = self._cam()
         node, err, avail = cc.resolve_operation(cam, "Drill1")
         assert node is None and "ambiguous" in err
-        assert avail == ["S1 / Drill1", "S2 / Drill1"] == cc.find_operation(cam, "Drill1")[1]
+        assert avail == ["S1 / Drill1", "S2 / Drill1"]
 
-    def test_a_miss_lists_exactly_what_find_operation_lists(self):
+    def test_a_miss_lists_every_operation_name(self):
         cam = self._cam()
         node, err, avail = cc.resolve_operation(cam, "Ghost")
         assert node is None and "No operation named 'Ghost'" in err
-        assert avail == ["Drill1", "Face1", "Drill1"] == cc.find_operation(cam, "Ghost")[1]
+        assert avail == ["Drill1", "Face1", "Drill1"]
 
     def test_a_unique_name_resolves_and_still_lists_every_operation(self):
         cam = self._cam()

@@ -11,6 +11,7 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from . import _common, _inputs, _assert, _geom, _sheet_common
 from ._common import error, ok, safe
+from ._sheet_common import _KIND_SPEC, _POSITIONS
 
 _EDGE = _inputs.GeometryHandle("edge", require="edge", required=True)
 _KIND = _inputs.Choice("kind", ["flat", "open", "rolled", "rope", "teardrop", "double"], required=True)
@@ -19,18 +20,7 @@ _GAP = _inputs.Distance("gap", allow_zero=False, allow_negative=False, required=
 _RADIUS = _inputs.Distance("radius", allow_zero=False, allow_negative=False, required=False)
 _SETBACK = _inputs.Distance("setback", allow_zero=False, allow_negative=False, required=False)
 _POSITION = _inputs.Choice("position", ["start_edge", "tangent_to_side"], default="start_edge")
-_POSITIONS = {"start_edge": "StartEdgeBendPositionType", "tangent_to_side": "TangentToSideBendPositionType"}
 _DIMS = {"length": _LENGTH, "gap": _GAP, "radius": _RADIUS, "setback": _SETBACK}
-
-# kind -> (its dimensions in the setter's own order, the landed HemFeatureDefinition class suffix).
-_KIND_SPEC = {
-    "flat": (("length",), "FlatHemFeatureDefinition"),
-    "open": (("length", "gap"), "OpenHemFeatureDefinition"),
-    "rolled": (("radius", "angle_deg"), "RolledHemFeatureDefinition"),
-    "rope": (("length", "gap", "radius"), "RopeHemFeatureDefinition"),
-    "teardrop": (("radius", "length", "gap"), "TeardropHemFeatureDefinition"),
-    "double": (("gap", "length", "setback"), "DoubleHemFeatureDefinition"),
-}
 
 
 def _joined(names):

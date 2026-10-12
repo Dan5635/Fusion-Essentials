@@ -9,7 +9,7 @@ from decimal import Decimal
 import adsk.core
 import adsk.fusion
 
-from . import _inputs, _param_common, sheet_create_hem
+from . import _inputs, _param_common, _sheet_common
 
 MAP_BLURB = "hem_read/prepare_hem/write_hem - supported Hem definition reads, validation and rebuild."
 HEM_KINDS = ("flat", "open", "rolled", "double")
@@ -20,18 +20,18 @@ def hem_read(feature):
     """Return the comparable Hem controls and a restorable public expression definition."""
     definition = feature.definition
     kind = next((kind for kind in HEM_KINDS if definition.objectType ==
-                 "adsk::fusion::" + sheet_create_hem._KIND_SPEC[kind][1]), None)
+                 "adsk::fusion::" + _sheet_common._KIND_SPEC[kind][1]), None)
     if kind is None:
         raise ValueError("Only flat, open, rolled and double Hem definitions are supported.")
     flip = definition.isFlipped
     if type(flip) is not bool:
         raise ValueError("Hem flip is unreadable.")
-    position = next((name for name, member in sheet_create_hem._POSITIONS.items()
+    position = next((name for name, member in _sheet_common._POSITIONS.items()
                      if definition.bendPositionType == getattr(adsk.fusion.BendPositionTypes, member)), None)
     if position is None:
         raise ValueError("Hem bend position is not start_edge or tangent_to_side.")
     values, dimensions = {}, {}
-    for name in sheet_create_hem._KIND_SPEC[kind][0]:
+    for name in _sheet_common._KIND_SPEC[kind][0]:
         parameter = getattr(definition, "angle" if name == "angle_deg" else name)
         value, expression = parameter.value, parameter.expression
         if (isinstance(value, bool) or not isinstance(value, (int, float))
@@ -54,7 +54,7 @@ def prepare_hem(raw, before, design):
     kind = raw.get("type")
     if kind not in HEM_KINDS:
         raise ValueError(f"hem.type={kind!r}; use flat, open, rolled or double.")
-    dimensions = sheet_create_hem._KIND_SPEC[kind][0]
+    dimensions = _sheet_common._KIND_SPEC[kind][0]
     allowed = {"type", "flip", "bend_position", *dimensions}
     extra = set(raw) - allowed
     missing = set(dimensions) - set(raw)
@@ -64,7 +64,7 @@ def prepare_hem(raw, before, design):
     position = raw.get("bend_position", before["bend_position"])
     if type(flip) is not bool:
         raise ValueError(f"hem.flip={flip!r} must be boolean.")
-    if position not in sheet_create_hem._POSITIONS:
+    if position not in _sheet_common._POSITIONS:
         raise ValueError(f"hem.bend_position={position!r}; use start_edge or tangent_to_side.")
     values, public = {}, {}
     for name in dimensions:
@@ -98,7 +98,7 @@ def write_hem(feature, payload):
     """Rebuild one Hem from its expressions, preserving or restoring the requested flip and position."""
     kind = payload["type"]
     arguments = [adsk.core.ValueInput.createByString(payload["dimensions"][name]["expression"])
-                 for name in sheet_create_hem._KIND_SPEC[kind][0]]
-    position = getattr(adsk.fusion.BendPositionTypes, sheet_create_hem._POSITIONS[payload["bend_position"]])
+                 for name in _sheet_common._KIND_SPEC[kind][0]]
+    position = getattr(adsk.fusion.BendPositionTypes, _sheet_common._POSITIONS[payload["bend_position"]])
     if getattr(feature, _METHODS[kind])(*arguments, payload["flip"], position) is not True:
         raise RuntimeError(f"Fusion did not confirm the {kind} Hem rebuild.")

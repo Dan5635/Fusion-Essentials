@@ -18,6 +18,7 @@ from . import _common
 from . import _inputs
 from . import _outputs
 from . import _assert
+from ._assembly_common import _move_delta, _occ_origin
 from ._joints import (AXES as _AXES, FLIP_HINT, OFFSET_PARAM_NOTE, apply_motion,
                       build_joint_geometry as _joint_geometry_for,
                       is_joint_origin as _is_joint_origin, motion_param_names,
@@ -59,33 +60,6 @@ def _joint_input_for(entity):
     if _is_joint_origin(entity):
         return entity, "joint_origin", None
     return _joint_geometry_for(entity)
-
-
-def _occ_origin(occ):
-    """A placed occurrence's world translation in cm, or None."""
-    point = _common.occurrence_world_translation(occ)
-    return tuple(point.values()) if point is not None else None
-
-
-# Above this the reposition is reported as moved_by. 0.005 cm = 0.05 mm - below it the move is joint
-# solver noise, not a teleport worth flagging.
-_MOVE_TOL_CM = 0.005
-
-
-def _move_delta(before, after):
-    """{distance_mm, direction} if the moving occurrence shifted more than _MOVE_TOL_CM, else
-    None."""
-    # joint_at aligns the two picked KEYPOINTS (a planar face's centroid, an edge's midpoint), so
-    # pairing a small feature with a large one repositions the part by the keypoint gap.
-    if before is None or after is None:
-        return None
-    dx, dy, dz = after[0] - before[0], after[1] - before[1], after[2] - before[2]
-    dist = (dx * dx + dy * dy + dz * dz) ** 0.5
-    if dist <= _MOVE_TOL_CM:
-        return None
-    inv = 1.0 / dist
-    return {"distance_mm": round(dist * 10.0, 3),
-            "direction": [round(dx * inv, 4), round(dy * inv, 4), round(dz * inv, 4)]}
 
 
 def _axis_entity(entity):

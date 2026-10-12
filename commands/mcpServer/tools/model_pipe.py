@@ -14,8 +14,10 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, ok, safe, target_component, build_path
+from ._common import error, ok, safe, target_component
+from ._inputs import build_path
 from . import _common
+from . import _path_common
 from . import _design_common
 from . import _edit_feature_common
 from . import _assert
@@ -160,7 +162,7 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     # What the built Path HOLDS, beside what the request named: the pipe follows these curves and
     # no others, so a chain that stopped short pipes a stub of the intended run.
     path_curves = _common.counted(lambda: pipe_path.count)
-    sketch_curves = _common.path_sketch_curve_count(comp, path)
+    sketch_curves = _path_common.path_sketch_curve_count(comp, path)
     path_closed = safe(lambda: pipe_path.isClosed)
     if frac_two is not None and path_closed is not True:
         if path_closed is None:
@@ -330,7 +332,7 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     }
     if sketch_curves is not None:
         payload["path_sketch_curves"] = sketch_curves
-    warning = _common.path_chain_warning(path_curves, sketch_curves, "pipe", left)
+    warning = _path_common.path_chain_warning(path_curves, sketch_curves, "pipe", left)
     if warning:
         payload["note"] += " " + warning
     if op_key in ("cut", "intersect"):

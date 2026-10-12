@@ -11,8 +11,10 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, ok, safe, target_component, root_body_advisory, build_path
+from ._common import error, ok, safe, target_component, root_body_advisory
+from ._inputs import build_path
 from . import _common
+from . import _path_common
 from . import _design_common
 from . import _edit_feature_common
 from . import _geom
@@ -156,7 +158,7 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     path_curves = _common.counted(lambda: sweep_path.count)
     if path_curves is None or path_curves < 1:
         return error("The solid sweep path has no readable curves; draw one connected path.")
-    sketch_curves = _common.path_sketch_curve_count(host, path)
+    sketch_curves = _path_common.path_sketch_curve_count(host, path)
     sweeps = host.features.sweepFeatures
     op = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
     try:
@@ -242,7 +244,7 @@ def _solid_sweep(design, solid_body, path, op_key, orient_key, as_surface,
     note = "Solid body swept into a new result; its source tool body retains its geometry."
     if health == states.WarningFeatureHealthState:
         note += " Feature warning: " + str(safe(lambda: feature.errorOrWarningMessage) or "details unreadable") + "."
-    warning = _common.path_chain_warning(path_curves, sketch_curves, "sweep", left)
+    warning = _path_common.path_chain_warning(path_curves, sketch_curves, "sweep", left)
     if warning:
         note += " " + warning
     return ok({"swept": True, "feature": safe(lambda: feature.name),
@@ -352,7 +354,7 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
     # What the built Path HOLDS, beside what the request named: the profile is driven over these
     # curves and no others, so a chain that stopped short sweeps a stub of the intended run.
     path_curves = _common.counted(lambda: sweep_path.count)
-    sketch_curves = _common.path_sketch_curve_count(host, path)
+    sketch_curves = _path_common.path_sketch_curve_count(host, path)
     guide_sweep_path = None
     guide_path_curves = None
     guide_label = None
@@ -566,7 +568,7 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
     join_clause = _common.join_new_body_clause(op_key, bodies_before, body_names)
     if join_clause:
         note += " " + join_clause
-    warning = _common.path_chain_warning(path_curves, sketch_curves, "sweep", left)
+    warning = _path_common.path_chain_warning(path_curves, sketch_curves, "sweep", left)
     if warning:
         note += " " + warning
 

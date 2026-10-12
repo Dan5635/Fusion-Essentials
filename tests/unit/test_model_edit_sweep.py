@@ -149,8 +149,8 @@ def rig(monkeypatch):
     monkeypatch.setattr(mod, "_operand_error", lambda *_args: None)
     monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
         "new", True, False, sweep.parentComponent, None, None))
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (("arc",), "arc", None))
-    monkeypatch.setattr(mod._common, "path_sketch_curve_count", lambda *_args: 1)
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (("arc",), "arc", None))
+    monkeypatch.setattr(mod._path_common, "path_sketch_curve_count", lambda *_args: 1)
     monkeypatch.setattr(mod, "_profile_members", lambda operand: operand)
     monkeypatch.setattr(mod, "_path_members", lambda operand: operand)
     monkeypatch.setattr(mod, "_same_feature", lambda *_args: True)
@@ -380,7 +380,7 @@ def test_a_later_operand_is_refused_after_read_only_definition_preflight(rig, mo
     sweep, timeline = rig
     later = Sketch(name="PathLater", timeline_object=SimpleNamespace(index=11))
     line = SimpleNamespace(entityToken="later-line", parentSketch=later)
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(line), "p", None))
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (_path_of(line), "p", None))
     monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
         line, True, False, sweep.parentComponent, None, None))
     rolls = []
@@ -395,7 +395,7 @@ def test_a_guided_sweep_mode_refusal_precedes_later_operand_advice(rig, monkeypa
     sweep.guideRail = object()
     later = Sketch(name="PathLater", timeline_object=SimpleNamespace(index=11))
     line = SimpleNamespace(entityToken="later-line", parentSketch=later)
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(line), "p", None))
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (_path_of(line), "p", None))
     rolls = []
     sweep.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
 
@@ -421,7 +421,7 @@ def test_a_later_operand_from_another_component_gets_the_owner_refusal_not_reord
     other = SimpleNamespace(name="Other")
     later = Sketch(name="PathLater", timeline_object=SimpleNamespace(index=11), parent_component=other)
     line = SimpleNamespace(entityToken="later-line", parentSketch=later, isValid=True)
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(line), "p", None))
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (_path_of(line), "p", None))
     monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
         line, True, False, other, None, None))
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: a is b)
@@ -439,7 +439,7 @@ def test_a_later_open_profile_gets_the_mode_refusal_only_for_a_solid_sweep(rig, 
     curve = SimpleNamespace(entityToken="open-curve", parentSketch=later, isValid=True)
     monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
         Profile(parent_sketch=None), False, True, sweep.parentComponent, later, None))
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(curve), "p", None))
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (_path_of(curve), "p", None))
     monkeypatch.setattr(mod, "_operand_error", _real_operand_error)
     rigged = mod._definition
     monkeypatch.setattr(mod, "_definition", lambda entity: {**rigged(entity), "is_solid": solid})
@@ -477,7 +477,7 @@ def test_a_rolled_back_path_sketch_is_named_with_its_row_and_the_roll_remedy(rig
         sketch.objectType = "adsk::fusion::Sketch"
         timeline._items.append(FakeTimelineObject(name="PathLater", index=3 + i, entity=sketch,
                                                   rolled_back=rolled))
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (
         None, None, "No sketch named 'PathLater' for the path. Use sketch_get or sketch_create."))
     rolls = []
     sweep.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
@@ -505,7 +505,7 @@ def test_a_path_sketch_in_a_collapsed_group_gets_the_ungroup_hint_before_any_rol
     group.isCollapsed, group.count, group.item = True, 1, lambda _i: member
     timeline.timelineGroups = _NamedCollection([group])
     line = SimpleNamespace(entityToken="later-line", parentSketch=grouped)
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(line), "p", None))
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (_path_of(line), "p", None))
     rolls = []
     sweep.timelineObject.rollTo = lambda _before: rolls.append(True) or timeline.roll()
     text = error_message(mod.handler(feature="Sweep1", action="path", path="sketch:PathLater"))
@@ -593,7 +593,7 @@ def test_an_edge_of_a_later_body_names_the_one_feature_holding_that_body(
     if group:
         timeline._items.append(FakeTimelineObject(name="G", index=4, is_group=True))
     # The handle resolves at the marker and is refused at the Sweep's edit position.
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (
         (_path_of(edge), "p", None) if timeline.markerPosition == 3 else (None, None, _UNRESOLVED)))
     text = error_message(mod.handler(feature="Sweep1", action="path", path="later-edge"))
     assert text == (_LATER_BODY if named else f"Editing 'Sweep1': {_UNRESOLVED} Nothing was edited.")
@@ -657,7 +657,7 @@ def _path_swap(rig, monkeypatch, old, new, rebuild, operation="NewBodyFeatureOpe
         "operation": getattr(adsk.fusion.FeatureOperations, operation),
         "orientation": adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType,
         "is_solid": True})
-    monkeypatch.setattr(mod._common, "build_path", lambda *_args: (_path_of(new), "sketch:PathB", None))
+    monkeypatch.setattr(mod._inputs, "build_path", lambda *_args: (_path_of(new), "sketch:PathB", None))
     monkeypatch.setattr(mod, "_all_shapes", lambda _design: {("target", None): {
         "component": "Host", "body": "Target",
         "shape": {"volume_cm3": 1 if sweep.path.item(0).entity is old else 2}}})
@@ -1034,7 +1034,7 @@ def test_open_surface_opaque_profile_reads_back_as_proxy_curve_path(rig, monkeyp
     monkeypatch.setattr(mod, "_operand_error", _real_operand_error)
     monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
         opaque, False, True, host, new_sketch, None))
-    monkeypatch.setattr(mod._common, "build_path", lambda _host, raw: (
+    monkeypatch.setattr(mod._inputs, "build_path", lambda _host, raw: (
         new_profile, raw, None))
     monkeypatch.setattr(mod, "_all_shapes", lambda _design: {
         ("target", None): {"component": "Host", "body": "Sheet",
@@ -1162,8 +1162,8 @@ def test_partial_path_edit_discloses_omitted_curve_ids_without_changing_operand(
         if left is not None:
             left.append("line:1")
         return ("arc",), "sketch:Partial", None
-    monkeypatch.setattr(mod._common, "build_path", build)
-    monkeypatch.setattr(mod._common, "path_sketch_curve_count", lambda *_args: 2)
+    monkeypatch.setattr(mod._inputs, "build_path", build)
+    monkeypatch.setattr(mod._path_common, "path_sketch_curve_count", lambda *_args: 2)
     result = payload(mod.handler(feature="Sweep1", action="path", path="sketch:Partial"))
     assert sweep.path == ("arc",) and sweep.assignments == 1
     assert "Not in the path: line:1" in result["note"]

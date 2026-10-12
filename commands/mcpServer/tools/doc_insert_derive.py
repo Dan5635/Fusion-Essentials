@@ -21,6 +21,7 @@ from . import _edit_feature_common
 from . import _inputs
 from . import _outputs
 from ._data_common import _resolve_data_file
+from ._param_common import parameter_census
 
 app = adsk.core.Application.get()
 
@@ -363,44 +364,7 @@ def _mapped_bodies(feature, sources, excluded, comp):
     return rows, None
 
 
-_DERIVED_PARAMETER = "DerivedParameter"     # the objectType suffix a derived parameter reads
-_PARAMETER_CAP = 5000                       # parameters one census reads
 _NAMES_CAP = 50                             # names one reply lists
-
-
-def _collection_names(getter):
-    """The sorted names in a counted collection, or None when any read fails."""
-    collection = safe(getter)
-    count = _common.counted(lambda: collection.count)
-    if count is None:
-        return None
-    names = [safe(lambda i=i: collection.item(i).name) for i in range(count)]
-    return None if any(not isinstance(n, str) for n in names) else sorted(names)
-
-
-def parameter_census(design, deep=False):
-    """({name: {kind, derived, user}}, problem) over design.allParameters; `deep` adds dependents."""
-    params = safe(lambda: design.allParameters)
-    count = _common.counted(lambda: params.count)
-    if count is None:
-        return None, "design.allParameters did not count"
-    if count > _PARAMETER_CAP:
-        return None, f"the design holds {count} parameters, over the {_PARAMETER_CAP} read here"
-    users = _collection_names(lambda: design.userParameters)
-    census = {}
-    for i in range(count):
-        p = safe(lambda i=i: params.item(i))
-        name = safe(lambda: p.name)
-        if not isinstance(name, str) or name in census:
-            return None, f"parameter {i} of design.allParameters did not read a distinct name"
-        kind = safe(lambda: p.objectType.rsplit("::", 1)[-1])
-        row = {"kind": kind, "derived": None if kind is None else kind == _DERIVED_PARAMETER,
-               "user": None if users is None else name in users}
-        if deep:
-            row["expression"] = safe(lambda: p.expression)
-            row["dependents"] = _collection_names(lambda: p.dependentParameters)
-        census[name] = row
-    return census, None
 
 
 def imported_parameters(before, after):

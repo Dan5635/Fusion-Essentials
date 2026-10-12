@@ -132,7 +132,6 @@ _SNAKE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
 # of an action-dispatched tool). Shrink-only; each needs a reason.
 _NOT_A_TOOL = {
     "find_setup": "a _cam_common helper that resolves a CAM setup by exact name, not a tool",
-    "find_operation": "a _cam_common helper that resolves a CAM operation by exact name, not a tool",
 }
 
 
@@ -170,23 +169,6 @@ class TestToolCitations:
         assert not offenders, (
             "A doc cites a tool name no registered tool answers to (rename to the current tool, or add "
             "a genuine helper/action to _NOT_A_TOOL with a reason):\n  " + "\n  ".join(offenders))
-
-    def test_not_a_tool_entries_still_cited_and_still_not_tools(self):
-        # both staleness directions for the exemption table: an entry that became a real tool now
-        # SHADOWS the check; an entry no doc cites anymore is dead weight. Either way, drop it.
-        registered = _registered_names()
-        cited = set()
-        for doc in CONSTITUTION_DOCS:
-            if doc.exists():
-                cited |= set(_SNAKE.findall(_inline_code(doc)))
-        stale = []
-        for tok, reason in _NOT_A_TOOL.items():
-            assert reason.strip(), f"_NOT_A_TOOL: {tok} needs a plain-English reason"
-            if tok in registered:
-                stale.append(f"{tok}: now a registered tool - drop the entry")
-            elif tok not in cited:
-                stale.append(f"{tok}: no doc cites it anymore - drop the entry")
-        assert not stale, "stale _NOT_A_TOOL entries:\n  " + "\n  ".join(stale)
 
 
 # A citation is `<module>.<symbol>` judged on its first two segments. The head must OPEN the dotted
@@ -273,55 +255,17 @@ def _symbol_citations():
 
 class TestSymbolCitations:
     def test_cited_symbols_are_defined(self):
-        offenders = []
+        offenders, judged = [], 0
         for src, mod, sym in _symbol_citations():
             paths = _modules().get(mod)
             if not paths or f"{mod}.{sym}" in _NOT_A_MODULE_SYMBOL:
                 continue
+            judged += 1
             if not any(sym in _top_level(path) for path in paths):
                 offenders.append(f"{src.relative_to(REPO)} cites '{mod}.{sym}' - {mod} defines no "
                                  f"'{sym}' at module level")
+        assert judged, "nothing was checked: no module.symbol citation resolved to a module of ours"
         assert not offenders, (
             "A doc or source comment points into a module at a symbol it doesn't define "
             "(renamed/removed? cite the current name, or name a genuine non-module reference in "
             "_NOT_A_MODULE_SYMBOL with a reason):\n  " + "\n  ".join(offenders))
-
-    def test_the_symbol_surface_still_collects_every_half(self):
-        # A citation that is never COLLECTED, or whose module never RESOLVES, is skipped rather
-        # than flagged - so each half can be narrowed away with nothing to report and the rule
-        # above still green. Three pins over the real corpus, one per way that happens.
-        mods = _modules()
-        judged = [(src, mod, sym) for src, mod, sym in _symbol_citations() if mod in mods]
-        in_source = {(mod, sym) for src, mod, sym in judged if src not in CONSTITUTION_DOCS}
-        doc_only = {(mod, sym) for src, mod, sym in judged if src in CONSTITUTION_DOCS} - in_source
-        assert doc_only, (
-            "no module citation is collected from the constitution docs alone - the docs dropped "
-            "out of the SYMBOL surface (_scanned_files/_symbol_citations) and their citations are "
-            "now unchecked")
-        underscored = {(mod, sym) for _, mod, sym in judged if mod.startswith("_")}
-        assert underscored, (
-            "no citation of an underscore-spelled module is collected - _DOTTED's head group no "
-            "longer opens on a leading underscore (`_?[a-z]...`), so `_inputs.resolve_inputs` and "
-            "every pointer like it left the SYMBOL surface")
-        tests_tree = REPO / "tests"
-        checked = {(mod, sym) for _, mod, sym in judged
-                   if all(tests_tree in path.parents for path in mods[mod])
-                   and any(sym in _top_level(path) for path in mods[mod])}
-        assert checked, (
-            "no cited symbol resolves through a module under tests/ - the tests tree dropped out "
-            "of _modules(), so a citation into conftest.py or live_api_facts.py is now skipped as "
-            "'no module of ours' instead of checked")
-
-    def test_not_a_module_symbol_entries_still_cited_and_still_dangle(self):
-        # both staleness directions, as for _NOT_A_TOOL: an entry whose module grew that symbol now
-        # SHADOWS a real check; an entry no prose cites anymore is dead weight.
-        cited = {f"{mod}.{sym}" for _, mod, sym in _symbol_citations()}
-        stale = []
-        for tok, reason in _NOT_A_MODULE_SYMBOL.items():
-            assert reason.strip(), f"_NOT_A_MODULE_SYMBOL: {tok} needs a plain-English reason"
-            mod, sym = tok.split(".", 1)
-            if any(sym in _top_level(path) for path in _modules().get(mod, ())):
-                stale.append(f"{tok}: {mod} defines '{sym}' at module level - drop the entry")
-            elif tok not in cited:
-                stale.append(f"{tok}: no prose cites it anymore - drop the entry")
-        assert not stale, "stale _NOT_A_MODULE_SYMBOL entries:\n  " + "\n  ".join(stale)

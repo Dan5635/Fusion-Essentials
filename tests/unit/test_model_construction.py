@@ -1117,7 +1117,7 @@ def _stub_path(monkeypatch, path=_DEFAULT_PATH, label="1 edge(s)", err=None, omi
         if left_out is not None:
             left_out.extend(omitted)
         return path, label, err
-    monkeypatch.setattr(cn._common, "build_path", build)
+    monkeypatch.setattr(cn._inputs, "build_path", build)
     return path
 
 
@@ -1180,7 +1180,7 @@ class TestOnPath:
         comp = _install()
         path = type("Path", (), {"count": 2})()
         _stub_path(monkeypatch, path=path, label="sketch:Spine", omitted=("line:1",))
-        monkeypatch.setattr(cn._common, "path_sketch_curve_count", lambda _comp, _raw: 3)
+        monkeypatch.setattr(cn._path_common, "path_sketch_curve_count", lambda _comp, _raw: 3)
         if route == "point":
             out = _payload(cn.handler(kind="point", mode="on_path", path="sketch:Spine", at=0.5))
             assert comp.constructionPoints.added == 1

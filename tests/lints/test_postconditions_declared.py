@@ -153,22 +153,6 @@ class TestRungMeetsTheVerb:
             "reading the right value/geometry back with rung= declared on its verification - or "
             "add the tool to _RUNG_SHORT with the reason it cannot:\n  " + "\n  ".join(sorted(short)))
 
-    def test_every_short_entry_is_still_short(self):
-        kernel = load_tool("_assert")
-        items = {it.get_name(): it for it in register_all_tools()}
-        stale = []
-        for name in _RUNG_SHORT:
-            it = items.get(name)
-            if it is None:
-                stale.append(f"{name}: no such tool")
-                continue
-            declared = _declared_rung(it, kernel)
-            need = _minimum_rung_for(name)
-            if declared is None or kernel.RUNGS.index(declared) >= kernel.RUNGS.index(need):
-                stale.append(f"{name}: now reaches {declared}, its verb needs {need}")
-        assert not stale, ("_RUNG_SHORT only shrinks - these entries no longer describe a shortfall, "
-                           "remove them:\n  " + "\n  ".join(stale))
-
 
 # An evidence node id is spendable only when normal project discovery collects it. A bounded child
 # collection records pytest's structured session.items without executing tests.

@@ -1,0 +1,4473 @@
+{
+  "bootstrap": {
+    "complete": true,
+    "executed_families": [
+      "cloud",
+      "details",
+      "fff_export",
+      "finale",
+      "hub_cam",
+      "lookup",
+      "mesh",
+      "motion",
+      "nesting",
+      "part_cam",
+      "render",
+      "resize",
+      "sheet_coupon",
+      "sheet_flange",
+      "sheet_positions",
+      "sheet_selected",
+      "showcase",
+      "sketch",
+      "small_edits",
+      "solids",
+      "surfaces",
+      "swarf_cam",
+      "vise"
+    ],
+    "families": [
+      "cloud",
+      "details",
+      "fff_export",
+      "finale",
+      "hub_cam",
+      "lookup",
+      "mesh",
+      "motion",
+      "nesting",
+      "part_cam",
+      "render",
+      "resize",
+      "sheet_coupon",
+      "sheet_flange",
+      "sheet_positions",
+      "sheet_selected",
+      "showcase",
+      "sketch",
+      "small_edits",
+      "solids",
+      "surfaces",
+      "swarf_cam",
+      "vise"
+    ],
+    "fusion_version": "2706.0.116",
+    "raw": {
+      "file": "family-evidence-73838f71081b035b400ede1d878666a099d469df49097406696b3dc9bc3555bc.json",
+      "sha256": "73838f71081b035b400ede1d878666a099d469df49097406696b3dc9bc3555bc"
+    },
+    "run_id": "n1bootstrap1012b"
+  },
+  "bootstrap_run_id": "n1bootstrap1012b",
+  "families": {
+    "cloud": {
+      "act_modes": [
+        [
+          "ACT 11a - CLOUD: THE DATA MODEL",
+          "narrative"
+        ],
+        [
+          "ACT 11b - CLOUD: THE SAVED DOCUMENT",
+          "narrative"
+        ],
+        [
+          "ACT 11b2 - CLOUD: LINK GUARD REVIEW",
+          "skipped(cloud_link_crash_review_authorization not entitled (deferred and unverified; separate owner-approved crash review and code change required))"
+        ],
+        [
+          "ACT 11c - CLOUD: THE DRAWING",
+          "narrative"
+        ],
+        [
+          "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE",
+          "narrative"
+        ],
+        [
+          "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS",
+          "narrative"
+        ],
+        [
+          "ACT 11f - CLOUD: DERIVE EDITS",
+          "narrative"
+        ],
+        [
+          "ACT 11h - CLOUD: COMPONENT COPY",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 11a - CLOUD: THE DATA MODEL",
+        "ACT 11b - CLOUD: THE SAVED DOCUMENT",
+        "ACT 11b2 - CLOUD: LINK GUARD REVIEW",
+        "ACT 11c - CLOUD: THE DRAWING",
+        "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE",
+        "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS",
+        "ACT 11f - CLOUD: DERIVE EDITS",
+        "ACT 11h - CLOUD: COMPONENT COPY"
+      ],
+      "acts_hash": "2729a343032f2ed9677500eb6cf6d8d147c2b6e11f71287dc644fe70baecf3d4",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "0aaf3619db514f456b6c4feb0bd2b0d232070103b93cc0069c05564c32ffa696",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "design_delete_feature",
+            "joint_create_as_built",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_get",
+            "cam_apply_template",
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete_template",
+            "cam_edit_operation",
+            "cam_edit_tools",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_inspect_toolpaths",
+            "cam_save_template",
+            "data_create_folder",
+            "data_delete_file",
+            "data_delete_folder",
+            "data_download_file",
+            "data_get",
+            "data_get_upload_status",
+            "data_move_file",
+            "data_upload_file",
+            "design_add_instance",
+            "design_configure",
+            "design_edit_timeline",
+            "design_get",
+            "doc_activate",
+            "doc_close",
+            "doc_copy",
+            "doc_get",
+            "doc_insert_derive",
+            "doc_insert_occurrence",
+            "doc_new",
+            "doc_open",
+            "doc_restore_version",
+            "doc_save",
+            "doc_save_as",
+            "doc_save_milestone",
+            "doc_update_xref",
+            "drawing_add_sketch",
+            "drawing_add_symbol",
+            "drawing_create",
+            "drawing_delete_sketch",
+            "drawing_dimension",
+            "drawing_edit_revisions",
+            "drawing_edit_sheet",
+            "drawing_export",
+            "drawing_get",
+            "drawing_get_status",
+            "drawing_insert_image",
+            "drawing_update",
+            "find_geometry",
+            "model_create_component",
+            "model_edit_feature",
+            "model_extrude",
+            "model_inspect",
+            "param_add",
+            "param_get",
+            "param_set",
+            "sketch_get",
+            "sys_execute_script",
+            "view_screenshot",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 62
+        }
+      },
+      "family": "cloud",
+      "family_run_id": "8342f7876c9b46a78218920a859ab1fc",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [
+        {
+          "act": "ACT 11b2 - CLOUD: LINK GUARD REVIEW",
+          "capability": "cloud_link_crash_review_authorization",
+          "kind": "act",
+          "reason": "quarantined capability is outside admitted scope",
+          "state": "not-in-scope",
+          "tools": [
+            "data_delete_file",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_insert_occurrence",
+            "doc_new",
+            "doc_save_as",
+            "find_geometry",
+            "joint_create",
+            "joint_drive",
+            "joint_motion_link"
+          ]
+        }
+      ],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-ac738392f58559eee3f3c34e2e1644c7720e9e0ddfb6bd8bf1b6db66f3ef31eb.json",
+        "sha256": "ac738392f58559eee3f3c34e2e1644c7720e9e0ddfb6bd8bf1b6db66f3ef31eb"
+      },
+      "row_count": 950,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "details": {
+      "act_modes": [
+        [
+          "ACT 5 - DETAILS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 5 - DETAILS"
+      ],
+      "acts_hash": "2ce9cb9f35363cc8ab870b7d7b0cb3428ae315f44a4b7f814e5651b86fdaf4d1",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "ca4dc564ba48951664e6573a1941c44edcc68bc6498950ee3d84a2cafa3bdf0f",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "sketch_edit_curve",
+            "view_screenshot_multi",
+            "view_switch_workspace"
+          ],
+          "covered": [
+            "model_edit_feature"
+          ],
+          "refusals-only": [
+            "sketch_set_text"
+          ],
+          "self-reported": [
+            "assembly_capture_position",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_move",
+            "cam_find_holes",
+            "cam_find_pockets",
+            "design_activate_component",
+            "design_add_instance",
+            "design_delete_feature",
+            "design_delete_occurrence",
+            "design_edit_timeline",
+            "design_get",
+            "design_recompute",
+            "design_remove_feature",
+            "design_set_mode",
+            "design_set_name",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_create",
+            "joint_create_origin",
+            "mesh_get",
+            "mesh_to_brep",
+            "model_chamfer",
+            "model_combine",
+            "model_construction",
+            "model_create_component",
+            "model_create_rib",
+            "model_draft",
+            "model_edit_body",
+            "model_edit_extrude",
+            "model_emboss",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_measure_continuity",
+            "model_mirror",
+            "model_move",
+            "model_offset_face",
+            "model_pattern_circular",
+            "model_pattern_path",
+            "model_pattern_rectangular",
+            "model_pipe",
+            "model_replace_face",
+            "model_revolve",
+            "model_scale",
+            "model_shell",
+            "model_split",
+            "model_sweep",
+            "model_thread",
+            "param_add",
+            "param_delete",
+            "param_get",
+            "param_set",
+            "param_set_favorite",
+            "save_as_mesh",
+            "sketch_add_3d_spline",
+            "sketch_add_geometry",
+            "sketch_constrain",
+            "sketch_create",
+            "sketch_dimension",
+            "sketch_get",
+            "sketch_project",
+            "surface_extrude",
+            "surface_offset",
+            "surface_patch",
+            "sys_execute_script",
+            "view_screenshot",
+            "view_section",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 3,
+          "covered": 1,
+          "refusals-only": 1,
+          "self-reported": 74
+        }
+      },
+      "family": "details",
+      "family_run_id": "cef20cfb29344f1fb577fabd58734600",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [
+        {
+          "act": "ACT 5 - DETAILS",
+          "capability": "machining_extension",
+          "kind": "step",
+          "observed_verdict": true,
+          "polarity": "unless",
+          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "state": "not-applicable",
+          "tools": [
+            "cam_find_holes"
+          ]
+        }
+      ],
+      "producer_run_ids": [
+        "b7de32293e6449b4a639b74062e1ca1c"
+      ],
+      "producers": [
+        {
+          "closure_hash": "ca4dc564ba48951664e6573a1941c44edcc68bc6498950ee3d84a2cafa3bdf0f",
+          "family_run_id": "cef20cfb29344f1fb577fabd58734600",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 74,
+          "rows_hash": "829694266d28606f0230aaf1e99206df089c32b074ea3130d1bc8de850c7abf2",
+          "run_id": "b7de32293e6449b4a639b74062e1ca1c"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-f1c7d4288246e9ab155841cfc2070ac48a7b856a26fddc1b2c5f10e6d5ced37d.json",
+        "sha256": "f1c7d4288246e9ab155841cfc2070ac48a7b856a26fddc1b2c5f10e6d5ced37d"
+      },
+      "row_count": 3232,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": [
+        {
+          "reader_is_read": true,
+          "row_index": 1715,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1752,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1789,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1826,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1847,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1880,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1918,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1942,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1978,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 2021,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 2045,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        }
+      ]
+    },
+    "fff_export": {
+      "act_modes": [
+        [
+          "ACT 10c16 - CAM: FFF EXPORT",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 10c16 - CAM: FFF EXPORT"
+      ],
+      "acts_hash": "fd0d2a4c8d80b11203e240a938d3fb0b454c57ab55ddff7c344b19e441663977",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "e3d0f4d86c6d17b07d96d0ac81ac01cdc49e3f88422ac8c7f868b6ce646b1559",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "model_extrude",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "cam_create_setup",
+            "cam_export_setup",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_post",
+            "cam_show_toolpath",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "sys_execute_script"
+          ]
+        },
+        "counts": {
+          "called": 5,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 12
+        }
+      },
+      "family": "fff_export",
+      "family_run_id": "3c1e3419a60243f68b92fee30440dce2",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-e8ec7750673e60fa9cf4f3974088fd3d57e96eb4ba5994603543a59a9b0ea853.json",
+        "sha256": "e8ec7750673e60fa9cf4f3974088fd3d57e96eb4ba5994603543a59a9b0ea853"
+      },
+      "row_count": 29,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "finale": {
+      "act_modes": [
+        [
+          "FINALE",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "FINALE"
+      ],
+      "acts_hash": "b1a690b3085bd1693bd31bb122cf29906a78879338aa3a8d783a94e8d60f4562",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "40f303f5d009eb225c302ebccba1e2ee216176be5113df6f80fd795d49c1997e",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "doc_new"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "doc_close",
+            "doc_get",
+            "view_set",
+            "view_switch_workspace"
+          ]
+        },
+        "counts": {
+          "called": 2,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 4
+        }
+      },
+      "family": "finale",
+      "family_run_id": "fa4614e2f45f41c29637246c2febe178",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "27a0969738e14dd5a885792f906c481f"
+      ],
+      "producers": [
+        {
+          "closure_hash": "40f303f5d009eb225c302ebccba1e2ee216176be5113df6f80fd795d49c1997e",
+          "family_run_id": "fa4614e2f45f41c29637246c2febe178",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 2,
+          "rows_hash": "135710d54dbf27d35b38a59af8cdb24812b022c198baac0cb83a30f2268d1dbd",
+          "run_id": "27a0969738e14dd5a885792f906c481f"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-9bd53b428e90d9cbf98f5f6394412ccd615c2cf34bc116bb85d0d2a397a07436.json",
+        "sha256": "9bd53b428e90d9cbf98f5f6394412ccd615c2cf34bc116bb85d0d2a397a07436"
+      },
+      "row_count": 10,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "hub_cam": {
+      "act_modes": [
+        [
+          "ACT 8b - THE HUB",
+          "narrative"
+        ],
+        [
+          "ACT 10c4 - CAM: THE HUB JOB",
+          "narrative"
+        ],
+        [
+          "ACT 10c4b - CAM: THE TURNED PART",
+          "narrative"
+        ],
+        [
+          "ACT 10c5 - CAM: THE HUB CONTOUR",
+          "narrative"
+        ],
+        [
+          "ACT 10c6 - CAM: THE DUMP ORACLE",
+          "narrative"
+        ],
+        [
+          "ACT 10c7 - CAM: THE MILLING CENSUS",
+          "narrative"
+        ],
+        [
+          "ACT 10c8 - CAM: THE MILLING CENSUS READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c8b - CAM: THE LONG FAMILIES",
+          "narrative"
+        ],
+        [
+          "ACT 10c8c - CAM: THE LONG FAMILIES READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c8d - CAM: POCKET CLEARING FIRST",
+          "narrative"
+        ],
+        [
+          "ACT 10c8e - CAM: POCKET CLEARING READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c9 - CAM: THE TURNING CENSUS",
+          "narrative"
+        ],
+        [
+          "ACT 10c10 - CAM: THE TURNING CENSUS READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c11 - CAM: THE EXTENSION FAMILIES",
+          "narrative"
+        ],
+        [
+          "ACT 10c12 - CAM: THE EXTENSION FAMILIES READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c13 - CAM: THE ROTARY FAMILIES",
+          "narrative"
+        ],
+        [
+          "ACT 10c14 - CAM: THE ROTARY FAMILIES READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c15 - CAM: THE ADDITIVE BUILD",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 8b - THE HUB",
+        "ACT 10c4 - CAM: THE HUB JOB",
+        "ACT 10c4b - CAM: THE TURNED PART",
+        "ACT 10c5 - CAM: THE HUB CONTOUR",
+        "ACT 10c6 - CAM: THE DUMP ORACLE",
+        "ACT 10c7 - CAM: THE MILLING CENSUS",
+        "ACT 10c8 - CAM: THE MILLING CENSUS READ",
+        "ACT 10c8b - CAM: THE LONG FAMILIES",
+        "ACT 10c8c - CAM: THE LONG FAMILIES READ",
+        "ACT 10c8d - CAM: POCKET CLEARING FIRST",
+        "ACT 10c8e - CAM: POCKET CLEARING READ",
+        "ACT 10c9 - CAM: THE TURNING CENSUS",
+        "ACT 10c10 - CAM: THE TURNING CENSUS READ",
+        "ACT 10c11 - CAM: THE EXTENSION FAMILIES",
+        "ACT 10c12 - CAM: THE EXTENSION FAMILIES READ",
+        "ACT 10c13 - CAM: THE ROTARY FAMILIES",
+        "ACT 10c14 - CAM: THE ROTARY FAMILIES READ",
+        "ACT 10c15 - CAM: THE ADDITIVE BUILD"
+      ],
+      "acts_hash": "505cd3149a18f7b6bdccf80c86b23216daa6023b8c73037422ac72e7090312a4",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "d3a508b2789c583d08e7b5294d12eee29b90f31c58a0b9616b91a61888edd9f0",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "sketch_constrain",
+            "sketch_dimension",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "cam_compare_operations",
+            "cam_create_machine",
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete",
+            "cam_delete_machine",
+            "cam_edit_operation",
+            "cam_edit_setup",
+            "cam_edit_tools",
+            "cam_export_setup",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_inspect_toolpaths",
+            "cam_post",
+            "cam_reorder",
+            "cam_select_geometry",
+            "cam_show_toolpath",
+            "design_get",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_create_origin",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_revolve",
+            "model_thread",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_get",
+            "sketch_set_text",
+            "sys_execute_script",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 4,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 40
+        }
+      },
+      "family": "hub_cam",
+      "family_run_id": "48747f239a144cd0a54e41d3fd7b8521",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [
+        {
+          "act": "ACT 10c7 - CAM: THE MILLING CENSUS",
+          "capability": "machining_extension",
+          "kind": "step",
+          "observed_verdict": true,
+          "polarity": "unless",
+          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "state": "not-applicable",
+          "tools": [
+            "cam_create_operation"
+          ]
+        },
+        {
+          "act": "ACT 10c8 - CAM: THE MILLING CENSUS READ",
+          "capability": "machining_extension",
+          "kind": "step",
+          "observed_verdict": true,
+          "polarity": "unless",
+          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "state": "not-applicable",
+          "tools": [
+            "cam_get"
+          ]
+        }
+      ],
+      "producer_run_ids": [
+        "5d5a9712f77a49d18ada23ce79c0531d",
+        "074e0f4147e343458a9dd307bfc923de",
+        "8485010782d64a34866e48272b33517f",
+        "9653f61da4c148e383959cc3b04c648a"
+      ],
+      "producers": [
+        {
+          "closure_hash": "d3a508b2789c583d08e7b5294d12eee29b90f31c58a0b9616b91a61888edd9f0",
+          "family_run_id": "48747f239a144cd0a54e41d3fd7b8521",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 3,
+          "rows_hash": "e01b4c6e1d00ad0437394fabe2203af8feb9f3d9cd9f1cb07be060aa12520d19",
+          "run_id": "5d5a9712f77a49d18ada23ce79c0531d"
+        },
+        {
+          "closure_hash": "d3a508b2789c583d08e7b5294d12eee29b90f31c58a0b9616b91a61888edd9f0",
+          "family_run_id": "48747f239a144cd0a54e41d3fd7b8521",
+          "fusion_version": "2706.0.116",
+          "phase": "before ACT 10c4 - CAM: THE HUB JOB",
+          "row_count": 1,
+          "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
+          "run_id": "074e0f4147e343458a9dd307bfc923de"
+        },
+        {
+          "closure_hash": "d3a508b2789c583d08e7b5294d12eee29b90f31c58a0b9616b91a61888edd9f0",
+          "family_run_id": "48747f239a144cd0a54e41d3fd7b8521",
+          "fusion_version": "2706.0.116",
+          "phase": "before ACT 10c4b - CAM: THE TURNED PART",
+          "row_count": 1,
+          "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
+          "run_id": "8485010782d64a34866e48272b33517f"
+        },
+        {
+          "closure_hash": "d3a508b2789c583d08e7b5294d12eee29b90f31c58a0b9616b91a61888edd9f0",
+          "family_run_id": "48747f239a144cd0a54e41d3fd7b8521",
+          "fusion_version": "2706.0.116",
+          "phase": "before ACT 10c15 - CAM: THE ADDITIVE BUILD",
+          "row_count": 84,
+          "rows_hash": "b86d39cd5341bd03b3652f5b66d6e9d0f0ff08d9e378c58d2ec71ea15d9a87c0",
+          "run_id": "9653f61da4c148e383959cc3b04c648a"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-14319adec98ed92075376b185a0101e47608f017492e150a409189fc7d3b2fea.json",
+        "sha256": "14319adec98ed92075376b185a0101e47608f017492e150a409189fc7d3b2fea"
+      },
+      "row_count": 579,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "lookup": {
+      "act_modes": [
+        [
+          "ACT 14 - LOOKUP TARGETING",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 14 - LOOKUP TARGETING"
+      ],
+      "acts_hash": "7483473e6685571c4c1c2b013972d96dabc23ab585f313d307b08c2b02e09491",
+      "census": {
+        "end": "5ebb232012983c31cf3963a3133701de90d85b0eb742505e25506fc61ec57ad1",
+        "start": "5ebb232012983c31cf3963a3133701de90d85b0eb742505e25506fc61ec57ad1"
+      },
+      "closure_hash": "17da98331a4641d6a84f9f67cb4a3e2ae1abb016c58658bab0cb0327fda41e33",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_edit_tools",
+            "doc_get",
+            "model_create_component",
+            "model_extrude",
+            "sys_execute_script"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 7
+        }
+      },
+      "family": "lookup",
+      "family_run_id": "d3ff3ed0b11a4d75b9066c7b562b4ab9",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "55d952a6f4594df1b98c9492feb77d6b",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "a268849450c54c55b6c3595893f091da"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "89e1ae4ea1654cb78c3fa5fd684c1b76"
+      ],
+      "producers": [
+        {
+          "closure_hash": "17da98331a4641d6a84f9f67cb4a3e2ae1abb016c58658bab0cb0327fda41e33",
+          "family_run_id": "d3ff3ed0b11a4d75b9066c7b562b4ab9",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 4,
+          "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
+          "run_id": "89e1ae4ea1654cb78c3fa5fd684c1b76"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-6534011fdf704fd79ba8b14b68f20ae4510010322edad11e49df9d8c4af50630.json",
+        "sha256": "6534011fdf704fd79ba8b14b68f20ae4510010322edad11e49df9d8c4af50630"
+      },
+      "row_count": 23,
+      "run_id": "n1lookup1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "mesh": {
+      "act_modes": [
+        [
+          "ACT 4 - MESH",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 4 - MESH"
+      ],
+      "acts_hash": "1d5f65c07ad27e8944a33978b1a7b8904db90186f76b0fde0f21f5d6ab48ab77",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "e4b139c3afaa1f782dcea77b41d94eb2ebe062b0955294c22d6359a512de465e",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_capture_position",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_move",
+            "design_add_instance",
+            "design_edit_reference_image",
+            "design_get",
+            "design_set_name",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "form_create",
+            "form_edit",
+            "form_get",
+            "mesh_combine",
+            "mesh_delete",
+            "mesh_export",
+            "mesh_find",
+            "mesh_generate_face_groups",
+            "mesh_get",
+            "mesh_insert",
+            "mesh_plane_cut",
+            "mesh_reduce",
+            "mesh_remesh",
+            "mesh_repair",
+            "mesh_reverse_normal",
+            "mesh_separate",
+            "mesh_shell",
+            "mesh_smooth",
+            "mesh_to_brep",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "model_move",
+            "save_as_mesh",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 5,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 40
+        }
+      },
+      "family": "mesh",
+      "family_run_id": "09ac0be8c8a74afd8be20b060dcd8307",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-09fba9a5a99f99d52ea10f2587c2bdd32c087cee6d316d8acfbec9d722247530.json",
+        "sha256": "09fba9a5a99f99d52ea10f2587c2bdd32c087cee6d316d8acfbec9d722247530"
+      },
+      "row_count": 374,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "motion": {
+      "act_modes": [
+        [
+          "ACT 7b - MOTION BENCH",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 7b - MOTION BENCH"
+      ],
+      "acts_hash": "3e82942108d2b7f93e4022b07527557463d21b6fe0006fe24404ca445ad6390d",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "ed49e6a1a0a2971279d7c447f5276bdf003aeed4b8ce66258b54801898eecdeb",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "appearance_set",
+            "design_activate_component",
+            "design_delete_feature",
+            "design_delete_occurrence",
+            "doc_activate",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_get",
+            "surface_revolve",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_capture_position",
+            "assembly_constrain",
+            "assembly_edit_contacts",
+            "assembly_edit_relations",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_inspect_interference",
+            "assembly_move",
+            "assembly_rigid_group",
+            "design_add_instance",
+            "design_edit_timeline",
+            "design_get",
+            "design_move_occurrence",
+            "design_recompute",
+            "design_set_mode",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_at_geometry",
+            "joint_create",
+            "joint_create_as_built",
+            "joint_create_origin",
+            "joint_drive",
+            "joint_edit",
+            "joint_motion_link",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "model_pattern_circular",
+            "model_pattern_path",
+            "model_revolve",
+            "param_add",
+            "param_set",
+            "surface_fill",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 11,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 38
+        }
+      },
+      "family": "motion",
+      "family_run_id": "18780f81127548ed8a0982d4e4ea7253",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-83bc273738a0bf37fbada41c62c867e493292784780e9515ea36e5ae78a434fc.json",
+        "sha256": "83bc273738a0bf37fbada41c62c867e493292784780e9515ea36e5ae78a434fc"
+      },
+      "row_count": 986,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "nesting": {
+      "act_modes": [
+        [
+          "ACT 6b - NESTING",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 6b - NESTING"
+      ],
+      "acts_hash": "0edc120cdf62352554c6fdc1b2830ab0eaec26ca086094b46663fb79bcf440b9",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "1671ff744ed86a7986e7a445fe7e91de00eade30b8dde9b013a0dcb0f299db0f",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "design_delete_feature",
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_ground",
+            "design_add_instance",
+            "doc_get",
+            "model_arrange",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "sketch_add_geometry",
+            "sketch_move",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 7,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 10
+        }
+      },
+      "family": "nesting",
+      "family_run_id": "d5ddc2f5ffd84ee297fc5204d2455c3e",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [
+        {
+          "act": "ACT 6b - NESTING",
+          "capability": "machining_extension",
+          "kind": "step",
+          "observed_verdict": true,
+          "polarity": "unless",
+          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "state": "not-applicable",
+          "tools": [
+            "model_arrange"
+          ]
+        }
+      ],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-93c5438d3176673af72dfe076783b63cc2ae0531a0338a30ddd31ee14cd7f3fb.json",
+        "sha256": "93c5438d3176673af72dfe076783b63cc2ae0531a0338a30ddd31ee14cd7f3fb"
+      },
+      "row_count": 45,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "part_cam": {
+      "act_modes": [
+        [
+          "ACT 10a - CAM: JOB + GENERATE",
+          "narrative"
+        ],
+        [
+          "ACT 10b - CAM: DELIVERABLES",
+          "narrative"
+        ],
+        [
+          "ACT 10b1 - CAM: TEMPLATE MODES",
+          "narrative"
+        ],
+        [
+          "ACT 10b1b - CAM: TEMPLATE CLEANUP",
+          "narrative"
+        ],
+        [
+          "ACT 10d - CAM: THE SECOND SETUP",
+          "narrative"
+        ],
+        [
+          "ACT 10e - CAM: MULTI-SETUP POST",
+          "narrative"
+        ],
+        [
+          "ACT 10f - CAM: THE TREE LEFT BEHIND",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 10a - CAM: JOB + GENERATE",
+        "ACT 10b - CAM: DELIVERABLES",
+        "ACT 10b1 - CAM: TEMPLATE MODES",
+        "ACT 10b1b - CAM: TEMPLATE CLEANUP",
+        "ACT 10d - CAM: THE SECOND SETUP",
+        "ACT 10e - CAM: MULTI-SETUP POST",
+        "ACT 10f - CAM: THE TREE LEFT BEHIND"
+      ],
+      "acts_hash": "6a505c3eee398a258b0e8f3f45b137f22f7b099314c6a8a7bec721c3965d0cee",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "6c29d14c75bb7d2cc6f751f643efe085fed6bf618f150d3328dac0201e2f1cdd",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "sketch_create",
+            "sketch_dimension",
+            "view_screenshot"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "appearance_set",
+            "cam_activate_setup",
+            "cam_apply_template",
+            "cam_compare_operations",
+            "cam_create_machine",
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete",
+            "cam_delete_machine",
+            "cam_delete_template",
+            "cam_edit_folders",
+            "cam_edit_operation",
+            "cam_edit_setup",
+            "cam_edit_tools",
+            "cam_find_holes",
+            "cam_find_pockets",
+            "cam_generate",
+            "cam_generate_setup_sheet",
+            "cam_get",
+            "cam_get_status",
+            "cam_inspect_toolpaths",
+            "cam_post",
+            "cam_reorder",
+            "cam_save_template",
+            "cam_select_geometry",
+            "cam_set_nc_comment",
+            "cam_show_toolpath",
+            "design_activate_component",
+            "design_export",
+            "design_get",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_insert_import",
+            "doc_new",
+            "find_geometry",
+            "joint_create_origin",
+            "model_chamfer",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "param_add",
+            "param_get",
+            "param_set",
+            "param_set_favorite",
+            "sketch_add_geometry",
+            "sketch_get",
+            "sys_execute_script",
+            "view_set",
+            "view_switch_workspace",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 3,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 54
+        }
+      },
+      "family": "part_cam",
+      "family_run_id": "35c3ded8fa8f407dba1d8d4b1d6b83ee",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [
+        {
+          "act": "ACT 10a - CAM: JOB + GENERATE",
+          "capability": "machining_extension",
+          "kind": "fixture",
+          "observed_verdict": true,
+          "polarity": "unless",
+          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "state": "not-applicable",
+          "tools": [
+            "cam_find_holes"
+          ]
+        }
+      ],
+      "producer_run_ids": [
+        "86ae196be24248e0b4d5890819a4efea",
+        "447b6e057a264cb1ba42fc88d844390e"
+      ],
+      "producers": [
+        {
+          "closure_hash": "6c29d14c75bb7d2cc6f751f643efe085fed6bf618f150d3328dac0201e2f1cdd",
+          "family_run_id": "35c3ded8fa8f407dba1d8d4b1d6b83ee",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 104,
+          "rows_hash": "ad51edfe6ccf5501e469a80b7106f44a1813330b41e0803b487c799b7b9dd61f",
+          "run_id": "86ae196be24248e0b4d5890819a4efea"
+        },
+        {
+          "closure_hash": "6c29d14c75bb7d2cc6f751f643efe085fed6bf618f150d3328dac0201e2f1cdd",
+          "family_run_id": "35c3ded8fa8f407dba1d8d4b1d6b83ee",
+          "fusion_version": "2706.0.116",
+          "phase": "before ACT 10e - CAM: MULTI-SETUP POST",
+          "row_count": 97,
+          "rows_hash": "7298e82b2278cfd18335e2a51d1bc71a74fa33fffae17e358af206f1353a8bda",
+          "run_id": "447b6e057a264cb1ba42fc88d844390e"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-fb3201dde12faab339d8c8e7ab9419acad12bbeded2f15e970595c5211340216.json",
+        "sha256": "fb3201dde12faab339d8c8e7ab9419acad12bbeded2f15e970595c5211340216"
+      },
+      "row_count": 839,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "render": {
+      "act_modes": [
+        [
+          "ACT 15 - RENDER: LOCAL START",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: LOCAL JPEG",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: LOCAL TIFF",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: LOCAL NAMED",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: SCENE + CANVAS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 15 - RENDER: LOCAL START",
+        "ACT 15 - RENDER: LOCAL JPEG",
+        "ACT 15 - RENDER: LOCAL TIFF",
+        "ACT 15 - RENDER: LOCAL NAMED",
+        "ACT 15 - RENDER: SCENE + CANVAS"
+      ],
+      "acts_hash": "64573b75302e1ab458038e39f5e305db90443954d913c5b9178b717097abfb9a",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "330a1cbe5664d11c05646b55342f21a87746fee0c8313f5c24a0d328b3bf47b1",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_set"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "doc_get",
+            "model_create_component",
+            "model_extrude",
+            "render_create",
+            "render_edit",
+            "render_get",
+            "view_switch_workspace"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 7
+        }
+      },
+      "family": "render",
+      "family_run_id": "f4f2381a6d9e4dd080e41de6da0fea98",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "8412e54c45214c78aa73842d835f3ef3"
+      ],
+      "producers": [
+        {
+          "closure_hash": "330a1cbe5664d11c05646b55342f21a87746fee0c8313f5c24a0d328b3bf47b1",
+          "family_run_id": "f4f2381a6d9e4dd080e41de6da0fea98",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 4,
+          "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
+          "run_id": "8412e54c45214c78aa73842d835f3ef3"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-add77a2b3e4433c65727380a11afb8272e80ceb623c8266a1b94aee4abbdab68.json",
+        "sha256": "add77a2b3e4433c65727380a11afb8272e80ceb623c8266a1b94aee4abbdab68"
+      },
+      "row_count": 67,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "resize": {
+      "act_modes": [
+        [
+          "ACT 6 - RESIZE",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 6 - RESIZE"
+      ],
+      "acts_hash": "fa2682462d01b9f6970ab6167881c5d3d34d58b7b6647264bbb8bba168bb4590",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "7516db7400e2c9758572183bc8ba7ff86f4b98853490690723a1f3cf03cc9c53",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "sketch_create",
+            "sketch_dimension",
+            "sketch_get",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_get",
+            "assembly_inspect_interference",
+            "design_activate_component",
+            "design_add_instance",
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_get",
+            "design_recompute",
+            "design_set_name",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_create_origin",
+            "model_chamfer",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_pattern_rectangular",
+            "model_pipe",
+            "param_add",
+            "param_delete",
+            "param_get",
+            "param_set",
+            "param_set_favorite",
+            "sketch_add_3d_spline",
+            "sketch_add_geometry",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 31
+        }
+      },
+      "family": "resize",
+      "family_run_id": "a2d839316fa34244bc535ea2b073036a",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "71212b3bb954494a9432af41d4393619"
+      ],
+      "producers": [
+        {
+          "closure_hash": "7516db7400e2c9758572183bc8ba7ff86f4b98853490690723a1f3cf03cc9c53",
+          "family_run_id": "a2d839316fa34244bc535ea2b073036a",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 71,
+          "rows_hash": "ded6ed4d6ba8c07c3af9dbd12fbafa5414bd39d09554e840ebe71ff09cfa92c7",
+          "run_id": "71212b3bb954494a9432af41d4393619"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-deb97bec72c22877a27518a6a46208b3a2c0c243938734a8498e40857036b938.json",
+        "sha256": "deb97bec72c22877a27518a6a46208b3a2c0c243938734a8498e40857036b938"
+      },
+      "row_count": 226,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sheet_coupon": {
+      "act_modes": [
+        [
+          "ACT 12 - SHEET METAL COUPON",
+          "narrative"
+        ],
+        [
+          "ACT 12b - SHEET METAL LASER OUTPUT",
+          "narrative"
+        ],
+        [
+          "ACT 12b1 - SHEET METAL SOURCE UPDATE",
+          "narrative"
+        ],
+        [
+          "ACT 12b2 - SHEET METAL CAM RESTORE",
+          "narrative"
+        ],
+        [
+          "ACT 12c - SHEET METAL DRAWING",
+          "narrative"
+        ],
+        [
+          "ACT 12d - SHEET METAL CLEANUP",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 12 - SHEET METAL COUPON",
+        "ACT 12b - SHEET METAL LASER OUTPUT",
+        "ACT 12b1 - SHEET METAL SOURCE UPDATE",
+        "ACT 12b2 - SHEET METAL CAM RESTORE",
+        "ACT 12c - SHEET METAL DRAWING",
+        "ACT 12d - SHEET METAL CLEANUP"
+      ],
+      "acts_hash": "227bd099b5142075e0493bece3334f72f3732603d555fc5ca48f3ceeec4faa9f",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "e56ec48cd912d12495a3f3d8ea7ab397b0feb609c5d246a6fce77ff4091d9f71",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "sheet_create_flange",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [
+            "view_screenshot"
+          ],
+          "self-reported": [
+            "cam_apply_template",
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete",
+            "cam_delete_template",
+            "cam_edit_setup",
+            "cam_edit_tools",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_inspect_toolpaths",
+            "cam_post",
+            "cam_save_template",
+            "cam_select_geometry",
+            "cam_show_toolpath",
+            "data_get",
+            "design_delete_occurrence",
+            "design_export",
+            "design_get",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "doc_open",
+            "doc_save",
+            "doc_save_as",
+            "drawing_create",
+            "drawing_edit_sheet",
+            "drawing_export",
+            "drawing_get",
+            "drawing_get_status",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "param_set",
+            "sheet_convert",
+            "sheet_create_flat_pattern",
+            "sheet_create_fold",
+            "sheet_create_refold",
+            "sheet_create_unfold",
+            "sheet_edit_rule",
+            "sheet_get",
+            "sketch_dimension",
+            "sketch_get",
+            "sys_execute_script",
+            "sys_get_guidance",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 5,
+          "covered": 0,
+          "refusals-only": 1,
+          "self-reported": 47
+        }
+      },
+      "family": "sheet_coupon",
+      "family_run_id": "d731784a8bef4eb8a615c65b2882d476",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-81276ec9566587ecde8f8a085040515443360f8c54be9e26f030c5f86fbc2a1e.json",
+        "sha256": "81276ec9566587ecde8f8a085040515443360f8c54be9e26f030c5f86fbc2a1e"
+      },
+      "row_count": 224,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sheet_flange": {
+      "act_modes": [
+        [
+          "ACT 12g - SHEET METAL FLANGE FAMILY",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 12g - SHEET METAL FLANGE FAMILY"
+      ],
+      "acts_hash": "555befef6644d0f9e6d6071ba43417c73f57479277af96e36307dbda92bbc088",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "ee33fcd481153ebe0dd216eb45f2b7af2200c4866e1646c71878c48cfa138e2e",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "model_construction",
+            "model_fillet",
+            "model_shell",
+            "param_set",
+            "sketch_add_geometry",
+            "sketch_create"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "design_edit_plastic_rule",
+            "design_edit_timeline",
+            "design_get",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "model_create_component",
+            "model_edit_feature",
+            "model_extrude",
+            "model_inspect",
+            "param_add",
+            "sheet_convert",
+            "sheet_create_flange",
+            "sheet_create_flat_pattern",
+            "sheet_create_hem",
+            "sheet_create_join_by_bend",
+            "sheet_create_refold",
+            "sheet_create_rip",
+            "sheet_create_unfold",
+            "sheet_edit_rule",
+            "sheet_get",
+            "sketch_get",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 7,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 26
+        }
+      },
+      "family": "sheet_flange",
+      "family_run_id": "0f27cff32a6141a197d0e13440027c83",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-53e50b90467f5a8e5560781b2ce41831d7026b63a09d491e29d888eabe9161b2.json",
+        "sha256": "53e50b90467f5a8e5560781b2ce41831d7026b63a09d491e29d888eabe9161b2"
+      },
+      "row_count": 423,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sheet_positions": {
+      "act_modes": [
+        [
+          "ACT 12f - SHEET METAL FOLD POSITIONS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 12f - SHEET METAL FOLD POSITIONS"
+      ],
+      "acts_hash": "a531e30034585f68ddb6fea98bed08a1225b4c3430910b3ad932221f5521243f",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "d41d2a4362138617480292633844f85a7ec5b7b5d8e1451cfa6ed3fbade819b2",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "doc_activate",
+            "model_fillet",
+            "sheet_edit_rule",
+            "sketch_add_geometry",
+            "sketch_create"
+          ],
+          "covered": [],
+          "refusals-only": [
+            "sheet_create_hem"
+          ],
+          "self-reported": [
+            "design_get",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "sheet_convert",
+            "sheet_create_flat_pattern",
+            "sheet_create_fold",
+            "sheet_get",
+            "sketch_get",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 0,
+          "refusals-only": 1,
+          "self-reported": 15
+        }
+      },
+      "family": "sheet_positions",
+      "family_run_id": "836e9e936ff1488791c499c73f9df20e",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-90fc3ea2fc20c1a6915bf9668ddc6e2e51400307b53ac403300bc37f9e1d8ebc.json",
+        "sha256": "90fc3ea2fc20c1a6915bf9668ddc6e2e51400307b53ac403300bc37f9e1d8ebc"
+      },
+      "row_count": 132,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sheet_selected": {
+      "act_modes": [
+        [
+          "ACT 12e - SHEET METAL SELECTED BEND",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 12e - SHEET METAL SELECTED BEND"
+      ],
+      "acts_hash": "d4b575460bdca8b239e01e261cc849e86d9936e6d35a231fbbad3c60b1dccca7",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "687e3ff7d8e26d4408949215d5a9cac66bb25201655b6645ef4bd02536a7f09b",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "doc_activate",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_get",
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_get",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "sheet_convert",
+            "sheet_create_flange",
+            "sheet_create_flat_pattern",
+            "sheet_create_fold",
+            "sheet_create_refold",
+            "sheet_create_unfold",
+            "sheet_edit_rule",
+            "sheet_get",
+            "sketch_get",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 5,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 22
+        }
+      },
+      "family": "sheet_selected",
+      "family_run_id": "343668cdd63a437297f4313f4db314f4",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-a834cece5aa4abb0dea0dff3679cf98e70f01b0ec23af2217a474f94f869d55a.json",
+        "sha256": "a834cece5aa4abb0dea0dff3679cf98e70f01b0ec23af2217a474f94f869d55a"
+      },
+      "row_count": 241,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "showcase": {
+      "act_modes": [
+        [
+          "ACT 9 - THE SHOWCASE",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 9 - THE SHOWCASE"
+      ],
+      "acts_hash": "e030e582feb410b8632256bb424679a6b800c39103b4a6c5e428f3f73fe0d0cb",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "eaf6e5b3b4a3e534ca54aea0fe396c39a05842aecc4be94fa34e7d67b5318fdb",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_recompute",
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_create",
+            "sketch_dimension",
+            "surface_revolve",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [
+            "drawing_create",
+            "param_set"
+          ],
+          "self-reported": [
+            "appearance_set",
+            "assembly_capture_position",
+            "assembly_constrain",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_rigid_group",
+            "design_activate_component",
+            "design_export",
+            "design_get",
+            "design_set_name",
+            "doc_get",
+            "doc_insert_import",
+            "find_geometry",
+            "joint_at_geometry",
+            "joint_create",
+            "joint_create_as_built",
+            "joint_create_origin",
+            "joint_drive",
+            "joint_edit",
+            "joint_motion_link",
+            "model_chamfer",
+            "model_construction",
+            "model_create_component",
+            "model_draft",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_measure_between",
+            "model_mirror",
+            "model_pattern_circular",
+            "model_pattern_rectangular",
+            "model_revolve",
+            "param_add",
+            "param_get",
+            "param_set_favorite",
+            "sketch_add_geometry",
+            "sketch_get",
+            "surface_fill",
+            "view_screenshot",
+            "view_screenshot_multi",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 8,
+          "covered": 0,
+          "refusals-only": 2,
+          "self-reported": 43
+        }
+      },
+      "family": "showcase",
+      "family_run_id": "1e1b2cc46fd64b71ad9100a97ae084a2",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "ce52831472684fadbe5d394cfa50f26c"
+      ],
+      "producers": [
+        {
+          "closure_hash": "eaf6e5b3b4a3e534ca54aea0fe396c39a05842aecc4be94fa34e7d67b5318fdb",
+          "family_run_id": "1e1b2cc46fd64b71ad9100a97ae084a2",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 197,
+          "rows_hash": "75531d880d52978a04fe20a6f4a6318f47f46a4a94ffc863624d186a290560db",
+          "run_id": "ce52831472684fadbe5d394cfa50f26c"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-2152a9c9dc7a91c78a98c8df94c7aa988d35813663fc66df246bb24c9ef89314.json",
+        "sha256": "2152a9c9dc7a91c78a98c8df94c7aa988d35813663fc66df246bb24c9ef89314"
+      },
+      "row_count": 341,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sketch": {
+      "act_modes": [
+        [
+          "ACT 0 - OVERTURE",
+          "narrative"
+        ],
+        [
+          "ACT 1 - SKETCH + PARAMETERS",
+          "narrative"
+        ],
+        [
+          "ACT 1b - SKETCH TOOLS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 0 - OVERTURE",
+        "ACT 1 - SKETCH + PARAMETERS",
+        "ACT 1b - SKETCH TOOLS"
+      ],
+      "acts_hash": "0ba81069df81f573b84c36f01ee76492129681d800a25652109391747e0b3e15",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "4dcb66a777ffc43a54a34e64fded2a174cbcfd1e3b200998bc8a3c0ab3d40454",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_recompute",
+            "view_screenshot"
+          ],
+          "covered": [],
+          "refusals-only": [
+            "assembly_constrain",
+            "cam_post",
+            "form_create",
+            "form_get",
+            "pmi_create",
+            "sys_get_selection"
+          ],
+          "self-reported": [
+            "assembly_get",
+            "design_activate_component",
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_export",
+            "design_get",
+            "design_set_mode",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_insert_import",
+            "doc_new",
+            "find_geometry",
+            "model_base_feature",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "param_add",
+            "param_delete",
+            "param_get",
+            "param_set",
+            "param_set_favorite",
+            "sheet_create_flange",
+            "sketch_add_3d_line",
+            "sketch_add_geometry",
+            "sketch_constrain",
+            "sketch_copy",
+            "sketch_create",
+            "sketch_delete_entity",
+            "sketch_dimension",
+            "sketch_edit",
+            "sketch_edit_curve",
+            "sketch_get",
+            "sketch_insert_svg",
+            "sketch_move",
+            "sketch_project",
+            "sketch_set_text",
+            "sys_capability_map",
+            "sys_execute_script",
+            "sys_find_tool",
+            "sys_get_api_doc",
+            "sys_get_guidance",
+            "sys_get_preferences",
+            "sys_set_preferences",
+            "view_list_workspaces",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 2,
+          "covered": 0,
+          "refusals-only": 6,
+          "self-reported": 48
+        }
+      },
+      "family": "sketch",
+      "family_run_id": "c1b6c3d13e0f4f289dab12be01c2875f",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-2e6ec1fd3e5d9b264d096532c1e6a9ac70bc46a91d6fa485650dd025b8a8f8f9.json",
+        "sha256": "2e6ec1fd3e5d9b264d096532c1e6a9ac70bc46a91d6fa485650dd025b8a8f8f9"
+      },
+      "row_count": 1763,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "small_edits": {
+      "act_modes": [
+        [
+          "ACT 13 - SMALL EDIT SAFETY",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 13 - SMALL EDIT SAFETY"
+      ],
+      "acts_hash": "e06417db4f7164a2315c13a57a88283781dafa5dc6dae3aa31bbd6416fe3c828",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "d6062c13fa27c269d36e012be7dfeef9055cbbb6122031b7a5e028fb0e6a3fc5",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "appearance_set",
+            "design_get",
+            "design_set_metadata",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "param_add",
+            "param_delete",
+            "param_get",
+            "sys_execute_script"
+          ]
+        },
+        "counts": {
+          "called": 4,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 15
+        }
+      },
+      "family": "small_edits",
+      "family_run_id": "4e4811ab6e1a4d47ae6a6c7ce6553734",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "cc2b6596b9fb4f289e4b809f03f33f52"
+      ],
+      "producers": [
+        {
+          "closure_hash": "d6062c13fa27c269d36e012be7dfeef9055cbbb6122031b7a5e028fb0e6a3fc5",
+          "family_run_id": "4e4811ab6e1a4d47ae6a6c7ce6553734",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 4,
+          "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
+          "run_id": "cc2b6596b9fb4f289e4b809f03f33f52"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-33b98e83817d2187774c0112d1f8d54ffb349bc4e395e951ebdc57fb2e4559ce.json",
+        "sha256": "33b98e83817d2187774c0112d1f8d54ffb349bc4e395e951ebdc57fb2e4559ce"
+      },
+      "row_count": 65,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "solids": {
+      "act_modes": [
+        [
+          "ACT 2 - SOLIDS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 2 - SOLIDS"
+      ],
+      "acts_hash": "803f3f3ea52399d0201652dde73e4012834109630c711f3c29142fab6baf831e",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "bec09fc913c9ac560a72e46f4c39ef493ad2144b6f07563c9190ebc51562664e",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "appearance_set",
+            "param_set",
+            "sketch_add_3d_line",
+            "sketch_dimension",
+            "surface_offset",
+            "view_switch_workspace"
+          ],
+          "covered": [
+            "model_pattern_rectangular"
+          ],
+          "refusals-only": [
+            "sketch_edit_curve"
+          ],
+          "self-reported": [
+            "assembly_capture_position",
+            "assembly_get",
+            "assembly_move",
+            "cam_get",
+            "design_activate_component",
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_get",
+            "design_set_metadata",
+            "design_set_name",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_create_origin",
+            "model_chamfer",
+            "model_combine",
+            "model_construction",
+            "model_create_component",
+            "model_draft",
+            "model_edit_extrude",
+            "model_edit_loft",
+            "model_edit_sweep",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_loft",
+            "model_measure_between",
+            "model_measure_continuity",
+            "model_measure_relation",
+            "model_mirror",
+            "model_move",
+            "model_offset_face",
+            "model_pattern_circular",
+            "model_pattern_path",
+            "model_replace_face",
+            "model_revolve",
+            "model_set_material",
+            "model_sweep",
+            "param_add",
+            "param_get",
+            "param_set_favorite",
+            "pmi_create",
+            "pmi_delete",
+            "pmi_edit",
+            "pmi_get",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_get",
+            "sketch_project",
+            "surface_extrude",
+            "sys_execute_script",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 1,
+          "refusals-only": 1,
+          "self-reported": 56
+        }
+      },
+      "family": "solids",
+      "family_run_id": "edde5cf1cffd4e119cc63f298a31d327",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [
+        {
+          "act": "ACT 2 - SOLIDS",
+          "capability": "machining_extension",
+          "kind": "step",
+          "observed_verdict": true,
+          "polarity": "unless",
+          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "state": "not-applicable",
+          "tools": [
+            "pmi_create"
+          ]
+        },
+        {
+          "act": "ACT 2 - SOLIDS",
+          "capability": "machining_extension",
+          "kind": "step",
+          "observed_verdict": true,
+          "polarity": "unless",
+          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "state": "not-applicable",
+          "tools": [
+            "pmi_create"
+          ]
+        },
+        {
+          "act": "ACT 2 - SOLIDS",
+          "capability": "machining_extension",
+          "kind": "step",
+          "observed_verdict": true,
+          "polarity": "unless",
+          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "state": "not-applicable",
+          "tools": [
+            "pmi_create"
+          ]
+        }
+      ],
+      "producer_run_ids": [
+        "e2f382982e914e8aa2a855739a24d548"
+      ],
+      "producers": [
+        {
+          "closure_hash": "bec09fc913c9ac560a72e46f4c39ef493ad2144b6f07563c9190ebc51562664e",
+          "family_run_id": "edde5cf1cffd4e119cc63f298a31d327",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 39,
+          "rows_hash": "8ca30e5cd38605eeed15710abdeb367294629f0522ad0e4e418c5409afb3345f",
+          "run_id": "e2f382982e914e8aa2a855739a24d548"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-f60c5bdefe7e3cc9b2b647730b3cbc40dea06f401327bfa36e5c763ce3513461.json",
+        "sha256": "f60c5bdefe7e3cc9b2b647730b3cbc40dea06f401327bfa36e5c763ce3513461"
+      },
+      "row_count": 2439,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": [
+        {
+          "reader_is_read": true,
+          "row_index": 1637,
+          "targets": [
+            "model_pattern_rectangular"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        }
+      ]
+    },
+    "surfaces": {
+      "act_modes": [
+        [
+          "ACT 3 - SURFACES",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 3 - SURFACES"
+      ],
+      "acts_hash": "9c097678938dee44bd0427f54ebdef59846ab1030fcc129a6a98aef7434fb25c",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "622f1d7fa17a21f4614b744062027c353835c02987df007306129d1d8fd6f843",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "model_move",
+            "model_revolve",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_project",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_get",
+            "design_recompute",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "form_create",
+            "form_get",
+            "model_base_feature",
+            "model_compute_holder",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_loft",
+            "model_measure_continuity",
+            "model_shell",
+            "model_split",
+            "model_stitch",
+            "model_unstitch",
+            "param_set",
+            "sketch_get",
+            "surface_create_ruled",
+            "surface_delete_face",
+            "surface_extend",
+            "surface_extrude",
+            "surface_fill",
+            "surface_offset",
+            "surface_patch",
+            "surface_reverse_normal",
+            "surface_revolve",
+            "surface_thicken",
+            "surface_trim",
+            "surface_untrim",
+            "sys_execute_script",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 8,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 42
+        }
+      },
+      "family": "surfaces",
+      "family_run_id": "81e21cde89784b62b469a0de31666a00",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-3c35949a09ec88b47369a6f0071fb353ef897a76e42b52a616f9aa5b177c7ac0.json",
+        "sha256": "3c35949a09ec88b47369a6f0071fb353ef897a76e42b52a616f9aa5b177c7ac0"
+      },
+      "row_count": 557,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "swarf_cam": {
+      "act_modes": [
+        [
+          "ACT 8 - SWARF CAMEO",
+          "narrative"
+        ],
+        [
+          "ACT 10b2 - CAM: COMPONENT SCOPE",
+          "narrative"
+        ],
+        [
+          "ACT 10c - CAM: EXTENSION STRATEGIES",
+          "narrative"
+        ],
+        [
+          "ACT 10c6b - CAM: THE 5-AXIS DUMP",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 8 - SWARF CAMEO",
+        "ACT 10b2 - CAM: COMPONENT SCOPE",
+        "ACT 10c - CAM: EXTENSION STRATEGIES",
+        "ACT 10c6b - CAM: THE 5-AXIS DUMP"
+      ],
+      "acts_hash": "70d424a921a00b23dd029106b74b1fe85d3a9175abe72f7e117c5659f42cc05b",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "34670f04124760d0587f13770a1439575d14526559f1d4dee6c41f6b83612624",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete",
+            "cam_edit_operation",
+            "cam_edit_setup",
+            "cam_edit_tools",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_post",
+            "cam_select_geometry",
+            "doc_get",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_inspect",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 7,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 19
+        }
+      },
+      "family": "swarf_cam",
+      "family_run_id": "29060c3b9fe4414498578ac04b1b93c7",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "03d74e06758f4ecabfacd73cc039060d",
+        "e18d6fbd4b3c483fa067e094fabb256c"
+      ],
+      "producers": [
+        {
+          "closure_hash": "34670f04124760d0587f13770a1439575d14526559f1d4dee6c41f6b83612624",
+          "family_run_id": "29060c3b9fe4414498578ac04b1b93c7",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 3,
+          "rows_hash": "e01b4c6e1d00ad0437394fabe2203af8feb9f3d9cd9f1cb07be060aa12520d19",
+          "run_id": "03d74e06758f4ecabfacd73cc039060d"
+        },
+        {
+          "closure_hash": "34670f04124760d0587f13770a1439575d14526559f1d4dee6c41f6b83612624",
+          "family_run_id": "29060c3b9fe4414498578ac04b1b93c7",
+          "fusion_version": "2706.0.116",
+          "phase": "before ACT 10b2 - CAM: COMPONENT SCOPE",
+          "row_count": 1,
+          "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
+          "run_id": "e18d6fbd4b3c483fa067e094fabb256c"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-4154e51ca67b95d897ba3be8d878b4c50e5438e81e9811a4ff8dc50a12386c5b.json",
+        "sha256": "4154e51ca67b95d897ba3be8d878b4c50e5438e81e9811a4ff8dc50a12386c5b"
+      },
+      "row_count": 120,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "vise": {
+      "act_modes": [
+        [
+          "ACT 7 - THE VISE",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 7 - THE VISE"
+      ],
+      "acts_hash": "82ed5efb5c03223830fb8ee88624ae8b146cd4d1dcfc920f389225f04727b664",
+      "census": {
+        "end": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed",
+        "start": "a5f2fc8e40398350e40b23c5460bc30824dbfd0daa853274aa8c0bd1293c2fed"
+      },
+      "closure_hash": "e07e9608dd484f9cdd679f468352b6c63f3d303b9f42e627c2e3c748d1181e75",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_create",
+            "sketch_dimension",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "appearance_set",
+            "assembly_capture_position",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_inspect_interference",
+            "assembly_rigid_group",
+            "design_activate_component",
+            "doc_get",
+            "find_geometry",
+            "joint_create",
+            "joint_create_as_built",
+            "joint_create_origin",
+            "joint_drive",
+            "joint_edit",
+            "joint_motion_link",
+            "model_chamfer",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_measure_between",
+            "param_add",
+            "param_get",
+            "param_set_favorite",
+            "sketch_add_geometry",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 7,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 28
+        }
+      },
+      "family": "vise",
+      "family_run_id": "1c1547b4e5cf45d78388e8c7af735093",
+      "fusion_version": "2706.0.116",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "cb7a39675e994199a0e6815d54cb882f"
+      ],
+      "producers": [
+        {
+          "closure_hash": "e07e9608dd484f9cdd679f468352b6c63f3d303b9f42e627c2e3c748d1181e75",
+          "family_run_id": "1c1547b4e5cf45d78388e8c7af735093",
+          "fusion_version": "2706.0.116",
+          "phase": "setup",
+          "row_count": 66,
+          "rows_hash": "2ed853303c49aa298917bf6e11c1575d221edd47124ad1dbf672dbf2c69c225d",
+          "run_id": "cb7a39675e994199a0e6815d54cb882f"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-a11958ce2ad0440ea0935c7bbf03081cc5ce57454a7a9020c0c9025b0d978668.json",
+        "sha256": "a11958ce2ad0440ea0935c7bbf03081cc5ce57454a7a9020c0c9025b0d978668"
+      },
+      "row_count": 130,
+      "run_id": "n1bootstrap1012b",
+      "scope": {
+        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_tier": "requested",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ]
+      },
+      "state": "executed",
+      "witnesses": []
+    }
+  },
+  "format": 1,
+  "lifecycle": {
+    "after": {
+      "bootstrap_exclusions": [
+        "Fusion-Essentials.py",
+        "lib/loaded_attestation.py"
+      ],
+      "complete": true,
+      "executed_module_count": 297,
+      "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+      "load_id": "c2f7745322a44f3c8bcb09f7e63ebd4e",
+      "loaded_matches_source": true,
+      "problems": [],
+      "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+      "scope": "commands/mcpServer import closure",
+      "session_id": "d7719c4050ba4afdabc54b177210207a"
+    },
+    "after_fusion_version": "2706.0.116",
+    "after_mcp_session": "d7719c4050ba4afdabc54b177210207a",
+    "after_tool_census": [
+      "appearance_set",
+      "assembly_capture_position",
+      "assembly_constrain",
+      "assembly_edit_contacts",
+      "assembly_edit_relations",
+      "assembly_get",
+      "assembly_ground",
+      "assembly_inspect_interference",
+      "assembly_move",
+      "assembly_rigid_group",
+      "cam_activate_setup",
+      "cam_apply_template",
+      "cam_compare_operations",
+      "cam_create_machine",
+      "cam_create_operation",
+      "cam_create_setup",
+      "cam_delete",
+      "cam_delete_machine",
+      "cam_delete_template",
+      "cam_edit_folders",
+      "cam_edit_operation",
+      "cam_edit_setup",
+      "cam_edit_tools",
+      "cam_export_setup",
+      "cam_find_holes",
+      "cam_find_pockets",
+      "cam_generate",
+      "cam_generate_setup_sheet",
+      "cam_get",
+      "cam_get_status",
+      "cam_inspect_toolpaths",
+      "cam_post",
+      "cam_reorder",
+      "cam_save_template",
+      "cam_select_geometry",
+      "cam_set_nc_comment",
+      "cam_show_toolpath",
+      "data_create_folder",
+      "data_create_project",
+      "data_delete_file",
+      "data_delete_folder",
+      "data_download_file",
+      "data_get",
+      "data_get_upload_status",
+      "data_move_file",
+      "data_switch_hub",
+      "data_upload_file",
+      "design_activate_component",
+      "design_add_instance",
+      "design_configure",
+      "design_delete_feature",
+      "design_delete_occurrence",
+      "design_edit_plastic_rule",
+      "design_edit_reference_image",
+      "design_edit_timeline",
+      "design_export",
+      "design_get",
+      "design_move_occurrence",
+      "design_recompute",
+      "design_remove_feature",
+      "design_set_metadata",
+      "design_set_mode",
+      "design_set_name",
+      "doc_activate",
+      "doc_close",
+      "doc_copy",
+      "doc_get",
+      "doc_insert_derive",
+      "doc_insert_import",
+      "doc_insert_occurrence",
+      "doc_new",
+      "doc_open",
+      "doc_restore_version",
+      "doc_save",
+      "doc_save_as",
+      "doc_save_milestone",
+      "doc_update_xref",
+      "drawing_add_sketch",
+      "drawing_add_symbol",
+      "drawing_create",
+      "drawing_delete_sketch",
+      "drawing_dimension",
+      "drawing_edit_revisions",
+      "drawing_edit_sheet",
+      "drawing_export",
+      "drawing_get",
+      "drawing_get_status",
+      "drawing_insert_image",
+      "drawing_update",
+      "find_geometry",
+      "form_create",
+      "form_edit",
+      "form_get",
+      "joint_at_geometry",
+      "joint_create",
+      "joint_create_as_built",
+      "joint_create_origin",
+      "joint_drive",
+      "joint_edit",
+      "joint_motion_link",
+      "mesh_combine",
+      "mesh_delete",
+      "mesh_export",
+      "mesh_find",
+      "mesh_generate_face_groups",
+      "mesh_get",
+      "mesh_insert",
+      "mesh_plane_cut",
+      "mesh_reduce",
+      "mesh_remesh",
+      "mesh_repair",
+      "mesh_reverse_normal",
+      "mesh_separate",
+      "mesh_shell",
+      "mesh_smooth",
+      "mesh_to_brep",
+      "model_arrange",
+      "model_base_feature",
+      "model_chamfer",
+      "model_combine",
+      "model_compute_holder",
+      "model_construction",
+      "model_create_component",
+      "model_create_rib",
+      "model_draft",
+      "model_edit_body",
+      "model_edit_extrude",
+      "model_edit_feature",
+      "model_edit_loft",
+      "model_edit_sweep",
+      "model_emboss",
+      "model_extrude",
+      "model_fillet",
+      "model_hole",
+      "model_inspect",
+      "model_loft",
+      "model_measure_between",
+      "model_measure_continuity",
+      "model_measure_relation",
+      "model_mirror",
+      "model_move",
+      "model_offset_face",
+      "model_pattern_circular",
+      "model_pattern_path",
+      "model_pattern_rectangular",
+      "model_pipe",
+      "model_replace_face",
+      "model_revolve",
+      "model_scale",
+      "model_set_material",
+      "model_shell",
+      "model_split",
+      "model_stitch",
+      "model_sweep",
+      "model_thread",
+      "model_unstitch",
+      "param_add",
+      "param_delete",
+      "param_get",
+      "param_set",
+      "param_set_favorite",
+      "pmi_create",
+      "pmi_delete",
+      "pmi_edit",
+      "pmi_get",
+      "render_create",
+      "render_edit",
+      "render_get",
+      "save_as_mesh",
+      "sheet_convert",
+      "sheet_create_flange",
+      "sheet_create_flat_pattern",
+      "sheet_create_fold",
+      "sheet_create_hem",
+      "sheet_create_join_by_bend",
+      "sheet_create_refold",
+      "sheet_create_rip",
+      "sheet_create_unfold",
+      "sheet_edit_rule",
+      "sheet_get",
+      "sketch_add_3d_line",
+      "sketch_add_3d_spline",
+      "sketch_add_geometry",
+      "sketch_constrain",
+      "sketch_copy",
+      "sketch_create",
+      "sketch_delete_entity",
+      "sketch_dimension",
+      "sketch_edit",
+      "sketch_edit_curve",
+      "sketch_get",
+      "sketch_insert_svg",
+      "sketch_move",
+      "sketch_project",
+      "sketch_set_text",
+      "surface_create_ruled",
+      "surface_delete_face",
+      "surface_extend",
+      "surface_extrude",
+      "surface_fill",
+      "surface_offset",
+      "surface_patch",
+      "surface_reverse_normal",
+      "surface_revolve",
+      "surface_thicken",
+      "surface_trim",
+      "surface_untrim",
+      "sys_capability_map",
+      "sys_execute_script",
+      "sys_find_tool",
+      "sys_get_api_doc",
+      "sys_get_guidance",
+      "sys_get_preferences",
+      "sys_get_selection",
+      "sys_reload_addin",
+      "sys_request_selection",
+      "sys_set_preferences",
+      "view_list_workspaces",
+      "view_screenshot",
+      "view_screenshot_multi",
+      "view_section",
+      "view_set",
+      "view_switch_workspace",
+      "workspace_orient"
+    ],
+    "before": {
+      "bootstrap_exclusions": [
+        "Fusion-Essentials.py",
+        "lib/loaded_attestation.py"
+      ],
+      "complete": true,
+      "executed_module_count": 297,
+      "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+      "load_id": "55d952a6f4594df1b98c9492feb77d6b",
+      "loaded_matches_source": true,
+      "problems": [],
+      "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+      "scope": "commands/mcpServer import closure",
+      "session_id": "a268849450c54c55b6c3595893f091da"
+    },
+    "before_mcp_session": "a268849450c54c55b6c3595893f091da",
+    "before_tool_census": [
+      "appearance_set",
+      "assembly_capture_position",
+      "assembly_constrain",
+      "assembly_edit_contacts",
+      "assembly_edit_relations",
+      "assembly_get",
+      "assembly_ground",
+      "assembly_inspect_interference",
+      "assembly_move",
+      "assembly_rigid_group",
+      "cam_activate_setup",
+      "cam_apply_template",
+      "cam_compare_operations",
+      "cam_create_machine",
+      "cam_create_operation",
+      "cam_create_setup",
+      "cam_delete",
+      "cam_delete_machine",
+      "cam_delete_template",
+      "cam_edit_folders",
+      "cam_edit_operation",
+      "cam_edit_setup",
+      "cam_edit_tools",
+      "cam_export_setup",
+      "cam_find_holes",
+      "cam_find_pockets",
+      "cam_generate",
+      "cam_generate_setup_sheet",
+      "cam_get",
+      "cam_get_status",
+      "cam_inspect_toolpaths",
+      "cam_post",
+      "cam_reorder",
+      "cam_save_template",
+      "cam_select_geometry",
+      "cam_set_nc_comment",
+      "cam_show_toolpath",
+      "data_create_folder",
+      "data_create_project",
+      "data_delete_file",
+      "data_delete_folder",
+      "data_download_file",
+      "data_get",
+      "data_get_upload_status",
+      "data_move_file",
+      "data_switch_hub",
+      "data_upload_file",
+      "design_activate_component",
+      "design_add_instance",
+      "design_configure",
+      "design_delete_feature",
+      "design_delete_occurrence",
+      "design_edit_plastic_rule",
+      "design_edit_reference_image",
+      "design_edit_timeline",
+      "design_export",
+      "design_get",
+      "design_move_occurrence",
+      "design_recompute",
+      "design_remove_feature",
+      "design_set_metadata",
+      "design_set_mode",
+      "design_set_name",
+      "doc_activate",
+      "doc_close",
+      "doc_copy",
+      "doc_get",
+      "doc_insert_derive",
+      "doc_insert_import",
+      "doc_insert_occurrence",
+      "doc_new",
+      "doc_open",
+      "doc_restore_version",
+      "doc_save",
+      "doc_save_as",
+      "doc_save_milestone",
+      "doc_update_xref",
+      "drawing_add_sketch",
+      "drawing_add_symbol",
+      "drawing_create",
+      "drawing_delete_sketch",
+      "drawing_dimension",
+      "drawing_edit_revisions",
+      "drawing_edit_sheet",
+      "drawing_export",
+      "drawing_get",
+      "drawing_get_status",
+      "drawing_insert_image",
+      "drawing_update",
+      "find_geometry",
+      "form_create",
+      "form_edit",
+      "form_get",
+      "joint_at_geometry",
+      "joint_create",
+      "joint_create_as_built",
+      "joint_create_origin",
+      "joint_drive",
+      "joint_edit",
+      "joint_motion_link",
+      "mesh_combine",
+      "mesh_delete",
+      "mesh_export",
+      "mesh_find",
+      "mesh_generate_face_groups",
+      "mesh_get",
+      "mesh_insert",
+      "mesh_plane_cut",
+      "mesh_reduce",
+      "mesh_remesh",
+      "mesh_repair",
+      "mesh_reverse_normal",
+      "mesh_separate",
+      "mesh_shell",
+      "mesh_smooth",
+      "mesh_to_brep",
+      "model_arrange",
+      "model_base_feature",
+      "model_chamfer",
+      "model_combine",
+      "model_compute_holder",
+      "model_construction",
+      "model_create_component",
+      "model_create_rib",
+      "model_draft",
+      "model_edit_body",
+      "model_edit_extrude",
+      "model_edit_feature",
+      "model_edit_loft",
+      "model_edit_sweep",
+      "model_emboss",
+      "model_extrude",
+      "model_fillet",
+      "model_hole",
+      "model_inspect",
+      "model_loft",
+      "model_measure_between",
+      "model_measure_continuity",
+      "model_measure_relation",
+      "model_mirror",
+      "model_move",
+      "model_offset_face",
+      "model_pattern_circular",
+      "model_pattern_path",
+      "model_pattern_rectangular",
+      "model_pipe",
+      "model_replace_face",
+      "model_revolve",
+      "model_scale",
+      "model_set_material",
+      "model_shell",
+      "model_split",
+      "model_stitch",
+      "model_sweep",
+      "model_thread",
+      "model_unstitch",
+      "param_add",
+      "param_delete",
+      "param_get",
+      "param_set",
+      "param_set_favorite",
+      "pmi_create",
+      "pmi_delete",
+      "pmi_edit",
+      "pmi_get",
+      "render_create",
+      "render_edit",
+      "render_get",
+      "save_as_mesh",
+      "sheet_convert",
+      "sheet_create_flange",
+      "sheet_create_flat_pattern",
+      "sheet_create_fold",
+      "sheet_create_hem",
+      "sheet_create_join_by_bend",
+      "sheet_create_refold",
+      "sheet_create_rip",
+      "sheet_create_unfold",
+      "sheet_edit_rule",
+      "sheet_get",
+      "sketch_add_3d_line",
+      "sketch_add_3d_spline",
+      "sketch_add_geometry",
+      "sketch_constrain",
+      "sketch_copy",
+      "sketch_create",
+      "sketch_delete_entity",
+      "sketch_dimension",
+      "sketch_edit",
+      "sketch_edit_curve",
+      "sketch_get",
+      "sketch_insert_svg",
+      "sketch_move",
+      "sketch_project",
+      "sketch_set_text",
+      "surface_create_ruled",
+      "surface_delete_face",
+      "surface_extend",
+      "surface_extrude",
+      "surface_fill",
+      "surface_offset",
+      "surface_patch",
+      "surface_reverse_normal",
+      "surface_revolve",
+      "surface_thicken",
+      "surface_trim",
+      "surface_untrim",
+      "sys_capability_map",
+      "sys_execute_script",
+      "sys_find_tool",
+      "sys_get_api_doc",
+      "sys_get_guidance",
+      "sys_get_preferences",
+      "sys_get_selection",
+      "sys_reload_addin",
+      "sys_request_selection",
+      "sys_set_preferences",
+      "view_list_workspaces",
+      "view_screenshot",
+      "view_screenshot_multi",
+      "view_section",
+      "view_set",
+      "view_switch_workspace",
+      "workspace_orient"
+    ],
+    "checks": {
+      "fresh_handle_write_readback": true,
+      "fresh_session_changed": true,
+      "fresh_session_read_new_handle": true,
+      "new_load_and_session": true,
+      "nonce_read_back_before_reload": true,
+      "nonce_survived_reload": true,
+      "old_handle_refused": true,
+      "old_transport_refused_empty_404": true,
+      "recovery_parameter_removed": true,
+      "reload_scheduled": true,
+      "same_implementation_and_schema": true,
+      "scratch_closed_and_home_restored": true,
+      "stale_write_absent": true,
+      "tool_census_matches": true
+    },
+    "cleanup_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:e1122a04cb48410683bf68b24e4faf45",
+      "name": "Untitled",
+      "open_count": 2,
+      "rows": [
+        {
+          "document_handle": "session:6c9da0feb8504a32a9395b389135660d",
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        },
+        {
+          "document_handle": "session:e1122a04cb48410683bf68b24e4faf45",
+          "is_active": true,
+          "is_modified": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 1
+        }
+      ]
+    },
+    "fresh_transport_document_handle": "session:e1122a04cb48410683bf68b24e4faf45",
+    "fusion_version": "2706.0.116",
+    "nonce_name": "ReloadNonce0119fddc",
+    "nonce_value_mm": 17,
+    "post_reload_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:e1122a04cb48410683bf68b24e4faf45",
+      "name": "Untitled",
+      "open_count": 2,
+      "rows": [
+        {
+          "document_handle": "session:6c9da0feb8504a32a9395b389135660d",
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        },
+        {
+          "document_handle": "session:e1122a04cb48410683bf68b24e4faf45",
+          "is_active": true,
+          "is_modified": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 1
+        }
+      ]
+    },
+    "pre_reload_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:72694cf0761847a5adbc15cca59a28f7",
+      "name": "Untitled",
+      "open_count": 1,
+      "rows": [
+        {
+          "document_handle": "session:72694cf0761847a5adbc15cca59a28f7",
+          "is_active": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        }
+      ]
+    },
+    "raw": {
+      "file": "family-evidence-aad963be0da45ebd77d56de0683fbaa7262eb52865d23a136905336c0023bbc2.json",
+      "sha256": "aad963be0da45ebd77d56de0683fbaa7262eb52865d23a136905336c0023bbc2"
+    },
+    "restored_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:6c9da0feb8504a32a9395b389135660d",
+      "name": "Untitled",
+      "open_count": 1,
+      "rows": [
+        {
+          "document_handle": "session:6c9da0feb8504a32a9395b389135660d",
+          "is_active": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        }
+      ]
+    },
+    "run_id": "n1lookup1012b",
+    "scratch_cleanup_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:6c9da0feb8504a32a9395b389135660d",
+      "name": "Untitled",
+      "open_count": 1,
+      "rows": [
+        {
+          "document_handle": "session:6c9da0feb8504a32a9395b389135660d",
+          "is_active": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        }
+      ]
+    },
+    "scratch_handle_before_reload": "session:0119fddcea99453e8147d68bf84d4070",
+    "source_hash": "6114dba045d601256019ae3262ac453f06cb9bd9f2dac7e25123e549cc57159c"
+  },
+  "lifecycle_history": [
+    {
+      "after": {
+        "bootstrap_exclusions": [
+          "Fusion-Essentials.py",
+          "lib/loaded_attestation.py"
+        ],
+        "complete": true,
+        "executed_module_count": 297,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "55d952a6f4594df1b98c9492feb77d6b",
+        "loaded_matches_source": true,
+        "problems": [],
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "scope": "commands/mcpServer import closure",
+        "session_id": "a268849450c54c55b6c3595893f091da"
+      },
+      "after_fusion_version": "2706.0.116",
+      "after_mcp_session": "a268849450c54c55b6c3595893f091da",
+      "after_tool_census": [
+        "appearance_set",
+        "assembly_capture_position",
+        "assembly_constrain",
+        "assembly_edit_contacts",
+        "assembly_edit_relations",
+        "assembly_get",
+        "assembly_ground",
+        "assembly_inspect_interference",
+        "assembly_move",
+        "assembly_rigid_group",
+        "cam_activate_setup",
+        "cam_apply_template",
+        "cam_compare_operations",
+        "cam_create_machine",
+        "cam_create_operation",
+        "cam_create_setup",
+        "cam_delete",
+        "cam_delete_machine",
+        "cam_delete_template",
+        "cam_edit_folders",
+        "cam_edit_operation",
+        "cam_edit_setup",
+        "cam_edit_tools",
+        "cam_export_setup",
+        "cam_find_holes",
+        "cam_find_pockets",
+        "cam_generate",
+        "cam_generate_setup_sheet",
+        "cam_get",
+        "cam_get_status",
+        "cam_inspect_toolpaths",
+        "cam_post",
+        "cam_reorder",
+        "cam_save_template",
+        "cam_select_geometry",
+        "cam_set_nc_comment",
+        "cam_show_toolpath",
+        "data_create_folder",
+        "data_create_project",
+        "data_delete_file",
+        "data_delete_folder",
+        "data_download_file",
+        "data_get",
+        "data_get_upload_status",
+        "data_move_file",
+        "data_switch_hub",
+        "data_upload_file",
+        "design_activate_component",
+        "design_add_instance",
+        "design_configure",
+        "design_delete_feature",
+        "design_delete_occurrence",
+        "design_edit_plastic_rule",
+        "design_edit_reference_image",
+        "design_edit_timeline",
+        "design_export",
+        "design_get",
+        "design_move_occurrence",
+        "design_recompute",
+        "design_remove_feature",
+        "design_set_metadata",
+        "design_set_mode",
+        "design_set_name",
+        "doc_activate",
+        "doc_close",
+        "doc_copy",
+        "doc_get",
+        "doc_insert_derive",
+        "doc_insert_import",
+        "doc_insert_occurrence",
+        "doc_new",
+        "doc_open",
+        "doc_restore_version",
+        "doc_save",
+        "doc_save_as",
+        "doc_save_milestone",
+        "doc_update_xref",
+        "drawing_add_sketch",
+        "drawing_add_symbol",
+        "drawing_create",
+        "drawing_delete_sketch",
+        "drawing_dimension",
+        "drawing_edit_revisions",
+        "drawing_edit_sheet",
+        "drawing_export",
+        "drawing_get",
+        "drawing_get_status",
+        "drawing_insert_image",
+        "drawing_update",
+        "find_geometry",
+        "form_create",
+        "form_edit",
+        "form_get",
+        "joint_at_geometry",
+        "joint_create",
+        "joint_create_as_built",
+        "joint_create_origin",
+        "joint_drive",
+        "joint_edit",
+        "joint_motion_link",
+        "mesh_combine",
+        "mesh_delete",
+        "mesh_export",
+        "mesh_find",
+        "mesh_generate_face_groups",
+        "mesh_get",
+        "mesh_insert",
+        "mesh_plane_cut",
+        "mesh_reduce",
+        "mesh_remesh",
+        "mesh_repair",
+        "mesh_reverse_normal",
+        "mesh_separate",
+        "mesh_shell",
+        "mesh_smooth",
+        "mesh_to_brep",
+        "model_arrange",
+        "model_base_feature",
+        "model_chamfer",
+        "model_combine",
+        "model_compute_holder",
+        "model_construction",
+        "model_create_component",
+        "model_create_rib",
+        "model_draft",
+        "model_edit_body",
+        "model_edit_extrude",
+        "model_edit_feature",
+        "model_edit_loft",
+        "model_edit_sweep",
+        "model_emboss",
+        "model_extrude",
+        "model_fillet",
+        "model_hole",
+        "model_inspect",
+        "model_loft",
+        "model_measure_between",
+        "model_measure_continuity",
+        "model_measure_relation",
+        "model_mirror",
+        "model_move",
+        "model_offset_face",
+        "model_pattern_circular",
+        "model_pattern_path",
+        "model_pattern_rectangular",
+        "model_pipe",
+        "model_replace_face",
+        "model_revolve",
+        "model_scale",
+        "model_set_material",
+        "model_shell",
+        "model_split",
+        "model_stitch",
+        "model_sweep",
+        "model_thread",
+        "model_unstitch",
+        "param_add",
+        "param_delete",
+        "param_get",
+        "param_set",
+        "param_set_favorite",
+        "pmi_create",
+        "pmi_delete",
+        "pmi_edit",
+        "pmi_get",
+        "render_create",
+        "render_edit",
+        "render_get",
+        "save_as_mesh",
+        "sheet_convert",
+        "sheet_create_flange",
+        "sheet_create_flat_pattern",
+        "sheet_create_fold",
+        "sheet_create_hem",
+        "sheet_create_join_by_bend",
+        "sheet_create_refold",
+        "sheet_create_rip",
+        "sheet_create_unfold",
+        "sheet_edit_rule",
+        "sheet_get",
+        "sketch_add_3d_line",
+        "sketch_add_3d_spline",
+        "sketch_add_geometry",
+        "sketch_constrain",
+        "sketch_copy",
+        "sketch_create",
+        "sketch_delete_entity",
+        "sketch_dimension",
+        "sketch_edit",
+        "sketch_edit_curve",
+        "sketch_get",
+        "sketch_insert_svg",
+        "sketch_move",
+        "sketch_project",
+        "sketch_set_text",
+        "surface_create_ruled",
+        "surface_delete_face",
+        "surface_extend",
+        "surface_extrude",
+        "surface_fill",
+        "surface_offset",
+        "surface_patch",
+        "surface_reverse_normal",
+        "surface_revolve",
+        "surface_thicken",
+        "surface_trim",
+        "surface_untrim",
+        "sys_capability_map",
+        "sys_execute_script",
+        "sys_find_tool",
+        "sys_get_api_doc",
+        "sys_get_guidance",
+        "sys_get_preferences",
+        "sys_get_selection",
+        "sys_reload_addin",
+        "sys_request_selection",
+        "sys_set_preferences",
+        "view_list_workspaces",
+        "view_screenshot",
+        "view_screenshot_multi",
+        "view_section",
+        "view_set",
+        "view_switch_workspace",
+        "workspace_orient"
+      ],
+      "before": {
+        "bootstrap_exclusions": [
+          "Fusion-Essentials.py",
+          "lib/loaded_attestation.py"
+        ],
+        "complete": true,
+        "executed_module_count": 297,
+        "implementation_fingerprint": "d9b6f6fbc099a02105bb1abd4845c936f268e76d0528416eac608a07b1760a56",
+        "load_id": "93bc8bfad9c7466cbc84c2201e2f31a2",
+        "loaded_matches_source": true,
+        "problems": [],
+        "schema_fingerprint": "fc4fd79b9af8618c51fa114bc137a108bc138732106a241b9adc244951009845",
+        "scope": "commands/mcpServer import closure",
+        "session_id": "d1f65e296baf4168a1120d7265d20a50"
+      },
+      "before_mcp_session": "d1f65e296baf4168a1120d7265d20a50",
+      "before_tool_census": [
+        "appearance_set",
+        "assembly_capture_position",
+        "assembly_constrain",
+        "assembly_edit_contacts",
+        "assembly_edit_relations",
+        "assembly_get",
+        "assembly_ground",
+        "assembly_inspect_interference",
+        "assembly_move",
+        "assembly_rigid_group",
+        "cam_activate_setup",
+        "cam_apply_template",
+        "cam_compare_operations",
+        "cam_create_machine",
+        "cam_create_operation",
+        "cam_create_setup",
+        "cam_delete",
+        "cam_delete_machine",
+        "cam_delete_template",
+        "cam_edit_folders",
+        "cam_edit_operation",
+        "cam_edit_setup",
+        "cam_edit_tools",
+        "cam_export_setup",
+        "cam_find_holes",
+        "cam_find_pockets",
+        "cam_generate",
+        "cam_generate_setup_sheet",
+        "cam_get",
+        "cam_get_status",
+        "cam_inspect_toolpaths",
+        "cam_post",
+        "cam_reorder",
+        "cam_save_template",
+        "cam_select_geometry",
+        "cam_set_nc_comment",
+        "cam_show_toolpath",
+        "data_create_folder",
+        "data_create_project",
+        "data_delete_file",
+        "data_delete_folder",
+        "data_download_file",
+        "data_get",
+        "data_get_upload_status",
+        "data_move_file",
+        "data_switch_hub",
+        "data_upload_file",
+        "design_activate_component",
+        "design_add_instance",
+        "design_configure",
+        "design_delete_feature",
+        "design_delete_occurrence",
+        "design_edit_plastic_rule",
+        "design_edit_reference_image",
+        "design_edit_timeline",
+        "design_export",
+        "design_get",
+        "design_move_occurrence",
+        "design_recompute",
+        "design_remove_feature",
+        "design_set_metadata",
+        "design_set_mode",
+        "design_set_name",
+        "doc_activate",
+        "doc_close",
+        "doc_copy",
+        "doc_get",
+        "doc_insert_derive",
+        "doc_insert_import",
+        "doc_insert_occurrence",
+        "doc_new",
+        "doc_open",
+        "doc_restore_version",
+        "doc_save",
+        "doc_save_as",
+        "doc_save_milestone",
+        "doc_update_xref",
+        "drawing_add_sketch",
+        "drawing_add_symbol",
+        "drawing_create",
+        "drawing_delete_sketch",
+        "drawing_dimension",
+        "drawing_edit_revisions",
+        "drawing_edit_sheet",
+        "drawing_export",
+        "drawing_get",
+        "drawing_get_status",
+        "drawing_insert_image",
+        "drawing_update",
+        "find_geometry",
+        "form_create",
+        "form_edit",
+        "form_get",
+        "joint_at_geometry",
+        "joint_create",
+        "joint_create_as_built",
+        "joint_create_origin",
+        "joint_drive",
+        "joint_edit",
+        "joint_motion_link",
+        "mesh_combine",
+        "mesh_delete",
+        "mesh_export",
+        "mesh_find",
+        "mesh_generate_face_groups",
+        "mesh_get",
+        "mesh_insert",
+        "mesh_plane_cut",
+        "mesh_reduce",
+        "mesh_remesh",
+        "mesh_repair",
+        "mesh_reverse_normal",
+        "mesh_separate",
+        "mesh_shell",
+        "mesh_smooth",
+        "mesh_to_brep",
+        "model_arrange",
+        "model_base_feature",
+        "model_chamfer",
+        "model_combine",
+        "model_compute_holder",
+        "model_construction",
+        "model_create_component",
+        "model_create_rib",
+        "model_draft",
+        "model_edit_body",
+        "model_edit_extrude",
+        "model_edit_feature",
+        "model_edit_loft",
+        "model_edit_sweep",
+        "model_emboss",
+        "model_extrude",
+        "model_fillet",
+        "model_hole",
+        "model_inspect",
+        "model_loft",
+        "model_measure_between",
+        "model_measure_continuity",
+        "model_measure_relation",
+        "model_mirror",
+        "model_move",
+        "model_offset_face",
+        "model_pattern_circular",
+        "model_pattern_path",
+        "model_pattern_rectangular",
+        "model_pipe",
+        "model_replace_face",
+        "model_revolve",
+        "model_scale",
+        "model_set_material",
+        "model_shell",
+        "model_split",
+        "model_stitch",
+        "model_sweep",
+        "model_thread",
+        "model_unstitch",
+        "param_add",
+        "param_delete",
+        "param_get",
+        "param_set",
+        "param_set_favorite",
+        "pmi_create",
+        "pmi_delete",
+        "pmi_edit",
+        "pmi_get",
+        "render_create",
+        "render_edit",
+        "render_get",
+        "save_as_mesh",
+        "sheet_convert",
+        "sheet_create_flange",
+        "sheet_create_flat_pattern",
+        "sheet_create_fold",
+        "sheet_create_hem",
+        "sheet_create_join_by_bend",
+        "sheet_create_refold",
+        "sheet_create_rip",
+        "sheet_create_unfold",
+        "sheet_edit_rule",
+        "sheet_get",
+        "sketch_add_3d_line",
+        "sketch_add_3d_spline",
+        "sketch_add_geometry",
+        "sketch_constrain",
+        "sketch_copy",
+        "sketch_create",
+        "sketch_delete_entity",
+        "sketch_dimension",
+        "sketch_edit",
+        "sketch_edit_curve",
+        "sketch_get",
+        "sketch_insert_svg",
+        "sketch_move",
+        "sketch_project",
+        "sketch_set_text",
+        "surface_create_ruled",
+        "surface_delete_face",
+        "surface_extend",
+        "surface_extrude",
+        "surface_fill",
+        "surface_offset",
+        "surface_patch",
+        "surface_reverse_normal",
+        "surface_revolve",
+        "surface_thicken",
+        "surface_trim",
+        "surface_untrim",
+        "sys_capability_map",
+        "sys_execute_script",
+        "sys_find_tool",
+        "sys_get_api_doc",
+        "sys_get_guidance",
+        "sys_get_preferences",
+        "sys_get_selection",
+        "sys_reload_addin",
+        "sys_request_selection",
+        "sys_set_preferences",
+        "view_list_workspaces",
+        "view_screenshot",
+        "view_screenshot_multi",
+        "view_section",
+        "view_set",
+        "view_switch_workspace",
+        "workspace_orient"
+      ],
+      "checks": {
+        "fresh_handle_write_readback": true,
+        "fresh_session_changed": true,
+        "fresh_session_read_new_handle": true,
+        "new_load_and_session": true,
+        "nonce_read_back_before_reload": true,
+        "nonce_survived_reload": true,
+        "old_handle_refused": true,
+        "old_transport_refused_empty_404": true,
+        "recovery_parameter_removed": true,
+        "reload_scheduled": true,
+        "same_implementation_and_schema": true,
+        "scratch_closed_and_home_restored": true,
+        "stale_write_absent": true,
+        "tool_census_matches": true
+      },
+      "cleanup_census": {
+        "complete": true,
+        "document_id": null,
+        "handle": "session:aa2d9156e3e34663bab2b5c0e3387c81",
+        "name": "Untitled",
+        "open_count": 2,
+        "rows": [
+          {
+            "document_handle": "session:72694cf0761847a5adbc15cca59a28f7",
+            "is_saved": false,
+            "name": "Untitled",
+            "open_index": 0
+          },
+          {
+            "document_handle": "session:aa2d9156e3e34663bab2b5c0e3387c81",
+            "is_active": true,
+            "is_modified": true,
+            "is_saved": false,
+            "name": "Untitled",
+            "open_index": 1
+          }
+        ]
+      },
+      "fresh_transport_document_handle": "session:aa2d9156e3e34663bab2b5c0e3387c81",
+      "fusion_version": "2706.0.116",
+      "nonce_name": "ReloadNonce27ccfb18",
+      "nonce_value_mm": 17,
+      "post_reload_census": {
+        "complete": true,
+        "document_id": null,
+        "handle": "session:aa2d9156e3e34663bab2b5c0e3387c81",
+        "name": "Untitled",
+        "open_count": 2,
+        "rows": [
+          {
+            "document_handle": "session:72694cf0761847a5adbc15cca59a28f7",
+            "is_saved": false,
+            "name": "Untitled",
+            "open_index": 0
+          },
+          {
+            "document_handle": "session:aa2d9156e3e34663bab2b5c0e3387c81",
+            "is_active": true,
+            "is_modified": true,
+            "is_saved": false,
+            "name": "Untitled",
+            "open_index": 1
+          }
+        ]
+      },
+      "pre_reload_census": {
+        "complete": true,
+        "document_id": null,
+        "handle": "session:12ef918145e44351b3cbde9eda2318bf",
+        "name": "Untitled",
+        "open_count": 1,
+        "rows": [
+          {
+            "document_handle": "session:12ef918145e44351b3cbde9eda2318bf",
+            "is_active": true,
+            "is_saved": false,
+            "name": "Untitled",
+            "open_index": 0
+          }
+        ]
+      },
+      "raw": {
+        "file": "family-evidence-6b7f4038c32a5fa25462b7727b7483daf53b21c39dae77f6f4be0e54f2b776ce.json",
+        "sha256": "6b7f4038c32a5fa25462b7727b7483daf53b21c39dae77f6f4be0e54f2b776ce"
+      },
+      "restored_census": {
+        "complete": true,
+        "document_id": null,
+        "handle": "session:72694cf0761847a5adbc15cca59a28f7",
+        "name": "Untitled",
+        "open_count": 1,
+        "rows": [
+          {
+            "document_handle": "session:72694cf0761847a5adbc15cca59a28f7",
+            "is_active": true,
+            "is_saved": false,
+            "name": "Untitled",
+            "open_index": 0
+          }
+        ]
+      },
+      "run_id": "n1bootstrap1012b",
+      "scratch_cleanup_census": {
+        "complete": true,
+        "document_id": null,
+        "handle": "session:72694cf0761847a5adbc15cca59a28f7",
+        "name": "Untitled",
+        "open_count": 1,
+        "rows": [
+          {
+            "document_handle": "session:72694cf0761847a5adbc15cca59a28f7",
+            "is_active": true,
+            "is_saved": false,
+            "name": "Untitled",
+            "open_index": 0
+          }
+        ]
+      },
+      "scratch_handle_before_reload": "session:27ccfb180d544e159c145beaaa413f5e",
+      "source_hash": "6114dba045d601256019ae3262ac453f06cb9bd9f2dac7e25123e549cc57159c"
+    }
+  ],
+  "not_in_scope": {},
+  "tool_census": [
+    "appearance_set",
+    "assembly_capture_position",
+    "assembly_constrain",
+    "assembly_edit_contacts",
+    "assembly_edit_relations",
+    "assembly_get",
+    "assembly_ground",
+    "assembly_inspect_interference",
+    "assembly_move",
+    "assembly_rigid_group",
+    "cam_activate_setup",
+    "cam_apply_template",
+    "cam_compare_operations",
+    "cam_create_machine",
+    "cam_create_operation",
+    "cam_create_setup",
+    "cam_delete",
+    "cam_delete_machine",
+    "cam_delete_template",
+    "cam_edit_folders",
+    "cam_edit_operation",
+    "cam_edit_setup",
+    "cam_edit_tools",
+    "cam_export_setup",
+    "cam_find_holes",
+    "cam_find_pockets",
+    "cam_generate",
+    "cam_generate_setup_sheet",
+    "cam_get",
+    "cam_get_status",
+    "cam_inspect_toolpaths",
+    "cam_post",
+    "cam_reorder",
+    "cam_save_template",
+    "cam_select_geometry",
+    "cam_set_nc_comment",
+    "cam_show_toolpath",
+    "data_create_folder",
+    "data_create_project",
+    "data_delete_file",
+    "data_delete_folder",
+    "data_download_file",
+    "data_get",
+    "data_get_upload_status",
+    "data_move_file",
+    "data_switch_hub",
+    "data_upload_file",
+    "design_activate_component",
+    "design_add_instance",
+    "design_configure",
+    "design_delete_feature",
+    "design_delete_occurrence",
+    "design_edit_plastic_rule",
+    "design_edit_reference_image",
+    "design_edit_timeline",
+    "design_export",
+    "design_get",
+    "design_move_occurrence",
+    "design_recompute",
+    "design_remove_feature",
+    "design_set_metadata",
+    "design_set_mode",
+    "design_set_name",
+    "doc_activate",
+    "doc_close",
+    "doc_copy",
+    "doc_get",
+    "doc_insert_derive",
+    "doc_insert_import",
+    "doc_insert_occurrence",
+    "doc_new",
+    "doc_open",
+    "doc_restore_version",
+    "doc_save",
+    "doc_save_as",
+    "doc_save_milestone",
+    "doc_update_xref",
+    "drawing_add_sketch",
+    "drawing_add_symbol",
+    "drawing_create",
+    "drawing_delete_sketch",
+    "drawing_dimension",
+    "drawing_edit_revisions",
+    "drawing_edit_sheet",
+    "drawing_export",
+    "drawing_get",
+    "drawing_get_status",
+    "drawing_insert_image",
+    "drawing_update",
+    "find_geometry",
+    "form_create",
+    "form_edit",
+    "form_get",
+    "joint_at_geometry",
+    "joint_create",
+    "joint_create_as_built",
+    "joint_create_origin",
+    "joint_drive",
+    "joint_edit",
+    "joint_motion_link",
+    "mesh_combine",
+    "mesh_delete",
+    "mesh_export",
+    "mesh_find",
+    "mesh_generate_face_groups",
+    "mesh_get",
+    "mesh_insert",
+    "mesh_plane_cut",
+    "mesh_reduce",
+    "mesh_remesh",
+    "mesh_repair",
+    "mesh_reverse_normal",
+    "mesh_separate",
+    "mesh_shell",
+    "mesh_smooth",
+    "mesh_to_brep",
+    "model_arrange",
+    "model_base_feature",
+    "model_chamfer",
+    "model_combine",
+    "model_compute_holder",
+    "model_construction",
+    "model_create_component",
+    "model_create_rib",
+    "model_draft",
+    "model_edit_body",
+    "model_edit_extrude",
+    "model_edit_feature",
+    "model_edit_loft",
+    "model_edit_sweep",
+    "model_emboss",
+    "model_extrude",
+    "model_fillet",
+    "model_hole",
+    "model_inspect",
+    "model_loft",
+    "model_measure_between",
+    "model_measure_continuity",
+    "model_measure_relation",
+    "model_mirror",
+    "model_move",
+    "model_offset_face",
+    "model_pattern_circular",
+    "model_pattern_path",
+    "model_pattern_rectangular",
+    "model_pipe",
+    "model_replace_face",
+    "model_revolve",
+    "model_scale",
+    "model_set_material",
+    "model_shell",
+    "model_split",
+    "model_stitch",
+    "model_sweep",
+    "model_thread",
+    "model_unstitch",
+    "param_add",
+    "param_delete",
+    "param_get",
+    "param_set",
+    "param_set_favorite",
+    "pmi_create",
+    "pmi_delete",
+    "pmi_edit",
+    "pmi_get",
+    "render_create",
+    "render_edit",
+    "render_get",
+    "save_as_mesh",
+    "sheet_convert",
+    "sheet_create_flange",
+    "sheet_create_flat_pattern",
+    "sheet_create_fold",
+    "sheet_create_hem",
+    "sheet_create_join_by_bend",
+    "sheet_create_refold",
+    "sheet_create_rip",
+    "sheet_create_unfold",
+    "sheet_edit_rule",
+    "sheet_get",
+    "sketch_add_3d_line",
+    "sketch_add_3d_spline",
+    "sketch_add_geometry",
+    "sketch_constrain",
+    "sketch_copy",
+    "sketch_create",
+    "sketch_delete_entity",
+    "sketch_dimension",
+    "sketch_edit",
+    "sketch_edit_curve",
+    "sketch_get",
+    "sketch_insert_svg",
+    "sketch_move",
+    "sketch_project",
+    "sketch_set_text",
+    "surface_create_ruled",
+    "surface_delete_face",
+    "surface_extend",
+    "surface_extrude",
+    "surface_fill",
+    "surface_offset",
+    "surface_patch",
+    "surface_reverse_normal",
+    "surface_revolve",
+    "surface_thicken",
+    "surface_trim",
+    "surface_untrim",
+    "sys_capability_map",
+    "sys_execute_script",
+    "sys_find_tool",
+    "sys_get_api_doc",
+    "sys_get_guidance",
+    "sys_get_preferences",
+    "sys_get_selection",
+    "sys_reload_addin",
+    "sys_request_selection",
+    "sys_set_preferences",
+    "view_list_workspaces",
+    "view_screenshot",
+    "view_screenshot_multi",
+    "view_section",
+    "view_set",
+    "view_switch_workspace",
+    "workspace_orient"
+  ]
+}

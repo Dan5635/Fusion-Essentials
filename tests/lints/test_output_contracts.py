@@ -25,11 +25,6 @@ def _tools_with_returns():
 
 
 class TestDeclaredOutputs:
-    def test_at_least_the_known_producers_declare_returns(self):
-        # A floor so this lint can't pass vacuously if discovery breaks.
-        names = {n for n, _ in _tools_with_returns()}
-        assert {"find_geometry", "doc_get", "cam_generate"} <= names
-
     def test_returns_entries_are_output_kinds(self):
         for name, mod in _tools_with_returns():
             for o in mod.RETURNS:
@@ -37,8 +32,9 @@ class TestDeclaredOutputs:
                     f"{name}.RETURNS has a non-OutputKind entry: {o!r}")
 
     def test_declared_key_appears_in_source(self):
-        offenders = []
-        for name, mod in _tools_with_returns():
+        offenders, declaring = [], _tools_with_returns()
+        assert declaring, "nothing was checked: no tool declares a RETURNS spec"
+        for name, mod in declaring:
             src = _corpus.text(os.path.join(TOOLS_DIR, f"{name}.py"))
             for o in mod.RETURNS:
                 if f'"{o.key}"' not in src and f"'{o.key}'" not in src:

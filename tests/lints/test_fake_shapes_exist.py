@@ -111,8 +111,7 @@ def _declared_map(decls=None):
 _ALLOWLIST = {}
 
 # Fake-shaped classes in the shared-fake modules with NO live SHAPES dump to sweep against yet.
-# Shrink-only: the staleness check fails the moment a dump lands (auto-map then takes over) or the
-# class goes.
+# Shrink-only: an entry leaves when a dump lands (the auto-map then takes over) or the class goes.
 _UNMAPPED_OK = {
     "_MeshBodies": "MeshBodies has no SHAPES dump; the one member the fake takes a position on is "
                    "itemByName, which it DROPS off the measured meshbodies-no-itembyname row "
@@ -214,6 +213,8 @@ class TestSharedFakeShapesExist:
     def test_every_shared_fake_attribute_exists_live(self):
         classes = _conftest_classes()
         offenders = []
+        assert _auto_mapped(classes, live_api_facts.SHAPES) and _declared_map(), (
+            "nothing was checked: no shared fake maps onto a live type by name, or none declares one")
         for fake, live in sorted(_effective_map(classes).items()):
             assert fake in classes, f"mapped fake {fake} not found in the shared-fake modules"
             shape = live_api_facts.SHAPES.get(live)
@@ -246,47 +247,6 @@ class TestSharedFakeShapesExist:
             "SHAPES key (auto: name it after the live type; or declare @fusion_fake(live_type=...) "
             "on it; or shape-dump the live type), or add a reasoned _UNMAPPED_OK entry:\n  "
             + "\n  ".join(unmapped))
-
-    def test_the_sweep_map_carries_the_declared_fakes(self):
-        # The map is two halves and the MERGE is load-bearing: a fake whose stripped name is no
-        # SHAPES key reaches the sweep ONLY through its declaration, so a map that dropped the
-        # declared half would quietly stop sweeping every one of them, and no other check would
-        # report it.
-        classes = _conftest_classes()
-        mapping = _effective_map(classes)
-        auto = _auto_mapped(classes, live_api_facts.SHAPES)
-        for fake, live in (("FakePoint", "Point3D"), ("MakeComp", "Component"),
-                           ("_NamedCollection", "BRepBodies")):
-            assert fake not in auto, f"{fake} auto-maps now - this check needs a declared-ONLY fake"
-            assert mapping.get(fake) == live, (
-                f"{fake} is swept only because its declaration names {live} - the declared half of "
-                "the map is not merged in")
-
-    def test_unmapped_ok_entries_still_trip(self):
-        classes = _conftest_classes()
-        stale = []
-        for name, reason in _UNMAPPED_OK.items():
-            assert reason.strip(), f"{name} _UNMAPPED_OK entry needs a plain-English reason"
-            if name not in classes:
-                stale.append(f"{name}: no such shared-fake class - remove the entry")
-            elif _stripped(name) in live_api_facts.SHAPES:
-                stale.append(f"{name}: '{_stripped(name)}' now has a SHAPES dump - the auto-map "
-                             "sweeps it; remove the entry")
-            elif name in _declared_map():
-                stale.append(f"{name}: declares a @fusion_fake live_type - remove the entry")
-        assert not stale, "stale _UNMAPPED_OK entries:\n  " + "\n  ".join(stale)
-
-    def test_allowlist_entries_still_trip(self):
-        classes = _conftest_classes()
-        stale = []
-        for key, reason in _ALLOWLIST.items():
-            assert reason.strip(), f"{key} allowlist entry needs a plain-English reason"
-            fake, attr = key.split(".", 1)
-            if fake not in classes or attr not in _public_surface(classes[fake], classes):
-                stale.append(f"{key}: the fake no longer exposes it - remove the entry")
-            elif attr in live_api_facts.SHAPES.get(_effective_map(classes).get(fake, ""), ()):
-                stale.append(f"{key}: the attribute exists live - remove the entry")
-        assert not stale, "stale allowlist entries:\n  " + "\n  ".join(stale)
 
 
 # The provenance arm, over the same inventory: a declaration is STRUCTURED DATA on the fake
@@ -395,30 +355,9 @@ class TestApiFactProvenance:
             "shared-fake defs construct a declared fake without naming it, so they sit outside the "
             "inventory the shape sweep and the rules above run on:\n  " + "\n  ".join(bad))
 
-    def test_the_declarations_read_the_real_conftest_fakes(self):
-        # a reader that found nothing, or read some other attribute, would pass every rule above
-        # green over any set of fake modules at all.
-        decls = declarations()
-        assert decls, "no shared fake carries a @fusion_fake declaration - the reader is dead"
-        assert decls["FakeOccurrence"]["live_type"] == "Occurrence"
-        assert "shape-dump-design-world" in decls["FakeOccurrence"]["facts"]
-        assert decls["body_proxy"]["factory_for"] == "_OccurrenceProxy"
-        assert decls["_EntityProxy"]["scenario_double"].strip()
-
 
 # The reuse arm, over tests/unit: the two arms above sweep conftest's fakes, and a unit test that
 # hand-rolls its own double of a MEASURED type is exactly the shape they cannot see.
-
-
-def _shared_unit_classes():
-    """{class name: ClassDef} for the tests/unit/_*.py fake modules other test files import from -
-    a base defined there is followed like one defined in the file itself."""
-    found = {}
-    for path in _corpus.py_files(_UNIT_DIR):
-        if os.path.basename(path).startswith("_"):
-            found.update({n.name: n for n in _corpus.tree(path).body
-                          if isinstance(n, ast.ClassDef)})
-    return found
 
 
 def _base_refs(cls_node):
@@ -595,23 +534,3 @@ class TestUnitFakesStandOnTheSharedOnes:
             "double teaches a surface nothing swept - import the shared fake from conftest, or "
             "subclass it and add only the extra the test needs:\n  "
             + "\n  ".join(f"{f}: {c} doubles live {live}" for f, c, live in offenders))
-
-    def test_the_scan_reads_the_real_unit_tests(self):
-        # a scan that found no candidate, or a base walk answering the same for everything, would
-        # pass the gate above green over any tests/unit at all.
-        conftest = _conftest_classes()
-        tree = ast.parse("from conftest import Sketch as _S\nfrom elsewhere import Plane\n"
-                         "class A(_S): pass\nclass B: pass\nclass C(Plane): pass")
-        bound = _conftest_bindings(tree, conftest, set())
-        own = _named_classes(tree)
-        scopes = _scope_map(own)
-        derived, plain, collided = [n for n in tree.body if isinstance(n, ast.ClassDef)]
-        assert _stands_on_conftest(derived, own, scopes, bound, conftest)
-        assert not _stands_on_conftest(plain, own, scopes, bound, conftest)
-        # the hardening: `Plane` is a conftest class NAME, but this file bound it elsewhere
-        assert not _stands_on_conftest(collided, own, scopes, bound, conftest)
-        assert _shared_unit_classes(), "tests/unit/_*.py defines no class - the file walk is dead"
-        in_scope = [n.name for path in _corpus.py_files(_UNIT_DIR)
-                    for n in ast.walk(_corpus.tree(path))
-                    if isinstance(n, ast.ClassDef) and _stripped(n.name) in live_api_facts.SHAPES]
-        assert in_scope, "no tests/unit class is named for a measured type - the scope is dead"

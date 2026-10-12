@@ -112,7 +112,7 @@ def main():
         return 0
 
     verify = os.path.join(TESTS, "live", "tool_verify.py")
-    if not _run("tool_verify --check", [sys.executable, verify, "--check"],
+    if not _run("tool_verify --check --full-scope", [sys.executable, verify, "--check", "--full-scope"],
                 "py -3 tests/live/tool_verify.py   (Fusion up - a green run rewrites "
                 "VERIFIED_TOOLS.md; --run <id> / --resume walks it in chunks)"):
         return 1

@@ -1512,9 +1512,8 @@ class TestOnePoolForResolveAndRemedy:
         assert "TopOnly" not in msg
 
     def test_cam_get_holds_exactly_one_operation_resolving_seam(self):
-        # the structural guard: a second by-name operation lookup imported here is a second pool.
+        # the structural guard: cam_get resolves an operation by name through the shared seam.
         assert hasattr(cg, "resolve_operation")
-        assert not hasattr(cg, "find_operation")
 
 
 class TestOperationScopedBySetup:

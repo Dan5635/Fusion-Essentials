@@ -10,7 +10,8 @@ from ._common import counted, iter_collection, measured, ptxyz, safe
 
 MAP_BLURB = ("rule_row/scoped_rules/matching_rules/component_row/sheet_edge_faces/bend_face_count/bend_wall_groups/"
              "flat_pattern_row/pending_unfolds - scoped rules, pending unfold preflight, component state, a rim edge's faces, cylinder-face "
-             "count, bend walls paired per axis, flat health and optional geometry")
+             "count, bend walls paired per axis, flat health and optional geometry; "
+             "_POSITIONS/_KIND_SPEC - Hem position and kind tables")
 
 _RULE_VALUES = ("thickness", "bendRadius", "gap", "reliefWidth", "reliefDepth",
                 "reliefRemnant", "twoBendReliefSize", "threeBendReliefRadius")
@@ -30,6 +31,17 @@ _RELIEF_ENUMS = {"BendReliefShapes": adsk.fusion.BendReliefShapes,
                  "TwoBendReliefShapes": adsk.fusion.TwoBendReliefShapes,
                  "TwoBendReliefPlacements": adsk.fusion.TwoBendReliefPlacements,
                  "ThreeBendReliefShapes": adsk.fusion.ThreeBendReliefShapes}
+_POSITIONS = {"start_edge": "StartEdgeBendPositionType", "tangent_to_side": "TangentToSideBendPositionType"}
+
+# kind -> (its dimensions in the setter's own order, the landed HemFeatureDefinition class suffix).
+_KIND_SPEC = {
+    "flat": (("length",), "FlatHemFeatureDefinition"),
+    "open": (("length", "gap"), "OpenHemFeatureDefinition"),
+    "rolled": (("radius", "angle_deg"), "RolledHemFeatureDefinition"),
+    "rope": (("length", "gap", "radius"), "RopeHemFeatureDefinition"),
+    "teardrop": (("radius", "length", "gap"), "TeardropHemFeatureDefinition"),
+    "double": (("gap", "length", "setback"), "DoubleHemFeatureDefinition"),
+}
 
 
 def relief_enum(field, label):

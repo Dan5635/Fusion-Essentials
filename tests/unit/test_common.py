@@ -15,6 +15,8 @@ from conftest import (BRepBody, FakeMatrix3D, MakeComp, MakeDesign, _NamedCollec
                       make_occurrence, make_sketch, make_sketch_curve, make_source_document)
 
 common = load_tool("_common")
+path_inputs = load_tool("_inputs")
+paths = load_tool("_path_common")
 
 
 @pytest.mark.parametrize('case', ['root', 'contextual', 'nested_native', 'ambiguous', 'unreadable'])
@@ -495,26 +497,13 @@ class TestAllComponents:
         assert common.all_components(D()) == []
 
 
-class TestResolveSketchDesignWide:
-    def test_finds_a_sub_component_sketch_while_root_is_active(self):
-        root = _comp_with_sketches("Root")
-        sub = _comp_with_sketches("Frame", ["FrameSketch"])
-        sk = common.resolve_sketch(_design_with(root, [sub]), "FrameSketch")
-        assert sk is not None and sk.name == "FrameSketch"
-
-    def test_a_name_two_components_share_resolves_to_nothing(self):
-        # Two components each hold a "Profile" sketch. Neither is identified by that name, so the
-        # resolver hands back nothing rather than an arbitrary one to draw on or delete from.
-        root = _comp_with_sketches("Root", ["Profile"])
-        sub = _comp_with_sketches("Frame", ["Profile"])
-        assert common.resolve_sketch(_design_with(root, [sub], active=sub), "Profile") is None
-
+class TestFindSketch:
     def test_a_unique_name_still_resolves_beside_a_shared_one(self):
         # The other side of the boundary: one hit resolves even while another name is shared.
         root = _comp_with_sketches("Root", ["Profile", "Base"])
         sub = _comp_with_sketches("Frame", ["Profile"])
         d = _design_with(root, [sub], active=sub)
-        assert common.resolve_sketch(d, "Base") is root.sketches.item(1)
+        assert common.find_sketch(d, "Base") == (root.sketches.item(1), None)
 
     def test_a_sketch_in_the_ACTIVE_sub_component_is_reachable(self):
         # The reach that matters: a sketch drawn in an activated sub-component resolves by name.
@@ -525,18 +514,8 @@ class TestResolveSketchDesignWide:
         d = _design_with(root, [sub], active=sub)
         hits = common.find_sketches_by_name(d, "FrameOnly")
         assert [c.name for _sk, c in hits] == ["Frame"]
-        assert common.resolve_sketch(d, "FrameOnly") is sub.sketches.item(0)
+        assert common.find_sketch(d, "FrameOnly") == (sub.sketches.item(0), None)
 
-    def test_one_sketch_reached_through_the_active_and_root_wrappers_is_not_shared(self):
-        # The active component IS the root here, so the same sketch is reached three times (active,
-        # root, allComponents). De-duplicated by the sketch itself, that stays ONE hit - otherwise
-        # every root sketch would refuse as a name several sketches carry.
-        root = _comp_with_sketches("Root", ["Profile"])
-        d = _design_with(root, [], active=root)
-        assert common.resolve_sketch(d, "Profile") is root.sketches.item(0)
-
-
-class TestFindSketch:
     def test_a_shared_name_is_refused_naming_each_owning_component(self):
         root = _comp_with_sketches("Root", ["Profile"])
         sub = _comp_with_sketches("Frame", ["Profile"])
@@ -633,7 +612,6 @@ class TestFindSketch:
         sk, err = common.find_sketch(d, "Frame_Ring")
         assert sk is None
         assert "2 sketches are named 'Frame_Ring'" in err and err.count("Frame") >= 2
-        assert common.resolve_sketch(d, "Frame_Ring") is None
 
     def test_owners_sharing_a_name_are_listed_by_their_occurrence_paths(self):
         # The degenerate listing this replaces: "'Frame_Ring' in Frame, 'Frame_Ring' in Frame" is
@@ -757,7 +735,7 @@ class TestFindSketch:
         root = _comp_with_sketches("Root", ["Profile"])
         d = _design_with(root, [], active=root)
         assert len(common.find_sketches_by_name(d, "Profile")) == 1
-        assert common.resolve_sketch(d, "Profile") is root.sketches.item(0)
+        assert common.find_sketch(d, "Profile") == (root.sketches.item(0), None)
 
 
 class TestComponentsInScope:
@@ -1134,7 +1112,7 @@ class TestFindSketchIn:
     def test_the_unscoped_resolver_still_refuses_the_same_name(self):
         # The scope is an ADDITION: find_sketch must not have been weakened into a first-match.
         _root, _sub, d = self._shared()
-        assert common.resolve_sketch(d, "Sketch2") is None
+        assert common.find_sketch(d, "Sketch2")[0] is None
 
     def test_a_component_holding_no_such_sketch_is_refused_naming_the_ones_that_do(self):
         root = _comp_with_sketches("Root", ["Sketch2"])
@@ -2270,24 +2248,24 @@ class TestBuildPathLabel:
 
     def test_a_seed_that_expanded_reports_the_built_count(self, monkeypatch):
         self._stub_handles(monkeypatch, 1)
-        _p, label, err = common.build_path(self._comp(_BuiltPath(14)), "EDGE1")
+        _p, label, err = path_inputs.build_path(self._comp(_BuiltPath(14)), "EDGE1")
         assert err is None
         assert label == "14 edge(s) from 1 seed handle"
 
     def test_a_seed_that_did_not_expand_reports_one(self, monkeypatch):
         self._stub_handles(monkeypatch, 1)
-        _p, label, err = common.build_path(self._comp(_BuiltPath(1)), "EDGE1")
+        _p, label, err = path_inputs.build_path(self._comp(_BuiltPath(1)), "EDGE1")
         assert err is None and label == "1 edge(s) from 1 seed handle"
 
     def test_unreadable_count_says_so_instead_of_echoing_the_input(self, monkeypatch):
         self._stub_handles(monkeypatch, 1)
-        _p, label, err = common.build_path(self._comp(_UnreadablePath()), "EDGE1")
+        _p, label, err = path_inputs.build_path(self._comp(_UnreadablePath()), "EDGE1")
         assert err is None
         assert label == "from 1 seed handle; edge count unreadable"
 
     def test_several_handles_are_used_exactly(self, monkeypatch):
         self._stub_handles(monkeypatch, 3)
-        _p, label, err = common.build_path(self._comp(_BuiltPath(3)), ["E1", "E2", "E3"])
+        _p, label, err = path_inputs.build_path(self._comp(_BuiltPath(3)), ["E1", "E2", "E3"])
         assert err is None and label == "3 edge(s) from 3 handles, used exactly"
 
 
@@ -2336,7 +2314,7 @@ class TestBuildPathFromSketch:
         comp = self._comp(self._sketch(5), _BuiltPath(1))
         coll = _RecordingCollection()
         monkeypatch.setattr(adsk.core.ObjectCollection, "create", staticmethod(lambda: coll))
-        p, label, err = common.build_path(comp, "sketch:PathSketch")
+        p, label, err = path_inputs.build_path(comp, "sketch:PathSketch")
         assert err is None
         assert p.count == 5
         assert label == "sketch:PathSketch"
@@ -2360,7 +2338,7 @@ class TestBuildPathFromSketch:
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
         left = []
-        p, label, err = common.build_path(comp, "sketch:PathSketch", left_out=left)
+        p, label, err = path_inputs.build_path(comp, "sketch:PathSketch", left_out=left)
         assert err is None
         assert p is chain                          # the seed chain, not the collection
         assert label == "sketch:PathSketch"
@@ -2374,7 +2352,7 @@ class TestBuildPathFromSketch:
         comp = self._comp(sketch, chain, collection_answer=lambda c: _BuiltPath(0))
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
-        p, _label, err = common.build_path(comp, "sketch:PathSketch")
+        p, _label, err = path_inputs.build_path(comp, "sketch:PathSketch")
         assert err is None
         assert p is chain
         assert comp.seed_calls
@@ -2388,10 +2366,10 @@ class TestBuildPathFromSketch:
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
         left = []
-        p, label, err = common.build_path(comp, "sketch:PathSketch", left_out=left)
+        p, label, err = path_inputs.build_path(comp, "sketch:PathSketch", left_out=left)
         assert err is None and p is partial
         assert label == "sketch:PathSketch" and left == ["line:1"]
-        warning = common.path_chain_warning(2, 3, "sweep", left)
+        warning = paths.path_chain_warning(2, 3, "sweep", left)
         assert "chained 2 of the sketch's 3 curves" in warning
         assert "Not in the path: line:1." in warning
 
@@ -2400,7 +2378,7 @@ class TestBuildPathFromSketch:
         comp = self._comp(self._sketch(5, extra_construction=1), _BuiltPath(1))
         coll = _RecordingCollection()
         monkeypatch.setattr(adsk.core.ObjectCollection, "create", staticmethod(lambda: coll))
-        p, _label, err = common.build_path(comp, "sketch:PathSketch")
+        p, _label, err = path_inputs.build_path(comp, "sketch:PathSketch")
         assert err is None
         assert p.count == 5                        # the construction curve never reached the collection
 
@@ -2424,7 +2402,7 @@ class TestBuildPathFromSketch:
         comp = self._comp(sketch, chain, collection_answer=lambda c: partial)
         monkeypatch.setattr(adsk.core.ObjectCollection, 'create',
                             staticmethod(lambda: _RecordingCollection()))
-        p, _label, err = common.build_path(comp, 'sketch:PathSketch')
+        p, _label, err = path_inputs.build_path(comp, 'sketch:PathSketch')
         assert err is None
         assert p is (chain if replacement == 'complete' else partial)
         assert comp.seed_calls == [(curves[0], True)]
@@ -2438,19 +2416,19 @@ class TestBuildPathFromSketch:
         comp = self._comp(sketch, self._chain(real), collection_answer=lambda c: _BuiltPath(0))
         monkeypatch.setattr(adsk.core.ObjectCollection, 'create',
                             staticmethod(lambda: _RecordingCollection()))
-        p, _label, err = common.build_path(comp, 'sketch:PathSketch')
+        p, _label, err = path_inputs.build_path(comp, 'sketch:PathSketch')
         assert err is None and p.count == 1
         assert comp.seed_calls == [(real, True)]
 
     def test_all_construction_input_is_refused_without_a_native_path(self, monkeypatch):
         sketch = make_sketch('PathSketch', lines=[SimpleNamespace(isConstruction=True)])
         comp = self._comp(sketch, _BuiltPath(1))
-        p, _label, err = common.build_path(comp, 'sketch:PathSketch')
+        p, _label, err = path_inputs.build_path(comp, 'sketch:PathSketch')
         assert p is None and 'no non-construction curves' in err
         assert not comp.seed_calls and not comp.coll_calls
 
     def test_partial_warning_does_not_invent_a_corner_diagnosis(self):
-        warning = common.path_chain_warning(2, 3, 'sweep')
+        warning = paths.path_chain_warning(2, 3, 'sweep')
         assert '2 of' in warning and 'sketch_get' in warning
         assert 'sharp' not in warning and 'tangent' not in warning
         # A connected sketch drawn out of order also chains short, so neither cause is asserted.
@@ -2458,8 +2436,8 @@ class TestBuildPathFromSketch:
         assert "does not connect" not in warning and "Not in the path" not in warning
 
     def test_a_full_chain_has_no_warning_whatever_ids_ride_along(self):
-        assert common.path_chain_warning(3, 3, 'sweep', ["line:1"]) == ""
-        assert common.path_chain_warning(2, 3, 'sweep', ["line:1"]).startswith("WARNING")
+        assert paths.path_chain_warning(3, 3, 'sweep', ["line:1"]) == ""
+        assert paths.path_chain_warning(2, 3, 'sweep', ["line:1"]).startswith("WARNING")
 
 
 class TestOpenProfileFromSketch:

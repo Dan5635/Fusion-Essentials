@@ -1,63 +1,11 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Live tool verification: every registered tool called at least once against LIVE Fusion.
+"""Run owned Fusion families and maintain source-bound portable receipts.
 
-A deterministic script of direct tools/call requests (no LLM, no SDK) walking owned document
-families with local inputs and fresh context. The gate: a ledger with zero
-unexplained rows - every tool is pass / expected-refusal / skipped(reason).
-
-Each family creates or owns its scratch document. Bracket, stock/vise, and CAM families build
-their declared inputs locally; generation and reads stay together where they share a real job.
-The default run chains every family once and is the only path that can stamp the receipt.
-``--acts`` expands named acts to complete families, runs them independently, writes dated setup,
-narrative, and cleanup evidence under ``outputs/tool-sweep/``, and never stamps a receipt, even
-when the selection covers every act.
-
-The run is not capped by wall clock - what it costs is reported per act and per tool, and a program
-that outgrows one 600 s shell call is walked in CHUNKS that share one receipt (``--run``/``--resume``
-below). A complete unselected run with zero FAIL/blocked steps writes ``tests/live/VERIFIED_TOOLS.md`` - the tracked receipt: the
-per-tool ledger stamped with a SHA-256 of the ``commands/mcpServer/`` source tree, binding that
-run to the exact tool source it exercised. ``--check`` recomputes the hash offline (no Fusion
-needed) and fails on any difference, so a green suite cannot ride on a live run that never saw
-the current code. The hash is of the WORKING TREE while Fusion runs its LOADED copy of the
-add-in: after editing source, reload the add-in before re-running, or the receipt stamps code
-the session never executed.
-
-Run:  py -3 tests/live/tool_verify.py            (requires Fusion running + the add-in enabled)
-      py -3 tests/live/tool_verify.py --check    (no Fusion: exit 1 when VERIFIED_TOOLS.md is missing
-                                                  or its source hash differs from the tree)
-      py -3 tests/live/tool_verify.py --json     (also write tests/live/results/verify-<ts>.json)
-      py -3 tests/live/tool_verify.py --keep-open  (leave only the last family document open)
-      py -3 tests/live/tool_verify.py --acts "ACT 5,ACT 7b"  (run the Details and Motion families
-                                                  in their own documents; dated evidence, no receipt)
-      py -3 tests/live/tool_verify.py --run r1   (full acceptance with per-act checkpoints)
-      py -3 tests/live/tool_verify.py --run r1 --resume   (continue that exact full candidate)
-
-``--resume --acts`` and checkpoints from the former single-document sweep are refused.
-
-Steps are DATA (see STEPS): each row is (tool, args, expect) where args may be a dict or a
-callable(ctx) reading what earlier steps stored, and expect is "ok", "refused" (a deliberate
-guard check whose error must name the offense), ``_refused("fragment", ...)`` - the same
-deliberate refusal, with each fragment required IN the error text (a guard that starts refusing
-for a different reason is a FAIL, not a silent pass) - or a callable(payload) -> bool - a VALUE
-PREDICATE run on an ok result (falsy = FAIL); that is how grip contact and machine assignment
-are asserted, not just call success. Extend coverage by adding rows, not code.
-
-The expectation's SHAPE is also what buckets the tool in the receipt: a passing value predicate
-earns 'covered', a passing bare "ok" earns only 'called' (see ``predicate_kind``), so the count
-line separates the tools whose effect was read back from the tools that merely did not fail.
-
-WHERE THE ROWS ARE. This module is the surface every consumer imports; the harness itself is its
-siblings, and a step is edited in the one it belongs to:
-
-  verify_core.py      the wire, the step kinds, the value predicates, the scratch fixtures
-  verify_layout.py    the sketch hoist, authored anchors, and framing pass
-  verify_acts_doc.py / _sketch / _model_* / _motion / _mesh / _cam / _hub / _cloud   the step rows
-  cloud_config.py     the OPT-IN cloud tier's local config (gitignored); absent, the tier is skipped
-  verify_program.py   the judged acts, run through those passes, plus STEPS/STORY/EXCLUDED
-  verify_families.py  owned act groups and their bounded local input producers
-  verify_runner.py    run/run_steps/judged_steps and the receipt (source_hash, --check)
+Full runs bootstrap; --families refreshes whole families, while --acts writes evidence only.
+--check validates current family closures on one Fusion build without requiring Fusion.
+Usage and coverage accounting are documented in tests/README.md.
 """
 
 import argparse
@@ -158,7 +106,9 @@ from verify_runner import (  # noqa: F401
     source_hash, _STAMP_RE, write_verified, check, _shoot, run_steps, judged_steps,
     _precondition_holds, _one_act, select_acts, run, RESULTS_DIR, run_state_path,
     save_run_state, load_run_state, resume_refusal, develop_refusal, _document_now)
-from verify_core import attestation_identity  # noqa: F401
+from verify_core import attestation_identity, Independent, independent_targets  # noqa: F401
+
+FAMILY_RECEIPTS = True
 
 # The patchable surface is patched ON THIS MODULE (a consumer stubs tool_verify.call,
 # tool_verify.ACTS, tool_verify.source_hash), so the runner and the post-act hook read
@@ -169,6 +119,8 @@ verify_core.bind_facade(globals())
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--full-scope", action="store_true",
+                    help="with --check: require full admitted recorded scope; quarantine stays excluded")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--keep-open", action="store_true",
                     help="leave only the last requested family's scratch document open for inspection")
@@ -185,6 +137,9 @@ if __name__ == "__main__":
                     help="run the full family chain under this ID, saving act progress and exact "
                          "document ownership to tests/live/results/run-<ID>.json after every act; "
                          "incomplete chunks write no receipt")
+    ap.add_argument("--families", metavar="NAMES", default=None,
+                    help="refresh whole comma-separated family receipts after a new full bootstrap; "
+                         "all aggregate closures must match and share one Fusion build")
     ap.add_argument("--resume", action="store_true",
                     help="continue an unselected full --run ID from its owned-family checkpoint; "
                          "old single-document checkpoints and --resume --acts are refused")
@@ -194,6 +149,9 @@ if __name__ == "__main__":
         os.makedirs(shots, exist_ok=True)
     if args.resume and not args.run_id:
         sys.exit("--resume needs the run it continues: --run <id> --resume")
-    sys.exit(check() if args.check else run(args.json, keep_open=args.keep_open, trace=args.trace,
+    if args.full_scope and not args.check:
+        sys.exit("--full-scope needs --check")
+    sys.exit(check(full_scope=args.full_scope) if args.check else run(args.json, keep_open=args.keep_open, trace=args.trace,
                                             shots_dir=shots, acts_spec=args.acts,
-                                            run_id=args.run_id, resume=args.resume))
+                                            run_id=args.run_id, resume=args.resume,
+                                            families_spec=args.families))

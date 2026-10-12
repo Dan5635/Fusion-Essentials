@@ -323,7 +323,7 @@ def test_partial_sketch_path_names_omitted_curve_in_pattern_note(monkeypatch):
         left_out.extend(["line:1"])
         return path, "sketch:Spine", None
     monkeypatch.setattr(pp, "build_path", build)
-    monkeypatch.setattr(pp._common, "path_sketch_curve_count", lambda _owner, _raw: 3)
+    monkeypatch.setattr(pp._path_common, "path_sketch_curve_count", lambda _owner, _raw: 3)
 
     out = payload(pp.handler(bodies="Boss", path="sketch:Spine", quantity=2, distance=10))
 

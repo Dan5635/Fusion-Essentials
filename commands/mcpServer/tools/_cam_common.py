@@ -22,8 +22,8 @@ from . import _view_common
 
 MAP_BLURB = (
     "the CAM substrate every CAM tool starts from: get_cam (the document's CAM product); the ONE "
-    "tree walk and its EXACT by-name resolvers (walk_cam_tree, resolve_cam_node, find_setup, "
-    "find_operation - a duplicate name is refused); the parameter helpers; the per-op state "
+    "tree walk and its EXACT by-name resolvers (walk_cam_tree, resolve_cam_node, find_setup "
+    "- a duplicate name is refused); the parameter helpers; the per-op state "
     "classifiers and readiness verdicts (op_state_facts, ready_verdict, live_readiness); the "
     "machine catalog; the bounded library walk")
 
@@ -824,15 +824,6 @@ def _operation_listing(pool, name):
     want = (name or "").strip().lower()
     dupes = [n for n in pool if (n.name or "").lower() == want]
     return [n.path for n in dupes] if len(dupes) > 1 else [n.name for n in pool]
-
-
-def find_operation(cam, name):
-    """(operation, available_names) for the unique Operation named `name` anywhere in the CAM tree;
-    a DUPLICATED name is refused and the list carries each duplicate's 'Setup / op' path."""
-    pool = operation_nodes(cam)
-    want = (name or "").strip().lower()
-    matches = [n for n in pool if (n.name or "").lower() == want]
-    return (matches[0].obj if len(matches) == 1 else None), _operation_listing(pool, name)
 
 
 def resolve_operation(cam, name, label="operation"):

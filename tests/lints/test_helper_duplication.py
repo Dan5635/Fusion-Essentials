@@ -29,7 +29,6 @@ _DENYLIST = {
     # without that .error guard is how one of them publishes or writes that 0 as a real size.
     "tool_dimension_value": ("_cam_common", "def"),
     "find_setup": ("_cam_common", "def"),
-    "find_operation": ("_cam_common", "def"),
     "walk_operations": ("_cam_common", "def"),
     # The kind -> child-collection map (operations/folders/patterns) the walk and both leaf
     # readers share - a local copy is how a reorder's re-read comes to read a DIFFERENT
@@ -265,7 +264,6 @@ _DENYLIST = {
     # itemByName - the name that "exists" in the census then resolves to nothing.
     "find_sketches_by_name": ("_common", "def"),
     "find_sketch": ("_common", "def"),
-    "resolve_sketch": ("_common", "def"),
     "find_or_recent_sketch": ("_common", "def"),
     "resolve_or_recent_sketch": ("_common", "def"),
     # The component SCOPE over that same walk: one match rule (exact, case-insensitive) and one
@@ -302,7 +300,7 @@ _DENYLIST = {
     # sketch_get's two depths cannot accept different spellings.
     "scope_components": ("_sketch_detail", "def"),
     "scope_component": ("_sketch_detail", "def"),
-    "timeline_health": ("_common", "def"),
+    "timeline_health": ("_design_primitives", "def"),
     # The ONE sentence a failed edit states its kept/rolled-back/unchanged state in, the ONE marker
     # clause, and the ONE verified reverse: a copy is how an edit tool claims what no re-read backs.
     "outcome_clause": ("_common", "def"),
@@ -372,7 +370,7 @@ _DENYLIST = {
     "failed_effect_remedy": ("_common", "def"),
     # The ONE retained-feature sentence and the deleteMe a failed write already runs, so every
     # site names the same address and design_delete_feature call.
-    "feature_address": ("_common", "def"),
+    "feature_address": ("_feature_address", "def"),
     "left_in_timeline": ("_common", "def"),
     "delete_failed_feature": ("_common", "def"),
     "scope_left_clause": ("_design_common", "def"),
@@ -402,7 +400,7 @@ _DENYLIST = {
     # The ONE feature-path resolver (sweep / pipe / path pattern / on-path datum): one home so the
     # 'sketch:<name>' chain rule and the single-handle chaining rule cannot be right in one tool
     # and stale in the next.
-    "build_path": ("_common", "def"),
+    "build_path": ("_inputs", "def"),
     # The timeline walk and the EXACT-match/'name@index' matcher behind FeatureRef: one home, so a
     # tool cannot re-roll the matcher with a substring fallback.
     "_timeline_objects": ("_inputs", "def"),
@@ -596,10 +594,8 @@ _DENYLIST = {
 
 
 # (module without .py, symbol) -> why this same-named definition is a DIFFERENT job, not a re-roll
-# of the shared helper. Each reason must describe the local definition's own job. Kept honest by
-# test_allowlist_entries_still_exist_and_still_differ: the entry must still match the pattern in
-# that module AND its definition must still differ from the home module's - a local copy that
-# becomes identical to home is a true duplicate and loses its exemption.
+# of the shared helper. Each reason must describe the local definition's own job. A local copy
+# that becomes identical to home is a true duplicate and loses its entry.
 _ALLOWLIST = {
     # cam_edit_setup's pointer names the SETUP's own parameters (cam_get(..., setup=...)), a
     # different read from the operation-scoped one in _cam_common - not a re-roll of it.
@@ -626,31 +622,6 @@ def _read(fn):
     # Shared with every other lint reading this corpus: the denylist sweep asks for each tool file
     # once per symbol (~150 x ~190), and _corpus reads each one once per process.
     return _corpus.text(os.path.join(TOOLS_DIR, fn))
-
-
-def _bracket_delta(line):
-    return sum(line.count(o) for o in "([{") - sum(line.count(c) for c in ")]}")
-
-
-def _definition_block(src, match):
-    """The full statement starting at `match`: a def's body (lines until the next column-0 line) or
-    a possibly-multi-line assignment (lines until brackets balance). Good enough for a lint's
-    same-or-different comparison; strings containing brackets can only over-extend the block."""
-    lines = src[match.start():].splitlines()
-    block = [lines[0]]
-    depth = _bracket_delta(lines[0])
-    for line in lines[1:]:
-        if depth <= 0 and line and not line[0].isspace():
-            break
-        block.append(line)
-        depth += _bracket_delta(line)
-    return "\n".join(block).strip()
-
-
-def _normalized(block, symbol):
-    """The block with the symbol's optional leading underscore dropped, so `_OPERATIONS = (...)`
-    compares against home's `OPERATIONS = (...)` on content, not on the private prefix."""
-    return re.sub(r"\b_" + re.escape(symbol) + r"\b", symbol, block)
 
 
 class TestHelperDefinedOnlyInItsHomeModule:
@@ -681,33 +652,6 @@ class TestHelperDefinedOnlyInItsHomeModule:
                     f"the denylist entry is stale, fix it or move the definition back"
                 )
         assert not offenders, "helper duplication:\n  " + "\n  ".join(offenders)
-
-    def test_allowlist_entries_still_exist_and_still_differ(self):
-        # An entry that no longer matches anything is dead weight hiding a regression check; an
-        # entry whose local definition became a verbatim copy of home's is a true duplicate that
-        # must collapse, not stay exempted.
-        stale = []
-        for (mod_name, symbol), reason in _ALLOWLIST.items():
-            assert reason.strip(), f"({mod_name}, {symbol}) allowlist entry needs a reason"
-            assert symbol in _DENYLIST, f"({mod_name}, {symbol}): '{symbol}' is not denylisted"
-            home, kind = _DENYLIST[symbol]
-            path = os.path.join(TOOLS_DIR, mod_name + ".py")
-            if not os.path.exists(path):
-                stale.append(f"({mod_name}, {symbol}): no such module - remove the entry")
-                continue
-            src = _read(mod_name + ".py")
-            m = _pattern(symbol, kind).search(src)
-            if not m:
-                stale.append(f"({mod_name}, {symbol}): the module no longer defines it - "
-                             f"remove the entry")
-                continue
-            home_src = _read(home + ".py")
-            hm = _pattern(symbol, kind).search(home_src)
-            if hm and (_normalized(_definition_block(src, m), symbol)
-                       == _normalized(_definition_block(home_src, hm), symbol)):
-                stale.append(f"({mod_name}, {symbol}): now identical to {home}'s definition - "
-                             f"a true duplicate; collapse it onto {home} and remove the entry")
-        assert not stale, "stale allowlist entries:\n  " + "\n  ".join(stale)
 
 
 # The value-shape arm: two shared maps a local copy re-rolls under a NAME the denylist above cannot

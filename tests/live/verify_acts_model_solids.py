@@ -7,6 +7,7 @@ import math
 import json
 
 from verify_core import (
+    Independent,
     _activated, _box, _document_closed, _home_address, _new_document,
     _RECALL, _chamfered, _component_metadata, _ctx_get, _cut_on_its_pivot, _datum, _datum_plane, _drafted, _drafted_on_its_pivot, _drafted_symmetric, _drilled, _extent_measured, _extruded, _face_up_at, _fg, _fgn, _filleted, _gap_measured, _home_document, _joint_origin_at, _lofted, _made_component, _material_assigned, _matched, _measured, _metadata_set, _mirrored, _moved_occurrence, _captured, _near, _needs, _num, _offset_faces, _param_read, _param_traced, _patterned, _prof, _recall, _refused, _relation_measured, _relation_passes, _relation_read, _replaced_on_its_pivot, _sits_on_a_face, _swept, _unless, _watch)
 from verify_acts_cam import (
@@ -90,7 +91,8 @@ def _pattern_count_rows():
          _pattern_single_row_history, None),
         ("model_inspect", {"target": "CountSeed:1", "include": ["default", "mass"],
                            "per_body": True, "units": "mm", "accuracy": "very_high"},
-         _pattern_single_row_material, None),
+         Independent(_pattern_single_row_material, ("model_pattern_rectangular",),
+                     "tool:model_inspect"), None),
         ("model_inspect", {"target": "CountWitness:1", "include": ["default", "mass"],
                            "per_body": True, "units": "mm", "accuracy": "very_high"},
          _retire_compare("count_refusal_CountWitness:1", _retire_material_state, True), None),

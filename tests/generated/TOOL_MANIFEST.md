@@ -317,6 +317,14 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `view_set` | View-state verbs: aim the camera, isolate/show/hide, set the visual style, toggle the non-body display folders, snapshot and restore - no geometry changes. |
 | ✎ | `view_switch_workspace` | Switch the active Fusion workspace; view_list_workspaces lists the targets. |
 
+### render
+
+| | Tool | Summary |
+|---|---|---|
+| ✎ | `render_create` | Start a local PNG/JPEG/TIFF job or visible in-canvas render |
+| ✎ | `render_edit` | Edit scene or restore defaults; activate Render; stop canvas or save a new image. |
+| · | `render_get` | Read a local render job, settings, scene, environment catalog or canvas state |
+
 ### find
 
 | | Tool | Summary |
@@ -371,12 +379,4 @@ Before adding a tool input that points at a face/edge/body/plane/axis/profile/oc
 | ✎ | `sys_reload_addin` | Reload the add-in to pick up code changes |
 | ✎ | `sys_request_selection` | Hand the pick to the USER: holds the call, and by default clears their selection |
 | ⚠ | `sys_set_preferences` | SET one APPLICATION preference, by the path sys_get_preferences reports |
-
-### other
-
-| | Tool | Summary |
-|---|---|---|
-| ✎ | `render_create` | Start a local PNG/JPEG/TIFF job or visible in-canvas render |
-| ✎ | `render_edit` | Edit scene or restore defaults; activate Render; stop canvas or save a new image. |
-| · | `render_get` | Read a local render job, settings, scene, environment catalog or canvas state |
 

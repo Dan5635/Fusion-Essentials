@@ -2220,15 +2220,18 @@ def _reload_census(call, phase="census"):
     if active_rows[0].get("document_handle") != active_handle:
         return None, f"{phase} active document did not match its census row"
     return {"handle": active_handle, "document_id": active.get("document_id"),
-            "name": active.get("name"), "rows": rows}, None
+            "name": active.get("name"), "rows": rows, "complete": True,
+            "open_count": count}, None
 
 
-def _reload_cleanup(call, scratch, home):
+def _reload_cleanup(call, scratch, home, evidence=None):
     """Close only the proven scratch and independently restore the original home."""
     problems = []
     state, problem = _reload_census(call, "cleanup")
     if problem:
         return False, problem
+    if evidence is not None:
+        evidence["cleanup_census"] = state
     if not _reload_handle(scratch):
         problems.append("scratch ownership unresolved")
     elif scratch in {row["document_handle"] for row in state["rows"]}:
@@ -2244,6 +2247,8 @@ def _reload_cleanup(call, scratch, home):
         state, problem = _reload_census(call, "scratch cleanup")
         if problem:
             return False, "; ".join(problems + [problem])
+        if evidence is not None:
+            evidence["scratch_cleanup_census"] = state
         if scratch in {row["document_handle"] for row in state["rows"]}:
             problems.append("owned scratch remains open")
     handles = {row["document_handle"] for row in state["rows"]}
@@ -2268,6 +2273,9 @@ def _reload_cleanup(call, scratch, home):
         problems.append("original home identity did not read back")
     if problems:
         return False, "; ".join(problems)
+    if evidence is not None:
+        evidence["restored_census"] = restored
+        evidence.setdefault("checks", {})["scratch_closed_and_home_restored"] = True
     return True, "scratch cleanup and home restoration verified"
 
 
@@ -2289,7 +2297,7 @@ def _reload_owned_handle(call, old_handle, nonce_name):
     return None
 
 
-def _reload_document_probe(call, old_handle, home, nonce_name):
+def _reload_document_probe(call, old_handle, home, nonce_name, evidence=None):
     def ask(tool, args):
         try:
             is_error, payload = call(tool, args)
@@ -2301,6 +2309,8 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
     if problem:
         return False, problem, None
     fresh = payload["handle"]
+    if evidence is not None:
+        evidence["post_reload_census"] = payload
     if fresh == old_handle:
         return False, "post-reload scratch handle was not fresh", None
     is_error, nonce = ask("param_get", {"name": nonce_name})
@@ -2308,13 +2318,19 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
     if (is_error or not isinstance(par, dict) or par.get("name") != nonce_name
             or par.get("value") != 17):
         return False, "post-reload nonce did not identify the owned scratch", None
+    if evidence is not None:
+        evidence.setdefault("checks", {})["nonce_survived_reload"] = True
     is_error, stale = ask("param_add", {"name": "ReloadStale", "expression": "1 mm",
                                         "expect_document": old_handle})
     if not is_error or "unknown_document_handle" not in str(stale):
         return False, "the expired scratch handle did not refuse before writing", fresh
+    if evidence is not None:
+        evidence.setdefault("checks", {})["old_handle_refused"] = True
     is_error, absent = ask("param_get", {"name": "ReloadStale"})
     if not is_error or "Parameter not found" not in str(absent):
         return False, "the stale-handle parameter was not absent", fresh
+    if evidence is not None:
+        evidence.setdefault("checks", {})["stale_write_absent"] = True
     is_error, added = ask("param_add", {"name": "ReloadRecovered", "expression": "2 mm",
                                         "expect_document": fresh})
     par = (added or {}).get("parameter") if isinstance(added, dict) else None
@@ -2325,6 +2341,8 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
     par = (read_back or {}).get("parameter") if isinstance(read_back, dict) else None
     if is_error or not isinstance(par, dict) or par.get("value") != 2:
         return False, "fresh scratch parameter did not read back", fresh
+    if evidence is not None:
+        evidence.setdefault("checks", {})["fresh_handle_write_readback"] = True
     is_error, deleted = ask("param_delete", {"name": "ReloadRecovered",
                                               "expect_document": fresh})
     if is_error or not isinstance(deleted, dict) or deleted.get("deleted") is not True:
@@ -2332,9 +2350,11 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
     is_error, absent = ask("param_get", {"name": "ReloadRecovered"})
     if not is_error or "Parameter not found" not in str(absent):
         return False, "fresh scratch cleanup was not read back", fresh
+    if evidence is not None:
+        evidence.setdefault("checks", {})["recovery_parameter_removed"] = True
     return True, "fresh scratch handle recovered and stale handle refused", fresh
 
-def _reload_session_probe(previous_session, old_document_handle):
+def _reload_session_probe(previous_session, old_document_handle, evidence=None):
     """Require stale transport refusal and a fresh-session document read."""
     read = {"jsonrpc": "2.0", "id": "reload-session-read", "method": "tools/call",
             "params": {"name": "doc_get", "arguments": {}}}
@@ -2351,6 +2371,8 @@ def _reload_session_probe(previous_session, old_document_handle):
             raise RuntimeError("retained transport session refused with " + str(exc.code)) from exc
         if exc.read() != b"":
             raise RuntimeError("stale transport refusal carried an unexpected body")
+        if evidence is not None:
+            evidence.setdefault("checks", {})["old_transport_refused_empty_404"] = True
     initialized, fresh_session = facade("_post")(
         {"jsonrpc": "2.0", "id": "reload-session-init", "method": "initialize",
          "params": {"protocolVersion": "2025-03-26"}}, with_session=True)
@@ -2358,6 +2380,9 @@ def _reload_session_probe(previous_session, old_document_handle):
     if (not fresh_session or fresh_session == previous_session
             or result.get("serverInfo", {}).get("name") != SERVER_NAME):
         raise RuntimeError("fresh initialize did not identify the restarted server")
+    if evidence is not None:
+        evidence["after_mcp_session"] = fresh_session
+        evidence.setdefault("checks", {})["fresh_session_changed"] = fresh_session != previous_session
     request = urllib.request.Request(
         MCP, data=json.dumps(read).encode("utf-8"),
         headers={"Content-Type": "application/json",
@@ -2373,17 +2398,24 @@ def _reload_session_probe(previous_session, old_document_handle):
     handle = (payload.get("active") or {}).get("document_handle")
     if not _reload_handle(handle) or handle == old_document_handle:
         raise RuntimeError("fresh-session doc_get did not read a new document handle")
+    if evidence is not None:
+        evidence["fresh_transport_document_handle"] = handle
+        evidence.setdefault("checks", {})["fresh_session_read_new_handle"] = True
     return handle
 
 
 def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
-                 up_polls=_RELOAD_UP_POLLS, expected_attestation=None):
+                 up_polls=_RELOAD_UP_POLLS, expected_attestation=None, evidence=None,
+                 before_tool_census=None, expected_fusion_version=None):
     """Reload the add-in and verify a run-owned document survives with fresh identity."""
     call, STORY = facade("call"), facade("STORY")
     home, problem = _reload_census(call, "pre-reload")
     if problem:
         print("  reload beat: " + problem)
         return
+    if evidence is not None:
+        evidence["pre_reload_census"] = home
+        evidence["before_tool_census"] = sorted(before_tool_census or [])
     if home["document_id"] is not None and (
             not isinstance(home["document_id"], str) or not home["document_id"].startswith("urn:")):
         print("  reload beat: original home lineage is invalid")
@@ -2425,6 +2457,23 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
         if (not old_session or initialized.get("result", {}).get("serverInfo", {}).get("name")
                 != SERVER_NAME):
             raise RuntimeError("pre-reload initialize did not identify the serving session")
+        if evidence is not None:
+            evidence["before_mcp_session"] = old_session
+        if expected_attestation is not None:
+            try:
+                before_health = facade("health_gate")()
+            except (OSError, ValueError, SystemExit) as exc:
+                raise RuntimeError("pre-reload health did not confirm the loaded identity") from exc
+            before_attestation = facade("attestation_identity")(before_health)
+            if (not isinstance(before_attestation, dict)
+                    or any(before_attestation.get(key) != expected_attestation.get(key)
+                           for key in ("implementation_fingerprint", "schema_fingerprint",
+                                       "load_id", "session_id"))):
+                raise RuntimeError("pre-reload identity differs from the run's loaded identity")
+            if evidence is not None:
+                evidence["before_health"] = before_health
+                evidence["before_attestation"] = dict(
+                    before_health["attestation"], session_id=before_health["session_id"])
         is_error, payload = call("sys_reload_addin", {})
         if is_error or "Reload scheduled" not in str(payload):
             raise RuntimeError(f"no reload was scheduled - {str(payload)[:NOTE_MAX]}")
@@ -2447,8 +2496,31 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
             if not all(current_attestation.get(field) == expected_attestation.get(field)
                        for field in ("implementation_fingerprint", "schema_fingerprint")):
                 raise RuntimeError("new server did not prove the expected build")
-            if "sys_reload_addin" not in facade("registered_tools")(current_health):
+            if expected_fusion_version is not None:
+                build_error, build_observation = call("workspace_orient", {})
+                after_fusion_version = (build_observation.get("fusion_version")
+                                        if isinstance(build_observation, dict) else None)
+                if (build_error or not isinstance(after_fusion_version, str)
+                        or not after_fusion_version or after_fusion_version == "?"
+                        or after_fusion_version != expected_fusion_version):
+                    raise RuntimeError("restarted Fusion build differs from the run's build")
+                if evidence is not None:
+                    evidence["after_build_observation"] = build_observation
+                    evidence["after_fusion_version"] = after_fusion_version
+            after_tool_census = facade("registered_tools")(current_health)
+            if "sys_reload_addin" not in after_tool_census:
                 raise RuntimeError("restarted tools/list did not return sys_reload_addin")
+            if before_tool_census is not None and sorted(before_tool_census) != after_tool_census:
+                raise RuntimeError("restarted tool census differs from the starting registry")
+            if evidence is not None:
+                evidence["after_health"] = current_health
+                evidence["after_attestation"] = dict(
+                    current_health["attestation"], session_id=current_health["session_id"])
+                evidence["after_tool_census"] = after_tool_census
+                evidence.setdefault("checks", {}).update({
+                    "new_load_and_session": True, "same_implementation_and_schema": True,
+                    "tool_census_matches": before_tool_census is None
+                    or sorted(before_tool_census) == after_tool_census})
             restart_note = "new load and session identities proved the expected build"
         else:
             if not _poll_health(False, down_polls):
@@ -2456,7 +2528,13 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
             if not _poll_health(True, up_polls):
                 raise RuntimeError(f"/health did not answer again within {up_polls} probes")
             restart_note = f"/health stopped answering and answered again as {SERVER_NAME}"
-        transport_handle = _reload_session_probe(old_session, canary)
+        if evidence is not None:
+            evidence["scratch_handle_before_reload"] = canary
+            evidence["nonce_name"] = nonce_name
+            evidence["nonce_value_mm"] = 17
+            evidence.setdefault("checks", {})["nonce_read_back_before_reload"] = True
+            evidence.setdefault("checks", {})["reload_scheduled"] = True
+        transport_handle = _reload_session_probe(old_session, canary, evidence)
         try:
             found = call("sys_find_tool", {"query": _RELOAD_SMOKE_QUERY})[1]
         except Exception as e:
@@ -2470,12 +2548,12 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
         mapped = call("sys_capability_map", {})[1]
         _bound_on_harness("sys_capability_map",
                           mapped.get("bound") if isinstance(mapped, dict) else None)
-        ok, note, fresh = _reload_document_probe(call, canary, home, nonce_name)
+        ok, note, fresh = _reload_document_probe(call, canary, home, nonce_name, evidence)
         if not ok:
             raise RuntimeError(note)
         if fresh != transport_handle:
             raise RuntimeError("fresh-session read disagreed with the owned scratch census")
-        cleanup_ok, cleanup_note = _reload_cleanup(call, fresh, home)
+        cleanup_ok, cleanup_note = _reload_cleanup(call, fresh, home, evidence)
         if not cleanup_ok:
             raise RuntimeError(cleanup_note)
         rows.append(("sys_reload_addin", "pass",

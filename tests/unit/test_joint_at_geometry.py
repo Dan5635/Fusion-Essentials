@@ -672,8 +672,8 @@ class TestHandler:
         native = make_occurrence('Host:1', component=component, transform2=_at((10, 20, 5)))
         root = MakeComp(occurrences_by_component={'Host': [native]})
         monkeypatch.setattr(jg._common, 'design', lambda: make_design(comp=root))
-        assert jg._occ_origin(native) == (10, 20, 5)
         sampler = load_tool('_assembly_common')
+        assert sampler._occ_origin(native) == (10, 20, 5)
         assert sampler._constraint_positions({'host': native})['host'][0] == (10, 20, 5)
 
     def test_successful_native_local_translation_is_withheld_by_all_movement_consumers(self, monkeypatch):
@@ -682,9 +682,9 @@ class TestHandler:
         face.assemblyContext = native
         _install_design(monkeypatch, {'a': face, 'b': _face(_ST.PlaneSurfaceType)})
         out = _payload(jg.handler(handle_one='a', handle_two='b', motion='rigid'))
-        assert jg._occ_origin(native) is None
-        assert 'moved_by' not in out and 'translation was not read' in out['movement_warning']
         sampler = load_tool('_assembly_common')
+        assert sampler._occ_origin(native) is None
+        assert 'moved_by' not in out and 'translation was not read' in out['movement_warning']
         assert sampler._constraint_positions({'leaf': native}) == {}
         assert sampler._constraint_moves({'leaf': ((0.0, 0.0, 0.0), None)},
                                          {'leaf': native}) == ([], False)

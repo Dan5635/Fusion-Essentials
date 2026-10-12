@@ -8,7 +8,7 @@ import adsk.fusion
 import math
 from itertools import islice
 
-from . import _common, _design_common, _geom, _inputs, _sketch_detail
+from . import _common, _design_common, _geom, _inputs, _param_common, _sketch_detail
 from ._common import counted, safe
 
 MAP_BLURB = (
@@ -969,9 +969,7 @@ def feature_edit_state(feature):
                     raise RuntimeError(f"{member} did not read a {reader} value")
                 state[field] = definition[field] = value
             elif reader == "derived_parameters":
-                # doc_insert_derive imports this module, so its census is bound at call time.
-                from . import doc_insert_derive
-                census, problem = doc_insert_derive.parameter_census(_common.design())
+                census, problem = _param_common.parameter_census(_common.design())
                 if census is None or any(row_["derived"] is None for row_ in census.values()):
                     raise RuntimeError(problem or "a parameter did not read its type")
                 value = sorted(name for name, row_ in census.items() if row_["derived"])

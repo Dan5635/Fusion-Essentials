@@ -45,6 +45,7 @@ _ATTESTATION = {"implementation_fingerprint": "a" * 64, "schema_fingerprint": "b
 def _legacy_runner_fixture(monkeypatch):
     """These wire stubs declare their own tiny act programs without family ownership."""
     monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
+    monkeypatch.setattr(tool_verify, "FAMILY_RECEIPTS", False)
 
 
 def _registered(names, writes=()):
@@ -1776,10 +1777,10 @@ def _harness_bound(port=None):
 
 
 def _reload_wire(reload_answer=(False, _SCHEDULED), found=("sys_reload_addin", "doc_get"),
-                 map_bound=None):
+                 map_bound=None, home_name="Home", scratch_name="Canary"):
     """A mutable session for the reload lifecycle without Autodesk objects."""
     state = {"active": "session:home", "documents": {
-        "session:home": "Home", "session:other": "Other"}, "parameters": {}, "seen": []}
+        "session:home": home_name, "session:other": "Other"}, "parameters": {}, "seen": []}
 
     def call(tool, args):
         state["seen"].append((tool, dict(args)))
@@ -1791,11 +1792,11 @@ def _reload_wire(reload_answer=(False, _SCHEDULED), found=("sys_reload_addin", "
                                       "document_handle": active},
                            "truncated": False, "open_count": len(state["documents"]),
                            "open_documents": [{"name": name, "document_handle": handle,
-                                               "is_active": handle == active}
+                                               **({"is_active": True} if handle == active else {})}
                                               for handle, name in state["documents"].items()]}
         if tool == "doc_new":
             state["active"] = "session:canary-old"
-            state["documents"][state["active"]] = "Canary"
+            state["documents"][state["active"]] = scratch_name
             return False, {"created": True, "document_handle": state["active"]}
         if tool == "sys_reload_addin":
             if isinstance(reload_answer, Exception):
@@ -1897,6 +1898,70 @@ class TestReloadBeat:
         assert notes["sys_reload_addin"] == "stubbed reload story"
         assert valued == {"sys_reload_addin"}
         assert f"both publish {tool_verify.MCP} as bound" in rows[0][2]
+
+    def test_success_sink_keeps_reload_census_sessions_and_actual_checks(self, monkeypatch, tmp_path):
+        wire = _reload_wire(home_name="Untitled", scratch_name="Untitled")
+        def call(tool, args):
+            if tool == "workspace_orient":
+                return False, {"fusion_version": "Fusion-1"}
+            return wire(tool, args)
+        expected = dict(_ATTESTATION, complete=True, loaded_matches_source=True)
+        after = dict(expected, load_id="fresh-load", session_id="fresh-health-session")
+        monkeypatch.setattr(tool_verify, "call", call)
+        monkeypatch.setattr(tool_verify, "_post", lambda *a, **kw: (
+            {"result": {"serverInfo": {"name": tool_verify.SERVER_NAME}}}, "session-before"))
+        health_states = iter(({"attestation": expected, "session_id": expected["session_id"]},
+                              {"attestation": after, "session_id": after["session_id"]}))
+        monkeypatch.setattr(tool_verify, "health_gate", lambda: next(health_states))
+        monkeypatch.setattr(tool_verify, "registered_tools", lambda _health: ["doc_get", "sys_reload_addin"])
+        monkeypatch.setattr(tool_verify, "_health_bound", lambda: _harness_bound())
+        monkeypatch.setattr(tool_verify, "_server_answers", _health(True, False, True))
+        monkeypatch.setattr(tool_verify.time, "sleep", lambda _seconds: None)
+
+        def fresh_session(old, _handle, evidence):
+            evidence["after_mcp_session"] = "session-after"
+            evidence["fresh_transport_document_handle"] = call("doc_get", {})[1]["active"]["document_handle"]
+            evidence.setdefault("checks", {}).update({"old_transport_refused_empty_404": True,
+                "fresh_session_changed": old != "session-after", "fresh_session_read_new_handle": True})
+            return evidence["fresh_transport_document_handle"]
+
+        monkeypatch.setattr(verify_acts_doc, "_reload_session_probe", fresh_session)
+        sink, rows = {}, []
+        verify_acts_doc.reload_smoke(rows, {}, expected_attestation=expected, evidence=sink,
+            before_tool_census=["doc_get", "sys_reload_addin"],
+            expected_fusion_version="Fusion-1")
+        assert rows and sink["before_mcp_session"] == "session-before"
+        assert sink["after_mcp_session"] == "session-after"
+        assert sink["pre_reload_census"]["rows"] and sink["post_reload_census"]["rows"]
+        assert [row["name"] for row in sink["pre_reload_census"]["rows"]] == [
+            "Untitled", "Other"]
+        assert sum(row["name"] == "Untitled" for row in sink["post_reload_census"]["rows"]) == 2
+        assert "fusion_version" not in sink["after_health"]
+        assert sink["after_build_observation"]["fusion_version"] == "Fusion-1"
+        assert sink["restored_census"]["name"] == "Untitled"
+        assert sink["checks"]["fresh_handle_write_readback"] is True
+        life = verify_runner.verify_receipts.make_lifecycle(
+            sink, "native-run", "a" * 64, "Fusion-1", evidence_dir=tmp_path / "results")
+        assert life["before_mcp_session"] == "session-before"
+        assert life["scratch_cleanup_census"]["rows"]
+
+    def test_pre_reload_health_exit_fails_and_cleans_owned_scratch(self, monkeypatch):
+        wire = _reload_wire()
+        monkeypatch.setattr(tool_verify, "call", wire)
+        monkeypatch.setattr(tool_verify, "_post", lambda *a, **kw: (
+            {"result": {"serverInfo": {"name": tool_verify.SERVER_NAME}}}, "session-before"))
+        monkeypatch.setattr(tool_verify, "health_gate", lambda: (_ for _ in ()).throw(SystemExit(1)))
+        expected = dict(_ATTESTATION, complete=True, loaded_matches_source=True)
+        rows = []
+
+        verify_acts_doc.reload_smoke(rows, {}, expected_attestation=expected)
+
+        tools = [tool for tool, _args in wire.state["seen"]]
+        assert rows == []
+        assert "sys_reload_addin" not in tools
+        assert "doc_close" in tools
+        assert sorted(wire.state["documents"].values()) == ["Home", "Other"]
+        assert wire.state["documents"][wire.state["active"]] == "Home"
 
     @pytest.mark.parametrize("where", ["health", "map"])
     @pytest.mark.parametrize("wrong", [
@@ -2041,9 +2106,12 @@ class TestReloadBeat:
 
         seen = []
         wire = _reload_wire()
+        reload_scheduled = {"value": False}
 
         def call(tool, args):
             seen.append(tool)
+            if tool == "sys_reload_addin":
+                reload_scheduled["value"] = True
             if tool == "a_get":
                 return False, {"n": 1}
             if tool == "design_get":
@@ -2058,9 +2126,8 @@ class TestReloadBeat:
         monkeypatch.setattr(tool_verify, "_server_answers", _health(True, False, True))
         monkeypatch.setattr(tool_verify, "_health_bound", _harness_bound)
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
-        health_rows = iter([_attested_health(), _attested_health(),
-                            _attested_health(_reloaded_attestation())])
-        monkeypatch.setattr(tool_verify, "health_gate", lambda: next(health_rows))
+        monkeypatch.setattr(tool_verify, "health_gate", lambda: _attested_health(
+            _reloaded_attestation() if reload_scheduled["value"] else _ATTESTATION))
         registry_health = []
 
         def registered(health=None, include_rows=False):

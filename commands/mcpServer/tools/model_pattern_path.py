@@ -14,8 +14,10 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, ok, safe, set_verified, build_path
+from ._common import error, ok, safe, set_verified
+from ._inputs import build_path
 from . import _common
+from . import _path_common
 from . import _inputs
 from . import _assert
 from . import _outputs
@@ -130,8 +132,8 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
     real_total = safe(lambda: feature.patternElements.count)
     note = ("Instances placed along the path. Copies keep the seed's orientation; they do not "
             "rotate to follow the path. Pair with view_screenshot to view.")
-    warning = _common.path_chain_warning(
-        safe(lambda: pattern_path.count), _common.path_sketch_curve_count(owner, path),
+    warning = _path_common.path_chain_warning(
+        safe(lambda: pattern_path.count), _path_common.path_sketch_curve_count(owner, path),
         "pattern", left_out)
     if warning:
         note += " " + warning

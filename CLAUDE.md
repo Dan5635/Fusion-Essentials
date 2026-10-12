@@ -42,8 +42,8 @@ Every tool is `<domain>_<verb>[_<noun>]`, with `<verb>` from a closed vocabulary
 must agree with `write=`**: a read verb (`get`/`find`/`probe`/...) is read-only and an edit verb
 changes state. So `cam_get` reads, `model_compute_holder` acquires and `cam_edit_tools` writes.
 `test_tool_naming.py` enforces this and holds the verb vocabulary. The exemptions (a poller like
-`cam_get_status`; a read-verb tool that still changes state, such as `view_section`) and how Edit tools
-are packaged (`action=` dispatch, one verb per file) are in
+`cam_get_status`; a read-verb tool that still changes state, such as `view_section`) and how tools
+are packaged (one tool per file, shared code in the family's underscore helper) are in
 [commands/mcpServer/tools/CLAUDE.md](commands/mcpServer/tools/CLAUDE.md).
 
 ## Honesty contract (the rule that matters most)
@@ -62,12 +62,12 @@ are packaged (`action=` dispatch, one verb per file) are in
 - Guard inputs and say *why* a precondition failed, naming the offending value. Resolve references
   (occurrences, geometry) through the typed kinds described under "Input kinds" below.
 - Resolving a name yourself: whether taking the first match is a bug depends on whether the name is
-  unique. A **scope-unique** name (a CAM setup or operation) resolves correctly by case-insensitive
-  exact match, returning the available names on a miss (`_cam_common.find_operation`). A
-  **non-unique** name (two sub-assemblies each holding a "Bolt:1") must **refuse** the ambiguity,
-  never return the first substring/`.find()`/`[0]` hit, which silently targets the wrong entity.
-  `test_no_first_match_resolvers` catches the shapes that are always wrong (substring, first by
-  index), but deciding whether a name is unique is your call.
+  unique. A **scope-unique** name (a CAM setup) resolves by case-insensitive exact match, lists the
+  available names on a miss, and is still refused when two setups share it
+  (`_cam_common.find_setup`). A **non-unique** name (two sub-assemblies each holding a "Bolt:1")
+  must **refuse** the ambiguity, never return the first substring/`.find()`/`[0]` hit, which
+  silently targets the wrong entity. `test_no_first_match_resolvers` catches the shapes that are
+  always wrong (substring, first by index), but deciding whether a name is unique is your call.
 
 ## Input kinds
 
@@ -76,12 +76,14 @@ length, fixed choice), use a typed kind from [`_inputs.py`](commands/mcpServer/t
 instead of hand-rolling a `name` or `index` resolver. The kinds refuse ambiguity instead of grabbing
 the wrong instance. Wire one with `tool.add_input_property(*kind.as_property())` and resolve it with
 `_inputs.resolve_inputs(...)`. If a kind is close but lacks a selector, extend the kind, not one
-tool's local copy. The full catalog of kinds and shared helpers is the generated map in
+tool's local copy. An input with a fixed set of values is a `Choice`; a new raw `enum` schema is not
+accepted in review, and the raw enums in older tools are not exemplars. The full catalog of kinds
+and shared helpers is the generated map in
 [commands/mcpServer/tools/CLAUDE.md](commands/mcpServer/tools/CLAUDE.md), which loads when you author
 a tool.
 
 <!-- BEGIN GENERATED FAMILIES (py -3 tests/gen_manifest.py) -->
-**Tool families** (224 tools — `sys_find_tool <kw>` to search, `TOOL_MANIFEST.md` for the full list): `model`(40) `surface`(12) `form`(3) `mesh`(16) `sketch`(15) `cam`(27) `assembly`(9) `joint`(7) `design`(16) `doc`(14) `data`(10) `drawing`(12) `param`(5) `pmi`(4) `view`(6) `find`(1) `workspace`(1) `appearance`(1) `save`(1) `sheet`(11) `sys`(10) `other`(3)
+**Tool families** (224 tools — `sys_find_tool <kw>` to search, `TOOL_MANIFEST.md` for the full list): `model`(40) `surface`(12) `form`(3) `mesh`(16) `sketch`(15) `cam`(27) `assembly`(9) `joint`(7) `design`(16) `doc`(14) `data`(10) `drawing`(12) `param`(5) `pmi`(4) `view`(6) `render`(3) `find`(1) `workspace`(1) `appearance`(1) `save`(1) `sheet`(11) `sys`(10)
 <!-- END GENERATED FAMILIES -->
 
 ## Tool descriptions and agent-facing strings
@@ -123,23 +125,29 @@ fresh agent with no skill appended), so only what the tools say on the wire is g
 ## Enforcement is a closed list
 
 The files in `tests/lints/` are the closed list: the wire contract (naming + verb/`write=`
-agreement, write-status, strict schema, input names, output contracts, ASCII, wire budget and shape, prose
-budget), the honesty contract (no fabricated fallbacks, bool returns checked, no first-match resolvers,
+agreement, write-status, strict schema, input names, output contracts, ASCII, wire budget and shape,
+wire caps interpolated, prose budget, permission posture, capability map complete), the honesty
+contract (no fabricated fallbacks, bool returns checked, no first-match resolvers,
 postconditions declared, units, native identity keys, export knob pre-read, frame disclosure, material
 effect, rename adoption, no hand-cast product), and the structure (helper duplication denylist, no
-duplicate defs, dead code, autodiscovery, unit-coverage-complete, tool-verify-complete, generated docs
-current, doc citations, measured enums, fake shapes, evergreen). Adding a lint file needs the owner's
+duplicate defs, dead code, autodiscovery, unit-coverage-complete, tool-verify-complete, assert
+strength, generated docs current, doc citations, measured enums, no hand-seeded enums, fake shapes,
+evergreen). Adding a lint file needs the owner's
 word; a new duplication class gets a denylist entry, not a file. No ratchets, no per-file
-baselines, no self-tests for lints, no lint that polices wording. The suite
+baselines, no self-tests for lints. Wording is policed in two places only: the size caps
+(`test_prose_budget.py`) and `test_evergreen_no_baggage.py`; a new wording rule goes into
+evergreen, not into a new file. The suite
 regrew twice after purges because every review finding became a lint. A finding becomes a backlog
 row, a fix, and a step in the live sweep.
 
 ## Prose in code
 
-A docstring is one line saying what the function returns or does; a comment is at most three lines
-stating a present-tense fact the code cannot show (a platform trap at its point of use, with no history).
-A helper's catalog blurb is one line: its symbols and when to reach for it. Everything longer is cut, and
-`test_prose_budget.py` says where.
+A docstring says what the function returns or does. One line is the aim; at most four lines (a
+module docstring, six). A comment is at most three lines stating a present-tense fact the
+code cannot show (a platform trap at its point of use, with no history). A helper's catalog blurb is
+one table row of at most 400 characters: its symbols and when to reach for it. `test_prose_budget.py`
+enforces these limits for the files in `commands/mcpServer/tools/`; elsewhere they are the habit to
+follow.
 
 ## Running commands: never `cd` to the repo root, never redirect stderr
 

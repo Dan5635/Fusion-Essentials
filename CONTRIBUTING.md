@@ -52,9 +52,11 @@ and few blind spots.
   precondition refusal can't point the wrong way. On the output side, `_outputs.py` lets a tool
   declare `RETURNS = [...]` of typed **output kinds**
   (`ReturnsHandle`/`ReturnsUrn`/`ReturnsName`/`ReturnsValue`). They generate the description's
-  `PRODUCES:` line and back a test that asserts the handler returns the declared key, so a renamed id
-  field fails the suite instead of silently misleading every consumer that reads it. How a tool
-  reports failure is the honesty contract in root [CLAUDE.md](CLAUDE.md).
+  `Produces:` line, and `test_output_contracts.py` checks that each declared key is spelled in the
+  tool's source and named on that line. Where a tool's unit test also calls the kind's
+  `assert_present` on a real payload, a renamed id field fails the suite instead of silently
+  misleading every consumer that reads it. How a tool reports failure is the honesty contract in
+  root [CLAUDE.md](CLAUDE.md).
 
 - **The live add-in is a development surface.** `sys_reload_addin` hot-reloads without restarting
   Fusion, and `sys_get_api_doc` + `sys_execute_script` let you try an `adsk.*` call against the live
@@ -68,10 +70,11 @@ primitive to its handler and execution metadata, the registry); and the tool mod
 (`tools/<domain_verb>.py`), which holds only domain logic. Read any one tool file (e.g.
 `workspace_orient.py` or `find_geometry.py`) to see the whole pattern in one place.
 
-> Most of these conventions are enforced: write-status is a structured annotation (linted), enum
-> inputs are typed `Choice`/`UnitField` kinds, occurrence and geometry references are typed kinds
-> that refuse ambiguity, and outputs are declared through `_outputs.py` with a lint that asserts the
-> ids are returned.
+> Most of these conventions are enforced: write-status is a structured annotation (linted),
+> occurrence and geometry references are typed kinds that refuse ambiguity, and outputs are declared
+> through `_outputs.py` with a lint that checks each declared key is spelled in the tool's source.
+> A new enum input is a typed `Choice`/`UnitField` kind; the raw `enum` schemas already in the tools
+> remain.
 
 ---
 
@@ -161,10 +164,10 @@ the [tool-authoring guide](commands/mcpServer/tools/CLAUDE.md) before adding too
 - `task_manager.py` (in `server/`) - marshals work onto Fusion's **main thread** via a custom event.
 - `mcp_primitives/` - Tool / Item schema classes plus the registry.
 - `tools/` - one module per tool, named exactly after the tool it registers (`<family>_<verb>.py`;
-  `TOOL_MANIFEST.md` is the authoritative per-tool list). Each has a `handler(...)` (the logic; its
-  parameters are the tool inputs), a `TOOL_DESCRIPTION`, a `tool = Tool.create_...`, an
-  `item = Item.create_tool_item(...)`, and a `register_tool()`. `_`-prefixed modules (`_common`,
-  `_inputs`, `_outputs`, `_data_common`) are shared helpers.
+  `TOOL_MANIFEST.md` is the authoritative per-tool list). Each has a `register_tool()`, and most
+  also bind at module level a `handler(...)` (the logic; its parameters are the tool inputs), a
+  `TOOL_DESCRIPTION`, a `tool = Tool.create_...` and an `item = Item.create_tool_item(...)`.
+  `_`-prefixed modules (`_common`, `_inputs`, `_outputs`, `_data_common`) are shared helpers.
 - `entry.py` - starts and stops the server, runs the tool-discovery sweep, gates `sys_execute_script`.
 - `README.md` (in that folder) - the **user-facing** doc (setup, security, platform).
 
@@ -200,8 +203,8 @@ the [tool-authoring guide](commands/mcpServer/tools/CLAUDE.md) before adding too
 - **A Joint Origin inside a referenced or child occurrence must be joined via its assembly-context
   proxy**, not the native JO: `jo.createForAssemblyContext(occurrence)`. Passing the native JO
   yields "Provided input paths for joint are not valid". The `joint_create` tool resolves this
-  automatically (root JOs are used as-is; sub-component JOs are proxied through the occurrence
-  that instances them, matched by component name).
+  automatically: a JO passed by bare name goes through `_joints.jo_assembly_proxy` (a root JO is
+  used as-is; a sub-component JO is proxied through the one occurrence that places its component).
 
 ### The development loop (iterating without manual Fusion steps)
 

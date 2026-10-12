@@ -69,12 +69,14 @@ for you; if you patch by hand, patch `mod._common.design` and `mod._inputs._comm
 
 ## Comments and API facts in tests
 
-A test comment states a present-tense fact in at most three lines: no process notes, observation
-diaries or plan references (`test_evergreen_no_baggage.py` enforces this). An adsk API fact (an enum
-int, a behavior flag) is never hand-typed; it comes from the generated `live_api_facts.py`. The mock
-adsk enums arrive pre-seeded with measured values, the shared fakes read their behavior flags from
-it, and `test_no_hand_seeded_enums.py` bans hand-assigning a measured member. If a fact you need is
-missing, add a measurement row to `measure_api.py` and regenerate against live Fusion.
+A test comment states a present-tense fact, by habit in at most three lines: no process notes,
+observation diaries or plan references (`test_evergreen_no_baggage.py` catches the history and plan
+phrases, dates and work-item labels on its own list; nothing counts the lines). An adsk API fact
+(an enum int, a behavior flag) is never hand-typed; it comes from the generated
+`live_api_facts.py`. The mock adsk enums arrive pre-seeded with measured values, the shared fakes
+read their behavior flags from it, and `test_no_hand_seeded_enums.py` bans hand-assigning a measured
+member. If a fact you need is missing, add a measurement row to `measure_api.py` and regenerate
+against live Fusion.
 
 ## Prove a test bites
 
@@ -98,6 +100,7 @@ asserting an implementation detail -> fix the test).
 
 ## Regenerating docs
 
-`py -3 tests/gen_all.py` rebuilds everything under `tests/generated/` (TOOL_MANIFEST and the
-CLAUDE.md maps from the registry, TOOL_POINTER_MAP from source, PERMISSION_POSTURE from the write
-annotations); `--check` fails if anything is stale, and `test_generated_docs_current.py` enforces it.
+`py -3 tests/gen_all.py` rebuilds everything under `tests/generated/`, plus `tests/api_surface.py`,
+the marked blocks in root CLAUDE.md, tools/CLAUDE.md and tests/README.md, and the
+`parametric-cad-design` skill package; `--check` fails if anything is stale, and
+`test_generated_docs_current.py` enforces it.

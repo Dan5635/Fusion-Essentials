@@ -13,7 +13,9 @@ How to add or change a tool in `commands/mcpServer/tools/`. Read the root
   or `entry.py`. `_`-prefixed modules are shared helpers, never tools.
 - A Read with many slices (`design_get`) is still one tool: its slices are `_slice_*` helpers in the
   same file. Code two tools share lives once, in the family's underscore helper (`_cam_common`,
-  `_doc_common`, ...), never copied into a second tool file. `test_tool_naming.py` enforces this.
+  `_doc_common`, ...), never copied into a second tool file. `test_tool_naming.py` enforces one tool
+  per file, each file named after its tool; `test_helper_duplication.py` catches a copied helper
+  whose name is on its denylist.
 - **Reuse before you write.** Check the catalog below before adding a resolver, and run
   `sys_find_tool <kw>` before adding a tool or an input. Extend what exists instead of duplicating it.
 - Set `write=` on the `Item` honestly: `"read"`, `"write"` or `"destructive"`. It is linted.
@@ -73,47 +75,51 @@ generates both from `_inputs.py` and each helper's `MAP_BLURB`; don't edit betwe
 
 | Helper | Provides (import from here - never re-implement) |
 |---|---|
-| `_assembly_common` | the occurrence WORLD-POSE sampler an assembly write is judged by: _constraint_positions - every target's translation and basis BEFORE the mutation, one that will not read ABSENT rather than zeroed; _constraint_moves - which moved across it (translation plus _axes_rotation_deg, the flip a translation-only row hides), and whether ANY target was sampled on both sides |
+| `_assembly_common` | the occurrence WORLD-POSE sampler an assembly write is judged by: _constraint_positions - every target's translation and basis BEFORE the mutation, an unread one ABSENT, not zeroed; _constraint_moves - which moved across it (translation plus _axes_rotation_deg, the flip a translation-only row hides), and whether ANY target was sampled on both sides; _occ_origin/_move_delta - one occurrence's shift |
 | `_assembly_detail` | the row SERIALIZERS behind assembly_get, one per array in its payload - reach for one only from there. _occ_record/_all_occurrence_rows - occurrence identity, placement behind with_pose; _health_fields - the compute-state verdict; _joint_frame/_limit_facts/_value_now/_motion_axes - a joint's world frame, limits, value and heading; _joint_origin_rows/_relation_rows/_contact_rows - the rest |
 | `_assert` | POSTCONDITION kinds (VersionAdvanced/ReferencesFresh/FileLanded/...) - declare an Edit tool's verify-the-effect once; wired via Item.create_tool_item(postconditions=[...]) |
 | `_cam_additive` | setting_fits/assign_parts/target_parts (print setting vs machine, an operation's parts), orientation_rows/choose_orientation, placement_rows, print_setting_row/printer_row, additive_results - additive setup reads and verified writes. |
-| `_cam_common` | the CAM substrate every CAM tool starts from: get_cam (the document's CAM product); the ONE tree walk and its EXACT by-name resolvers (walk_cam_tree, resolve_cam_node, find_setup, find_operation - a duplicate name is refused); the parameter helpers; the per-op state classifiers and readiness verdicts (op_state_facts, ready_verdict, live_readiness); the machine catalog; the bounded library walk |
+| `_cam_common` | the CAM substrate every CAM tool starts from: get_cam (the document's CAM product); the ONE tree walk and its EXACT by-name resolvers (walk_cam_tree, resolve_cam_node, find_setup - a duplicate name is refused); the parameter helpers; the per-op state classifiers and readiness verdicts (op_state_facts, ready_verdict, live_readiness); the machine catalog; the bounded library walk |
 | `_cam_presets` | ToolPreset validation and writing: _preset_spec_error, _apply_preset_values, _persist_preset_change. Reading: _preset_names, _presets_named, _preset_expressions. resolve_operation_preset matches an operation's tool. |
 | `_cam_read` | the per-slice READ cores behind cam_get(include=[...]) - get_cam_setups_handler, get_cam_operations_handler, get_setup_references_handler, get_tool_list_handler, get_machining_time_handler, get_nc_programs_handler, get_inspection_results_handler, get_machine_limits_handler; reach for one only from that router, every other CAM tool shares _cam_common |
 | `_cam_templates` | the CAM TEMPLATE library substrate: _template_library - the handle off the CAMManager singleton, not the CAM product; list_cam_templates_handler - the bounded folder tree cam_get(include=['templates']) returns, each row carrying the ASSET url cam_apply_template takes; _find_template_by_name - the by-name search REFUSING a name several templates answer to; _LOCATION - the location selector |
-| `_common` | response+resolve: ok/error/safe (per-FIELD, never a MUTATION), read_optional/measured/read_flag/counted/finite_number, design/target_component, find_sketch/resolve_sketch (ambiguity), timeline_health/timeline_message/set_verified/rolled_to (effect; roll-restore), same_component/native_identity/occurrence_walk/broken_reference (TRI-STATE), scale/iter_collection/named_with_remainder/told_apart |
+| `_common` | response+resolve: ok/error/safe (per-FIELD, never a MUTATION), read_optional/measured/read_flag/counted/finite_number, design/target_component, find_sketch (ambiguity), timeline_health/timeline_message/set_verified/rolled_to (effect; roll-restore), same_component/native_identity/occurrence_walk/broken_reference (TRI-STATE), scale/iter_collection/named_with_remainder/told_apart |
 | `_contacts` | the substrate assembly_get's contacts slice and assembly_edit_contacts share. contact_sets/all_contact_sets/contact_set_names - the DESIGN-scoped contactSets walk; find_contact_set - the EXACT resolve-one, refusing a duplicate; membership/member_label - the occurencesAndBodies read-back |
 | `_continuity` | the ONE seam read: edge_angles/body_seams - the largest normal angle along a two-faced edge (None when a sample will not read), for one edge or every one of a body; seam - the gap, normal angle and cross-seam curvature jump between two faces at samples along an edge; partner_face - the face of the one edge of another body lying along an edge |
 | `_data_common` | cloud data-model substrate: resolve_file_reference / _file_in_folder_by_name - the URN-or-name-in-a-project and one-folder resolvers, a shared name REFUSED; navigate_folder_path - the folder-PATH walk from a project root, creating nothing; active_project - the active document's OWN DataProject; name_extension - the NAME holds the true extension; absence_after_delete - the re-resolve after deleteMe |
 | `_data_read` | cloud READ cores for data_get: list_projects_handler (hub projects), list_project_files_handler (scoped project files), folder_summary_handler (folder identity + immediate counts), list_folders_handler (bounded folder tree), file_facts_handler (one file's metadata + links); the capped walks record unread folders |
 | `_design_common` | MODE: get_mode_handler/health_handler - mode and health; run_in_base_feature/base_feature_run_wrapper - a mutation in an always-finished base-feature scope; timeline_census/timeline_item_key/census_caveat - an edit census; collapsed_group_hint(_for)/hidden_twin_hint - a grouped member's miss (by name or entity) or hidden twin; unfold_group_members - the group-state census; no_timeline_reason |
+| `_design_primitives` | MODE_PARAMETRIC/MODE_DIRECT/current_design_type; timeline_health/timeline_message - shared mode and health reads. |
 | `_doc_common` | _resolve_open_document - exact open-document resolve by handle/index/URN/name, refusing ambiguity; VERSION_LAG_WINDOW_S - measured cloud-tip lag window; fresh_version_read/wait_for_version_advance - fresh cloud identity reads around a save; publication_read - the bounded DataFile.isComplete settle read every save publishes |
 | `_drawing_common` | active_drawing(_document); SHEET_SIZE_MAP/DIMENSION_STRATEGIES/ORIENTATION_MEMBERS/NO_PORTRAIT; sheet_units/SHEET_EXTENT_UNIT/DOCUMENT_UNIT/coordinate_unit/extent_in_coordinates/coordinates_to_extent; enum_value/*_label; resolve_sheet/sheet_listing/sheet_facts/view_at; view_curve/typed_curve/curve_point/curve_row; listed/as_index/sheet_xy; palette_parts/palette_list; revision_rows - its row census |
 | `_edge_common` | EDGES/FACES/BODY/_EDGE_FILTER_DESC/_TANGENT_CHAIN_DESC - targeting; _edges_of_faces - face edges; _distinct_placed_edges - edge handles per placement; _edge_convexity/_collect_edges - dihedral filters; _tangent_chain_read - applied chain; _cut_edges - resolved count via rolled_to; _apply - build and verify volume/area |
 | `_edit_feature_common` | FEATURE_EDIT_SUPPORT/feature_edit_rows - closed offer; read_extrude_definition/read_sweep_definition/feature_definition - read; write_datum; all_shapes/health/same_feature; feature_geometry_snapshot - body shapes and occurrence frames; sketch_address/at_address/address_text; restore_definition/restore_gaps/matched/shape_match - rollback; rolled_back_text/failed/identical_geometry_reply - outcomes |
 | `_export` | export-to-disk substrate: sanitize/prepare_out_path (safe filename, extension and directory prep), find_component/instance_paths (by-name resolve, shared name refused), top_level_occurrences/split_by_occurrence/failure_detail (one file per root occurrence), snapshot/verify_written (prove THIS call wrote), applied_pair (set an option, read it back), stl_unit_enum, pump_until (bounded doEvents wait) |
+| `_feature_address` | candidate_address/feature_address - timeline addresses for typed references and failed-write remedies. |
 | `_form_common` | the T-spline Form substrate: all_forms/form_label/resolve_form - a Form's '<component>/<name>' address; health_label; body_box_cm; create_form/finish_edit/retire - the always-finished edit and its rollback; read_record/store_record - the creation record; one_cage_body/cage_walk/cage_revision/cage_handle/resolve_cage - the control cage by native index, refused once the cage has changed |
 | `_geom` | math: unit_vector/unit_vector_between/evaluator_normal_at/dot/cross/coaxial (vectors); body_aabb/occ_world_frame/axis_vec (AABB, placement); volumes/volume_delta/signed_volume/body_shape/face_counts/face_count_delta/areas/area_delta/face_frames/faces_moved/lump_count/aabb_gap/parallel_plane_facts (what a write is judged by; area/frames move where a pivot leaves the volume); address/subtree_facts |
 | `_holder` | holder geometry: get_axis, get_tool_profile, build_holder_data, get_tooling_libraries |
 | `_image_common` | the reference-image substrate: image_rows/slice_reference_images - the root component's canvases and decals as rows; resolve_image - a row's ref back to its entity, refused when stale; canvas_frame/canvas_cells/decal_frame/decal_cells - a placement as centre, size, rotation and mirroring, and back to matrix cells; original_size - the size Fusion gives the image file unscaled |
-| `_inputs` | typed kinds; resolve_inputs/apply_to_tool; length_value_input/expression_report; FeatureEditOperands (feature refs); world_construction_axis/axis_line_of (axis entity; world line), single_placement/entity_component/operand_in (assembly-context lift), operand_meta/placed_point_cm/placed_datum_frame/placed_handle (world frame, handle), resolve_surface/surface_ref_label (*_to_surface operand) |
+| `_inputs` | typed kinds; resolve_inputs/apply_to_tool; build_path; length_value_input/expression_report; FeatureEditOperands (feature refs); world_construction_axis/axis_line_of (world axis), single_placement/entity_component/operand_in (assembly-context lift), operand_meta/placed_point_cm/placed_datum_frame/placed_handle (world frame, handle), resolve_surface/surface_ref_label (*_to_surface operand) |
 | `_joint_inputs` | the joint WRITE substrate above _joints: _resolve_input - the ONE joint-input resolve (a handle, a '<occurrence>:<snap>', then a Joint Origin name), with _parse_snap/_pick_face behind it; _JOINT_TYPES/_MOTIONS - the wire motion vocabulary; _apply_limits - limits read BACK off the joint; input_occurrence/pose_before/pose_moved - the jointed parts' world-pose change |
 | `_joints` | build_joint_geometry/apply_motion - keypoint factory + motion dispatch; all_joints/find_joint - walks joints+asBuiltJoints, REFUSING a shared name; DRIVES_ANY - drivable gate; motion_link_record/link_ratio_values - link record + ratio codec; all_joint_origins/jo_assembly_proxy - JointOrigin walk + proxy; component_world_matrix - world matrix ladder; pair_used_clause/PAIR_USED - used-pair refusal |
 | `_materials` | browse - the ONE material/appearance catalog read: a library census plus the document-local set when no library is named, one library's filtered and capped entries when it is; catalog_census/find_library/entries are its leaf ops |
 | `_mesh_common` | the MeshBody read substrate: _tri_count/_node_count - the displayMesh counts every mesh payload reports; _area_volume + _mesh_moved - the second, independent signal a flat triangle count is judged beside; _mesh_summary - the one per-mesh record; _result_mesh_of - the mesh a mesh feature produced; mesh_measure_of_body - the mesh analogue of a BRep measure |
 | `_outputs` | RETURNS kinds (ReturnsHandle/Urn/Name/Value/Verdict) - declare a tool's stable outputs once |
-| `_param_common` | the design-PARAMETER substrate: _param_summary - the ONE parameter row every param_* tool publishes, converting Parameter.value out of DATABASE units (cm/radians) into the parameter's own and naming the frame it could not convert into; _owner_facts - a MODEL parameter's maker, each key absent when it did not read; _find_parameter - the exact by-name lookup, user parameters first |
+| `_param_common` | the design-PARAMETER substrate: _param_summary - the ONE parameter row every param_* tool publishes, Parameter.value converted from DATABASE units (cm/radians) to the parameter's own, the unconverted frame named; _owner_facts - a MODEL parameter's maker, an unread key absent; _find_parameter - the exact by-name lookup, user parameters first; parameter_census - kind/derived/user per parameter |
+| `_path_common` | build_sketch_path/build_edge_path - resolved path construction; path_sketch_curve_count/path_chain_warning - sketch omissions. |
 | `_pattern_common` | the pattern substrate: _resolve_input_entities - the ObjectCollection a pattern seeds from, bodies taking precedence over occurrences; _owning_component - the component the feature must be built in (the axis and the feature must share one or Fusion raises getObjectPath); _direction_entity - a world-axis key as that component's own origin axis, anything else lifted into its assembly context |
 | `_pdf_text` | the exported-PDF text reader, pure Python: read - (document, error) for a PDF path: its modified time and per page its label, size in mm and text runs as {text, x, y, angle, layer}; MAX_FILE_BYTES/MAX_STREAM_BYTES/MAX_INFLATED_BYTES - the file, one-stream and all-streams sizes it stops at |
 | `_plastic_common` | plastic_rules/plastic_rule_row - complete scoped rule lookup and unit-aware records. |
 | `_pmi` | the PMI substrate. walk_annotations/find_annotation - the design-wide walk and the resolve-one REFUSING a shared name; build_segments/segments_markup/annotation_record - the {symbol} markup codec and light record; readable_warning - errorOrWarningMessage as one bounded line; build_tolerance/build_display - the tolerance/display codecs; apply_*/normalize_extension/set_* - the writers, each re-read |
+| `_read_primitives` | safe - per-field reads below design and typed inputs. |
 | `_relations` | the substrate assembly_get's relations slice and assembly_edit_relations share. all_relations - the ONE walk over a design's rigid groups / motion links / assembly constraints; relation_names/find_relation - the names for an error message and the EXACT resolve-one that REFUSES a duplicate; rigid_group_members - member paths |
 | `_render_common` | RenderManager access and local image setting rows for render_create/render_get |
 | `_render_file` | Read rendered image dimensions and file completeness without image libraries. |
 | `_render_jobs` | local render job IDs and bounded in-process RenderFuture retention |
 | `_render_scene` | scene_row/environment_rows: bounded passive scene and environment reads. |
 | `_rib_common` | body_census/rib_definition - owner-local shape witnesses and passive Rib/Web definitions. |
-| `_sheet_common` | rule_row/scoped_rules/matching_rules/component_row/sheet_edge_faces/bend_face_count/bend_wall_groups/flat_pattern_row/pending_unfolds - scoped rules, pending unfold preflight, component state, a rim edge's faces, cylinder-face count, bend walls paired per axis, flat health and optional geometry |
+| `_sheet_common` | rule_row/scoped_rules/matching_rules/component_row/sheet_edge_faces/bend_face_count/bend_wall_groups/flat_pattern_row/pending_unfolds - scoped rules, pending unfold preflight, component state, a rim edge's faces, cylinder-face count, bend walls paired per axis, flat health and optional geometry; _POSITIONS/_KIND_SPEC - Hem position and kind tables |
 | `_sheet_edit` | hem_read/prepare_hem/write_hem - supported Hem definition reads, validation and rebuild. |
 | `_sketch_batch` | the sketch batch substrate: entries_or_error - the list-shape guard; run_batch - one sketch's entries in order, stopping at the first failure or raise, with the shared landed/failed/not_attempted payload; refuse - an entry refused before any write; entry_counts - the four counts a failed entry is judged by; retired_clause - delete an entry's minted midpoint anchors, judged by those counts |
 | `_sketch_detail` | sketch_get's X-ray; sketch_world_frame/frame_space_note - frame; curve_id/entity_id/dimension_entities - ids; point_census/moved_points/point_ends - what a solve moved; scope_component(s)/COMPONENT_SCOPE/component_scope/scoped_sketch/scoped_or_recent_sketch/scope_remedy - the scope; _sketch_summary - a sketch row; _prepare/_transform - move/copy; unquote_text/font_read_back - SketchText. |
@@ -181,11 +187,12 @@ tool passes `postconditions=[...]` to `Item.create_tool_item`. That wrapper runs
 4. **Teaches at the failure moment, in one shared home, not in every description.** Failure-time
    teaching goes in the error, once, in the shared resolver (`_cam_common.get_cam`'s Manufacture-gate
    error). Purpose and next step go in a lean description; input legality goes in a typed kind. Root
-   CLAUDE.md, "Tool descriptions", sets the same rule for everything on the wire.
+   CLAUDE.md, "Tool descriptions and agent-facing strings", sets the same rule for everything on
+   the wire.
 5. **Reuses one resolver, one parser, one health signal; never re-rolls it.** Shared logic lives
    once, in its owner module (`find_setup`, `live_readiness`, `_data_common._resolve_data_file` for
-   the URN/URL format, `resolve_sketch` for the design-wide sketch walk). Code that only looks alike
-   is not shared logic; leave it.
+   the URN/URL format, the by-name sketch resolver in `_common` for the design-wide sketch walk).
+   Code that only looks alike is not shared logic; leave it.
 
 ## Named exemplars: copy the nearest one before inventing a new shape
 
@@ -209,11 +216,12 @@ tool passes `postconditions=[...]` to `Item.create_tool_item`. That wrapper runs
 A tool module may carry a docstring of a few lines (`test_prose_budget.py` caps a module docstring
 at six): what the tool or tools do, plus at most one API gotcha the code depends on. Function
 docstrings and `#` comments follow root CLAUDE.md, "Prose in code": a function's docstring is one
-line. No design history, migration or review narrative anywhere; `test_evergreen_no_baggage.py`
-enforces this. API facts beyond that one gotcha live in the code that uses them (a guard, a typed
-kind, a point-of-use comment). A handler docstring that only restates the wire `description` should
-be one line or omitted. A process lesson (how a bug was found, what a review taught) belongs in your
-own memory, not the repo.
+line as the aim, at most four. No design history, migration or review narrative
+anywhere; `test_evergreen_no_baggage.py` catches the history and plan phrases, dates and work-item
+labels on its own list, under `commands/mcpServer/` and `tests/`. API facts beyond that one gotcha
+live in the code that uses them (a guard, a typed kind, a point-of-use comment). A handler
+docstring that only restates the wire `description` should be one line or omitted. A process lesson
+(how a bug was found, what a review taught) belongs in your own memory, not the repo.
 
 ## `write=` policy for a read-style verb whose actions still change state
 
@@ -221,8 +229,9 @@ A poller that only advances an async operation that was already authorized (`cam
 `write="read"`: the write guard on the call that started it already covers what it advances. A tool
 with a read-style verb whose own actions change or delete persistent state must be `write="write"`,
 through an explicit exemption in `test_tool_naming.py`'s `_WRITE_VERB_EXEMPT`. The exemptions are
-`view_section` (`clear` deletes user-created section analyses) and `sys_request_selection` (clears the
-user's current Fusion selection). A new one needs an entry there with a one-line reason naming the
+`view_section` (`clear` deletes user-created section analyses), `sys_request_selection` (clears the
+user's current Fusion selection) and `view_screenshot` (`file_path` writes, and silently overwrites,
+a caller-named PNG on local disk). A new one needs an entry there with a one-line reason naming the
 observed mutation; flipping `write=` locally is not enough.
 
 ## What crosses the wire (what an agent reads every turn)
@@ -276,7 +285,7 @@ Build rules for a read:
 - **Handles are light; records are heavy.** A 200-char handle the agent will *use* is fine; twenty
   full entity records it must skim to find one profile are the waste.
 - The default's `note`/`pointers` must name its own `include=` slices, or point at the `include` enum
-  when naming them all would push the note past its budget (cam_get's fifteen). A flag nobody
+  when naming them all would push the note past its budget (as cam_get's does). A flag nobody
   advertises is invisible.
 - The handler is a thin router over small `_slice_xxx(...)` helpers, one per slice, so the file stays
   readable whole and each slice can be tested on its own.
@@ -289,8 +298,8 @@ Build rules for a read:
 - `test_tool_naming.py` - the naming schema: verb vocabulary and verb-kind/`write=` agreement.
 - `test_write_status_annotations.py` - every registered tool declares a write-status annotation.
 - `test_wire_ascii.py` - every description/note and every module-level string constant in `tools/` is pure ASCII.
-- `test_generated_docs_current.py` - runs `gen_all.py --check` (`gen_manifest.py`/`gen_wiring.py`/`gen_posture.py`)
-  and fails with the regen command when a doc has gone stale.
+- `test_generated_docs_current.py` - runs `gen_all.py --check` (every generator in its `_GENERATORS`
+  tuple) and fails with the regen command when a doc has gone stale.
 - `test_helper_duplication.py` - a denylist: a known shared symbol (`get_cam`, `sanitize`,
   `target_sketch`, ...) may only be defined in its home helper module; re-implementing it locally fails.
 - `test_no_first_match_resolvers.py` - bans the substring/`.lower() in name.lower()` first-match smell

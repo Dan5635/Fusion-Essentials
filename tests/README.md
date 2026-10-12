@@ -146,14 +146,24 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 
 A pass is either LIVE-VERIFIED (the stamp on the measured API facts was checked against a running
 Fusion) or OFFLINE (you asked for it explicitly; the mocks were not re-confirmed). Either way it
-checks the live-run receipt: `tests/live/VERIFIED_TOOLS.md` carries a source hash from the last green
-`tool_verify.py` run, and `check_all.py` fails when tool source has changed since. To repair it,
-re-run `tool_verify.py` with Fusion up (in one go, or in chunks with `--run <id>` / `--resume`) and
-commit the rewritten receipt.
+checks the family receipts: a new full `tool_verify.py` run bootstraps
+`tests/live/VERIFIED_FAMILIES.json` (in one go, or chunks with `--run <id>` / `--resume`).
+After bootstrap, `--families render,mesh` refreshes whole named families; separate passing refreshes
+can persist while other families remain stale. `--acts "ACT 5"` runs owned families for evidence
+only and never stamps. Receipt runs require cleanup; use `--acts` for `--keep-open`.
 
-The receipt's count line splits `covered` (a step's predicate read a value off the payload) from
-`called` (bare `ok` steps only: the call did not fail, but the effect was not read). The `called`
-number is the queue of steps that still need an effect read.
+`tool_verify.py --check` is offline and validates source currentness for the recorded scope on one
+Fusion build. A tier declared off has an omission record, no family evidence stamp, and is printed as
+out of scope; a requested tier that could not run is held and makes the check incomplete. Present
+invalid cloud config is requested, while only an absent config is the opt out. Clones validate the
+recorded scope without their ignored local config or raw results. `--check --full-scope` additionally
+requires every admitted configurable tier on; the permanent crash-review quarantine stays excluded.
+Committed compact stamps suffice on a clone; retained ignored raw results are checked when present.
+Minting validates actual execution, exact loaded identity/census, unchanged source and cleanup.
+`VERIFIED_TOOLS.md` composes current family stamps and lists their run provenance, including earlier
+matching runs. `covered` requires an explicit `Independent` cross-tool/file/geometry witness for an
+earlier successful target in the same family. Ordinary value predicates are `self-reported`; bare
+`ok` steps are `called`. A tool witness must name the actual read tool and cannot credit itself.
 
 > Requires `pytest` and `numpy` (`py -3 -m pip install pytest numpy`) for the unit tests and
 > lints; `numpy` is imported by the pose checks in `tests/unit/test_design_add_instance.py` alone.

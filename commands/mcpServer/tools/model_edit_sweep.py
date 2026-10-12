@@ -11,7 +11,7 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from . import _assert, _common, _design_common, _inputs, _sketch_detail, _sweep_common
+from . import _assert, _common, _design_common, _inputs, _path_common, _sketch_detail, _sweep_common
 from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_address,
                                    body_creator, failed,
                                    collection_entities as _collection_entities,
@@ -145,7 +145,7 @@ def _later_refusal(design, owner, label, index, action, raw, component):
     """(reorder advice, unmovable refusal, open profile, refusal before any roll, later-body refusal)."""
     open_profile = host = later_body = None
     if action in ("path", "guide_path"):
-        operand, _label, refusal = _common.build_path(owner, raw)
+        operand, _label, refusal = _inputs.build_path(owner, raw)
         name = raw.split(":", 1)[1].strip() if isinstance(raw, str) and ":" in raw else None
         row = (_rolled_back_row(design, owner, name)
                if refusal and name and raw.strip().lower().startswith("sketch:") else None)
@@ -159,7 +159,7 @@ def _later_refusal(design, owner, label, index, action, raw, component):
             design, owner, raw, False, component)
         # An open Profile has no parentSketch; its source curves carry timeline provenance.
         if not refusal and open_profile:
-            operand, _label, refusal = _common.build_path(host, f"sketch:{sketch.name}")
+            operand, _label, refusal = _inputs.build_path(host, f"sketch:{sketch.name}")
     members = [] if refusal else _members(operand)
     for member in members:
         source, row, from_sketch = operand_source(member)
@@ -206,7 +206,7 @@ def _remedy(label, action, addresses, host):
     if (curves and None not in curves and len({a[1:] for a in addresses}) == len(addresses)
             and all(a[1] != "profile" and a[0] == sketch for a in addresses)
             and not any(safe(lambda c=c: c.isConstruction, False) for c in curves)
-            and _common.path_sketch_curve_count(host, f"sketch:{name}") == len(addresses)
+            and _path_common.path_sketch_curve_count(host, f"sketch:{name}") == len(addresses)
             and safe(lambda: _common.target_sketch(host, name)[0] == sketch) is True):
         return f"{call}path='sketch:{name}')."
     return "Undo it in Fusion."
@@ -626,19 +626,19 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                 source_name = safe(lambda: source_sketch.name)
                 if not source_name:
                     raise ValueError("The open profile's source sketch name is unreadable.")
-                checked_operand, _label, refusal = _common.build_path(host, f"sketch:{source_name}")
+                checked_operand, _label, refusal = _inputs.build_path(host, f"sketch:{source_name}")
                 if refusal:
                     raise ValueError(refusal)
-                source_count = _common.path_sketch_curve_count(host, f"sketch:{source_name}")
+                source_count = _path_common.path_sketch_curve_count(host, f"sketch:{source_name}")
                 if source_count is None or counted(lambda: checked_operand.count) != source_count:
                     raise ValueError("The open profile's source path omits sketch curves.")
             desired = _profile_members(checked_operand)
         elif action in ("path", "guide_path"):
-            operand, _label, refusal = _common.build_path(component_owner, path, left_out)
+            operand, _label, refusal = _inputs.build_path(component_owner, path, left_out)
             if refusal:
                 raise ValueError(later_body or refusal)
             desired = _path_members(operand)
-            sketch_curve_count = _common.path_sketch_curve_count(component_owner, path)
+            sketch_curve_count = _path_common.path_sketch_curve_count(component_owner, path)
             checked_operand = operand
         if action in ("profile", "path", "guide_path"):
             if desired is None:
@@ -884,7 +884,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
                        "Sweep operand changed on the same feature. Boolean edits retain the current "
                        "participants; newly reached bodies are excluded. Inspect model_inspect.")
     if action in ("path", "guide_path"):
-        details["note"] += " " + _common.path_chain_warning(len(desired), sketch_curve_count, "sweep", left_out)
+        details["note"] += " " + _path_common.path_chain_warning(len(desired), sketch_curve_count, "sweep", left_out)
         details["note"] = details["note"].strip()
     return identical_geometry_reply(details) if identical else ok(details)
 

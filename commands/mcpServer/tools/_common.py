@@ -7,15 +7,20 @@ and cm-based unit ``scale``/``UNIT_TO_CM``."""
 
 import json
 import math
-import re
 
 import adsk.core
 import adsk.fusion
 
+from ._read_primitives import safe
+from ._design_primitives import MODE_DIRECT, current_design_type
+from ._design_primitives import _HealthName, timeline_health, timeline_message  # noqa: F401 - helper exports
+from ._design_primitives import _MESSAGE_MARKUP, _MESSAGE_GLUE, _MESSAGE_LIMIT  # noqa: F401 - helper exports
+from ._feature_address import feature_address
+
 MAP_BLURB = (
     "response+resolve: ok/error/safe (per-FIELD, never a MUTATION), "
     "read_optional/measured/read_flag/counted/finite_number, design/target_component, "
-    "find_sketch/resolve_sketch (ambiguity), timeline_health/timeline_message/"
+    "find_sketch (ambiguity), timeline_health/timeline_message/"
     "set_verified/rolled_to (effect; roll-restore), same_component/native_identity/occurrence_walk/"
     "broken_reference (TRI-STATE), scale/iter_collection/named_with_remainder/told_apart")
 
@@ -43,17 +48,6 @@ def error(text: str, payload=None) -> dict:
             body = {"error": text, **body}
         content = json.dumps(body, indent=2)
     return {"content": [{"type": "text", "text": content}], "isError": True, "message": text}
-
-
-# ── safe getter ─────────────────────────────────────────────────────────────
-
-def safe(getter, default=None):
-    """Call ``getter()`` and swallow any exception, returning ``default`` - the per-FIELD read
-    guard for a Fusion object model where a missing property raises. Never around a MUTATION."""
-    try:
-        return getter()
-    except Exception:
-        return default
 
 
 _UNREADABLE = object()      # a getter that RAISED - distinct from one that returned None
@@ -798,12 +792,6 @@ def find_sketch_in(d, name, comp, label, input_name="component"):
                   + (named_with_remainder(held) or "(no sketches)") + ".")
 
 
-def resolve_sketch(d, name):
-    """The live Sketch a name addresses design-wide, or None both when NO sketch carries it and
-    when SEVERAL do. A caller that can surface WHY calls ``find_sketch``."""
-    return find_sketch(d, name)[0]
-
-
 def find_or_recent_sketch(d, name, remedy=None):
     """(sketch-or-None, the stripped name or None when blank, ambiguity_error-or-None): a NAME
     resolves design-wide, an EMPTY name means the most recent sketch in the ACTIVE component, and
@@ -920,9 +908,7 @@ def direct_feature_absence(design, feature) -> bool:
     """True when a falsy Features.*.add() return is the DIRECT-mode shape rather than a failure -
     it never says anything LANDED (a direct combine of two non-touching bodies returned None with
     body count and volume unmoved), so the caller confirms its effect off the MODEL."""
-    # _inputs imports _common, so the ONE mode reader is bound at call time, not at import.
-    from . import _inputs
-    return not feature and _inputs.current_design_type(design) == _inputs.MODE_DIRECT
+    return not feature and current_design_type(design) == MODE_DIRECT
 
 
 def null_feature_note(design, feature, base_feature_name, what) -> str:
@@ -952,21 +938,10 @@ def body_count(host):
     return safe(lambda: host.bRepBodies.count)
 
 
-def feature_address(entity):
-    """The address design_delete_feature takes for `entity`'s timeline row, else its name, else None."""
-    from . import _inputs
-    if not entity:
-        return None
-    return (_inputs.candidate_address(safe(lambda: entity.timelineObject))
-            or safe(lambda: entity.name) or None)
-
-
 def left_in_timeline(design, address):
     """The retained item's design_delete_feature sentence, or the undo one in DIRECT mode."""
-    # _inputs imports _common, so the ONE mode reader is bound at call time, not at import.
-    from . import _inputs
     # A direct design's timeline read raises (measured), so design_delete_feature has no row to take.
-    if _inputs.current_design_type(design) == _inputs.MODE_DIRECT:
+    if current_design_type(design) == MODE_DIRECT:
         return ("This design is in DIRECT mode: there is no timeline feature to remove, so whatever "
                 "did change is already in the model - undo in Fusion, or re-run with corrected "
                 "inputs.")
@@ -1005,80 +980,6 @@ def no_feature_error(design, what, hint="") -> str:
                  "silent success. Read the model back with design_get before retrying - a retry "
                  "would repeat an edit that may already be in the model.")
     return text
-
-
-class _HealthName(str):
-    """One unhealthy timeline item's name that serializes as the name while ``==`` compares the
-    row's ENTITY token - timeline names are NOT unique across components (measured), so a bare-name
-    diff is blind to a namesake's damage. ``__hash__`` stays the NAME's hash."""
-
-    def __new__(cls, name, token=None):
-        obj = str.__new__(cls, name)
-        obj.token = token or None
-        return obj
-
-    def __eq__(self, other):
-        mine, theirs = self.token, getattr(other, "token", None)
-        if mine and theirs:
-            return mine == theirs
-        return str.__eq__(self, other)
-
-    def __ne__(self, other):
-        same = self.__eq__(other)
-        return same if same is NotImplemented else not same
-
-    __hash__ = str.__hash__
-
-
-def timeline_health(design, limit=None):
-    """(error_names, warning_names, total) over the parametric timeline by healthState (2=error,
-    1=warning) - the shared before/after guard for edits that break downstream features; a direct
-    design yields empty lists. Each name is a ``_HealthName``, compared on the row's entity token."""
-    # ``limit`` bounds the walk to the first n items, keeping a CREATE's guard off the entry it just
-    # added: a freshly added assembly constraint's own healthState RAISES '1 : Unknown exception'
-    # (measured), and that caught error inside Python.Run rolled the whole transaction back.
-    errors, warnings, total = [], [], 0
-    tl = safe(lambda: design.timeline)
-    if tl is None:
-        return errors, warnings, total
-    count = safe(lambda: tl.count, 0) or 0
-    if limit is not None:
-        count = min(count, max(int(limit), 0))
-    for i in range(count):
-        it = tl.item(i)
-        total += 1
-        hs = safe(lambda it=it: it.healthState)
-        if hs not in (1, 2):
-            continue
-        # A TimelineObject carries no entityToken of its own; the ENTITY it stands for does, and
-        # that token re-reads identical within a session (measured). TimelineObject.entity is None
-        # for a group row and for a feature class with no public-API form, which keys on its name.
-        label = _HealthName(safe(lambda it=it: it.name) or f"#{i}",
-                            safe(lambda it=it: it.entity.entityToken))
-        (errors if hs == 2 else warnings).append(label)
-    return errors, warnings, total
-
-
-# A timeline row's errorOrWarningMessage carries <b>/<br/> markup, glues its 'Body N missing'
-# items and sentences together, and ends with the row's own name after the last sentence.
-_MESSAGE_MARKUP = re.compile(r"<[^>]*>")
-_MESSAGE_GLUE = re.compile(r"(?<=missing)(?=[A-Z0-9])|(?<=[.!?])(?=[A-Z])")
-_MESSAGE_LIMIT = 400
-
-
-def timeline_message(raw, name=None, limit=_MESSAGE_LIMIT):
-    """A timeline errorOrWarningMessage as '; '-joined plain text, less the row's `name` suffix."""
-    text = raw if isinstance(raw, str) else ""
-    if isinstance(name, str) and name and text.endswith(name):
-        text = text[:-len(name)]
-    items = []
-    for part in _MESSAGE_MARKUP.split(text):
-        for item in _MESSAGE_GLUE.split(part):
-            item = " ".join(item.split()).rstrip(".")
-            if item:
-                items.append(item)
-    text = "; ".join(items)
-    return text[:limit].rstrip() + " ..." if len(text) > limit else text
 
 
 def marker_clause(was, now, during):
@@ -1434,130 +1335,6 @@ OPERATIONS = {
     "intersect": "IntersectFeatureOperation",
     "new_component": "NewComponentFeatureOperation",
 }
-
-
-# ── the ONE path resolver (sweep / pipe / path pattern / on-path datum) ──────
-
-def build_path(comp, path_raw, left_out=None):
-    """Return (path, label, error); a `left_out` list receives the sketch curve ids the path omits."""
-    # _inputs and _sketch_detail import _common, so both are bound at call time, not at import.
-    from . import _inputs, _sketch_detail
-    if isinstance(path_raw, str) and path_raw.strip().lower().startswith("sketch:"):
-        nm = path_raw.split(":", 1)[1].strip()
-        sk, _ = target_sketch(comp, nm)
-        if not sk:
-            return None, None, f"No sketch named '{nm}' for the path. Use sketch_get or sketch_create."
-        curves = safe(lambda: sk.sketchCurves)
-        cn = safe(lambda: curves.count, 0) if curves else 0
-        if not cn:
-            return None, None, f"Path sketch '{nm}' has no curves to build a path from."
-        # The collection preserves separately drawn curves; a filleted chain can omit its exit leg.
-        selected = [c for c in iter_collection(curves)
-                    if not bool(safe(lambda c=c: c.isConstruction, False))]
-        if not selected:
-            return None, None, f"Path sketch '{nm}' has no non-construction curves."
-        coll = adsk.core.ObjectCollection.create()
-        for c in selected:
-            coll.add(c)
-        intended = [native_identity(c) for c in selected]
-        known = None not in intended and len(set(intended)) == len(selected)
-
-        def members(path):
-            """The native identities of a built path's members, None when any does not read."""
-            n = counted(lambda: path.count)
-            keys = ([native_identity(safe(lambda i=i: path.item(i).entity)) for i in range(n)]
-                    if n is not None else [None])
-            return None if None in keys else keys
-
-        p = None
-        if safe(lambda: coll.count, 0):
-            try:
-                built = comp.features.createPath(coll, False)
-            except Exception:
-                built = None
-            if built is not None and (counted(lambda: built.count) or 0) > 0:
-                p = built
-        if p is None or (counted(lambda: p.count) or 0) < len(selected):
-            try:
-                candidate = comp.features.createPath(selected[0], True)
-            except Exception as e:
-                if p is None:
-                    return None, None, f"Could not build a path from sketch '{nm}': {e}"
-                candidate = None
-            got = members(candidate) if candidate is not None else None
-            if p is None:
-                p = candidate
-            elif (known and got is not None and len(got) == len(selected)
-                  and set(got) == set(intended)):
-                p = candidate
-        if not p:
-            return None, None, f"createPath returned nothing for sketch '{nm}'."
-        got = (members(p) if left_out is not None and known
-               and (counted(lambda: p.count) or 0) < len(selected) else None)
-        if got is not None:
-            left = [_sketch_detail.curve_id(sk, c) for c, key in zip(selected, intended)
-                    if key not in got]
-            if None not in left:
-                left_out.extend(left)
-        return p, f"sketch:{nm}", None
-
-    # A single handle is kept whole - a composite handle carries commas in its locator, so it must
-    # NOT be comma-split; several must arrive as a JSON list.
-    if path_raw in (None, "", []):
-        return None, None, ("'path' is required: a find_geometry edge 'handle' (or a JSON list of "
-                            "them), or 'sketch:<name>' for a path sketch.")
-    handles = [path_raw] if isinstance(path_raw, str) else list(path_raw)
-    edges, err = _inputs.GeometryHandleList("path", require="edge").resolve(handles)
-    if err:
-        return None, None, err
-    if len(edges) == 1:
-        try:
-            p = comp.features.createPath(edges[0], True) # request chaining from the seed edge
-        except Exception as e:
-            return None, None, f"Could not build a path from the edge: {e}"
-    else:
-        coll = adsk.core.ObjectCollection.create()
-        for e in edges:
-            coll.add(e)
-        try:
-            # Multiple edges: use them exactly (noChainedCurves); they must connect into one path.
-            p = comp.features.createPath(coll, False)
-        except Exception as e:
-            return None, None, f"Could not build a path from the {len(edges)} edges: {e}"
-    if not p:
-        return None, None, "Path build returned nothing (the edges may not connect into one path)."
-    # MEASURED behind the tangent rule: an arc seed between two tangent lines built a 3-entity
-    # path, a tangent-continuous closed loop chained all 8 of its edges from one seed, and a sharp
-    # corner stopped it - open vs closed does not decide it.
-    built = safe(lambda: int(p.count), 0) or 0
-    how = ("from 1 seed handle" if len(edges) == 1
-           else f"from {len(edges)} handles, used exactly")
-    return p, (f"{built} edge(s) {how}" if built else f"{how}; edge count unreadable"), None
-
-
-def path_sketch_curve_count(comp, path_raw):
-    """How many SWEEPABLE (non-construction) curves the sketch a 'sketch:<name>' path names holds -
-    None for any other path form or an unreadable sketch."""
-    if not (isinstance(path_raw, str) and path_raw.strip().lower().startswith("sketch:")):
-        return None
-    sk, _ = target_sketch(comp, path_raw.split(":", 1)[1].strip())
-    if sk is None:
-        return None
-    curves = safe(lambda: sk.sketchCurves)
-    if counted(lambda: curves.count) is None:
-        return None
-    return sum(1 for c in iter_collection(curves) if not bool(safe(lambda c=c: c.isConstruction, False)))
-
-
-def path_chain_warning(path_curves, sketch_curves, action, left=()):
-    """The WARNING for a path short of its sketch's curves, naming the `left` ids; '' when none is."""
-    if path_curves is None or sketch_curves is None or path_curves >= sketch_curves:
-        return ""
-    named = f" Not in the path: {named_with_remainder(list(left))}." if left else ""
-    return (f"WARNING: the path chained {path_curves} of the sketch's {sketch_curves} curves, so "
-            f"the {action} covers only that run.{named} sketch_get lists the curves; one connected "
-            "run drawn out of order is redrawn in chain order; several runs go in separate path "
-            "sketches.")
 
 
 def iter_collection(coll):

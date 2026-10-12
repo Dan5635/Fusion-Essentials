@@ -256,6 +256,41 @@ class Parked:
         self.expect = expect
 
 
+class Independent:
+    """Mark an explicit cross-tool, file or geometry witness for earlier target calls."""
+
+    def __init__(self, expect, targets, witness):
+        if (not callable(expect) or not targets or isinstance(targets, str)
+                or any(not isinstance(target, str) or not target for target in targets)
+                or not isinstance(witness, str) or not re.fullmatch(
+                    r"(tool|file|geometry):.+", witness)):
+            raise ValueError("Independent needs a predicate, target names and tool/file/geometry witness")
+        self.expect, self.targets, self.witness = expect, tuple(targets), witness
+
+
+def independent_targets(expect, tool, earlier, reader_is_read=False):
+    """Return explicitly witnessed targets that actually passed earlier in this family."""
+    while isinstance(expect, _GATES):
+        if isinstance(expect, Independent):
+            if predicate_kind(expect) != "value":
+                return set()
+            if expect.witness.startswith("tool:") and (
+                    expect.witness != "tool:" + tool or reader_is_read is not True):
+                return set()
+            return (set(expect.targets) & set(earlier)) - {tool}
+        expect = expect.expect
+    return set()
+
+
+def independent_witness(expect):
+    """Return the explicit witness annotation, if any."""
+    while isinstance(expect, _GATES):
+        if isinstance(expect, Independent):
+            return expect.witness
+        expect = expect.expect
+    return None
+
+
 class Needs:
     """expect=Needs("<capability>", expect) - a step that RUNS only where that capability is
     entitled.
@@ -291,7 +326,7 @@ def _unless(capability, expect="refused"):
     return Unless(capability, expect)
 
 
-_GATES = (Parked, Needs, Unless)
+_GATES = (Parked, Needs, Unless, Independent)
 
 
 def _unparked(expect):

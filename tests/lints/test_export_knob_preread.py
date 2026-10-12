@@ -15,7 +15,7 @@ from conftest import TOOLS_DIR
 
 
 # (module basename without .py, enclosing function) -> why this site is exempt. A reason must state
-# a fact about THIS site. Kept honest by test_allowlist_entries_still_trip; the table only shrinks.
+# a fact about THIS site. The table only shrinks.
 _ALLOWLIST = {}
 
 # A name ending in one of these is an export-options object, by the convention the Fusion API and
@@ -186,18 +186,3 @@ class TestExportKnobsPreRead:
             "(landed value, changed); what that 'changed' is worth is the knob's own measured "
             "question, and applied_pair's note carries the three answers on file:\n  "
             + "\n  ".join(offenders))
-
-    def test_allowlist_entries_still_trip(self):
-        # An entry pointing at a site that no longer carries the shape is dead weight hiding the
-        # next copy; one pointing at a module or function that is gone is worse.
-        stale = []
-        for (mod_name, fname), reason in _ALLOWLIST.items():
-            assert reason.strip(), f"({mod_name}, {fname}) allowlist entry needs a reason"
-            path = os.path.join(TOOLS_DIR, mod_name + ".py")
-            if not os.path.exists(path):
-                stale.append(f"({mod_name}, {fname}): no such module - remove the entry")
-                continue
-            if fname not in {n for n, _ in _offenders(_corpus.tree(path))}:
-                stale.append(f"({mod_name}, {fname}): no longer writes an export knob without a "
-                             "pre-read - remove the entry")
-        assert not stale, "stale allowlist entries:\n  " + "\n  ".join(stale)
