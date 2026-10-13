@@ -374,7 +374,7 @@ tool = (
     .add_input_property(*_FLATS.as_property())
     .add_input_property("name", {"type": "string"})
     .add_input_property("machine", {"type": "string",
-            "description": "Required for additive."})
+            "description": "'vendor|model'. Required for additive."})
     .add_input_property("print_setting", {"type": "string",
             "description": "Additive only."})
     .add_input_property("print_setting_description", {"type": "string",

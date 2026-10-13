@@ -159,6 +159,9 @@ cython_debug/
 .claude/settings.local.json
 .claude/skills/fe-review-*/
 CLAUDE.local.md
+# The project rules are the AGENTS.md files. A CLAUDE.md is a local file for a client that does not
+# read AGENTS.md (CONTRIBUTING.md says when) and is never committed.
+CLAUDE.md
 
 # Local backlog and short-lived plans are private; keep open work in plans/backlog.md.
 # Agent scratch files and task artifacts are private.

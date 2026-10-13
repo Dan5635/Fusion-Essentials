@@ -16,8 +16,8 @@ import types
 
 import pytest
 
-from conftest import (MakeComp, MakeDesign, Sketch, SketchCurves, _NamedCollection, install,
-                      load_tool)
+from conftest import (FakeValueInput, MakeComp, MakeDesign, Sketch, SketchCurves,
+                      _NamedCollection, install, load_tool)
 
 st = load_tool("sketch_set_text")
 
@@ -587,10 +587,12 @@ class TestLandedString:
 class FakeTextInput:
     """A SketchTextInput: the three setAs* placements plus the formatting properties. angle/flips
     are real attributes so set_verified's read-back succeeds, as it does live. `place_returns`
-    models Fusion REFUSING a placement - the setAs* call answers false and nothing is placed."""
-    def __init__(self, text, height, place_returns=True):
-        self.text = text
-        self.height = height
+    models Fusion REFUSING a placement - the setAs* call answers false and nothing is placed.
+    It holds what createInput3 is handed, under the two supported names: `expression` and the
+    `height2` ValueInput. The retired `height` is absent, so a read of it raises."""
+    def __init__(self, expression, height2, place_returns=True):
+        self.expression = expression
+        self.height2 = height2
         self.multiline = None
         self.along = None
         self.fit = None
@@ -644,9 +646,10 @@ def _fake_definition(ipt, obj_type, blind):
 
 
 class FakeSketchTexts:
-    """createInput2/add that model a real SketchTexts collection: add() APPENDS so `count` rises -
+    """createInput3/add that model a real SketchTexts collection: add() APPENDS so `count` rises -
     unless `materialize=False`, which returns a truthy text object while the collection stays flat
-    (the on-face silent-no-op the honesty read-back must catch). `raise_on_add` models Fusion
+    (the on-face silent-no-op the honesty read-back must catch). The retired createInput2 is
+    absent, so a create that reaches for it fails. `raise_on_add` models Fusion
     rejecting the placement at add() time; `definition_type` forces the landed definition;
     `blind_definition` makes every placement read off it fail; `placement_override` makes the
     definition report a placement that DISAGREES with the request; `place_returns=False` makes the
@@ -657,11 +660,17 @@ class FakeSketchTexts:
     `bbox` is the (x0, y0, x1, y1) cm box the landed text reports as SketchText.boundingBox. The
     default is the measured shape of the case that motivated reporting it - an Arial h8 label
     running 188 mm - so it is nowhere near len(text) * height and a width read off the box is
-    distinguishable from one estimated from the inputs. None models a text with no readable box."""
+    distinguishable from one estimated from the inputs. None models a text with no readable box.
+
+    BINDINGS-SOURCED, not measured: the landed text's textParameter holds the input's expression as
+    written and its heightParameter the centimetres the height2 real carried. `landed_expression`
+    and `landed_height_cm` are INJECTED disagreements with what was asked; `blind_parameters` is a
+    text neither parameter reads on."""
     def __init__(self, initial=0, materialize=True, add_returns=True, raise_on_add=None,
                  definition_type=None, blind_definition=False, place_returns=True,
                  placement_override=None, font_raises=None, landed_font=None, blind_font=False,
-                 bbox=(0.0, 0.0, 18.8, 0.8)):
+                 bbox=(0.0, 0.0, 18.8, 0.8), landed_expression=None, landed_height_cm=None,
+                 blind_parameters=False):
         self.last_input = None
         self._texts = [type("T", (), {"name": f"T{i}"})() for i in range(initial)]
         self.materialize = materialize
@@ -675,12 +684,15 @@ class FakeSketchTexts:
         self.landed_font = landed_font
         self.blind_font = blind_font
         self.bbox = bbox
+        self.landed_expression = landed_expression
+        self.landed_height_cm = landed_height_cm
+        self.blind_parameters = blind_parameters
         self.add_calls = 0
     @property
     def count(self):
         return len(self._texts)
-    def createInput2(self, text, height):
-        self.last_input = FakeTextInput(text, height, place_returns=self.place_returns)
+    def createInput3(self, expression, height):
+        self.last_input = FakeTextInput(expression, height, place_returns=self.place_returns)
         return self.last_input
     def add(self, ipt):
         self.add_calls += 1
@@ -694,6 +706,12 @@ class FakeSketchTexts:
         for prop, value in self.placement_override.items():
             setattr(definition, prop, value)
         st = types.SimpleNamespace(name="Text1", definition=definition)
+        if not self.blind_parameters:
+            st.textParameter = FakeParam(ipt.expression if self.landed_expression is None
+                                         else self.landed_expression)
+            st.heightParameter = types.SimpleNamespace(
+                value=ipt.height2.realValue if self.landed_height_cm is None
+                else self.landed_height_cm)
         if self.bbox is not None:
             x0, y0, x1, y1 = self.bbox
             st.boundingBox = types.SimpleNamespace(
@@ -725,6 +743,7 @@ def _install_create(sketch_name="Plate", texts=None, lines=0, circles=0):
     design = _install([MakeComp(name="Root", sketches=[sk])])
     import adsk.core
     adsk.core.Point3D.create = staticmethod(lambda x, y, z: ("pt", x, y, z))
+    adsk.core.ValueInput.createByReal = staticmethod(lambda v: FakeValueInput(real=v))
     # HorizontalAlignments/VerticalAlignments members arrive pre-seeded with the measured ints
     # (live_api_facts via conftest) - the fake reads them, never assigns them.
     return design, sk
@@ -784,8 +803,8 @@ class TestCreate:
         design, sk = _install_create()
         out = _payload(st.handler(text="LBL", create=True, sketch_name="Plate", height=10, units="mm"))
         assert out["created"] is True and out["text"] == "LBL"
-        # height 10mm -> 1.0cm handed to createInput2
-        assert sk.sketchTexts.last_input.height == 1.0
+        # height 10mm -> a 1.0cm real handed to createInput3
+        assert sk.sketchTexts.last_input.height2.realValue == 1.0
 
     def test_create_without_a_height_applies_the_documented_default(self):
         # 'height' defaults to None on the wire so an edit-time height is DETECTABLE and refused;
@@ -793,13 +812,13 @@ class TestCreate:
         design, sk = _install_create()
         _payload(st.handler(text="A", create=True, sketch_name="Plate", units="mm"))
         assert st._DEFAULT_HEIGHT == 5.0
-        assert sk.sketchTexts.last_input.height == 0.5     # 5mm -> 0.5cm
+        assert sk.sketchTexts.last_input.height2.realValue == 0.5     # 5mm -> 0.5cm
 
     def test_the_create_default_is_applied_in_the_requested_units(self):
         # boundary beside it: the default is a number in 'units', not a fixed centimetre value
         design, sk = _install_create()
         _payload(st.handler(text="A", create=True, sketch_name="Plate", units="cm"))
-        assert sk.sketchTexts.last_input.height == 5.0
+        assert sk.sketchTexts.last_input.height2.realValue == 5.0
 
     def test_create_position_scaled(self):
         design, sk = _install_create()
@@ -880,6 +899,55 @@ class TestCreate:
         _install_create()
         res = st.handler(text="A", create=True, sketch_name="Plate", mode="wrap_around")
         assert res["isError"] is True and "wrap_around" in res["message"]
+
+
+class TestCreateReadBack:
+    """createInput3 takes the string as a parameter EXPRESSION and the height as a ValueInput, so
+    the create reads both back off the landed text."""
+
+    @pytest.mark.parametrize("text,expression", [("LBL", "'LBL'"), ("It's", "'It\\'s'"),
+                                                 ("d1 + 2", "'d1 + 2'")])
+    def test_the_string_goes_in_as_a_quoted_literal(self, text, expression):
+        # unquoted, 'd1 + 2' is an expression over a parameter and the label would follow it
+        design, sk = _install_create()
+        out = _payload(st.handler(text=text, create=True, sketch_name="Plate"))
+        assert sk.sketchTexts.last_input.expression == expression
+        assert out["created"] is True and out["text"] == text
+
+    def test_a_string_that_lands_as_another_is_an_error_naming_the_delete(self):
+        texts = FakeSketchTexts(initial=2, landed_expression="'OTHER'")
+        _install_create(texts=texts)
+        res = st.handler(text="LBL", create=True, sketch_name="Plate")
+        assert res["isError"] is True
+        assert "Asked for the string 'LBL'" in res["message"]
+        assert "reads back 'OTHER'" in res["message"]
+        assert "sketch_delete_entity(sketch_name='Plate', target='text:2')" in res["message"]
+
+    def test_a_height_that_lands_at_another_size_is_an_error_in_the_callers_units(self):
+        # 10 mm asked, 0.1 cm landed: the reading a real taken in the document's unit would give
+        texts = FakeSketchTexts(landed_height_cm=0.1)
+        _install_create(texts=texts)
+        res = st.handler(text="LBL", create=True, sketch_name="Plate", height=10, units="mm")
+        assert res["isError"] is True
+        assert "Asked for height 10.0 mm" in res["message"]
+        assert "heightParameter reads 1.0 mm" in res["message"]
+        assert "target='text:0'" in res["message"]
+
+    def test_a_height_difference_at_the_tolerance_passes_and_one_past_it_errors(self):
+        # 2e-6 - 1e-6 is EXACT in binary floating point, so the equal case sits ON the boundary.
+        for landed, is_error in ((2e-6, False), (3e-6, True)):
+            _install_create(texts=FakeSketchTexts(landed_height_cm=landed))
+            res = st.handler(text="A", create=True, sketch_name="Plate", height=1e-6, units="cm")
+            assert res["isError"] is is_error, landed
+
+    def test_parameters_that_do_not_read_are_published_null_with_the_request_disclosed(self):
+        _install_create(texts=FakeSketchTexts(blind_parameters=True))
+        out = _payload(st.handler(text="LBL", create=True, sketch_name="Plate", height=10))
+        assert out["created"] is True
+        # unread is not a mismatch, and it is not the caller's value echoed as a read either
+        assert out["text"] is None and out["height"] is None
+        assert out["requested"]["text"] == "LBL" and out["requested"]["height"] == 10.0
+        assert "REQUESTED" in out["note"]
 
 
 # ── multi_line: the box is ANCHORED by 'align' ──────────────────────────────
@@ -999,7 +1067,7 @@ class TestPathModes:
 
     def test_edge_handle_path_is_refused_before_anything_is_created(self):
         # a BRepEdge path is accepted by setAsAlongPath and then rejected at add() live, so the
-        # handle never reaches createInput2
+        # handle never reaches createInput3
         design, sk = _install_create(lines=1)
         res = st.handler(text="A", create=True, sketch_name="Plate", mode="along_path",
                          path=_EDGE_HANDLE)
@@ -1148,8 +1216,8 @@ class TestFormatting:
             def angle(self, v):
                 pass
         texts = FakeSketchTexts()
-        texts.createInput2 = lambda text, height: setattr(
-            texts, "last_input", _Deaf(text, height)) or texts.last_input
+        texts.createInput3 = lambda expression, height: setattr(
+            texts, "last_input", _Deaf(expression, height)) or texts.last_input
         design, sk = _install_create(texts=texts)
         res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg=45)
         assert res["isError"] is True and "angle_deg" in res["message"]

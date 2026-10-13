@@ -2023,9 +2023,9 @@ def resolve_machine(machine):
                                 "resolver will not pick one.")
 
     cands = query_machines(lib, vendor, model)
-    # WIDEN when the model as given matches nothing: the query prefix-matches the MODEL field, but a
-    # variant's distinguishing text lives in its DESCRIPTION, which is the label callers pass. The
-    # broad token fetches a pool that answers only where a machine matches the WHOLE request.
+    # WIDEN when the model as given matches nothing: the query matches the MODEL field as a whole,
+    # but a variant's distinguishing text lives in its DESCRIPTION, which is the label callers pass.
+    # The first model token is queried for a pool that answers only on a WHOLE-request match.
     near = []
     if not cands:
         v2, full_model = vendor, model

@@ -857,11 +857,12 @@ class TestLandingComponent:
         assert sub.jointOrigins.count == 0
 
     def test_unreadable_placement_is_refused_rather_than_assumed(self, monkeypatch):
-        # NEITHER placement matrix reads, so nothing says where the component sits
+        # DECLARED, not measured: transform2 declines on an occurrence whose component reads. The
+        # other placement member answers the identity here, and the refusal does not consult it.
         sub = _comp("Sub")
         unreadable = "3 : the placement of this occurrence is unavailable"
-        occ = make_occurrence(path="Sub:1", component=sub,
-                              raises_on={"transform2": unreadable, "transform": unreadable})
+        occ = make_occurrence(path="Sub:1", component=sub, transform=_matrix(),
+                              raises_on={"transform2": unreadable})
         _install_handler(monkeypatch, design=_design(occurrences=[occ]))
         res = jo.handler(anchor="coordinates", x=10, component="Sub:1")
         assert res["isError"] is True and "could not be read" in res["message"]

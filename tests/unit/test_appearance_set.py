@@ -587,7 +587,7 @@ class TestGuards:
 # ── occurrence fan-out: where an occurrence-level write actually landed ───────
 
 def _install_mp(monkeypatch, root, existing_appearances=(ap._BASE_NAME,), tokens=None):
-    """The monkeypatch install (tests/CLAUDE.md canonical pattern): every seam is torn down after
+    """The monkeypatch install (tests/AGENTS.md canonical pattern): every seam is torn down after
     the test instead of left poked on the module."""
     apps = FakeAppearances([FakeAppearance(n) for n in existing_appearances])
     design = MakeDesign(comp=root, tokens=tokens, appearances=apps)

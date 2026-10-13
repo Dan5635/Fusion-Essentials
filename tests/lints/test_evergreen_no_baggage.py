@@ -1,4 +1,4 @@
-"""Lint: the codebase is EVERGREEN (tools/CLAUDE.md, "Module docstrings").
+"""Lint: the codebase is EVERGREEN (tools/AGENTS.md, "Module docstrings").
 No comment/docstring/string narrates its own history ("used to", "previously"), admits the code is
 not final ("for now", a TODO marker), or points at a planning document (a work-item label, a plan
 phase, a dated observation). A legitimate domain use takes an _ALLOWLIST entry with a reason."""

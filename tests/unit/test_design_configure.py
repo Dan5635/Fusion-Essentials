@@ -554,6 +554,13 @@ class TestCreate:
         note = _payload(dc.handler(action="create"))["note"]
         assert "System Project - CONFIG" in note and "leaves behind" in note
 
+    def test_the_note_names_the_key_a_save_reports_a_moved_lineage_in(self, monkeypatch):
+        # doc_save compares the lineage on every save, so the note points at that key and does
+        # not name one save as the only one that can move the document.
+        _install(monkeypatch, _Design(configured=False), saved=True)
+        note = _payload(dc.handler(action="create"))["note"]
+        assert "lineage_changed" in note and "first save" not in note
+
 
 # ── add_configuration (row) ─────────────────────────────────────────────────
 

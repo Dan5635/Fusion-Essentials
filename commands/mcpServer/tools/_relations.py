@@ -9,7 +9,7 @@ answer the same value. The walk reads nothing that tells the two de-dup survivor
 
 from ._common import all_components, named_with_remainder, safe
 
-# One-line "what to reuse from here" for the generated CLAUDE.md helper map (see tests/gen_manifest.py).
+# One-line "what to reuse from here" for the generated AGENTS.md helper map (see tests/gen_manifest.py).
 MAP_BLURB = ("the substrate assembly_get's relations slice and assembly_edit_relations share. "
              "all_relations - the ONE walk over a design's rigid groups / motion links / assembly "
              "constraints; relation_names/find_relation - the names for an error message and the "

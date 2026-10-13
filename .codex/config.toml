@@ -1,7 +1,6 @@
 # Fusion-Essentials local Codex MCP permissions.
 # Every registered tool is explicit. Cloud file/folder deletion and arbitrary
 # Fusion API scripting require approval; all other typed tools are pre-approved.
-project_doc_fallback_filenames = ["CLAUDE.md"]
 
 [mcp_servers.fusion-essentials]
 url = "http://127.0.0.1:37182/mcp"

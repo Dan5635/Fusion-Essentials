@@ -70,17 +70,14 @@ def _is_identity(matrix):
 
 
 def _sits_at_world_origin(occ):
-    """True when `occ` AND every occurrence it nests inside carry an identity transform - the one
+    """True when `occ` AND every occurrence it nests inside read an identity transform2 - the one
     case where a world coordinate and that component's own coordinate are the same numbers; None
-    when a transform could not be read. Occurrence.transform is relative to the PARENT component,
-    so only the whole chain answers this."""
+    when a transform2 does not read."""
     node = occ
     for _ in range(64):      # a path this deep is a cycle, not an assembly
         if node is None:
             return True
         m = safe(lambda n=node: n.transform2)
-        if m is None:
-            m = safe(lambda n=node: n.transform)
         verdict = _is_identity(m) if m is not None else None
         if verdict is not True:
             return verdict

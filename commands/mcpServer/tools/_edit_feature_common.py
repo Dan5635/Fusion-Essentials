@@ -194,9 +194,10 @@ FEATURE_EDIT_SUPPORT = {
                      "field": "boundary"},
         "_preserve": {
             "operation": {"member": "operation", "reader": "operation", "field": "operation"},
-            "continuity": {"member": "continuity", "reader": "value", "field": "continuity"},
             "is_group_edges": {"member": "isGroupEdges", "reader": "boolean",
-                               "field": "is_group_edges"}}},
+                               "field": "is_group_edges"},
+            "continuity": {"member": "groupContinuity", "reader": "grouped_value",
+                           "field": "continuity"}}},
     "adsk::fusion::OffsetFeature": {
         "inputs": {"member": "entities", "reference": "faces", "cardinality": "many",
                    "reader": "references", "field": "entities", "setter": "setInputEntities",
@@ -642,7 +643,21 @@ def extrude_extent_kind(feature):
             "adsk::fusion::ThroughAllExtentDefinition": "through_all"}.get(one)
 
 
-_EXTRUDE_NOT_READ = ("taper_angle", "thin", "start_extent", "is_solid")
+_EXTRUDE_NOT_READ = ("thin", "start_extent", "is_solid")
+
+
+def extrude_tapers(feature, unavailable=None):
+    """Each side's taper parameter as name, expression and radians; side two only when two-sided."""
+    unavailable = {} if unavailable is None else unavailable
+    sides = [("taper", "taperAngleOne")]
+    if safe(lambda: feature.hasTwoExtents) is True:
+        sides.append(("taper_two", "taperAngleTwo"))
+    rows = []
+    for key, member in sides:
+        parameter = _definition_value(lambda member=member: getattr(feature, member), key, unavailable)
+        rows.append({field: safe(lambda field=field: getattr(parameter, field))
+                     for field in ("name", "expression", "value")})
+    return rows
 
 
 def read_extrude_definition(feature, limit=None):
@@ -680,6 +695,8 @@ def read_extrude_definition(feature, limit=None):
             "symmetric_full_length": (_common.read_flag(lambda: feature.extentOne.isFullLength)
                                       if kind == "symmetric" else None),
             "participants": participants, "participants_truncated": truncated,
+            "tapers": extrude_tapers(feature, unavailable),
+            "two_sided": _common.read_flag(lambda: feature.hasTwoExtents),
             "not_read": list(_EXTRUDE_NOT_READ) + (["extent_target"] if kind == "to_face" else []),
             "unavailable": unavailable}
 
@@ -1143,6 +1160,13 @@ def feature_edit_state(feature):
             elif reader == "value":
                 value = _feature_path(feature, member)
                 state[field] = definition[field] = value
+            elif reader == "grouped_value":
+                # groupContinuity's docstring: its value is ignored while isGroupEdges is false.
+                grouped = state.get("is_group_edges")
+                if type(grouped) is not bool:
+                    raise RuntimeError("isGroupEdges did not read, so groupContinuity was not read")
+                value = _feature_path(feature, member) if grouped else None
+                state[field] = definition[field] = value
             elif reader == "thread_length":
                 full_length = state.get("is_full_length")
                 value = None if full_length is True else _feature_path(feature, member)
@@ -1331,7 +1355,12 @@ def feature_definition(feature, factor):
         out.update(distance=_common.measured(lambda: read["distance_cm"], factor),
                    distance2=_common.measured(lambda: read["distance2_cm"], factor),
                    distance_applicable=applicable,
-                   distance2_applicable=None if kind is None else kind == "two_side")
+                   distance2_applicable=None if kind is None else kind == "two_side",
+                   taper_two_applicable=read["two_sided"])
+        for prefix, row in zip(("taper", "taper_two"), read["tapers"] + [{}]):
+            out.update({prefix + "_deg": _common.measured(lambda: row["value"], 180.0 / math.pi),
+                        prefix + "_parameter": row.get("name"),
+                        prefix + "_expression": row.get("expression")})
     else:
         read = read_sweep_definition(feature)
         unavailable = dict(read["unavailable"])

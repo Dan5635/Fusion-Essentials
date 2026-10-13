@@ -5118,10 +5118,15 @@ def _lineage_open_rows():
 
     def moved(p):
         change = p.get("lineage_changed") or {}
+        status = p.get("version_status") or ""
         return _measured("the in-place save moved the lineage", change,
                          p.get("saved") is True and change.get("from") == _RECALL.get("lin_first")
                          and bool(change.get("to")) and change.get("to") != change.get("from")
                          and p.get("version_confirmed") is False and p.get("cloud_tip_advanced") is False
+                         and (f"read {change.get('from')} before the save and {change.get('to')} "
+                              "after it") in status
+                         and f"data_get(file='{change.get('to')}')" in status
+                         and (p.get("version_after") is None) == ("did not return a file" in status)
                          and "advance cannot be inferred across them" in p.get("note", "")
                          and "configuration backing file" in p.get("note", ""))
 
@@ -5241,7 +5246,8 @@ def _lineage_open_rows():
         ("doc_save_as", write({"name": first, "project": PROJECT, "folder": FOLDER, "create_path": False}),
          _saved_as(first, FOLDER), ("lin_first", _recall("lin_first", lambda p: p["document_id"]))),
         ("design_configure", write({"action": "create"}),
-         lambda p: p.get("configured") is True and p.get("created") is True, None),
+         lambda p: (p.get("configured") is True and p.get("created") is True
+                    and "lineage_changed" in p.get("note", "")), None),
         ("design_configure", write({"action": "add_configuration", "name": "B"}),
          lambda p: p.get("active_configuration") == "B", None),
         ("design_configure", write({"action": "add_parameter", "parameter": "ProbeW",
@@ -6151,6 +6157,7 @@ def _cr_pose_rows(p, key="occurrences", count_key="occurrence_count"):
 _CR_PART_A = ((0.0, 0.0, 0.0), (20.0, 20.0, 10.0))
 _CR_LOCAL_AT = (0.0, 60.0, 0.0)
 _CR_AT_ROOT = {"x": 300, "y": -40, "z": 15, "rotate_deg": 30, "rotate_axis": "z"}
+_CR_AT_NESTED = {"x": 30, "y": -25, "z": 12, "rotate_deg": 90, "rotate_axis": "x"}
 # mm for a pose origin (read to 3 places) and for a body box; a cosine for an axis (4 places).
 _CR_POSE_TOL, _CR_AXIS_TOL, _CR_BOUNDS_TOL = 0.0015, 0.001, 0.01
 
@@ -6197,7 +6204,7 @@ def _cr_part_a_box(p):
                                    _CR_BOUNDS_TOL) for n, key in enumerate("xyz")))
 
 
-def _cr_insert_landed(p):
+def _cr_insert_landed(p, nested=False):
     """doc_insert_occurrence: an occurrence was made and it is a reference. Where it stands is
     judged by the two reads after it, which are told what this reply claimed."""
     name = p.get("new_occurrence_name")
@@ -6205,7 +6212,10 @@ def _cr_insert_landed(p):
                      {key: p.get(key) for key in ("is_reference", "new_occurrence_name",
                                                   "into_component", "placement_matches",
                                                   "placed_at")},
-                     p.get("is_reference") is True and isinstance(name, str) and bool(name.strip()))
+                     p.get("is_reference") is True and isinstance(name, str) and bool(name.strip())
+                     and (not nested or ("placed_at is in the host component's frame" in p.get("note", "")
+                          and "world placements are unconfirmed" in p.get("note", "")
+                          and "read each path with assembly_get" in p.get("note", ""))))
 
 
 def _cr_insert_claim(owner_key=None):
@@ -6740,17 +6750,20 @@ def _component_reference_rows():
                              and p.get("occurrence_count") == p.get("all_occurrence_count") == 6
                              and collision_claim(p, "all_occurrences", "all_occurrence_count")))
 
-    # 6. Part A is inserted at the root, off the origin and turned. Its placement claim is judged
-    # against independent pose and body reads, not the requested matrix echoed in the reply.
+    # 6. The placement an insert reports. Part A goes in twice more, off the origin and turned: at
+    # the root, then inside the local component, whose frame is not the host's. A failed row ends
+    # the act, so the insert row judges no placement: it hands its claim to the two reads.
     read("model_inspect", lambda c: {"target": _ctx_get(c, "cr_loose", "the unlinked part A"),
                                      "units": "mm"}, _cr_part_a_box)
-    for key, owner_key, placement in (("cr_at_root", None, _CR_AT_ROOT),):
+    for key, owner_key, placement in (("cr_at_root", None, _CR_AT_ROOT),
+                                      ("cr_at_nested", "cr_local", _CR_AT_NESTED)):
         write("doc_insert_occurrence", lambda c, owner_key=owner_key, placement=placement: {
             "document_id": _ctx_get(c, "cr_urn_A", "the saved PartA lineage"), "units": "mm",
             **placement,
             **({"into_component": _ctx_get(c, owner_key, "the local component")}
                if owner_key else {})},
-            _cr_insert_landed, (key, _recall(key, _cr_insert_claim(owner_key))))
+            lambda p, owner_key=owner_key: _cr_insert_landed(p, nested=bool(owner_key)),
+            (key, _recall(key, _cr_insert_claim(owner_key))))
         read("assembly_get", {"include": ["poses", "all_occurrences"], "max_occurrences": 100,
                               "max_all_occurrences": 100, "max_joints": 100, "units": "mm"},
              Independent(_cr_placed_pose(key, placement, owner_key),

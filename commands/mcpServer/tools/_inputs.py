@@ -50,7 +50,7 @@ class InputKind:
     json_type = "string"
 
     # A terse "what this kind references + the gotcha it avoids", read by gen_manifest.py into the
-    # CLAUDE.md catalog. A kind with MAP_HINT="" shows up blank there - the signal to fill it in.
+    # AGENTS.md catalog. A kind with MAP_HINT="" shows up blank there - the signal to fill it in.
     MAP_HINT = ""
 
     def __init__(self, name, description="", required=False, default=None):

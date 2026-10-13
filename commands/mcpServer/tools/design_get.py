@@ -1,7 +1,7 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""RICH READ: design_get - the active design's structure by zoom level (see CLAUDE.md "Reads are
+"""RICH READ: design_get - the active design's structure by zoom level (see AGENTS.md "Reads are
 RICH"). Default: a cheap orientation slice (design type, feature count, timeline health, content
 fingerprint). include=['tree'|'timeline'|'mode'|'configurations'|'materials'|'appearances'|
 'attributes'|'definition'|'datums'] pulls one deeper slice at a time via _slice_*() helpers. Read-only.

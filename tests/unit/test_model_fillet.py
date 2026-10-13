@@ -65,33 +65,60 @@ def make_body(name, edge_kinds, volume=None, area=None):
     return body
 
 
+class FakeVariableEdgeSetInput:
+    """The input a variable-radius add answers; it has no measured shape. setMidRadii(radii,
+    positions) takes the binding's argument order. The list-only arguments and the False answer
+    are INJECTED, not measured."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def setMidRadii(self, radii, positions):
+        for name, arg in (("radii", radii), ("positions", positions)):
+            if not isinstance(arg, list):
+                raise TypeError(f"in method 'VariableRadiusFilletEdgeSetInput_setMidRadii', "
+                                f"argument '{name}' is not a vector")
+        self._owner.mid_calls += 1
+        self._owner.variable_set = self._owner.variable_set[:3] + (positions, radii)
+        return not self._owner.refuse_mid_radii
+
+
+class FakeFilletEdgeSetInputs:
+    """FilletFeatureInput.edgeSetInputs; it has no measured shape. Each add takes the binding's
+    arity and answers an edge-set input object. The None it answers under `refuse` is INJECTED,
+    not measured."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def addConstantRadiusEdgeSet(self, entities, radius, isTangentChain):
+        self._owner.edge_set = (entities, radius, isTangentChain)
+        return None if self._owner.refuse else types.SimpleNamespace()
+
+    def addVariableRadiusEdgeSet(self, tangentEdges, startRadius, endRadius, isTangentChain):
+        self._owner.variable_set = (tangentEdges, startRadius, endRadius, [], [])
+        self._owner.variable_chain = isTangentChain
+        return None if self._owner.refuse else FakeVariableEdgeSetInput(self._owner)
+
+    def addChordLengthEdgeSet(self, entities, chordLength, isTangentChain):
+        self._owner.chord_set = (entities, chordLength, isTangentChain)
+        return None if self._owner.refuse else types.SimpleNamespace()
+
+
 class FakeFilletInput:
-    """FilletFeatureInput. Each add*EdgeSet returns True (the API returns a bool), and the arity of
-    each matches the real one - addVariableRadiusEdgeSet has NO isTangentChain argument, and its
-    positions/radii are plain Python lists (a vector argument): an ObjectCollection raises live, so
-    it raises here."""
+    """FilletFeatureInput at the one member the tool reads, edgeSetInputs. It carries no add*EdgeSet
+    of its own, so a call to one fails the test. The slots record what each add was sent;
+    variable_set is (edges, start, end, positions, radii)."""
 
     def __init__(self):
         self.edge_set = None
         self.variable_set = None
+        self.variable_chain = None
         self.chord_set = None
+        self.mid_calls = 0
         self.refuse = False
-
-    def addConstantRadiusEdgeSet(self, edges, val, tangent):
-        self.edge_set = (edges, val, tangent)
-        return not self.refuse
-
-    def addVariableRadiusEdgeSet(self, tangentEdges, startRadius, endRadius, positions, radii):
-        for name, arg in (("positions", positions), ("radii", radii)):
-            if not isinstance(arg, list):
-                raise TypeError(f"in method 'FilletFeatureInput_addVariableRadiusEdgeSet', "
-                                f"argument '{name}' is not a vector")
-        self.variable_set = (tangentEdges, startRadius, endRadius, positions, radii)
-        return not self.refuse
-
-    def addChordLengthEdgeSet(self, edges, chordLength, tangent):
-        self.chord_set = (edges, chordLength, tangent)
-        return not self.refuse
+        self.refuse_mid_radii = False
+        self.edgeSetInputs = FakeFilletEdgeSetInputs(self)
 
 
 class FakeRuleFilletInput:
@@ -235,6 +262,7 @@ class FakeFilletFeatures:
         # applied when a feature is added, so a test can model the geometry actually moving
         self.on_add = None
         self.refuse_edge_set = False
+        self.refuse_mid_radii = False
     def createFullRoundFilletInput(self):
         self.full_round_last = FakeFullRoundFilletInput()
         self.full_round_last.faceSets.refuse = self.refuse_edge_set
@@ -246,6 +274,7 @@ class FakeFilletFeatures:
     def createInput(self):
         self.last = FakeFilletInput()
         self.last.refuse = self.refuse_edge_set
+        self.last.refuse_mid_radii = self.refuse_mid_radii
         return self.last
     def add(self, inp):
         if self.on_add:
@@ -681,12 +710,15 @@ class TestFilletType:
         assert ff.last.variable_set is None and ff.last.chord_set is None
 
     def test_refused_edge_set_errors_instead_of_adding_a_feature(self):
-        # addConstantRadiusEdgeSet returns a bool; a False means nothing was selected, so adding the
-        # feature anyway would report a fillet that rounds nothing.
+        # The add answers an edge-set input; None is no set, so adding the feature anyway would
+        # report a fillet that rounds nothing.
         ff, _ = _install_edge_handles({"E1": _edge_ent()})
         ff.refuse_edge_set = True
+        added = []
+        ff.on_add = lambda: added.append(True)
         res = fl.handler(edges=["E1"], radius=1)
         assert res["isError"] is True and "constant-radius" in res["message"]
+        assert added == []
 
 
 class TestFullRoundFillet:
@@ -836,12 +868,13 @@ class TestTangentChainTargeting:
         out = _payload(fl.handler(edges=["E1"], radius=1))
         assert "edges_cut" not in out and "did not read" in out["note"]
 
-    def test_variable_radius_refuses_the_flag_the_api_has_no_argument_for(self):
+    def test_variable_radius_refuses_the_flag_this_tool_does_not_offer(self):
         self._seeded(cut_edges=1)
         res = fl.handler(edges=["E1"], radius=1, end_radius=2, fillet_type="variable",
                          tangent_chain=False)
-        assert res["isError"] is True and "variable-radius edge set has no such argument" \
-            in res["message"]
+        assert res["isError"] is True and (
+            "cannot take tangent_chain=false: this tool does not offer that combination. Drop "
+            "'tangent_chain', or use fillet_type='constant'.") in res["message"]
 
     def test_a_variable_radius_set_is_not_judged_against_a_flag_it_was_never_given(self):
         # Its edge set reads isTangentChain False while the default request is True; comparing the
@@ -851,7 +884,10 @@ class TestTangentChainTargeting:
         out = _payload(fl.handler(edges=["E1"], radius=1, end_radius=2, fillet_type="variable"))
         assert out["filleted"] is True and ff.result.deleted is False
         assert out["tangent_chain"] is False          # published as READ, not as requested
-        assert "no such argument" in out["note"] and "cuts the edges handed in" in out["note"]
+        assert "built with chaining off" in out["note"]
+        assert "cuts the edges handed in" in out["note"]
+        # the default request is true, and the set is still sent chaining off
+        assert ff.last.variable_chain is False
 
     def test_a_short_edge_set_is_the_partial_application_faces_cannot_see(self):
         # Corner patches can lift faces_created to the requested number while the set Fusion built
@@ -961,8 +997,8 @@ class TestTangentChainTargeting:
 class TestVariableRadius:
 
     def test_positions_and_radii_cross_as_plain_lists(self):
-        # The API takes positions/radii as vectors - plain Python lists. An ObjectCollection there
-        # raises a vector-type argument error live, and the fake raises the same way.
+        # setMidRadii takes (radii, positions) as vectors - plain Python lists. The fake files each
+        # under its own name, so the two swapped would read back swapped here.
         ff, _ = _install_edge_handles({"E1": _edge_ent()})
         out = _payload(fl.handler(edges=["E1"], radius=2, end_radius=5, units="mm",
                                           fillet_type="variable",
@@ -982,8 +1018,18 @@ class TestVariableRadius:
         out = _payload(fl.handler(edges=["E1"], radius=1, end_radius=2,
                                           fillet_type="variable"))
         _, _, _, positions, radii = ff.last.variable_set
-        assert positions == [] and radii == []
+        assert positions == [] and radii == [] and ff.last.mid_calls == 0
         assert "positions" not in out and "radii" not in out
+
+    def test_intermediate_radii_the_set_did_not_take_stop_before_the_feature(self):
+        ff, _ = _install_edge_handles({"E1": _edge_ent()})
+        ff.refuse_mid_radii = True
+        added = []
+        ff.on_add = lambda: added.append(True)
+        res = fl.handler(edges=["E1"], radius=1, end_radius=2, fillet_type="variable",
+                         positions=[0.5], radii=[1.5])
+        assert res["isError"] is True and "setMidRadii returned False" in res["message"]
+        assert "no fillet was created" in res["message"] and added == []
 
     def test_needs_end_radius(self):
         _install_edge_handles({"E1": _edge_ent()})

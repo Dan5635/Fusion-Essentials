@@ -62,7 +62,7 @@ class TestToolHandlerMap:
         assert self._map(src) == {}
 
 
-# ── gen_manifest: family grouping + CLAUDE.md splice ──────────────────────────
+# ── gen_manifest: family grouping + AGENTS.md splice ──────────────────────────
 
 class TestGenManifestFamilies:
     def test_first_matching_prefix_wins_and_leftovers_group_as_other(self):
@@ -93,7 +93,7 @@ class TestGenManifestFamilies:
 
 class TestSplice:
     # _splice is generic (path + begin/end markers); the same seam splices the root families census
-    # and the tools/CLAUDE.md catalog. Exercised here on a temp file with the catalog markers.
+    # and the tools/AGENTS.md catalog. Exercised here on a temp file with the catalog markers.
     def _doc(self, tmp_path, body, newline="\n"):
         # LF by default, as a generated file is: Path.write_text translates to the PLATFORM newline,
         # which would hand every test below a CRLF fixture no generator ever produces.

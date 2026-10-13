@@ -4,7 +4,7 @@ Before calling any change done, run `py -3 tests/check_all.py`. It runs the gene
 suite, the live-run receipt check (`tests/live/VERIFIED_TOOLS.md`) and the live gate, and each
 failure names its repair; [tests/README.md](README.md) explains each stage.
 
-Root [CLAUDE.md](../CLAUDE.md) has the project rules. [tests/README.md](README.md) explains the
+Root [AGENTS.md](../AGENTS.md) has the project rules. [tests/README.md](README.md) explains the
 harness: how `conftest.py` mocks `adsk`, the fakes, and which tools need tests at all. This file says
 which pattern a new test copies.
 
@@ -101,6 +101,6 @@ asserting an implementation detail -> fix the test).
 ## Regenerating docs
 
 `py -3 tests/gen_all.py` rebuilds everything under `tests/generated/`, plus `tests/api_surface.py`,
-the marked blocks in root CLAUDE.md, tools/CLAUDE.md and tests/README.md, and the
+the marked blocks in root AGENTS.md, tools/AGENTS.md and tests/README.md, and the
 `parametric-cad-design` skill package; `--check` fails if anything is stale, and
 `test_generated_docs_current.py` enforces it.

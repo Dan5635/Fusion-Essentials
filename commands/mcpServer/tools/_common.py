@@ -223,6 +223,13 @@ def broken_reference(occ):
     return False, None
 
 
+def ground_flags(occ):
+    """{'grounded', 'ground_to_parent'} for ONE occurrence: the UI Ground/Fix flag and the parent
+    lock, two native flags read apart - the one read assembly_get and workspace_orient share."""
+    return {"grounded": bool(safe(lambda: occ.isGrounded, False)),
+            "ground_to_parent": bool(safe(lambda: occ.isGroundToParent, False))}
+
+
 # The walk that produced an occurrence census, published beside every count it feeds.
 WALK_FAST = "allOccurrences"        # root.allOccurrences enumerated
 WALK_RECURSED = "recursed"          # it raised; the census was rebuilt from component.occurrences

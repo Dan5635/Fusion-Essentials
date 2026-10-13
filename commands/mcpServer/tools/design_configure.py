@@ -190,9 +190,10 @@ def _do_create(design):
                "configurations": _row_names(table),
                "note": "Design converted to a configured design (one configuration so far). Add "
                        "configurations and columns with the other actions. To see it in the UI: SAVE, "
-                       "then REOPEN by the URN that save reports - the first save moves this document "
-                       "to a NEW lineage, and the pre-conversion one is relocated to a Fusion-managed "
-                       "project ('System Project - CONFIG') that deleting this design leaves behind."})
+                       "then REOPEN by the URN that save reports - the document can move to a NEW "
+                       "lineage on a save (lineage_changed), and the pre-conversion one is relocated "
+                       "to a Fusion-managed project ('System Project - CONFIG') that deleting this "
+                       "design leaves behind."})
 
 
 def _do_activate(design, table, name):

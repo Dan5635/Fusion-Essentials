@@ -24,11 +24,17 @@ def _extrude_definition(extent, distance, distance2=None, units="mm", side_count
         available = d.get("unavailable") or {}
         profile = d.get("profile") or {}
         numeric = extent not in ("through_all", "to_face")
-        omitted = ["taper_angle", "thin", "start_extent", "is_solid"] + (
+        omitted = ["thin", "start_extent", "is_solid"] + (
             ["extent_target"] if extent == "to_face" else [])
+        two = distance2 is not None
+        untapered = (d.get("taper_deg") == 0 and bool(d.get("taper_parameter"))
+                     and bool(d.get("taper_expression")) and d.get("taper_two_applicable") is two
+                     and (d.get("taper_two_deg") == 0 and bool(d.get("taper_two_parameter"))
+                          if two else d.get("taper_two_deg") is None))
         return _measured(f"read {extent} Extrude definition in {units}", d,
             d.get("type") == "ExtrudeFeature" and d.get("extent") == extent and d.get("units") == units
             and d.get("not_read") == omitted and "extent" not in available
+            and (untapered or not numeric)
             and (d.get("note") or "").endswith(
                 " This Extrude definition is partial: not_read lists fields it omits.")
             and bool(profile.get("profile_handle")) and profile.get("profile_index") == 0
@@ -111,6 +117,52 @@ def _taper_expression(expression):
                          row.get("expression") == expression
                          and row.get("name") == _RECALL.get("ee_taper_extent_param"))
     return check
+
+
+def _taper_definition(extent):
+    """Check a definition read's taper keys against the names and rows earlier replies gave."""
+    def check(p):
+        d = p.get("definition") or {}
+        two = extent == "two_side"
+        edit = (_RECALL.get("ee_taper_rows") or []) if two else []
+        first, second = (edit + [{}, {}])[:2]
+        return _measured(f"read {extent} Extrude taper", d,
+            d.get("extent") == extent and "taper_angle" not in (d.get("not_read") or [])
+            and not {"taper", "taper_two"} & set(d.get("unavailable") or {})
+            and _near(d.get("taper_deg"), 3, 1e-6) and bool(d.get("taper_parameter"))
+            and d.get("taper_parameter") == _RECALL.get("ee_taper_extent_param")
+            and d.get("taper_expression") == "3.0 deg"
+            and d.get("taper_two_applicable") is two
+            and (len(edit) == 2 and d.get("taper_two_deg") == 0
+                 and bool(d.get("taper_two_parameter"))
+                 and d.get("taper_two_parameter") == second.get("name") != first.get("name")
+                 and d.get("taper_two_expression") == second.get("expression") == "0 deg"
+                 and first.get("name") == d.get("taper_parameter")
+                 and _num(first.get("value"))
+                 and _near(math.degrees(first["value"]), d.get("taper_deg"), 1e-6)
+                 if two else d.get("taper_two_deg") is None
+                 and d.get("taper_two_parameter") is None
+                 and d.get("taper_two_expression") is None))
+    return check
+
+
+def _taper_leans(prism):
+    """Check a separate body read is off its untapered prism volume by 5 to 25 percent."""
+    def check(p):
+        got = (p.get("mass") or {}).get("volume")
+        return _measured("tapered body volume is not the prism's", {"volume": got, "prism": prism},
+                         p.get("kind") == "body" and p.get("units") == "mm"
+                         and p.get("lump_count") == 1 and _near(got, prism, 0.25 * prism)
+                         and not _near(got, prism, 0.05 * prism))
+    return check
+
+
+def _taper_zero_parameter(p):
+    """Check the side-two taper parameter by name reads zero."""
+    row = p.get("parameter") or {}
+    return _measured("side-two taper parameter is zero", row,
+                     bool(row.get("name")) and row.get("name") == _RECALL.get("ee_taper_two_param")
+                     and row.get("expression") == "0 deg" and row.get("value_internal") == 0)
 
 
 def _taper_extent_landed(p):
@@ -833,6 +885,14 @@ def _extrude_edit_rows():
           ("ee_taper_extent_feature", _recall("ee_taper_extent_feature", save_taper_extent)))
     write("param_set", lambda c: {"name": _RECALL["ee_taper_extent_param"],
           "expression": "3.0 deg"}, "ok")
+
+    def taper_read(extent, save=None):
+        rows.append(("design_get", lambda c: {
+            "include": ["definition"], "units": "mm",
+            "feature": _ctx_get(c, "ee_taper_extent_feature", "tapered Extrude")},
+            _taper_definition(extent), save))
+
+    taper_read("distance")
     for suffix, extent_args in (("distance", {"extent": "distance", "distance": 15}),
                                 ("symmetric", {"extent": "symmetric", "distance": 12}),
                                 ("two_side", {"extent": "two_side", "distance": 12,
@@ -840,13 +900,15 @@ def _extrude_edit_rows():
         body = "EditTaperExtent:Body1"
         baseline_key = "ee_taper_extent_" + suffix + "_before"
         timeline_key = "ee_taper_extent_" + suffix + "_timeline"
-        rows.append(("model_inspect", _combine_inspect(body), "ok",
+        rows.append(("model_inspect", _combine_inspect(body),
+                     _taper_leans(1000) if suffix == "distance" else "ok",
                      (baseline_key, _recall(baseline_key, lambda p: p))))
         rows.append(("design_get", {"include": ["timeline"], "max_results": 100}, "ok",
                      (timeline_key, _recall(timeline_key, lambda p: p["timeline"]))))
         write("model_edit_extrude", lambda c, args=extent_args: {
             "feature": _ctx_get(c, "ee_taper_extent_feature", "tapered Extrude"),
-            "action": "extent", **args}, _taper_extent_landed)
+            "action": "extent", **args}, _taper_extent_landed,
+            ("ee_taper_rows", _recall("ee_taper_rows", lambda p: p["definition_after"]["tapers"])))
         rows.append(("model_inspect", _combine_inspect(body),
                      _taper_extent_material_changed(baseline_key), None))
         rows.append(("param_get", lambda c: {"name": _RECALL["ee_taper_extent_param"]},
@@ -884,6 +946,10 @@ def _extrude_edit_rows():
                          _taper_expression("3.0 deg"), None))
             rows.append(("design_get", {"include": ["timeline"], "max_results": 100},
                          _timeline_matches("ee_taper_entity_extent_timeline"), None))
+    taper_read("two_side", ("ee_taper_two_param", _recall(
+        "ee_taper_two_param", lambda p: p["definition"]["taper_two_parameter"])))
+    rows.append(("param_get", lambda c: {"name": _ctx_get(c, "ee_taper_two_param", "side-two taper")},
+                 _taper_zero_parameter, None))
     rows += [
         ("doc_activate", lambda c: {"name": _ctx_get(c, "ee_story", "story"),
                                     "expect_document": _ctx_get(c, "ee_doc", "scratch")}, "ok", None),
@@ -2166,7 +2232,7 @@ def _mixed_extent_definition(p):
                      and d.get("distance_applicable") is None and d.get("distance2_applicable") is None
                      and (d.get("unavailable") or {}).get("extent")
                      == "two-sided DistanceExtentDefinition + ToEntityExtentDefinition is not a supported extent"
-                     and d.get("not_read") == ["taper_angle", "thin", "start_extent", "is_solid"])
+                     and d.get("not_read") == ["thin", "start_extent", "is_solid"])
 
 
 def _mixed_extent_rows():

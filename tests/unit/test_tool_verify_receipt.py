@@ -27,6 +27,7 @@ import tool_verify  # noqa: E402
 import verify_core  # noqa: E402  probe_capabilities/capability_skip_reason read their tables here
 import verify_runner  # noqa: E402  source_hash reads SRC_ROOT/_HERE off ITS namespace, not the facade
 import verify_acts_doc  # noqa: E402  canonical document-handle lifecycle rows
+import verify_family_switch  # noqa: E402  the beat that writes the Settings file
 import verify_acts_cam  # noqa: E402
 import verify_acts_model_solids  # noqa: E402
 import verify_acts_motion  # noqa: E402
@@ -46,6 +47,9 @@ def _legacy_runner_fixture(monkeypatch):
     """These wire stubs declare their own tiny act programs without family ownership."""
     monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
     monkeypatch.setattr(tool_verify, "FAMILY_RECEIPTS", False)
+    # The switch beat writes the add-in's Settings file: a run() here never reaches the real one.
+    monkeypatch.setattr(tool_verify, "family_switch_smoke",
+                        lambda rows, expected_attestation, census, **kw: expected_attestation)
 
 
 def _registered(names, writes=()):
@@ -2207,6 +2211,314 @@ class TestReloadBeat:
         assert ledger == {}
 
 
+_SWITCH_GROUP = "GTF_Test_MCP"
+_SWITCH_TOOLS = ("cam_get", "doc_get", "pmi_get", "render_get", "sheet_convert", "sheet_get",
+                 "sys_capability_map", "sys_reload_addin")
+
+
+def _switch_settings(tmp_path, group=_SWITCH_GROUP, text=None, **rows):
+    """A Settings file of the test's own, indented unlike the add-in's writer so a reload
+    re-serializes it. A keyword sets one row's default; None drops that row."""
+    port = verify_core.ENDPOINT.PORT_SETTING
+    settings = {"family_enabled_" + family: {"type": "checkbox", "default": True}
+                for family in ("cam", "pmi", "render", "sheet")}
+    settings[port] = {"type": "number", "default": verify_core.ENDPOINT.DEFAULT_PORT}
+    for name, value in rows.items():
+        key = port if name == "port" else "family_enabled_" + name
+        if value is None:
+            del settings[key]
+        else:
+            settings[key]["default"] = value
+    path = tmp_path / "FusionEssentialsSettings.json"
+    path.write_bytes(text if text is not None else json.dumps(
+        {"OTHER": {"settings": {}}, group: {"name": "MCP Server", "settings": settings}},
+        indent=2).encode("ascii"))
+    return str(path)
+
+
+class _SwitchAddin:
+    """A stand-in add-in: each reload reads the family rows from the Settings file and writes the
+    file back re-serialized, as entry.py and shared_state do. `fault` names one INJECTED fault."""
+
+    def __init__(self, monkeypatch, path, fault=None):
+        self.path, self.fault = path, fault
+        self.load, self.off, self.seen, self.loaded_bytes, self.in_flight = 0, set(), [], [], None
+        monkeypatch.setattr(tool_verify, "call", self.call)
+        monkeypatch.setattr(tool_verify, "health_gate", self.health)
+        monkeypatch.setattr(tool_verify, "registered_tools", self.registered)
+        monkeypatch.setattr(tool_verify.time, "sleep", self.sleep)
+
+    def identity(self):
+        schema = "d" if self.fault == "restore changes schema" and self.load > 1 else (
+            "c" if self.off else "b")
+        return dict(_ATTESTATION, schema_fingerprint=schema * 64,
+                    load_id=f"load-{self.load}", session_id=f"session-{self.load}")
+
+    def listed(self):
+        names = [name for name in _SWITCH_TOOLS if name.split("_")[0] not in self.off]
+        if self.fault == "switch drops doc_get" and self.off:
+            names.remove("doc_get")
+        if self.fault == "restore loses cam_get" and self.load > 1:
+            names.remove("cam_get")
+        return names
+
+    def health(self):
+        self.seen.append("/health")
+        return _attested_health(self.identity())
+
+    def registered(self, _health=None):
+        self.seen.append("tools/list")
+        return self.listed()
+
+    def call(self, tool, args):
+        self.seen.append(tool)
+        assert args == {}
+        if tool == "sys_capability_map":
+            names = self.listed()
+            families = {name.split("_")[0] for name in names}
+            if self.fault == "map hides pmi":
+                families.discard("pmi")
+            if self.fault == "map keeps render" and self.off:
+                families.add("render")
+            one_more = self.fault == "map counts one more" and self.off
+            return False, {"families": [{"family": family} for family in sorted(families)],
+                           "tool_count": len(names) + (1 if one_more else 0)}
+        assert tool == "sys_reload_addin"
+        nth = self.seen.count("sys_reload_addin")
+        if self.fault == f"reload {nth} raises":
+            raise OSError("connection reset")
+        if self.fault == f"reload {nth} refuses":
+            return True, "reload event is not installed"
+        if self.fault == f"reload {nth} loads late":
+            self.in_flight = Path(self.path).read_bytes()
+        elif self.fault != f"reload {nth} never loads":
+            self._load()
+        return False, _SCHEDULED
+
+    def _load(self):
+        raw = Path(self.path).read_bytes()
+        self.loaded_bytes.append(raw)
+        data = json.loads(raw)
+        self.off = {key[len("family_enabled_"):]
+                    for key, row in data[_SWITCH_GROUP]["settings"].items()
+                    if key.startswith("family_enabled_") and not row.get("default", True)}
+        if self.fault == "sheet row is ignored":
+            self.off.discard("sheet")
+        Path(self.path).write_text(json.dumps(data, indent=4), encoding="utf-8")
+        self.load += 1
+
+    def sleep(self, seconds):
+        # The late load lands during the beat's file watch and writes back the rows it read.
+        if self.in_flight is not None and seconds == verify_family_switch._SETTLE_GAP_S:
+            Path(self.path).write_bytes(self.in_flight)
+            self.in_flight = None
+
+    def switch(self, census=None, expected=None):
+        rows, valued = [], set()
+        got = verify_family_switch.family_switch_smoke(
+            rows, expected or self.identity(),
+            list(_SWITCH_TOOLS) if census is None else census, valued=valued,
+            settings=(self.path, _SWITCH_GROUP), up_polls=3, settle_reads=2)
+        return got, rows, valued
+
+
+class TestFamilySwitchBeat:
+    """The post-run beat that writes the Settings file. Every path below ends with the file
+    holding what it held, and a reload that does not settle is followed by no wire call."""
+
+    @staticmethod
+    def _untouched(path, original):
+        return (Path(path).read_bytes() == original
+                and not os.path.exists(path + verify_family_switch.BACKUP_SUFFIX))
+
+    def test_the_three_families_are_read_absent_and_the_file_and_tools_come_back(
+            self, monkeypatch, tmp_path):
+        path = _switch_settings(tmp_path)
+        original = Path(path).read_bytes()
+        addin = _SwitchAddin(monkeypatch, path)
+        got, rows, valued = addin.switch()
+        assert got == dict(_ATTESTATION, load_id="load-2", session_id="session-2")
+        assert [(tool, status) for tool, status, _ in rows] == [("sys_capability_map", "pass")]
+        assert valued == {"sys_capability_map"}
+        read_off = json.loads(addin.loaded_bytes[0])[_SWITCH_GROUP]["settings"]
+        assert {key: row["default"] for key, row in read_off.items() if "family" in key} == {
+            "family_enabled_cam": True, "family_enabled_pmi": False,
+            "family_enabled_render": False, "family_enabled_sheet": False}
+        assert json.loads(addin.loaded_bytes[0])["OTHER"] == {"settings": {}}
+        # the restoring reload read the exact original bytes, and the add-in then re-serialized them
+        assert addin.loaded_bytes[1] == original
+        assert Path(path).read_bytes() != original
+        assert json.loads(Path(path).read_bytes()) == json.loads(original)
+        assert not os.path.exists(path + verify_family_switch.BACKUP_SUFFIX)
+        assert "lost exactly their 4 tools and kept the other 4" in rows[0][2]
+        assert "tool_count read 4 against 8 before" in rows[0][2]
+        assert addin.seen == [
+            "/health", "sys_capability_map", "sys_reload_addin", "/health", "tools/list",
+            "sys_capability_map", "sys_reload_addin", "/health", "tools/list"]
+
+    @pytest.mark.parametrize("build, said", [
+        (dict(census=[name for name in _SWITCH_TOOLS if name != "render_get"]), "no render tool"),
+        (dict(group="GTF_Other_MCP"), "no 'GTF_Test_MCP' group"),
+        (dict(text=b"{not json"), "is not JSON"),
+        (dict(sheet=None), "family_enabled_sheet reads None"),
+        (dict(pmi=False), "family_enabled_pmi reads False"),
+        (dict(cam=False), "family_enabled_cam reads off while the starting tool list has 1 cam"),
+        (dict(port=40123), "reads 40123, not the"),
+        (dict(expected=dict(_ATTESTATION, load_id="another-load", session_id="session-0")),
+         "serving identity differs"),
+        (dict(fault="map hides pmi"), "does not list pmi/render/sheet before the switch"),
+    ])
+    def test_a_refusal_before_the_switch_writes_nothing(self, monkeypatch, tmp_path, build, said):
+        census, expected = build.pop("census", None), build.pop("expected", None)
+        fault = build.pop("fault", None)
+        path = _switch_settings(tmp_path, **build)
+        original = Path(path).read_bytes()
+        addin = _SwitchAddin(monkeypatch, path, fault=fault)
+        if census is not None:
+            os.remove(path)     # the tool-list gate comes first: no file is there to open
+        got, rows, _valued = addin.switch(census=census, expected=expected)
+        assert got is None and [(tool, status) for tool, status, _ in rows] == [
+            ("sys_capability_map", "blocked")]
+        assert said in rows[0][2], rows[0][2]
+        assert "sys_reload_addin" not in addin.seen
+        assert addin.seen == [] if census is not None else self._untouched(path, original)
+
+    def test_a_backup_an_earlier_beat_left_blocks_only_when_the_file_differs(
+            self, monkeypatch, tmp_path):
+        path = _switch_settings(tmp_path)
+        original = Path(path).read_bytes()
+        backup = Path(path + verify_family_switch.BACKUP_SUFFIX)
+        other_rows = original.replace(b'"default": true', b'"default": false', 1)
+        assert other_rows != original
+        backup.write_bytes(other_rows)
+        addin = _SwitchAddin(monkeypatch, path)
+        got, rows, _valued = addin.switch()
+        assert got is None and rows[0][1] == "blocked" and "differs from" in rows[0][2]
+        assert Path(path).read_bytes() == original and backup.exists() and addin.seen == []
+        backup.write_bytes(original)
+        got, rows, _valued = addin.switch()
+        assert got is not None and rows[0][1] == "pass" and not backup.exists()
+
+    @pytest.mark.parametrize("fault, after_reload, said", [
+        ("reload 1 refuses", [], "scheduled no reload (reload event is not installed)"),
+        ("reload 1 raises", [], "did not answer (connection reset)"),
+        ("reload 1 never loads", ["/health"] * 3, "no new load and session identity within 3"),
+    ])
+    def test_an_unsettled_switch_reload_restores_the_file_and_makes_no_further_call(
+            self, monkeypatch, tmp_path, fault, after_reload, said):
+        path = _switch_settings(tmp_path)
+        original = Path(path).read_bytes()
+        addin = _SwitchAddin(monkeypatch, path, fault=fault)
+        got, rows, _valued = addin.switch()
+        assert got is None and [(tool, status) for tool, status, _ in rows] == [
+            ("sys_capability_map", "FAIL")]
+        assert said in rows[0][2] and "serving its starting tools and is not read again" in rows[0][2]
+        assert self._untouched(path, original)
+        assert addin.seen == ["/health", "sys_capability_map", "sys_reload_addin"] + after_reload
+
+    def test_an_unsettled_restoring_reload_leaves_the_file_restored_and_says_what_was_last_read(
+            self, monkeypatch, tmp_path):
+        path = _switch_settings(tmp_path)
+        original = Path(path).read_bytes()
+        addin = _SwitchAddin(monkeypatch, path, fault="reload 2 never loads")
+        got, rows, _valued = addin.switch()
+        assert got is None and rows[0][1] == "FAIL"
+        assert "the restoring reload: no new load" in rows[0][2]
+        assert "serving without pmi/render/sheet tools and is not read again" in rows[0][2]
+        assert self._untouched(path, original)
+        assert addin.seen[-4:] == ["sys_reload_addin", "/health", "/health", "/health"]
+
+    def test_a_late_load_that_writes_its_rows_over_the_restore_is_written_over_again(
+            self, monkeypatch, tmp_path):
+        path = _switch_settings(tmp_path)
+        original = Path(path).read_bytes()
+        addin = _SwitchAddin(monkeypatch, path, fault="reload 1 loads late")
+        got, rows, _valued = addin.switch()
+        assert got is None and rows[0][1] == "FAIL"
+        assert "after 1 rewrite(s) over other content" in rows[0][2]
+        assert self._untouched(path, original)
+
+    @pytest.mark.parametrize("fault, said", [
+        ("sheet row is ignored", "2 tool(s) of a switched-off family are still listed"),
+        ("switch drops doc_get", "beyond the three families: missing ['doc_get'] (1), added [] (0)"),
+        ("map keeps render", "families did not lose exactly the three"),
+        ("map counts one more", "tool_count reads 5; 8 before less the 4 switched-off tools is 4"),
+        ("restore loses cam_get", "restored tool list differs from the starting one"),
+        ("restore changes schema", "does not attest the pinned implementation and schema"),
+    ])
+    def test_a_failed_read_still_restores_the_file_and_reloads_onto_it(
+            self, monkeypatch, tmp_path, fault, said):
+        path = _switch_settings(tmp_path)
+        original = Path(path).read_bytes()
+        addin = _SwitchAddin(monkeypatch, path, fault=fault)
+        got, rows, valued = addin.switch()
+        assert got is None and valued == set() and [(tool, status) for tool, status, _ in rows] == [
+            ("sys_capability_map", "FAIL")]
+        assert said in rows[0][2], rows[0][2]
+        assert addin.seen.count("sys_reload_addin") == 2 and addin.loaded_bytes[1] == original
+        assert json.loads(Path(path).read_bytes()) == json.loads(original)
+        assert not os.path.exists(path + verify_family_switch.BACKUP_SUFFIX)
+
+    def test_a_restore_that_cannot_be_written_says_so_and_keeps_the_backup(
+            self, monkeypatch, tmp_path):
+        path = _switch_settings(tmp_path)
+        original = Path(path).read_bytes()
+        addin = _SwitchAddin(monkeypatch, path)
+        real, writes = verify_family_switch._replace, []
+
+        def replace(target, data):
+            writes.append(data)
+            if len(writes) > 1:
+                raise PermissionError("the file is locked")
+            return real(target, data)
+
+        monkeypatch.setattr(verify_family_switch, "_replace", replace)
+        got, rows, _valued = addin.switch()
+        assert got is None and rows[0][1] == "FAIL"
+        assert "is NOT restored (PermissionError: the file is locked)" in rows[0][2]
+        assert Path(path + verify_family_switch.BACKUP_SUFFIX).read_bytes() == original
+        assert set(writes[1:]) == {original}
+
+    def test_a_switch_that_cannot_be_written_reloads_nothing(self, monkeypatch, tmp_path):
+        path = _switch_settings(tmp_path)
+        original = Path(path).read_bytes()
+        addin = _SwitchAddin(monkeypatch, path)
+        monkeypatch.setattr(verify_family_switch, "_replace",
+                            lambda target, data: (_ for _ in ()).throw(PermissionError("locked")))
+        got, rows, _valued = addin.switch()
+        assert got is None and rows[0][1] == "FAIL" and "was not switched" in rows[0][2]
+        assert "the add-in was not reloaded" in rows[0][2]
+        assert self._untouched(path, original) and "sys_reload_addin" not in addin.seen
+
+    def test_the_run_hands_the_switch_beats_identity_to_the_reload_beat(self, monkeypatch, tmp_path):
+        h = _Harness(monkeypatch, tmp_path)
+        switched = dict(_ATTESTATION, load_id="switch-load", session_id="switch-session")
+        handed = {}
+
+        def switch(rows, expected, census, valued=None):
+            handed.update(switch_expected=expected, census=list(census))
+            return switched
+
+        def reload(rows, notes, valued=None, **kw):
+            handed.update(reload_expected=kw["expected_attestation"])
+            return _reloaded_attestation()
+
+        monkeypatch.setattr(tool_verify, "family_switch_smoke", switch)
+        monkeypatch.setattr(tool_verify, "reload_smoke", reload)
+        assert h.run() == 0
+        assert handed == {"switch_expected": _ATTESTATION, "census": ["a_get", "b_get"],
+                          "reload_expected": switched}
+        assert h.wrote["attestation"] == _reloaded_attestation()
+
+    def test_a_switch_beat_that_stops_refuses_the_run_before_the_reload_beat(
+            self, monkeypatch, tmp_path, capsys):
+        h = _Harness(monkeypatch, tmp_path)
+        monkeypatch.setattr(tool_verify, "family_switch_smoke", lambda rows, *a, **kw: rows.append(
+            ("sys_capability_map", "FAIL", "stubbed stop")))
+        assert h.run() == 1 and not h.wrote and "reload beat" not in h.tools_called()
+        assert "family switch beat did not end on the starting tools" in capsys.readouterr().out
+
+
 class TestActSelection:
     """--acts walks a SLICE of the story against the document a prior --keep-open run left open."""
 
@@ -2987,7 +3299,8 @@ class TestOwnedFamilies:
 
     @staticmethod
     def _run(monkeypatch, tmp_path, wire, acts, acts_spec=None, hash_values=None,
-             resume=False, run_id=None, fixture=None, keep_open=False):
+             resume=False, run_id=None, fixture=None, keep_open=False, continue_families=False,
+             health=None):
         wrote = []
         hashes = iter(hash_values or ["0" * 64] * 20)
         monkeypatch.setattr(tool_verify, "call", wire)
@@ -2995,7 +3308,7 @@ class TestOwnedFamilies:
         monkeypatch.setattr(verify_runner, "RESULTS_DIR", str(tmp_path))
         monkeypatch.setattr(verify_runner, "REPO_ROOT", str(tmp_path))
         monkeypatch.setattr(verify_runner, "fixture_steps", fixture or (lambda *a, **k: []))
-        monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
+        monkeypatch.setattr(tool_verify, "health_gate", health or _attested_health)
         monkeypatch.setattr(tool_verify, "registered_tools", _registered(
             ["model_write", "doc_new", "doc_close", "view_switch_workspace"],
             {"model_write", "doc_new", "doc_close"}))
@@ -3011,9 +3324,243 @@ class TestOwnedFamilies:
         monkeypatch.setattr(tool_verify, "ACTS", acts)
         monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", family_names(acts))
         code = tool_verify.run(write_json=False, acts_spec=acts_spec,
-                               resume=resume, run_id=run_id, keep_open=keep_open)
+                               resume=resume, run_id=run_id, keep_open=keep_open,
+                               continue_families=continue_families)
         evidence = sorted((tmp_path / "outputs" / "tool-sweep").glob("families-*.json"))
         return code, wrote, json.loads(evidence[-1].read_text()) if evidence else None
+
+    @pytest.mark.parametrize("discovery", [False, True])
+    def test_family_failure_blocks_dependents_and_discovers_later_failures(
+            self, monkeypatch, tmp_path, discovery, capsys):
+        wire = _DocumentWire()
+        acts = [
+            ("ACT 10a - CAM: JOB", None, [
+                ("model_write", {"mark": "first"}, lambda p: False, None),
+                ("model_write", {"mark": "remaining-step"}, "ok", None)], []),
+            ("ACT 10b - CAM: DELIVERABLES", None,
+             [("model_write", {"mark": "dependent"}, "ok", None)], []),
+            ("ACT 11a - CLOUD: THE DATA MODEL", None,
+             [("model_write", {"mark": "second"}, lambda p: False, None)], []),
+            ("ACT 12e - SHEET METAL SELECTED BEND", None,
+             [("model_write", {"mark": "last"}, lambda p: p["changed"], None)], []),
+        ]
+        code, wrote, evidence = self._run(
+            monkeypatch, tmp_path, wire, acts, continue_families=True,
+            run_id=None if discovery else "acceptance",
+            acts_spec="ACT 10a,ACT 11a,ACT 12e" if discovery else None)
+        assert code == 1 and not wrote and evidence["receipt_written"] is False
+        assert [args["mark"] for tool, args in wire.seen if tool == "model_write"] == [
+            "first", "second", "last"]
+        assert [row[1] for row in evidence["narrative_steps"]] == ["FAIL", "FAIL", "pass"]
+        assert evidence["family_outcomes"] == {
+            "part_cam": "failed", "cloud": "failed", "sheet_selected": "passed"}
+        assert [row["act"] for row in evidence["blocked_acts"]] == ["ACT 10b - CAM: DELIVERABLES"]
+        assert evidence["blocked_steps"] == [{"family": "part_cam", "act": "ACT 10a - CAM: JOB",
+                                               "tool": "model_write", "step_index": 1}]
+        assert wire.active == "session:home" and wire.created == 3
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+        assert "part_cam=failed" in capsys.readouterr().out
+        if not discovery:
+            state = verify_runner.load_run_state("acceptance")
+            assert set(state["failed_families"]) == {"part_cam", "cloud"}
+            assert "failed families" in verify_runner.resume_refusal(
+                state, "acceptance", "0" * 64, {}, _ATTESTATION)
+
+    @pytest.mark.parametrize("continuation,discovery", [(False, False), (True, True), (True, False)])
+    def test_green_discovery_never_stamps_and_default_remains_fail_fast(
+            self, monkeypatch, tmp_path, continuation, discovery):
+        wire = _DocumentWire()
+        acts = [("ACT 3 - SURFACES", None,
+                 [("model_write", {}, "ok" if continuation else lambda p: False, None)], []),
+                ("ACT 4 - MESH", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(
+            monkeypatch, tmp_path, wire, acts, continue_families=continuation,
+            acts_spec="ACT 3,ACT 4" if discovery else None,
+            run_id="green-acceptance" if continuation and not discovery else None)
+        assert code == (0 if continuation else 1)
+        assert wrote == ([True] if continuation and not discovery else [])
+        assert wire.created == (2 if continuation else 1)
+        assert evidence["receipt_written"] is (continuation and not discovery)
+
+    @pytest.mark.parametrize("fault", [
+        "cleanup", "transport", "pin", "source", "identity", "missing-home",
+        "modified-home", "unreadable-flags", "duplicate-census", "pending", "shared", "script",
+        "nested-transport", "server-timeout", "publication", "unresolved-upload", "cleanup-transport"])
+    def test_unsafe_family_failure_stops_globally(self, monkeypatch, tmp_path, fault):
+        wire = _DocumentWire(refuse_close=fault == "cleanup", drift_after_write=fault == "pin")
+        damaged = False
+
+        def call(tool, args):
+            nonlocal damaged
+            if tool == "doc_close" and fault == "cleanup-transport":
+                wire.seen.append((tool, dict(args)))
+                raise TimeoutError("cleanup outcome unknown")
+            if tool in {"model_write", "render_edit", "sys_execute_script"}:
+                damaged = True
+                if fault == "transport":
+                    wire.seen.append((tool, dict(args)))
+                    raise TimeoutError("dispatch outcome unknown")
+            if tool == "doc_get" and damaged and fault == "missing-home":
+                wire.documents.pop("session:home", None)
+            failed, payload = wire(tool, args)
+            if tool == "doc_get" and damaged:
+                if fault == "duplicate-census":
+                    payload["open_documents"].append(dict(payload["open_documents"][0]))
+                    payload["open_count"] += 1
+                for row in payload["open_documents"]:
+                    if row["document_handle"] == "session:home":
+                        if fault == "modified-home":
+                            row["is_modified"] = True
+                        if fault == "unreadable-flags":
+                            row["is_visible"] = None
+            if tool == "model_write" and fault == "pending":
+                payload["pending"] = True
+            if tool == "model_write" and fault == "server-timeout":
+                return True, "Handler is still running after 120s and could NOT be cancelled"
+            if tool == "doc_save":
+                return False, {"cloud_processing_complete": False}
+            return failed, payload
+
+        health_calls = 0
+
+        def health():
+            nonlocal health_calls
+            health_calls += 1
+            identity = dict(_ATTESTATION)
+            if fault == "identity" and health_calls > 2:
+                identity["load_id"] = "other-load"
+            return _attested_health(identity)
+
+        def predicate(payload):
+            if fault == "nested-transport":
+                raise TimeoutError("nested reader outcome unknown")
+            return False
+
+        first = ("render_edit" if fault == "shared" else "sys_execute_script" if fault == "script"
+                 else "doc_save" if fault == "publication" else "data_upload_file"
+                 if fault == "unresolved-upload" else "model_write")
+        acts = [("ACT 3 - SURFACES", None, [(first, {}, predicate, None)], []),
+                ("ACT 4 - MESH", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(
+            monkeypatch, tmp_path, call, acts, continue_families=True, health=health,
+            hash_values=["0" * 64, "0" * 64, "1" * 64] if fault == "source" else None)
+        assert code == 1 and not wrote and wire.created == 1
+        assert evidence["stopped"] is True and evidence["receipt_written"] is False
+        assert evidence["family_outcomes"]["mesh"] == "not-run"
+        assert any(row["phase"] == "continuation" and row["allowed"] is False
+                   for row in evidence["family_events"])
+        if fault in {"transport", "nested-transport", "server-timeout", "cleanup-transport"}:
+            assert wire.seen[-1][0] == ("doc_close" if fault == "cleanup-transport" else first)
+            assert evidence["transport_uncertain"] is True
+            assert evidence["owned_scratch"] == ["session:new1"]
+            assert "session:new1" in wire.documents
+
+    @pytest.mark.parametrize("missing_gate,pending,publication,save_tool", [
+        (False, False, True, "doc_save"), (True, False, True, "doc_save"),
+        (False, True, True, "doc_save"), (False, True, False, "doc_save"),
+        (False, True, None, "doc_save"), (False, True, True, "doc_save_as"),
+        (False, True, False, "doc_save_as")])
+    def test_cloud_name_failure_requires_prior_specific_restoration_gates(
+            self, monkeypatch, tmp_path, missing_gate, pending, publication, save_tool):
+        import verify_acts_cloud as cloud
+        wire = _DocumentWire()
+        restored = lambda p: p.get("restored") is True
+        generated = lambda p: p.get("completed") is True
+        deleted = lambda p: p.get("loads_after_delete") is False
+        scripts = []
+        for prefix in ("_capped_name_move", "_duplicate_project", "_duplicate_hub", "_hub_edit_preflight"):
+            provider = lambda ctx: {"script": "injected restore witness"}
+            monkeypatch.setattr(cloud, prefix + "_probe", provider)
+            monkeypatch.setattr(cloud, prefix + "_result", restored)
+            scripts.append(("sys_execute_script", provider, restored, None))
+        terminal = ("cam_get_status", {"target": "owned setup"}, generated, None)
+        cleanup = ("cam_delete_template", {"name": "owned template"}, deleted, None)
+        monkeypatch.setattr(cloud, "_CLOUD_DATA", scripts[:3])
+        monkeypatch.setattr(cloud, "_CLOUD_DOC", scripts[3:])
+        monkeypatch.setattr(cloud, "_CLOUD_DRAWING", [])
+        monkeypatch.setattr(cloud, "_CLOUD_CAM_PERSISTENCE", [terminal, cleanup])
+
+        def call(tool, args):
+            if tool == "sys_execute_script":
+                return False, {"restored": True}
+            if tool == "cam_get_status":
+                return False, {"completed": True}
+            if tool == "cam_delete_template":
+                return False, {"loads_after_delete": False}
+            if tool == save_tool:
+                payload = {"pending": pending, "version_confirmed": False, "cloud_tip_advanced": False}
+                if publication is not None:
+                    payload["cloud_processing_complete"] = publication
+                return False, payload
+            if tool == "data_get":
+                return False, {"file": {"name": "old backing name"}}
+            return wire(tool, args)
+
+        acts = [
+            ("ACT 11a - CLOUD: THE DATA MODEL", None, scripts[:3], []),
+            ("ACT 11b - CLOUD: THE SAVED DOCUMENT", None, scripts[3:], []),
+            ("ACT 11c - CLOUD: THE DRAWING", None, [], []),
+            ("ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE", None,
+             [("cam_generate", {}, "ok", None), terminal] + ([] if missing_gate else [cleanup]), []),
+            ("ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS", None, [
+                (save_tool, {}, "ok", None),
+                ("data_get", {}, lambda p: p["file"]["name"] == "Configuration 1", None)], []),
+            ("ACT 11f - CLOUD: DERIVE EDITS", None,
+             [("model_write", {"dependent": True}, "ok", None)], []),
+            ("ACT 12e - SHEET METAL SELECTED BEND", None,
+             [("model_write", {"independent": True}, "ok", None)], []),
+        ]
+        code, wrote, evidence = self._run(
+            monkeypatch, tmp_path, call, acts, continue_families=True)
+        assert code == 1 and not wrote
+        blocked = missing_gate or publication is not True
+        assert wire.created == (1 if blocked else 2)
+        assert [row for row in evidence["narrative_steps"] if row[1] == "FAIL"] == [
+            ["data_get", "FAIL", "{'file': {'name': 'old backing name'}}"]]
+        assert evidence["family_outcomes"]["sheet_selected"] == ("not-run" if blocked else "passed")
+        assert not [args for tool, args in wire.seen if tool == "model_write" and args.get("dependent")]
+
+    def test_fixture_logical_failure_keeps_its_evidence_and_runs_next_family(
+            self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {"dependent": True}, "ok", None)], []),
+                ("ACT 4 - MESH", None, [("model_write", {"independent": True}, "ok", None)], [])]
+        fixture = lambda family, before_act=None, **kw: (
+            [("model_write", {}, lambda p: False, None)]
+            if family == "surfaces" and before_act is None else [])
+        code, wrote, evidence = self._run(
+            monkeypatch, tmp_path, wire, acts, fixture=fixture, continue_families=True)
+        assert code == 1 and not wrote and wire.created == 2
+        assert evidence["family_outcomes"] == {"surfaces": "failed", "mesh": "passed"}
+        assert [row[1] for row in evidence["narrative_steps"]] == ["pass"]
+        assert any(event["phase"] == "setup" and event["steps"][0][1] == "FAIL"
+                   for event in evidence["family_events"])
+        assert not [args for tool, args in wire.seen if tool == "model_write" and args.get("dependent")]
+
+    @pytest.mark.parametrize("tool,arguments,refused", [
+        ("view_set", {"action": "orient", "projection": "perspective"}, False),
+        ("view_set", {"action": "orient", "projection": "perspective"}, True),
+        ("sys_set_preferences", {"member": "compatibility.recoverSaveScanFrequency", "value": 17}, True)])
+    def test_attempted_shared_write_remains_uncertified_even_when_refused(
+            self, monkeypatch, tmp_path, tool, arguments, refused):
+        wire = _DocumentWire()
+
+        def call(name, args):
+            if name == tool:
+                return (True, "injected partial write refusal") if refused else (False, {"changed": True})
+            return wire(name, args)
+
+        acts = [("ACT 3 - SURFACES", None, [
+            (tool, arguments, "refused" if refused else "ok", None),
+            ("model_write", {}, lambda p: False, None)], []),
+            ("ACT 4 - MESH", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(
+            monkeypatch, tmp_path, call, acts, continue_families=True)
+        assert code == 1 and not wrote and wire.created == 1
+        assert [row[1] for row in evidence["narrative_steps"]] == [
+            "expected-refusal" if refused else "pass", "FAIL"]
+        gate = next(event for event in evidence["family_events"] if event["phase"] == "continuation")
+        assert gate["allowed"] is False and tool in gate["reason"]
 
     def test_all_selected_families_reset_recall_and_never_stamp(self, monkeypatch, tmp_path):
         wire = _DocumentWire()
@@ -3071,6 +3618,33 @@ class TestOwnedFamilies:
             "setup", "narrative ACT 3 - SURFACES", "cleanup-total"}
         assert wire.created == 2 and wire.active == "session:home"
         assert set(wire.documents) == {"session:home", "session:intruder"}
+
+    @pytest.mark.parametrize("mode", ["full", "selected", "continue"])
+    def test_after_census_omits_a_dependency_that_unloaded_with_the_owned_tab(
+            self, monkeypatch, tmp_path, mode):
+        wire = _DocumentWire()
+
+        def call(tool, args):
+            result = wire(tool, args)
+            if tool == "model_write":
+                wire.documents["session:dependency"] = {
+                    "name": "Dependency", "document_id": "urn:dependency"}
+            elif tool == "doc_close":
+                wire.documents.pop("session:dependency", None)
+                if wire.active == "session:dependency":
+                    wire.active = "session:home"
+            return result
+
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], [])]
+        code, _wrote, evidence = self._run(
+            monkeypatch, tmp_path, call, acts,
+            acts_spec="ACT 3" if mode == "selected" else None,
+            continue_families=mode == "continue")
+        assert code == 0
+        after = [row for row in evidence["family_events"] if row["phase"] == "after-census"]
+        assert len(after) == 1 and after[0]["documents"] == sorted(wire.documents)
+        assert after[0]["documents"] == ["session:home", "session:intruder"]
+        assert after[0]["active"] == wire.active == "session:home"
 
     def test_source_drift_cleans_owned_document_and_saves_failure(self, monkeypatch, tmp_path):
         wire = _DocumentWire()

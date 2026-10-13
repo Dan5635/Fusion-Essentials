@@ -96,8 +96,8 @@ def test_mixed_request_names_every_read_only_key_and_each_remedy(monkeypatch):
     monkeypatch.setattr(edit._render_common, "context", lambda: pytest.fail("context called"))
     message = edit.handler("scene", {"units": "in", "environment_custom": False, "exposure_ev": 3,
                                      "background_type": "solid_color",
-                                     "aspect_ratio": "custom"})["message"]
-    assert "aspect_ratio, background_type, environment_custom, units are read-only" in message
+                                     "ground_position": [0, 0, 1]})["message"]
+    assert "background_type, environment_custom, ground_position, units are read-only" in message
     assert _UNITS_REMEDY in message and _BACKGROUND_REMEDY in message
 
 
@@ -332,15 +332,131 @@ def test_edit_without_camera_type_carries_no_prior_camera_key(scene_context):
     assert "camera_type_before" not in row and "camera type" not in row["note"]
 
 
-def test_aspect_write_is_refused_before_any_scene_setter(scene_context):
-    settings, _ = scene_context
-    result = edit.handler("scene", {"aspect_ratio": "custom", "aspect_width": 4,
-                                    "aspect_height": 3})
-    assert result["isError"] is True
-    assert "aspect_height, aspect_ratio, aspect_width are read-only" in result["message"]
-    assert settings.brightness == 10
+_RATIO = {label: getattr(edit.adsk.fusion.RenderAspectRatios, member)
+          for label, member in edit._render_common.ASPECT.items()}
+_ASPECT = ("aspect_ratio", "aspect_width", "aspect_height")
+
+
+class _AspectScene:
+    """Local scene-settings double, shaped as a live script measured: a pair lands on the height."""
+
+    def __init__(self, keeps=True):
+        vars(self).update(writes=[], keeps=keeps, pending=None, brightness=10,
+                          aspectRatio=_RATIO["viewport"], aspectRatioWidth=0, aspectRatioHeight=0)
+
+    def __setattr__(self, name, value):
+        self.writes.append((name, value))
+        if name == "aspectRatioWidth":
+            vars(self)["pending"] = value
+        elif name == "aspectRatioHeight":
+            if self.keeps and self.pending is not None:
+                vars(self).update(aspectRatio=_RATIO["custom"], aspectRatioWidth=self.pending,
+                                  aspectRatioHeight=value)
+        elif name == "aspectRatio":
+            if self.keeps and value == _RATIO["16:9"]:
+                vars(self).update(aspectRatio=value, aspectRatioWidth=16, aspectRatioHeight=9)
+        else:
+            vars(self)[name] = value
+
+
+@pytest.fixture
+def aspect_scene(monkeypatch):
+    """Install one aspect double as the scene settings and return it."""
+    def install(keeps=True):
+        settings = _AspectScene(keeps)
+        monkeypatch.setattr(edit._render_common, "context", lambda: (
+            object(), SimpleNamespace(sceneSettings=settings), None))
+        return settings
+    return install
+
+
+@pytest.mark.parametrize("label", [{}, {"aspect_ratio": "custom"}])
+def test_aspect_pair_writes_width_then_height_and_no_ratio_member(aspect_scene, label):
+    settings = aspect_scene()
+    result = edit.handler("scene", {"aspect_height": 5, "aspect_width": 7, **label})
+    assert result["isError"] is False
+    assert settings.writes == [("aspectRatioWidth", 7), ("aspectRatioHeight", 5)]
+    row = _payload(result)
+    assert row["applied"] == ["aspect_width", "aspect_height"]
+    assert [row["after"][key] for key in _ASPECT] == ["custom", 7, 5]
+
+
+@pytest.mark.parametrize("label,read_back", [("16:9", ["16:9", 16, 9]),
+                                             ("viewport", ["viewport", 0, 0])])
+def test_aspect_preset_writes_only_its_ratio_member(aspect_scene, label, read_back):
+    settings = aspect_scene()
+    result = edit.handler("scene", {"aspect_ratio": label})
+    assert result["isError"] is False
+    assert settings.writes == [("aspectRatio", _RATIO[label])]
+    row = _payload(result)
+    assert row["applied"] == ["aspect_ratio"]
+    assert [row["after"][key] for key in _ASPECT] == read_back
     scene_schema = edit.tool.to_dict()["inputSchema"]["properties"]["scene"]["properties"]
-    assert not {"aspect_ratio", "aspect_width", "aspect_height"} & set(scene_schema)
+    assert scene_schema["aspect_ratio"]["enum"] == list(_RATIO)
+    assert scene_schema["aspect_width"] == scene_schema["aspect_height"] == {"type": "integer"}
+
+
+@pytest.mark.parametrize("scene", [{"aspect_ratio": "16:9"},
+                                   {"aspect_width": 7, "aspect_height": 5}])
+def test_aspect_fields_fusion_reports_are_not_listed_as_unrequested_changes(aspect_scene, scene):
+    aspect_scene()
+    row = _payload(edit.handler("scene", scene))
+    assert row["before"]["aspect_ratio"] == "viewport" != row["after"]["aspect_ratio"]
+    assert row["before"]["aspect_width"] == 0 != row["after"]["aspect_width"]
+    assert row["changed_unrequested"] == {}
+
+
+@pytest.mark.parametrize("scene,offending,remedy", [
+    ({"aspect_width": 4}, "aspect_width=4", "aspect_width and aspect_height"),
+    ({"aspect_height": 3}, "aspect_height=3", "aspect_width and aspect_height"),
+    ({"aspect_ratio": "custom", "aspect_width": 4}, "aspect_width=4",
+     "aspect_width and aspect_height"),
+    ({"aspect_ratio": "custom"}, "aspect_ratio='custom'", "aspect_width and aspect_height"),
+    ({"aspect_ratio": "16:9", "aspect_width": 16, "aspect_height": 9}, "aspect_ratio='16:9'",
+     "send the preset alone"),
+    ({"aspect_width": 4.5, "aspect_height": 3}, "aspect_width=4.5", "positive integer"),
+    ({"aspect_width": True, "aspect_height": 3}, "aspect_width=True", "positive integer"),
+    ({"aspect_width": 4, "aspect_height": 0}, "aspect_height=0", "positive integer"),
+    ({"aspect_ratio": "3:2"}, "aspect_ratio='3:2'", "listed aspect ratio"),
+])
+def test_malformed_aspect_request_is_refused_before_context(monkeypatch, scene, offending, remedy):
+    monkeypatch.setattr(edit._render_common, "context", lambda: pytest.fail("context called"))
+    result = edit.handler("scene", {**scene, "brightness_lux": 25})
+    assert result["isError"] is True
+    assert offending in result["message"] and remedy in result["message"]
+
+
+def test_aspect_dimension_of_one_reaches_the_setters(aspect_scene):
+    settings = aspect_scene()
+    edit.handler("scene", {"aspect_width": 1, "aspect_height": 1})
+    assert settings.writes == [("aspectRatioWidth", 1), ("aspectRatioHeight", 1)]
+
+
+def test_multi_field_edit_keeps_width_and_height_adjacent(aspect_scene):
+    settings = aspect_scene()
+    result = edit.handler("scene", {"aspect_height": 5, "brightness_lux": 25, "aspect_width": 7})
+    assert result["isError"] is False
+    assert [name for name, _ in settings.writes] == ["brightness", "aspectRatioWidth",
+                                                     "aspectRatioHeight"]
+    assert edit._ORDER.index("aspect_height") == edit._ORDER.index("aspect_width") + 1
+
+
+@pytest.mark.parametrize("label,mismatches", [
+    ({}, {"aspect_width": 0, "aspect_height": 0}),
+    ({"aspect_ratio": "custom"}, {"aspect_width": 0, "aspect_height": 0,
+                                  "aspect_ratio": "viewport"}),
+])
+def test_ignored_aspect_pair_is_the_mismatch_error_with_before_and_after(aspect_scene, label,
+                                                                       mismatches):
+    settings = aspect_scene(keeps=False)
+    result = edit.handler("scene", {"aspect_width": 4, "aspect_height": 3, **label})
+    assert result["isError"] is True
+    assert settings.writes == [("aspectRatioWidth", 4), ("aspectRatioHeight", 3)]
+    row = _payload(result)
+    assert row["mismatches"] == mismatches
+    assert [row["before"][key] for key in _ASPECT] == ["viewport", 0, 0]
+    assert [row["after"][key] for key in _ASPECT] == ["viewport", 0, 0]
+    assert "scene.aspect_width=4 read back 0" in row["error"]
 
 
 def test_name_resolution_refuses_two_exact_matches():

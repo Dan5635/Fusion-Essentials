@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 767
+**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 770
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -51,7 +51,7 @@ close orphans, factor duplicated guards into shared helpers.
 - `data_get`  <- 28  (desc 10, note 18)
 - `doc_open`  <- 27  (desc 5, note 22)
 - `sketch_create`  <- 26  (desc 7, note 19)
-- `assembly_get`  <- 23  (desc 4, note 19)
+- `assembly_get`  <- 24  (desc 4, note 20)
 
 ## The detected guidance surface
 
@@ -1402,9 +1402,8 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ', but the assembly census that confirms it could not be read - the instance may or may not have landed. Re-read with design_get(include=['tree']).  **[hedge]**
 - The call reported an occurrence for '
 - ' but no new instance appeared in the assembly tree. Re-read with design_get(include=['tree']).
-- ' (kept), but not at the requested placement: its local origin in
-- from the requested one, local axes x
-- . Its transform was not reset to the request. Move it with assembly_move, then read it with assembly_get.
+- ' (kept), but its position was not captured
+- . Capture it with assembly_capture_position(action='capture'), or the next feature moves the copy to the pose of '
 - ' has no component to instance into.
 - Could not reach the root component to instance into.
 - independent=true copies a LOCAL component; '
@@ -1414,15 +1413,29 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Could not build the placement rotation (
 - ') - the instance was not created.
 - ' it returned is in the design; read it with design_get(include=['tree']).
+- . assembly_capture_position(action='status') lists the markers; without one for it, the next feature moves the copy to the pose of '
+- and the pending-position flag
+- ' (kept), but its capture is not verified: snapshots.add()
+- ' (kept), but its transform could not be set to the requested placement:
+- Move it with assembly_move, then read it with assembly_get.
+- ' (kept), but not at the requested placement: its local origin in
+- from the requested one, local axes x
+- It was assigned the request there after the copy and still reads off it.
+- Its transform was not reset to the request.
+- Instanced '' as '' at '' (kept), but not at the requested placement: its local origin in  reads (, , ) ,   from the requested one, local axes x  y  z .  Move it with assembly_move, then read it wit...
 - Refusing to instance '' into : that target is '' itself or sits inside it, so the component would contain an instance of itself. Pick a target outside it (omit 'into_component' for root).
 - Refusing to instance '' into : whether that target already sits inside '' could not be determined - the subtree could not be searched to a verdict, so the instance could make the component contain ...
 - The bodies of '' or the design's component count did not read, so a copy could not be checked against its source; no copy was made.
 - addExistingComponent returned an occurrence for '', but the assembly census that confirms it could not be read - the instance may or may not have landed. Re-read with design_get(include=['tree']).  **[hedge]**
 - The call reported an occurrence for '' but no new instance appeared in the assembly tree. Re-read with design_get(include=['tree']).
-- Instanced '' as '' at '' (kept), but not at the requested placement: its local origin in  reads (, , ) ,   from the requested one, local axes x  y  z . Its transform was not reset to the request. M...
+- Copied '' as '' at '' (kept), but its transform could not be set to the requested placement:  Move it with assembly_move, then read it with assembly_get.
+- Copied '' as '' at '' (kept), but its position was not captured. Capture it with assembly_capture_position(action='capture'), or the next feature moves the copy to the pose of ''.
+- Copied '' as '' at '' (kept), but its capture is not verified: snapshots.add()  and the pending-position flag . assembly_capture_position(action='status') lists the markers; without one for it, the...
 - Instanced '' - it LANDED as '' at ''. Fusion numbers a new instance from a per-component counter across the whole design, so use the landed name/full_path, not a predicted one. The instance SHARES ...
 - Copied '' as the NEW component '' - it LANDED as '' at '', with its own geometry. Joints on the source were not copied. Position it with assembly_move / joint_create.
 - The placement cannot be captured - it sets no pending-position flag, so assembly_capture_position refuses it. In a design that HOLDS captured position markers, a later joint creation can revert thi...
+- Its position is PENDING, not captured: positions were pending before this call, or that did not read. assembly_capture_position(action='capture') records them all; uncaptured, the next feature move...
+- Whether its position is pending did not read - assembly_capture_position(action='status') says. Uncaptured, the next feature moves the copy to the pose of ''.
 
 ### `design_configure`
 - No active design. Open or create a document first.
@@ -2163,16 +2176,25 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - addByInsert returned nothing (the insert did not produce an occurrence).
 - addByInsert returned an occurrence but it reads isValid=false - the insert did not land.
 - Insert landed but the occurrence is NOT an external reference (isReferencedComponent=false) - the associative link did not form. Confirm the source and host share a project, then retry.
-- , from the source's last SAVED cloud version. bound_version is the version this reference holds - null where none read it or two disagree; bound_is_tip whether it is the source's latest - null if e...
+- bound_version is the version this reference holds - null where none read it or two disagree; bound_is_tip whether it is the source's latest - null if either is unknown, false is brought current wit...
+- , from the source's last SAVED cloud version.
+- placed_at is in the host component's frame; where that host is placed more than once its world placements are unconfirmed - read each path with assembly_get.
 - ' has no component to insert into.
 - Unknown rotate_axis '
 - ) was refused - the placement rotation could not be built, so nothing was inserted or removed.
+- . Nothing was inserted or removed - retry, or insert without a placement and move the occurrence with assembly_move.
+- The placement could not be carried into the frame of
+- its world pose did not read
+- the requested matrix did not read
+- the carried matrix was refused
 - Failed to remove existing occurrence '
 - ' (deleteMe returned false). It may be referenced/locked.
 - . (An external reference requires the source and host in the SAME PROJECT - save the host into the source's project, then retry.)
 - Could not resolve '' to a saved document. Tried: . Pass a lineage URN or web URL (from data_get). The document must be SAVED to the cloud.
+- The placement could not be carried into the frame of : . Nothing was inserted or removed - retry, or insert without a placement and move the occurrence with assembly_move.
 - NOTE: occurrence '' was ALREADY REMOVED before this failure (its joints went with it) - the assembly no longer holds it.
 - Insert failed: . (An external reference requires the source and host in the SAME PROJECT - save the host into the source's project, then retry.)
+- , from the source's last SAVED cloud version. bound_version is the version this reference holds - null where none read it or two disagree; bound_is_tip whether it is the source's latest - null if e...
 
 ### `doc_new`
 - New blank design created. Use document_handle with doc_activate/expect_document; it expires on close/add-in reload. Check is_active before modelling; save with doc_save_as.
@@ -3647,12 +3669,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - thin-wall thickness reads
 - cm. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
 - Fusion rejected a symmetric extent=through_all (setTwoSidesExtent returned false).
+- extent=through_all (setOneSideExtent returned false).
 - 'taper_deg' applies only when extent_one='distance'.
 - 'taper_two_deg' applies only when extent_two='distance'.
-- Negative extent=through_all needs the retired setAllExtent compatibility setter, unavailable here; nothing was extruded.
-- Fusion rejected negative extent=through_all (retired setAllExtent returned false); nothing was extruded.
-- extent=through_all (setOneSideExtent returned false).
-- Fusion rejected the two-sided distances (setTwoSidesDistanceExtent returned false).
 - Fusion rejected the independent two-sided extents (setTwoSidesExtent returned false).
 - Fusion refused a symmetric tapered extent (
 - deg), so nothing was extruded.
@@ -3668,7 +3687,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - profile_index mixes the sketch text '' with other regions. A sketch text extrudes on its own - pass just '', and a separate call for the closed regions.
 - as_surface is not used with the sketch text '' - a text extrudes as a solid. Drop as_surface, or pass a closed profile / an open path.
 - Sketch '' has no closed profile to extrude. Draw a closed region (e.g. a rectangle or circle) first, or pass as_surface=true to extrude an open path into a surface.
-- Use model_measure_between to size a finite negative-distance cut, then use extent='distance' with that negative distance.
 - Extrude built '' but isThinExtrude reads false. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
 - Extrude built '' but its side- thin-wall location did not retain the requested value. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
 - Extrude built '' but its side- thin-wall thickness reads  cm, not  cm. The feature remains in the timeline; inspect it with design_get and remove it with design_delete_feature.
@@ -3688,7 +3706,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `model_fillet`
 - 'flipped' must be true or false - got
-- A variable-radius fillet without continuity cannot take tangent_chain=false: the legacy API's variable-radius edge set has no such argument, and it cuts the edges handed in. Drop 'tangent_chain', o...
+- A variable-radius fillet without continuity cannot take tangent_chain=false: this tool does not offer that combination. Drop 'tangent_chain', or use fillet_type='constant'.
 - 'edge_sets' does not take top-level
 - ; put radius and tangent_chain in each set and omit the other inputs.
 - 'edge_sets' carries each set's own type and settings; omit fillet_type, continuity, and flipped.
@@ -4561,6 +4579,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Scene read-back matches the requested fields.
 - background_type follows the background written: background_rgb gives solid_color; environment_id or environment_name gives environment.
 - Scene field(s)  cannot be written: Fusion can show a blocking depth-of-field warning while ray tracing is off. Read them with render_get instead.
+- aspect_ratio= cannot be combined with aspect_width or aspect_height; send the preset alone, or both dimensions with aspect_ratio omitted or 'custom'.
 - reset_scene returned true but no scene field changed; reset effect was not verified. Read render_get(include=['scene']).
 
 ### `render_get`
@@ -4864,7 +4883,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The sketch's constrained state did not read back.
 - The line reads fixed, but its endpoints can still move under a later dimension - fix their point ids too to hold them.
 - ' extended now passes through the centre of '
-- '. sketch_get lists this constraint with the line only.
 - sketch entities - read their '<type>:<index>' refs with sketch_get.
 - applied with EVERY instance suppressed, so it created no curves - the pattern constraint itself is in the sketch. Re-run with fewer 'suppressed' flags set for a pattern that draws.
 - two curves, at least one of them a spline, meeting at a COINCIDENT point - when both operands already satisfy that, check the shared endpoint is still coincident (an earlier smooth can move it apart)
@@ -5042,11 +5060,18 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ' needs the pick point x1,y1 (in 'units') - it chooses which segment, end, quadrant or side of the curve the edit applies to.
 - ' needs a pick point on EACH curve: x1,y1 on entity_one and x2,y2 on entity_two - together they choose the quadrant to build in.
 - fillet needs 'radius' > 0 (in 'units'); got
+- ', so it names no side for the offset. Nothing was written - pick a point off the curve, on the side the new curve(s) should land.
+- could not be placed beside '
+- ': the curve's geometry, or a joint of the chain it belongs to, did not read. Nothing was written - sketch_constrain(constraint='offset') takes the side as the sign of 'distance'.
 - extend changed nothing - the end nearest the pick point could not be extended. The sketch still holds
 - curve(s). Re-read sketch_get(include_entities=true) and pick a point ON the curve.
 - returned no curves and the sketch still holds
 - curve(s), so nothing changed.
 - Re-read sketch_get(include_entities=true) for the current ids and pick a point ON the curve.
+- offset landed on the OTHER side of '
+- ' from the pick point (
+- . The edit REMAINS as
+- : remove those with sketch_delete_entity, then use sketch_constrain(constraint='offset'), which takes the side as the sign of 'distance'.
 - Fillet radius requested
 - . The edit REMAINS; retained sketch-local curves in
 - . Read sketch_get(include_entities=true) to inspect the arc and neighbors; the user can Undo this edit in Fusion's UI.
@@ -5105,9 +5130,13 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '' needs the pick point x1,y1 (in 'units') - it chooses which segment, end, quadrant or side of the curve the edit applies to.
 - '' needs a pick point on EACH curve: x1,y1 on entity_one and x2,y2 on entity_two - together they choose the quadrant to build in.
 - offset needs 'distance' > 0 (in 'units'); the SIDE comes from the pick point x1,y1, so the distance is a magnitude. Got .
+- lies ON '', so it names no side for the offset. Nothing was written - pick a point off the curve, on the side the new curve(s) should land.
+- could not be placed beside '': the curve's geometry, or a joint of the chain it belongs to, did not read. Nothing was written - sketch_constrain(constraint='offset') takes the side as the sign of '...
 - extend changed nothing - the end nearest the pick point could not be extended. The sketch still holds  curve(s). Re-read sketch_get(include_entities=true) and pick a point ON the curve.
 - returned no curves and the sketch still holds  curve(s), so nothing changed. Re-read sketch_get(include_entities=true) for the current ids and pick a point ON the curve.
+- offset landed on the OTHER side of '' from the pick point (, ) . The edit REMAINS as : remove those with sketch_delete_entity, then use sketch_constrain(constraint='offset'), which takes the side a...
 - Fillet radius requested  , solved  . The edit REMAINS; retained sketch-local curves in : . Read sketch_get(include_entities=true) to inspect the arc and neighbors; the user can Undo this edit in Fu...
+- Which side of the pick point the new curve(s) landed on did not read - check them with sketch_get(include_entities=true).
 
 ### `sketch_get`
 - 'entity_offset' must be a nonnegative integer, got
@@ -5283,6 +5312,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Sketch text did not materialize in '
 - ': sketchTexts count stayed at
 - after add(). Nothing was created.
+- The text WAS created - remove it with sketch_delete_entity(sketch_name='
 - ' but the new text reports '
 - ', so the font did not take. The text WAS created - remove it with sketch_delete_entity(sketch_name='
 - ' text placement (it returned false), so no text was placed.
@@ -5555,7 +5585,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - it governs the scripting host this server runs in - a wrong value can leave the server unreachable, with no API left to undo it
 - a rendering driver this machine rejects can leave Fusion unrenderable, and the enum advertises drivers this machine rejects - the API cannot enumerate the legal subset
 - it writes the BODIES of the application's cloud HTTP traffic to a log, and that traffic carries the owner's credentials and tokens
-- isAutoLookAtSketch2 is the same setting with more values - set that one, so the two cannot be given contradicting values
 - Application preferences - they belong to the application, not to any document. Pull deeper with include= (one group per name).  nest one level further, by product name: sys_set_preferences addresse...
 
 ### `sys_get_selection`

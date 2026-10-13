@@ -19,6 +19,7 @@ from . import _doc_common
 from . import _inputs
 from . import _data_common
 from ._data_common import _b64url_decode, _resolve_data_file
+from .design_add_instance import _cells, _mul, _rigid_inverse
 
 
 # --- target component / occupant resolution (via the shared OccurrenceRef kind) ---
@@ -93,9 +94,11 @@ def handler(document_id: str = "", into_component: str = "",
         if not comp:
             return error(f"Occurrence '{into_component}' has no component to insert into.")
         comp_desc = f"component '{safe(lambda: comp.name)}'"
+        nested, host_world = True, _cells(safe(lambda: into_occ.transform2))
     else:
         comp = design.rootComponent
         comp_desc = "root component"
+        nested, host_world = False, None
 
     # Build the placement transform BEFORE any removal - a bad units/axis value (or a refused
     # rotation) must refuse while the assembly is still intact, not after a part is already gone.
@@ -120,6 +123,24 @@ def handler(document_id: str = "", into_component: str = "",
     if x or y or z:
         transform.translation = adsk.core.Vector3D.create(float(x) * k, float(y) * k, float(z) * k)
 
+    # An insertion lands at M.H in the world - M the matrix passed, H the host's world pose - so a
+    # placement inside a host is passed as H.M.inv(H) to land in the host's own frame. It is built
+    # here, before any removal, and a placement that cannot be carried is refused.
+    passed = transform
+    if nested and (x or y or z or rotate_deg):
+        want = _cells(transform)
+        shifted = safe(lambda: adsk.core.Matrix3D.create())
+        took = bool(host_world and want) and safe(lambda: shifted.setWithArray(
+            _mul(_mul(host_world, want), _rigid_inverse(host_world))), False)
+        if not took:
+            return error(f"The placement could not be carried into the frame of {comp_desc}: "
+                         + ("its world pose did not read" if not host_world else
+                            "the requested matrix did not read" if not want else
+                            "the carried matrix was refused")
+                         + ". Nothing was inserted or removed - retry, or insert without a "
+                         "placement and move the occurrence with assembly_move.")
+        passed = shifted
+
     # Optionally remove a named existing occurrence first (its joints are removed with it).
     removed = None
     if (remove_existing or "").strip():
@@ -139,7 +160,7 @@ def handler(document_id: str = "", into_component: str = "",
             "went with it) - the assembly no longer holds it." if removed else "")
 
     try:
-        new_occ = comp.occurrences.addByInsert(data_file, transform, True)
+        new_occ = comp.occurrences.addByInsert(data_file, passed, True)
     except Exception as e:
         return error(f"Insert failed: {e}. (An external reference requires the source and host in "
                      f"the SAME PROJECT - save the host into the source's project, then retry.){gone}")
@@ -187,6 +208,9 @@ def handler(document_id: str = "", into_component: str = "",
         "placement_matches": placement_matches,
         "rotate_deg": float(rotate_deg or 0.0),
         "note": (f"{where}, from the source's last SAVED cloud version. "
+            + ("placed_at is in the host component's frame; where that host is placed more than "
+               "once its world placements are unconfirmed - read each path with assembly_get. "
+               if nested else "") +
             "bound_version is the version this reference holds - null where none read it or two "
             "disagree; bound_is_tip whether it is the source's latest - null if either is unknown, "
             "false is brought current with doc_update_xref. A removed occurrence leaves features "

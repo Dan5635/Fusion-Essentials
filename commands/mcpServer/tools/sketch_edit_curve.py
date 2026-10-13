@@ -124,6 +124,76 @@ _NEEDS = {
 # cm; a length gain smaller than this is noise, not an extension.
 _LENGTH_EPS_CM = 1e-9
 _RADIUS_TOL_CM = 1e-4  # 0.001 mm comparison tolerance.
+# cm; two curve ends within this of each other are one joint of a chain.
+_JOINT_TOL_CM = 1e-6
+
+
+def _foot(curve, point):
+    """(the point of a sketch curve nearest `point`, the tangent there) in sketch space, or None
+    when its evaluator does not answer."""
+    try:
+        evaluator = curve.geometry.evaluator
+        at = evaluator.getParameterAtPoint(point)
+        if at[0] is not True:
+            return None
+        on, tangent = evaluator.getPointAtParameter(at[1]), evaluator.getTangent(at[1])
+        return (on[1], tangent[1]) if on[0] is True and tangent[0] is True else None
+    except Exception:
+        return None
+
+
+def _side(foot, point):
+    """+1 when `point` lies LEFT of the tangent at a foot, -1 RIGHT, 0 on it."""
+    at, tangent = foot
+    cross = tangent.x * (point.y - at.y) - tangent.y * (point.x - at.x)
+    return (cross > _LENGTH_EPS_CM) - (cross < -_LENGTH_EPS_CM)
+
+
+def _ends(curve):
+    """(start, end) of a sketch curve's geometry, or None when they do not read."""
+    answered = safe(lambda: curve.geometry.evaluator.getEndPoints())
+    if not answered or answered[0] is not True or answered[1] is None or answered[2] is None:
+        return None
+    return answered[1], answered[2]
+
+
+def _flow(chain, index):
+    """+1 when a chain's flow runs from chain[index]'s start to its end, -1 the other way, 0 when
+    a joint between it and the chain's first curve does not read."""
+    # The binding takes the flow from the FIRST curve handed in, in that curve's own direction, and
+    # carries it over each joint: two neighbours run the same way when one's end meets the other's
+    # start.
+    def joined(a, b):
+        return math.hypot(a.x - b.x, a.y - b.y) <= _JOINT_TOL_CM
+    flow, here = 1, _ends(chain[0]) if index else None
+    for curve in chain[1:index + 1]:
+        there = _ends(curve)
+        if here is None or there is None:
+            return 0
+        same_way = joined(here[1], there[0]) or joined(here[0], there[1])
+        if not same_way and not (joined(here[0], there[0]) or joined(here[1], there[1])):
+            return 0
+        flow, here = (flow if same_way else -flow), there
+    return flow
+
+
+def _offset_side(chain, curve, pick):
+    """(foot of the pick on `curve`, side of its tangent the pick lies on, flow of the chain
+    along it) - the last two +1/-1, or 0 where they cannot be told."""
+    foot = _foot(curve, pick)
+    if foot is None:
+        return None, 0, 0
+    index = next((i for i, c in enumerate(chain) if safe(lambda c=c: c == curve) is True), None)
+    return foot, _side(foot, pick), 0 if index is None else _flow(chain, index)
+
+
+def _landed_side(foot, curves):
+    """The side of a foot's tangent the nearest point of `curves` lies on; 0 when none reads."""
+    feet = [near for near in (_foot(c, foot[0]) for c in curves) if near is not None]
+    if not feet:
+        return 0
+    nearest = min(feet, key=lambda near: math.hypot(near[0].x - foot[0].x, near[0].y - foot[0].y))
+    return _side(foot, nearest[0])
 
 
 def _refuse_non_line(refs):
@@ -516,10 +586,27 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
             return error(f"offset needs 'distance' > 0 (in 'units'); the SIDE comes from the pick "
                          f"point x1,y1, so the distance is a magnitude. Got {distance}.")
 
+    source_curve_count = None
+    if act == "offset":
+        # createOffsetInput takes a set of END-CONNECTED curves; findConnectedCurves returns exactly
+        # that chain, in connected order, with the input curve among them.
+        chain = _collection_items(safe(lambda: sketch.findConnectedCurves(e1))) or [e1]
+        source_curve_count = len(chain)
+        foot, pick_side, flow = _offset_side(chain, e1, p1)
+        where = f"The pick point ({x1!a}, {y1!a}) {unit}"
+        if foot is not None and not pick_side:
+            return error(f"{where} lies ON '{entity_one}', so it names no side for the offset. "
+                         "Nothing was written - pick a point off the curve, on the side the new "
+                         "curve(s) should land.")
+        if not pick_side * flow:
+            return error(f"{where} could not be placed beside '{entity_one}': the curve's "
+                         "geometry, or a joint of the chain it belongs to, did not read. "
+                         "Nothing was written - sketch_constrain(constraint='offset') takes the "
+                         "side as the sign of 'distance'.")
+
     errors_before, _warn_before, _total = _common.timeline_health(design)
     before_n = _curve_count(sketch)
     length_before = safe(lambda: e1.length) if act == "extend" else None
-    source_curve_count = None
 
     try:
         if act in ("trim", "extend", "break", "split"):
@@ -539,14 +626,17 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
                 chamfer = lines.addDistanceChamfer(e1, p1, e2, p2, distance * k, second * k)
             created = [chamfer] if chamfer is not None else []
         else:
-            # Sketch.offset takes a set of END-CONNECTED curves; findConnectedCurves returns exactly
-            # that chain, in connected order, with the input curve among them.
-            chain = safe(lambda: sketch.findConnectedCurves(e1))
-            if chain is None or (safe(lambda: chain.count, 0) or 0) == 0:
-                chain = adsk.core.ObjectCollection.create()
-                chain.add(e1)
-            source_curve_count = safe(lambda: chain.count, 0) or 0
-            created = _collection_items(sketch.offset(chain, p1, distance * k))
+            # The binding puts a positive offset RIGHT of the chain's flow, so a pick on its left
+            # takes the negative. The length carries its unit, as sketch_constrain's offset does.
+            signed_cm = -pick_side * flow * distance * k
+            constraints = sketch.geometricConstraints
+            given = constraints.createOffsetInput(
+                chain, adsk.core.ValueInput.createByString(f"{signed_cm} cm"))
+            # A distance that swallows a corner arc offsets to fewer curves; the default refuses it.
+            given.isTopologyMatched = False
+            landed = constraints.addOffset2(given)
+            children = landed.childCurves if landed is not None else ()
+            created = [children[i] for i in range(len(children))]
     except Exception as e:
         needs = _NEEDS.get(act)
         return error(f"Could not {act} '{entity_one}' in sketch "
@@ -569,6 +659,18 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
         return error(f"{act} returned no curves and the sketch still holds {after_n} curve(s), so "
                      f"nothing changed.{tail} Re-read sketch_get(include_entities=true) for the "
                      "current ids and pick a point ON the curve.")
+
+    side_unread = False
+    if act == "offset":
+        # The sign was this tool's own choice, so where the curves landed is read back off them.
+        landed_side = _landed_side(foot, created)
+        if landed_side and landed_side != pick_side:
+            ids = [row["id"] for row in _curve_records(sketch, created, f)]
+            return error(f"offset landed on the OTHER side of '{entity_one}' from the pick point "
+                         f"({x1!a}, {y1!a}) {unit}. The edit REMAINS as {ids!a}: remove those with "
+                         "sketch_delete_entity, then use sketch_constrain(constraint='offset'), "
+                         "which takes the side as the sign of 'distance'.")
+        side_unread = not landed_side
 
     solved_radius = None
     if act == "fillet":
@@ -599,6 +701,9 @@ def handler(action: str = "", sketch_name: str = "", entity_one: str = "", entit
     if broke:
         note += (" This edit put " + ", ".join(broke) + " into an error state - the feature(s) "
                  "downstream of this sketch no longer compute.")
+    if side_unread:
+        note += (" Which side of the pick point the new curve(s) landed on did not read - check "
+                 "them with sketch_get(include_entities=true).")
 
     out = {
         "action": act,

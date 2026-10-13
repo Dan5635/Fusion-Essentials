@@ -19,11 +19,11 @@ MCP = REPO / "commands" / "mcpServer"
 
 # The prose surface every rule here polices - one list, so the scanned set cannot drift between them.
 CONSTITUTION_DOCS = [
-    REPO / "CLAUDE.md",
+    REPO / "AGENTS.md",
     REPO / "CONTRIBUTING.md",
     MCP / "README.md",
-    MCP / "tools" / "CLAUDE.md",
-    REPO / "tests" / "CLAUDE.md",
+    MCP / "tools" / "AGENTS.md",
+    REPO / "tests" / "AGENTS.md",
     REPO / "tests" / "README.md",
 ]
 # a file citation: an optional path prefix then a basename ending in .py, .md, or .log (a probe
@@ -36,7 +36,10 @@ _INLINE_CODE = re.compile(r"`([^`]+)`")
 # Log files the RUNNING add-in writes (they exist at runtime, never in the repo) - citing one is
 # a pointer to live output, not to committed evidence.
 # backlog.md: plans/ is a private, untracked ledger, absent from a clone.
-_RUNTIME_LOGS = {"futil.log", "app.log", "backlog.md", "plans/backlog.md"}
+_RUNTIME_LOGS = {"futil.log", "app.log", "backlog.md", "plans/backlog.md",
+                 # the gitignored local file CONTRIBUTING.md describes for a client that does not
+                 # read AGENTS.md
+                 "CLAUDE.md"}
 
 
 @lru_cache(maxsize=None)

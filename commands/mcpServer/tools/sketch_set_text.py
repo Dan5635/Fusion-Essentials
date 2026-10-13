@@ -307,6 +307,27 @@ def _apply_height(st, want_cm, sk_name, k, units):
     return rec, ""
 
 
+def _landed_as_asked(st, text, h, k, units):
+    """(the error for a NEW text whose string or height reads back other than asked, or '', and
+    which of 'text' and 'height' did not read back); a read that answers nothing convicts neither."""
+    # Both went in as parameter inputs - the string as an expression, the height as a ValueInput -
+    # so each is compared the way an edit compares its own write.
+    unread = []
+    expr = safe(lambda: st.textParameter.expression)
+    if expr is None:
+        unread.append("text")
+    elif _unquote(expr) != text and expr != _quote(text):
+        return (f"Asked for the string '{text}' but the new text's textParameter reads back "
+                f"'{_unquote(expr)}'."), unread
+    landed_cm = _height_read_cm(st)
+    if landed_cm is None:
+        unread.append("height")
+    elif abs(landed_cm - h * k) > _HEIGHT_MATCH_TOL_CM:
+        return (f"Asked for height {round(h, 6)} {units} but the new text's heightParameter reads "
+                f"{round(landed_cm / k, 6)} {units}."), unread
+    return "", unread
+
+
 def _create_text(design, text, sketch_name, height, x, y, units, mode, path, above_path,
                  align, character_spacing, angle_deg, flip_h, flip_v, font_name, component="",
                  style=None):
@@ -368,7 +389,9 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
     try:
         texts = sk.sketchTexts
         before = safe(lambda: texts.count, 0) or 0
-        ipt = texts.createInput2(text, h * k) # text + height (cm)
+        # createInput3 takes the string as a parameter EXPRESSION, so a literal goes in quoted; the
+        # height goes in as a ValueInput real. _landed_as_asked reads both back off the text.
+        ipt = texts.createInput3(_quote(text), adsk.core.ValueInput.createByReal(h * k))
         if _given(font_name):
             # The input accepts any string; add() below is where Fusion checks the name, so the
             # font is confirmed off the LANDED text. A font set BEFORE the setAs* placement
@@ -422,6 +445,11 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
     if derr:
         return error(derr)
 
+    lerr, unread = _landed_as_asked(st, text, h, k, units)
+    if lerr:
+        return error(lerr + " The text WAS created - remove it with sketch_delete_entity("
+                     f"sketch_name='{sketch_name}', target='text:{after - 1}'), then retry.")
+
     landed_font = _font_read_back(st) if _given(font_name) else None
     if landed_font and landed_font != font_name:
         return error(f"Asked for font '{font_name}' but the new text reports '{landed_font}', so "
@@ -459,8 +487,8 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
     "created": True,
     "sketch": safe(lambda: sk.name),
     "sketch_text_count": after,
-    "text": text,
-    "height": round(h, 6),
+    "text": None if "text" in unread else text,
+    "height": None if "height" in unread else round(h, 6),
     "mode": mode,
     "definition_type": facts["definition_type"],
     "mode_verified": facts["mode_verified"],
@@ -475,6 +503,9 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
     # Placement is READ BACK off the definition object, never echoed from the request; one that
     # will not read is published None and its requested value moves into 'requested' instead.
     asked = {"above_path": above, "align": align_key, "character_spacing": spacing}
+    for key, value in (("text", text), ("height", round(h, 6))):
+        if key in unread:
+            requested[key] = value
     for key, value in facts["placement"].items():
         out[key] = value
         if value is None:

@@ -24,7 +24,7 @@ Usage:
   py -3 tests/check_all.py --gen           # generator checks only
 
 The quality system, layer by layer (the one guarantee each makes):
-  constitution docs      the rules, taught once at the point of use (CLAUDE.md beside the code)
+  constitution docs      the rules, taught once at the point of use (AGENTS.md beside the code)
   unit tests             tool logic proven against fakes - which are POPULATED from measured facts
   lints                  the repo polices its own conventions (naming, wire text, comments, fakes)
   generators             TOOL_MANIFEST / TOOL_POINTER_MAP regenerate from code; gen_all --check gates

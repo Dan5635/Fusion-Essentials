@@ -918,6 +918,46 @@ class FakeOccurrence:
         return self._activate_ok
 
 
+@fusion_fake(scenario_double="the addByInsert member of a component's occurrences alone, landing "
+                             "as linked insertions through doc_insert_occurrence were read to "
+                             "land; no measure_api row drives a linked insertion, which needs "
+                             "a saved cloud document")
+class LinkedInsertOccurrences:
+    """component.occurrences as occurrences.addByInsert reaches it, for a component standing at the
+    world pose given (sixteen row-major cells; None is the root).
+
+    Measured in a parametric and in a direct design, as a first insertion and as a later one: the
+    new occurrence lands at M.H in the world - M the matrix passed, H the host's world pose - so in
+    the host's frame it reads inv(H).M.H. At the root it reads M. The underscored state is this
+    fake's own: what was last handed in, and an occurrence to hand back in place of the landing."""
+    _DEFAULT = object()
+
+    def __init__(self, host_world=None):
+        self._host_world = None if host_world is None else [float(v) for v in host_world]
+        self._last_transform = self._last_as_ref = None
+        self._insert_result = self._DEFAULT
+
+    @staticmethod
+    def _product(a, b):
+        return [sum(a[4 * r + i] * b[4 * i + c] for i in range(4))
+                for r in range(4) for c in range(4)]
+
+    def addByInsert(self, data_file, transform, as_ref):
+        self._last_transform, self._last_as_ref = transform, as_ref
+        if self._insert_result is not self._DEFAULT:
+            return self._insert_result
+        cells = [float(v) for v in transform.asArray()]
+        if self._host_world is not None:
+            h = self._host_world
+            rot = [[h[4 * c + r] for c in range(3)] for r in range(3)]
+            back = [-sum(rot[r][i] * h[4 * i + 3] for i in range(3)) for r in range(3)]
+            inverse = [*rot[0], back[0], *rot[1], back[1], *rot[2], back[2], 0.0, 0.0, 0.0, 1.0]
+            cells = self._product(self._product(inverse, cells), h)
+        landed = FakeMatrix3D()
+        landed.setWithArray(cells)
+        return make_occurrence(path="Part:1", referenced=as_ref, transform2=landed)
+
+
 @fusion_fake(factory_for="FakeOccurrence")
 def make_occurrence(path="Comp:1", component=None, raises=None, transform2=None,
                     assembly_context=None, ground_to_parent=None, children=(), raises_on=None,

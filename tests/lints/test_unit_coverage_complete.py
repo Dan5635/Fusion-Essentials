@@ -36,5 +36,5 @@ class TestUnitCoverageComplete:
         unaccounted = sorted(_tool_modules() - _unit_tested_modules() - set(UNTESTED))
         assert not unaccounted, (
             "Tool modules with no unit test and no excuse - write tests/unit/test_<module>.py "
-            "(load_tool('<module>'); copy the nearest pattern per tests/CLAUDE.md) or add an "
+            "(load_tool('<module>'); copy the nearest pattern per tests/AGENTS.md) or add an "
             "UNTESTED entry with the Tier-3 reason:\n  " + "\n  ".join(unaccounted))

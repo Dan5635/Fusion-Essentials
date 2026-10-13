@@ -203,6 +203,19 @@ class TestReads:
         op.generatedDataCollection = None
         assert ca.additive_results(cam, op)["generated_result_count"] is None
 
+    @pytest.mark.parametrize("target, items, noted", [
+        ("supportTarget", 0, True), ("supportTargetModel", 0, True), ("supportTarget", 1, False),
+        ("supportTarget", None, False), ("optimizeOrientationTarget", 0, False)])
+    def test_only_a_zero_count_on_a_support_operation_says_it_is_not_an_absence(self, cam, target,
+                                                                                 items, noted):
+        op = _operation({target: [cam.side[0]]}, data=[SimpleNamespace(kind="other")] * (items or 0))
+        if items is None:
+            op.generatedDataCollection = None
+        out = ca.additive_results(cam, op)
+        assert out["generated_result_count"] == items and out["parts"] == ["PartA:1"]
+        assert out.get("note") == (ca.SUPPORT_COUNT_NOTE if noted else None)
+        assert "does not say whether support was generated" in ca.SUPPORT_COUNT_NOTE
+
     def test_parameter_table_reports_total_count_before_truncation(self):
         table = SimpleNamespace(count=41, item=lambda i: SimpleNamespace(name=str(i), expression="1"))
         rows, count = ca._table(table, 40)

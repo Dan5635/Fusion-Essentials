@@ -2,7 +2,7 @@
 handlers behind cam_get, which reach the substrate through it). ``cc`` is the substrate, ``cr`` the
 read cores.
 
-Covers the bounded-read caps (CLAUDE.md "Bound it"): setups_handler's top-level 'truncated'
+Covers the bounded-read caps (AGENTS.md "Bound it"): setups_handler's top-level 'truncated'
 and per-setup 'model_lists_truncated', operations_handler's per-setup 'operations_truncated', and
 get_setup_references_handler's per-setup 'references_truncated' - plus the third incompleteness
 those flags carry, a model/fixture/stock PROPERTY that raises instead of reading a collection (the

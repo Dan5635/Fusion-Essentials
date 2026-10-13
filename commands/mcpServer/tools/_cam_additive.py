@@ -19,6 +19,11 @@ MAP_BLURB = ("setting_fits/assign_parts/target_parts (print setting vs machine, 
 # The parameter that holds the parts an additive operation acts on, by the operations that carry it.
 PART_TARGETS = ("optimizeOrientationTarget", "supportTarget", "supportTargetModel",
                 "interferenceAnalysisTargets")
+SUPPORT_TARGETS = ("supportTarget", "supportTargetModel")
+SUPPORT_COUNT_NOTE = (
+    "generated_result_count reads 0; on a support operation that does not say whether support was "
+    "generated. cam_get_status reads whether the operation is valid; has_error and error here read "
+    "a failed generation.")
 # Two reads of one orientation matrix differ by about 1e-8.
 MATRIX_TOL = 1e-6
 _ROTATION_CELLS = (0, 1, 2, 4, 5, 6, 8, 9, 10)
@@ -299,6 +304,8 @@ def additive_results(cam, op):
     data = safe(lambda: op.generatedDataCollection)
     count = _common.counted(lambda: data.count)
     out["generated_result_count"] = count
+    if count == 0 and found and found[1] in SUPPORT_TARGETS:
+        out["note"] = SUPPORT_COUNT_NOTE
     for i in range(count or 0):
         # an item is told by its class: asking the collection by type hands back whatever it holds
         clash = adsk.cam.AdditiveInterferenceAnalysisResult.cast(safe(lambda i=i: data.item(i)))

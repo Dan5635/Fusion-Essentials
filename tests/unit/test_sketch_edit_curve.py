@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import adsk.core
 import pytest
 
-from conftest import (FakeBoundingBox3D, FakePoint, MakeComp, assert_no_active_design,
-                      assert_unknown_units, error_message,
+from conftest import (FakeBoundingBox3D, FakePoint, FakeValueInput, FakeVector3D, Line3D, MakeComp,
+                      assert_no_active_design, assert_unknown_units, error_message,
                       install, load_tool, make_design, make_sketch, make_sketch_curve, payload,
                       sketch_curves_edit)
 
@@ -474,26 +474,177 @@ class TestFilletChamferOffset:
         assert calls[0][4] == pytest.approx(0.4)
         assert calls[0][5] == pytest.approx(math.radians(30))
 
-    def test_offset_feeds_the_connected_chain(self, mod, sketch):
-        calls = []
-        new_line = make_sketch_curve("L2", length=10.0)
-        chain = _result(_lines(sketch).item(0), _lines(sketch).item(1))
-        sketch.findConnectedCurves = lambda curve: chain
-        sketch.offset = _recorder(calls, _result(new_line))
-        out = payload(mod.handler(action="offset", entity_one="line:0", x1=5, y1=5, distance=2))
-        curves, direction, distance_cm = calls[0]
-        assert curves is chain and distance_cm == pytest.approx(0.2)
-        assert (direction.x, direction.y) == (0.5, 0.5)
-        assert out["source_curve_count"] == 2
 
-    def test_offset_falls_back_to_the_single_curve_when_no_chain_is_found(self, mod, sketch):
-        calls = []
-        new_line = make_sketch_curve("L2", length=10.0)
-        sketch.findConnectedCurves = lambda curve: _result()
-        sketch.offset = _recorder(calls, _result(new_line))
-        out = payload(mod.handler(action="offset", entity_one="line:0", x1=5, y1=5, distance=2))
-        assert calls[0][0].count == 1 and calls[0][0].item(0) is _lines(sketch).item(0)
-        assert out["source_curve_count"] == 1
+
+def _straight(curve, x0, y0, x1, y1):
+    """Give a sketch curve a straight line's sketch-space geometry (cm): the shared Line3D plus an
+    evaluator answering the live [bool, value] lists. BINDINGS-SOURCED, not measured: a point off
+    the line answers the parameter of its nearest point, and the tangent runs start to end."""
+    length = math.hypot(x1 - x0, y1 - y0)
+    ux, uy = (x1 - x0) / length, (y1 - y0) / length
+    curve.geometry = Line3D(FakePoint(x0, y0), FakePoint(x1, y1))
+    curve.geometry.evaluator = SimpleNamespace(
+        getParameterAtPoint=lambda p: [True, min(max((p.x - x0) * ux + (p.y - y0) * uy, 0.0),
+                                                 length)],
+        getPointAtParameter=lambda t: [True, FakePoint(x0 + ux * t, y0 + uy * t)],
+        getTangent=lambda t: [True, FakeVector3D(ux, uy, 0.0)],
+        getEndPoints=lambda: [True, FakePoint(x0, y0), FakePoint(x1, y1)])
+    curve.run = (x0, y0, x1, y1)
+    return curve
+
+
+class _Offsets:
+    """Local double - GeometricConstraints has no live_api_facts.SHAPES entry. createOffsetInput
+    records what it is handed and addOffset2 lands one child per straight input curve. The retired
+    Sketch.offset is absent from the shared Sketch, so a call that reaches for it fails.
+
+    A positive offset lands RIGHT of the flow; the first curve handed in sets it in its own
+    direction and each joint carries it on. `lies` are INJECTED: 'other_side' lands the children across the chain,
+    'blind_children' lands children whose geometry does not read, 'nothing' answers no constraint."""
+    def __init__(self, sketch, lies=()):
+        self.sketch, self.lies, self.inputs = sketch, lies, []
+
+    def createOffsetInput(self, curves, offset):
+        assert isinstance(curves, list), "createOffsetInput takes a plain list of curves"
+        self.inputs.append(SimpleNamespace(curves=curves, offset=offset))
+        return self.inputs[-1]
+
+    def addOffset2(self, offset_input):
+        if "nothing" in self.lies:
+            return None
+        text = offset_input.offset.stringValue
+        assert text.endswith(" cm"), text
+        d = float(text[:-3]) * (-1.0 if "other_side" in self.lies else 1.0)
+        runs = [curve.run for curve in offset_input.curves]
+        flows = [1.0]
+        for before, after in zip(runs, runs[1:]):
+            # two neighbours run the same way when one's end is the other's start
+            same_way = before[2:] == after[:2] or before[:2] == after[2:]
+            flows.append(flows[-1] if same_way else -flows[-1])
+        children = []
+        for n, curve in enumerate(offset_input.curves):
+            x0, y0, x1, y1 = curve.run
+            length = math.hypot(x1 - x0, y1 - y0)
+            d_flow = d * flows[n]
+            rx, ry = (y1 - y0) / length * d_flow, -(x1 - x0) / length * d_flow
+            child = make_sketch_curve(f"OFF{n}", length=length)
+            if "blind_children" not in self.lies:
+                _straight(child, x0 + rx, y0 + ry, x1 + rx, y1 + ry)
+            children.append(child)
+        sketch_curves_edit(_lines(self.sketch), add=children)
+        return SimpleNamespace(childCurves=children)
+
+
+@pytest.fixture
+def corner(sketch, monkeypatch):
+    """line:0 runs (0,0) -> (10,0) cm and line:1 leaves its END up to (10,5): one chain, in that
+    order, with the recording offset constraints on the sketch."""
+    line0 = _straight(_lines(sketch).item(0), 0.0, 0.0, 10.0, 0.0)
+    line1 = _straight(_lines(sketch).item(1), 10.0, 0.0, 10.0, 5.0)
+    sketch.findConnectedCurves = lambda curve: _result(line0, line1)
+    sketch.geometricConstraints = _Offsets(sketch)
+    monkeypatch.setattr(adsk.core.ValueInput, "createByString",
+                        lambda text: FakeValueInput(string=text))
+    return sketch
+
+
+def _signed_cm(sketch):
+    """The signed centimetres of the one offset input the tool built."""
+    made, = sketch.geometricConstraints.inputs
+    return float(made.offset.stringValue[:-3])
+
+
+class TestOffset:
+    @pytest.mark.parametrize("y1, signed_cm", [(5, -0.2), (-5, 0.2)])
+    def test_the_pick_side_becomes_the_sign_of_the_distance(self, mod, corner, y1, signed_cm):
+        # the chain flows along +x, so a pick above it is on its LEFT: the negative offset
+        out = payload(mod.handler(action="offset", entity_one="line:0", x1=50, y1=y1, distance=2))
+        made, = corner.geometricConstraints.inputs
+        assert made.curves == [_lines(corner).item(0), _lines(corner).item(1)]
+        assert _signed_cm(corner) == pytest.approx(signed_cm)
+        assert made.offset.stringValue.endswith(" cm") and made.isTopologyMatched is False
+        assert out["source_curve_count"] == 2
+        assert [row["id"] for row in out["resulting"]] == ["line:2", "line:3"]
+        assert out["curve_count_after"] == 4 and "did not read" not in out["note"]
+
+    def test_a_curve_drawn_against_the_chains_first_curve_flips_the_sign(self, mod, corner):
+        # line:0 is drawn towards the origin and line:1 leaves its START; the chain comes back
+        # with line:1 first, so the flow runs against line:0 and a pick above it is on the flow's
+        # LEFT: the negative offset, which lands above the line
+        line0 = _straight(_lines(corner).item(0), 10.0, 0.0, 0.0, 0.0)
+        line1 = _lines(corner).item(1)
+        corner.findConnectedCurves = lambda curve: _result(line1, line0)
+        out = payload(mod.handler(action="offset", entity_one="line:0", x1=50, y1=5, distance=2))
+        assert _signed_cm(corner) == pytest.approx(-0.2)
+        assert _lines(corner).item(3).run == pytest.approx((10.0, 0.2, 0.0, 0.2))
+        assert "did not read" not in out["note"]
+
+    def test_the_first_curve_handed_in_sets_the_flow_whatever_touches_it(self, mod, corner):
+        # line:1 leaves line:0's START, yet line:0 is first in the chain: a pick above is its LEFT
+        line0 = _lines(corner).item(0)
+        line1 = _straight(_lines(corner).item(1), 0.0, 0.0, 0.0, -5.0)
+        corner.findConnectedCurves = lambda curve: _result(line0, line1)
+        payload(mod.handler(action="offset", entity_one="line:0", x1=50, y1=5, distance=2))
+        assert _signed_cm(corner) == pytest.approx(-0.2)
+        assert _lines(corner).item(2).run == pytest.approx((0.0, 0.2, 10.0, 0.2))
+
+    def test_a_later_curve_takes_the_flow_carried_over_its_joint(self, mod, corner):
+        # line:1 runs up from line:0's end; a pick at x=12 is on its RIGHT
+        payload(mod.handler(action="offset", entity_one="line:1", x1=120, y1=20, distance=2))
+        assert _signed_cm(corner) == pytest.approx(0.2)
+
+    def test_a_curve_with_no_chain_is_offset_alone_along_its_own_direction(self, mod, corner):
+        corner.findConnectedCurves = lambda curve: _result()
+        out = payload(mod.handler(action="offset", entity_one="line:0", x1=50, y1=5, distance=2))
+        made, = corner.geometricConstraints.inputs
+        assert made.curves == [_lines(corner).item(0)] and out["source_curve_count"] == 1
+        assert _signed_cm(corner) == pytest.approx(-0.2)
+
+    def test_a_pick_on_the_curve_names_no_side_and_writes_nothing(self, mod, corner):
+        msg = error_message(mod.handler(action="offset", entity_one="line:0", x1=50, y1=0,
+                                        distance=2))
+        assert "The pick point (50, 0) mm lies ON 'line:0'" in msg and "Nothing was written" in msg
+        assert corner.geometricConstraints.inputs == []
+
+    def test_a_curve_whose_geometry_does_not_read_is_refused_before_the_write(self, mod, corner):
+        del _lines(corner).item(0).geometry
+        msg = error_message(mod.handler(action="offset", entity_one="line:0", x1=50, y1=5,
+                                        distance=2))
+        assert "could not be placed beside 'line:0'" in msg
+        assert "sketch_constrain(constraint='offset')" in msg
+        assert corner.geometricConstraints.inputs == []
+
+    def test_curves_that_land_across_the_chain_are_an_error_naming_them(self, mod, corner):
+        corner.geometricConstraints.lies = ("other_side",)
+        msg = error_message(mod.handler(action="offset", entity_one="line:0", x1=50, y1=5,
+                                        distance=2))
+        assert "offset landed on the OTHER side of 'line:0'" in msg
+        assert "The edit REMAINS as ['line:2', 'line:3']" in msg
+
+    def test_children_whose_side_does_not_read_are_reported_as_unread(self, mod, corner):
+        corner.geometricConstraints.lies = ("blind_children",)
+        out = payload(mod.handler(action="offset", entity_one="line:0", x1=50, y1=5, distance=2))
+        assert "Which side of the pick point the new curve(s) landed on did not read" in out["note"]
+        assert out["curve_count_after"] == 4
+
+    def test_a_constraint_that_is_not_handed_back_is_an_error(self, mod, corner):
+        corner.geometricConstraints.lies = ("nothing",)
+        msg = error_message(mod.handler(action="offset", entity_one="line:0", x1=50, y1=5,
+                                        distance=2))
+        assert "offset returned no curves" in msg and "nothing changed" in msg
+
+    def test_a_pick_at_the_noise_floor_is_on_the_curve_and_one_past_it_is_beside_it(self, mod):
+        foot = (FakePoint(0.0, 0.0), FakeVector3D(1.0, 0.0, 0.0))
+        assert mod._side(foot, FakePoint(0.0, mod._LENGTH_EPS_CM)) == 0
+        assert mod._side(foot, FakePoint(0.0, 2 * mod._LENGTH_EPS_CM)) == 1
+        assert mod._side(foot, FakePoint(0.0, -2 * mod._LENGTH_EPS_CM)) == -1
+
+    def test_ends_at_the_joint_tolerance_are_one_joint_and_past_it_are_not(self, mod):
+        # the successor starts at the origin, so the gap IS the first curve's end coordinate
+        nxt = _straight(make_sketch_curve("N"), 0.0, 0.0, 0.0, 5.0)
+        for gap, flow in ((mod._JOINT_TOL_CM, 1), (2 * mod._JOINT_TOL_CM, 0)):
+            first = _straight(make_sketch_curve("F"), -10.0, 0.0, gap, 0.0)
+            assert mod._flow([first, nxt], 1) == flow, gap
 
 
 class TestDownstreamHealth:

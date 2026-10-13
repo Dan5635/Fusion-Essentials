@@ -259,12 +259,15 @@ def _relation_rollup(design):
     return broken, unknown
 
 
-def _grounded_count(root):
-    grounded = 0
+def _ground_counts(root):
+    """(grounded, ground_to_parent) over the top-level occurrences - each flag counted apart, so a
+    parent-locked occurrence never adds to the grounded count."""
+    grounded = parent_locked = 0
     for o in _common.iter_collection(safe(lambda: root.occurrences)):
-        if safe(lambda o=o: o.isGrounded, False):
-            grounded += 1
-    return grounded
+        flags = _common.ground_flags(o)
+        grounded += flags["grounded"]
+        parent_locked += flags["ground_to_parent"]
+    return grounded, parent_locked
 
 
 def _unresolved_descendants(walk, name):
@@ -278,8 +281,9 @@ def _unresolved_descendants(walk, name):
 
 def _browser_digest(root, walk):
     """A DEPTH-1 digest of the top-level occurrences - name, component, child and body counts,
-    grounded, is_xref (which describes THAT ROW only) - plus unresolved_descendants, the one
-    subtree-wide number, read off the shared census rather than a second walk."""
+    grounded, ground_to_parent where it reads true, is_xref (which describes THAT ROW only) - plus
+    unresolved_descendants, the one subtree-wide number, read off the shared census rather than a
+    second walk."""
     digest = []
     occs = safe(lambda: root.occurrences)
     count = safe(lambda: occs.count, 0) if occs else 0
@@ -292,13 +296,17 @@ def _browser_digest(root, walk):
             digest.append({"name": name if name else "(unreadable name)",
                            "unresolved": True, "detail": detail})
             continue
+        flags = _common.ground_flags(o)
         digest.append({
         "name": name,
         "component": safe(lambda o=o: o.component.name),
         "children": safe(lambda o=o: o.childOccurrences.count, 0),
         "unresolved_descendants": _unresolved_descendants(walk, name),
         "bodies": safe(lambda o=o: o.bRepBodies.count, 0),
-        "grounded": bool(safe(lambda o=o: o.isGrounded, False)),
+        "grounded": flags["grounded"],
+        # Only on a row it reads true for: the health count is the always-present statement, and
+        # a false on every row is paid on every orient.
+        **({"ground_to_parent": True} if flags["ground_to_parent"] else {}),
         "is_xref": bool(safe(lambda o=o: o.isReferencedComponent, False)),
         })
     return digest, (count or 0)
@@ -596,7 +604,7 @@ def handler() -> dict:
     # MEASURED: a failed assembly constraint left this read healthy while only a deeper
     # include=['relations'] slice named it, so relation health rides the first call.
     broken_relations, relations_unknown = _relation_rollup(design)
-    grounded = _grounded_count(root)
+    grounded, parent_locked = _ground_counts(root)
     digest, top_level = _browser_digest(root, occ_walk)
     has_cam, cam = _cam_summary(doc)
 
@@ -626,6 +634,7 @@ def handler() -> dict:
         "broken_joints": broken_joints,
         "broken_relations": broken_relations,
         "grounded_occurrences": grounded,
+        "ground_to_parent_occurrences": parent_locked,
         # Features after a rolled-back marker are NOT in the current model - they revert to home.
         "timeline_rolled_back": rolled_back,
         "out_of_date_references": out_of_date,

@@ -1928,7 +1928,10 @@ def _additive_parts_rows():
           ("pb_support_final_gen", _recall("pb_support_final_gen", lambda p: p["handle"])))
     read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_support_final_gen", "the support")},
          _face_op_settled("pb_support_final_gen", "the placed support settled valid", {"valid": 1}))
-    results("pb_support", lambda r: r.get("parts") == [_PB_A] and r.get("has_error") is False)
+    # The count reads 0 on the valid support whose structures the 3MF below carries.
+    results("pb_support", lambda r: r.get("parts") == [_PB_A] and r.get("has_error") is False
+            and r.get("generated_result_count") == 0
+            and "does not say whether support was generated" in (r.get("note") or ""))
     # Generate the setup's default slice after arrange and refreshed support.
     def buildstyle(p):
         rows_ = [r for rec in ((p.get("operations") or {}).get("setups") or [])

@@ -1,4 +1,4 @@
-"""Lint: a shared helper lives in exactly ONE module - its home (CLAUDE.md "Reuse before you write").
+"""Lint: a shared helper lives in exactly ONE module - its home (AGENTS.md "Reuse before you write").
 A denylisted symbol (one optional leading underscore allowed) is defined in its home module and
 nowhere else under tools/; a same-named definition doing a different job takes an _ALLOWLIST entry.
 Two shared VALUE shapes are matched by shape below, since a renamed copy slips a name denylist."""
@@ -18,6 +18,7 @@ _DENYLIST = {
     "read_sweep_definition": ("_edit_feature_common", "def"),
     "feature_definition": ("_edit_feature_common", "def"),
     "extrude_extent_kind": ("_edit_feature_common", "def"),
+    "extrude_tapers": ("_edit_feature_common", "def"),
     "get_cam": ("_cam_common", "def"),
     # The cutting-tool identity pair the create and the edit both read Operation.tool back with -
     # one home, so the '#<n> - ' prefix strip cannot drift between the two comparisons and turn a

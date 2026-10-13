@@ -61,6 +61,23 @@ def _joint_preflight_assembly(motion, limits):
     return check
 
 
+def _joint_preflight_orient(p):
+    """Check the orientation ground counts and digest flags against assembly_get's own rows."""
+    def flags(rows):
+        return [(r.get("name"), r.get("grounded"), r.get("ground_to_parent")) for r in rows]
+    poses = flags((_RECALL.get("joint_preflight_poses") or [[]])[0])
+    health = p.get("health") or {}
+    counts = {key: health.get(key) for key in ("grounded_occurrences", "ground_to_parent_occurrences")}
+    digest = flags(p.get("browser_digest") or [])
+    # The digest carries ground_to_parent only on a row it reads true for.
+    valid = (poses == [("A:1", False, True), ("B:1", False, False)]
+             and all(type(v) is int for v in counts.values())
+             and counts == {"grounded_occurrences": 0, "ground_to_parent_occurrences": 1}
+             and digest == [("A:1", False, True), ("B:1", False, None)])
+    return _measured("orientation counts A's parent lock apart from grounded, as assembly_get reads it",
+                     {"assembly_get": poses, "workspace_orient": {**counts, "browser_digest": digest}}, valid)
+
+
 def _joint_limit_snapshot(name, motion, unit, lo, hi, key, baseline):
     """Read the enabled bounds and placed-state bundle before and after a refused edit."""
     limit_key = "rotation_limits_deg" if unit == "deg" else "slide_limits_mm"
@@ -149,6 +166,7 @@ def _joint_preflight_rows():
             rows.append(("find_geometry", lambda c, target=target: {"target": target, "units": "mm", "max_results": 100},
                          _retire_compare("joint_preflight_geometry_" + target, geometry, after), None))
     rows += [("assembly_get", assembly, _joint_preflight_assembly("revolute", None), None),
+             ("workspace_orient", {}, _joint_preflight_orient, None),
              ("design_get", history, _retire_compare("joint_preflight_asbuilt_history", history_state, False), None)]
     held(False)
     for field, value in (("offset", 5), ("angle", 30)):
@@ -2847,6 +2865,32 @@ def _instance_frame_geometry(bounds):
     return check
 
 
+def _instance_frame_box(*poses):
+    """World min and max corners (mm) of the 10 x 20 x 30 leaf box under `poses`, outermost first;
+    a pose is (x, y, z, degrees, axis)."""
+    points = [[x, y, z] for x in (0, 10) for y in (0, 20) for z in (0, 30)]
+    for x, y, z, deg, axis in reversed(poses):
+        c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+        i, j = {'x': (1, 2), 'y': (2, 0), 'z': (0, 1)}[axis]
+        for p in points:
+            p[i], p[j] = c * p[i] - s * p[j], s * p[i] + c * p[j]
+            p[:] = [p[0] + x, p[1] + y, p[2] + z]
+    return [[min(p[k] for p in points) for k in range(3)],
+            [max(p[k] for p in points) for k in range(3)]]
+
+
+def _after_copy_feature_landed(p):
+    """Read the later feature's one root solid independently of its creation reply."""
+    mass = p.get('mass') or {}
+    roots = [row for row in mass.get('per_body') or []
+             if 'occurrence' in row and row['occurrence'] is None]
+    return _measured('the later feature added its own 4 x 4 x 10 root solid', roots,
+                     mass.get('units') == 'mm' and mass.get('accuracy') == 'very_high'
+                     and mass.get('per_body_truncated') is False and len(roots) == 1
+                     and roots[0].get('is_solid') is True
+                     and _near(roots[0].get('volume'), 160, .016))
+
+
 def _instance_frame_rows(mode):
     """Verify current local placement for both instance factories through world geometry."""
     source = 'GroundHost:1+GroundLeaf:1'
@@ -2877,6 +2921,56 @@ def _instance_frame_rows(mode):
             ('model_inspect', lambda c, key=key: {'target': _ctx_get(c, key, 'acquired instance'), **inspection},
              _instance_frame_geometry(landed), None),
             ('model_inspect', {'target': source, **inspection}, _instance_frame_geometry(original), None),
+        ]
+    # The host placed a second time, then a copy addressed to that placement: the copy's own body
+    # is read under BOTH placements against boxes derived from the request, not from the reply.
+    first, second, request = (100, 200, 50, 90, 'z'), (-60, 40, 20, 40, 'y'), (12, -8, 6, 35, 'z')
+    key = 'instance_frame_' + mode + '_twice'
+    def twice(p):
+        leaf = (p.get('full_path') or '').rsplit('+', 1)[-1]
+        return (p.get('created') is True and p.get('independent') is True and bool(leaf)
+                and p.get('full_path') == 'GroundHost:2+' + leaf
+                and p.get('paths') == ['GroundHost:1+' + leaf, 'GroundHost:2+' + leaf]
+                and p.get('position') == {'x': 12, 'y': -8, 'z': 6}
+                and ('Its position was captured' in (p.get('note') or '')) is (mode == 'parametric'))
+    rows += [
+        ('design_add_instance', {'component': 'GroundHost:1', 'x': -60, 'y': 40, 'z': 20,
+            'units': 'mm', 'rotate_deg': 40, 'rotate_axis': 'y'},
+         lambda p: p.get('created') is True and p.get('full_path') == 'GroundHost:2'
+         and p.get('position') == {'x': -60, 'y': 40, 'z': 20}, None),
+        ('design_add_instance', {'component': source, 'into_component': 'GroundHost:2',
+            'independent': True, 'x': 12, 'y': -8, 'z': 6, 'units': 'mm',
+            'rotate_deg': 35, 'rotate_axis': 'z'}, twice,
+         (key, _recall(key, lambda p: p['full_path'].rsplit('+', 1)[-1]))),
+        ('model_inspect', lambda c, key=key: {
+            'target': 'GroundHost:2+' + _ctx_get(c, key, 'the copy'), **inspection},
+         _instance_frame_geometry(_instance_frame_box(second, request)), None),
+        ('model_inspect', lambda c, key=key: {
+            'target': 'GroundHost:1+' + _ctx_get(c, key, 'the copy'), **inspection},
+         _instance_frame_geometry(_instance_frame_box(first, request)), None),
+        ('model_inspect', {'target': source, **inspection}, _instance_frame_geometry(original), None),
+    ]
+    if mode == 'parametric':
+        # One later feature at the root. A copy whose position was left pending falls back to its
+        # source's pose at this point, so every copy is read again against its request.
+        copy_key = 'instance_frame_' + mode + '_copy'
+        rows += [
+            ('design_activate_component', {'occurrence': 'root'}, 'ok', None),
+            ('sketch_create', {'name': 'AfterCopy', 'plane': 'xy'}, 'ok', None),
+            ('sketch_add_geometry', {'sketch_name': 'AfterCopy', 'units': 'mm', 'geometry': [
+                {'kind': 'rectangle', 'x1': 400, 'y1': 400, 'x2': 404, 'y2': 404}]}, 'ok', None),
+            ('model_extrude', {'sketch_name': 'AfterCopy', 'distance': 10, 'units': 'mm',
+                               'operation': 'new'}, _extruded, None),
+            ('model_inspect', {'units': 'mm', 'include': ['mass'], 'accuracy': 'very_high',
+                               'per_body': True}, _after_copy_feature_landed, None),
+            ('model_inspect', lambda c, key=key: {
+                'target': 'GroundHost:2+' + _ctx_get(c, key, 'the copy'), **inspection},
+             _instance_frame_geometry(_instance_frame_box(second, request)), None),
+            ('model_inspect', lambda c, key=key: {
+                'target': 'GroundHost:1+' + _ctx_get(c, key, 'the copy'), **inspection},
+             _instance_frame_geometry(_instance_frame_box(first, request)), None),
+            ('model_inspect', lambda c: {'target': _ctx_get(c, copy_key, 'acquired instance'),
+                                         **inspection}, _instance_frame_geometry(landed), None),
         ]
     return _scratch('instance_frames_' + mode, rows)
 

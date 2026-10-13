@@ -76,7 +76,7 @@ def _build():
         "",
         "## Typed seams - contracts enforced at construction, not by scanning",
         "",
-        "- Input kinds: commands/mcpServer/tools/_inputs.py (the catalog table in tools/CLAUDE.md).",
+        "- Input kinds: commands/mcpServer/tools/_inputs.py (the catalog table in tools/AGENTS.md).",
         "- Postcondition kinds: commands/mcpServer/tools/_assert.py (capture -> mutate -> verify).",
         "- Verification declarations: commands/mcpServer/mcp_primitives/item.py (closed kinds;",
         "  every reference resolved by test_postconditions_declared.py).",

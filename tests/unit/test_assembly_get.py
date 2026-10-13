@@ -365,11 +365,13 @@ class TestProbe:
     def test_ground_flags_and_grounded_list(self, kin_design):
         block = _occ("Block:1", "Block", grounded=True, ground_to_parent=True)
         crank = _occ("Crank:1", "Crank", grounded=False, ground_to_parent=False)
-        kin_design(occs=[block, crank])
+        vise = _occ("Vise:1", "Vise", grounded=False, ground_to_parent=True)
+        kin_design(occs=[block, crank, vise])
         out = _payload(ap.handler())
-        assert out["grounded_occurrences"] == ["Block:1"]
+        assert out["grounded_occurrences"] == ["Block:1"]      # the parent lock alone is not grounded
         bycomp = {o["name"]: o for o in out["occurrences"]}
         assert bycomp["Crank:1"]["ground_to_parent"] is False
+        assert (bycomp["Vise:1"]["grounded"], bycomp["Vise:1"]["ground_to_parent"]) == (False, True)
 
     def test_joint_type_and_dof_mapping(self, kin_design):
         kin_design(occs=[_occ("A:1", "A"), _occ("B:1", "B")],
@@ -776,7 +778,7 @@ class TestRelationHealthWithheldWhenUnread:
         assert [r["name"] for r in out["broken_relations"]] == ["Bad"]
 
 
-# ── BOUNDED READS: occurrences/joints arrays cap + report truncated (CLAUDE.md "Bound it") ──────
+# ── BOUNDED READS: occurrences/joints arrays cap + report truncated (AGENTS.md "Bound it") ──────
 
 class TestCaps:
     def test_occurrences_under_cap_untruncated_and_unchanged(self, kin_design):

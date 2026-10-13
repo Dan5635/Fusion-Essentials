@@ -762,31 +762,22 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
             if taper:
                 return error("taper_deg is not supported with extent=through_all (a through-all "
                              "extent carries no taper).")
-            # The modern one-sided negative setter cuts the positive side in the scoped XY case;
-            # the retired negative setter cuts the requested side. Symmetry needs two modern sides.
+            # A symmetric through-all takes one definition per side.
             through_all_dir = _through_all_direction_key(symmetric, distance)
             all_extent = adsk.fusion.ThroughAllExtentDefinition
             if through_all_dir == "symmetric":
                 if not ext_input.setTwoSidesExtent(all_extent.create(), all_extent.create()):
                     return error("Fusion rejected a symmetric extent=through_all "
                                  "(setTwoSidesExtent returned false).")
-            elif through_all_dir == "negative":
-                setter = safe(lambda: ext_input.setAllExtent)
-                remedy = ("Use model_measure_between to size a finite negative-distance cut, "
-                          "then use extent='distance' with that negative distance.")
-                if not callable(setter):
-                    return error("Negative extent=through_all needs the retired setAllExtent "
-                                 "compatibility setter, unavailable here; nothing was extruded. "
-                                 + remedy)
-                if not setter(adsk.fusion.ExtentDirections.NegativeExtentDirection):
-                    return error("Fusion rejected negative extent=through_all "
-                                 "(retired setAllExtent returned false); nothing was extruded. "
-                                 + remedy)
             else:
                 ext_dirs = adsk.fusion.ExtentDirections
                 direction = {"positive": ext_dirs.PositiveExtentDirection,
                              "negative": ext_dirs.NegativeExtentDirection}[through_all_dir]
-                if not ext_input.setOneSideExtent(all_extent.create(), direction):
+                through = all_extent.create()
+                if through_all_dir == "negative":
+                    # The direction argument alone leaves the extent on the positive side.
+                    through.isPositiveDirection = False
+                if not ext_input.setOneSideExtent(through, direction):
                     return error(f"Fusion rejected a {through_all_dir} extent=through_all "
                                  "(setOneSideExtent returned false).")
         elif ext_key == "two_side":
@@ -798,23 +789,6 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
                 return error("'taper_deg' applies only when extent_one='distance'.")
             if taper_two_value and side_two_mode != "distance":
                 return error("'taper_two_deg' applies only when extent_two='distance'.")
-            legacy_distances = (side_one_mode == "distance" and side_two_mode == "distance"
-                                and not taper_one_value and not taper_two_value)
-            if legacy_distances:
-                value_one, cm_one, err_one = _inputs.length_value_input(
-                    distance, k, design, "distance")
-                if err_one:
-                    return error(err_one)
-                value_two, cm_two, err_two = _inputs.length_value_input(
-                    distance2, k, design, "distance2")
-                if err_two:
-                    return error(err_two)
-                if not ext_input.setTwoSidesDistanceExtent(value_one, value_two):
-                    return error("Fusion rejected the two-sided distances (setTwoSidesDistanceExtent returned false).")
-                depth_request.extend((
-                    ("side-one distance", 0, cm_one, distance, True),
-                    ("side-two distance", 1, cm_two, distance2, True),
-                ))
 
             def side_definition(mode, raw_distance, raw_stop, stop_name, minimum, side_index):
                 if mode == "distance":
@@ -830,26 +804,26 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
                     stop_expectations.append((side_index, _entity, minimum))
                 return definition, None, err
 
-            if not legacy_distances:
-                one, cm_one, err_one = side_definition(
-                    side_one_mode, distance, to_object, "to_object", minimum_solution, 0)
-                if err_one:
-                    return error(err_one)
-                two, cm_two, err_two = side_definition(
-                    side_two_mode, distance2, to_object_two, "to_object_two", minimum_solution, 1)
-                if err_two:
-                    return error(err_two)
-                taper_one = (adsk.core.ValueInput.createByString(f"{taper_one_value} deg")
-                             if taper_one_value else None)
-                taper_two = (adsk.core.ValueInput.createByString(f"{taper_two_value} deg")
-                             if taper_two_value else None)
-                if not ext_input.setTwoSidesExtent(one, two, taper_one, taper_two):
-                    return error("Fusion rejected the independent two-sided extents (setTwoSidesExtent "
-                                 "returned false).")
-                if cm_one is not None:
-                    depth_request.append(("side-one distance", 0, cm_one, distance, True))
-                if cm_two is not None:
-                    depth_request.append(("side-two distance", 1, cm_two, distance2, True))
+            one, cm_one, err_one = side_definition(
+                side_one_mode, distance, to_object, "to_object", minimum_solution, 0)
+            if err_one:
+                return error(err_one)
+            two, cm_two, err_two = side_definition(
+                side_two_mode, distance2, to_object_two, "to_object_two", minimum_solution, 1)
+            if err_two:
+                return error(err_two)
+            taper_one = (adsk.core.ValueInput.createByString(f"{taper_one_value} deg")
+                         if taper_one_value else None)
+            taper_two = (adsk.core.ValueInput.createByString(f"{taper_two_value} deg")
+                         if taper_two_value else None)
+            if not ext_input.setTwoSidesExtent(one, two, taper_one, taper_two):
+                return error("Fusion rejected the independent two-sided extents (setTwoSidesExtent "
+                             "returned false).")
+            # A distance side is listed even when its request evaluated to no number, so it is disclosed.
+            if side_one_mode == "distance":
+                depth_request.append(("side-one distance", 0, cm_one, distance, True))
+            if side_two_mode == "distance":
+                depth_request.append(("side-two distance", 1, cm_two, distance2, True))
         else:
             dist_val, want_distance_cm, dverr = _inputs.length_value_input(
                 distance, k, design, "distance")
@@ -859,9 +833,7 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
             # requested sign, -15 mm reads -1.5), so this side is judged whichever way it points.
             depth_request = [("distance", 0, want_distance_cm, distance, False)]
             if taper and symmetric:
-                # symmetric WITH taper: setDistanceExtent carries no taper, so setSymmetricExtent does.
-                # isFullLength=False -> 'distance' is the per-side half-length, matching setDistanceExtent
-                # (isSymmetric=True, distance), which live-measures as 'distance' on EACH side (2x total).
+                # isFullLength=False -> 'distance' is the per-side half-length (2x total).
                 taper_val = adsk.core.ValueInput.createByString(f"{taper} deg")
                 if not ext_input.setSymmetricExtent(dist_val, False, taper_val):
                     return error(f"Fusion refused a symmetric tapered extent ({distance} {units} per "
@@ -875,7 +847,14 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
                     return error(f"Fusion refused a one-sided tapered extent ({distance} {units}, "
                                  f"{taper} deg), so nothing was extruded.")
             else:
-                if not ext_input.setDistanceExtent(bool(symmetric), dist_val):
+                if symmetric:
+                    landed = ext_input.setSymmetricExtent(dist_val, False)
+                else:
+                    # The signed distance carries the side, as on the tapered branch above.
+                    landed = ext_input.setOneSideExtent(
+                        adsk.fusion.DistanceExtentDefinition.create(dist_val),
+                        adsk.fusion.ExtentDirections.PositiveExtentDirection)
+                if not landed:
                     return error(f"Fusion refused a {'symmetric ' if symmetric else ''}distance "
                                  f"extent of {distance} {units}, so nothing was extruded.")
     except Exception as e:
@@ -1216,8 +1195,6 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
             note += " The landed depth was not read."
     elif ext_key == "through_all":
         extent_report, distance_report = "through_all", None
-        if through_all_dir == "negative":
-            note += " Negative through-all uses the retired setAllExtent compatibility setter."
         if side_read is None:
             note += " The landed through_all side was not read back."
     else:

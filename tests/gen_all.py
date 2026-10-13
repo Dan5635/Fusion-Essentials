@@ -5,7 +5,7 @@
 
 Each generator pays a full mocked-registry load when run as its own process; importing them here
 means that load happens once, so the staleness check stays fast. Same contracts as running them
-individually: writes tests/generated/* (plus the CLAUDE.md spliced maps and the guidance-generated
+individually: writes tests/generated/* (plus the AGENTS.md spliced maps and the guidance-generated
 Claude skill), or with --check exits 1 naming what is stale.
 
     py -3 tests/gen_all.py           # regenerate everything

@@ -6,7 +6,7 @@ _Auto-generated from the live registry by `tests/gen_manifest.py`. Do not edit b
 
 ## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)
 
-Before adding a tool input that points at a face/edge/body/plane/axis/profile/occurrence, use one of these (extend the kind if it's close). See `CLAUDE.md` 'Input kinds'.
+Before adding a tool input that points at a face/edge/body/plane/axis/profile/occurrence, use one of these (extend the kind if it's close). See `AGENTS.md` 'Input kinds'.
 
 | Kind | What it references |
 |---|---|

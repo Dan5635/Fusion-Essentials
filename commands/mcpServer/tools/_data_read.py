@@ -357,18 +357,6 @@ def _shared_link_facts(df):
     return out
 
 
-def _public_link_facts(df):
-    """The file's public link, or 'not available' with the reason. Reading publicLink RAISES while
-    the file is unshared, so the raised text is kept as the reason rather than sinking the read."""
-    try:
-        url = df.publicLink
-    except Exception as e:
-        return {"available": False, "reason": str(e).strip()[:160]}
-    if isinstance(url, str) and url:
-        return {"available": True, "url": url}
-    return {"available": False, "reason": "the file reports an empty public link."}
-
-
 # MEASURED: an uploaded image read this flag false long after data_get_upload_status read
 # 'complete' - the flag is no completion signal for a non-CAD upload. The one home of this
 # wording - data_get's file-scope note appends it rather than restating it.
@@ -433,7 +421,6 @@ def file_facts_handler(file: str = "", project: str = "", project_id: str = "",
             "is_complete": is_complete,
         },
         "shared_link": _shared_link_facts(df),
-        "public_link": _public_link_facts(df),
     }
     if is_complete is not True:
         payload["note"] = _IS_COMPLETE_NOTE

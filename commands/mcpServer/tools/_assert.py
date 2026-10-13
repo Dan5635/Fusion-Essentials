@@ -119,11 +119,21 @@ class VersionAdvanced(Postcondition):
         })
         if verdict is not True:
             evidence["pending"] = True
-            evidence["version_status"] = (
-                "Cloud version advancement was not observed in fresh comparable reads. Re-read "
-                "data_get for the document_id." if verdict is False else
-                "Cloud version advancement is unknown because fresh before/after lineage/version "
-                "reads were not comparable. Re-read data_get for the document_id.")
+            held = before.get("lineage") if isinstance(before, dict) else None
+            if verdict is None and _doc_common._lineage_moved(held, lineage_after):
+                evidence["version_status"] = (
+                    f"The document's lineage read {held} before the save and {lineage_after} "
+                    "after it. version_before was read on the first and version_after on the "
+                    "second, so the two numbers are not compared and no advance is reported. "
+                    + ("" if after.get("data_file") is not None else
+                       "A fresh lookup of the second did not return a file in this call. ")
+                    + f"Read data_get(file='{lineage_after}').")
+            else:
+                evidence["version_status"] = (
+                    "Cloud version advancement was not observed in fresh comparable reads. Re-read "
+                    "data_get for the document_id." if verdict is False else
+                    "Cloud version advancement is unknown because fresh before/after lineage/version "
+                    "reads were not comparable. Re-read data_get for the document_id.")
         return "", evidence
 
 

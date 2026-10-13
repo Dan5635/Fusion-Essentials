@@ -61,7 +61,7 @@ class _RecordingExtrudes:
     def createInput(self, profile, operation):
         return types.SimpleNamespace(profile=profile, operation=operation, isSolid=True,
                                      participantBodies=None,
-                                     setDistanceExtent=lambda symmetric, distance: True)
+                                     setOneSideExtent=lambda extent, direction: True)
 
     def add(self, inp):
         feature = types.SimpleNamespace(name=f"{self.owner}Extrude{len(self.landed) + 1}",

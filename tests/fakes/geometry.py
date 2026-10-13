@@ -233,6 +233,17 @@ class FakeMatrix3D:
         self._rotated = True
         return True
 
+    def setWithArray(self, cells):
+        """Matrix3D.setWithArray(cells) -> bool: the sixteen cells taken whole, in the row-major
+        layout asArray answers. The rotation is general, as setToRotation leaves it."""
+        vals = [float(v) for v in cells]
+        if len(vals) != 16:
+            raise ValueError("setWithArray takes sixteen cells, got %d" % len(vals))
+        self._r = (tuple(vals[0:3]), tuple(vals[4:7]), tuple(vals[8:11]))
+        self._t = (vals[3], vals[7], vals[11])
+        self._rotated = True
+        return True
+
     def transformBy(self, other):
         """Matrix3D.transformBy(other) -> bool: `other` is applied AFTER this matrix in world
         coordinates (measured: matrix3d-transformby-applies-the-argument-after-self - rotate-then-

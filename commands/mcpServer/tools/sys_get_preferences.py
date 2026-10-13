@@ -91,9 +91,9 @@ FLAT_GROUPS = (
         Member("degreeDisplayFormat", enum=_family("DegreeDisplayFormats")),
         Member("materialDisplayUnit", enum=_family("MaterialDisplayUnits")),
     )),
-    # Measured raising members on this build: autoThrottleEffects, degradedSelectionDisplayStyle and
-    # isLimitEffectsDuringNavigation all raise RuntimeError on READ, which is why every member read
-    # here goes through safe() and reports unreadable rather than a value.
+    # Measured raising member on this build: degradedSelectionDisplayStyle raises RuntimeError on
+    # READ, which is why every member read here goes through safe() and reports unreadable rather
+    # than a value.
     ("graphics", "graphicsPreferences", (
         Member("graphicsPreset", enum=_family("GraphicsPresets")),
         Member("minimumFramesPerSecond"),
@@ -101,8 +101,6 @@ FLAT_GROUPS = (
         Member("selectionDisplayStyle", enum=_family("SelectionDisplayStyles")),
         Member("degradedSelectionDisplayStyle", enum=_family("DegradedSelectionDisplayStyles")),
         Member("transparencyEffects", enum=_family("TransparencyDisplayEffects")),
-        Member("autoThrottleEffects"),
-        Member("isLimitEffectsDuringNavigation"),
         Member("isSurfaceNormalDisplayDisabled"),
         Member("isWoodBumpEnabled"),
         Member("isDynamic"),
@@ -168,9 +166,6 @@ COLLECTION_GROUPS = (
         Member("isGhostedResultBodyShown"),
         Member("isDimensionEditedWhenCreated"),
         Member("isAutoLookAtSketch2", enum=_family("AutoLookAtSketchSettings")),
-        Member("isAutoLookAtSketch", TIER_REFUSED,
-               "isAutoLookAtSketch2 is the same setting with more values - set that one, so the two "
-               "cannot be given contradicting values"),
         Member("isAutoProjectGeometry"),
         Member("isAutoProjectEdgesOnReference"),
         Member("isAutoHideSketchOnFeatureCreation"),

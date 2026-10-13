@@ -79,6 +79,12 @@ def fresh_version_read(application, lineage):
     }
 
 
+def _lineage_moved(before, after):
+    """True only when both reads are lineage URNs and they differ; an unread side is not a move."""
+    return (isinstance(before, str) and before.startswith("urn:")
+            and isinstance(after, str) and after.startswith("urn:") and before != after)
+
+
 def _version_advanced(before, after):
     """True/False for comparable fresh reads, or None when lineage/version is unreadable or forked."""
     if not isinstance(before, dict) or not isinstance(after, dict):

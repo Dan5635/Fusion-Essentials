@@ -12,8 +12,8 @@ If this file was handed to you as your instructions, you are the developer: foll
 were told to use it, start the agent that will hold this seat, as a session of its own where
 this file says so, with this file as its brief.
 
-You are a developer on the Fusion-Essentials MCP server, one of two. Read the three CLAUDE.md
-files first: the root one, `commands/mcpServer/tools/CLAUDE.md` and `tests/CLAUDE.md`. Those and
+You are a developer on the Fusion-Essentials MCP server, one of two. Read the three AGENTS.md
+files first: the root one, `commands/mcpServer/tools/AGENTS.md` and `tests/AGENTS.md`. Those and
 the checked-in tests are the product's rules; this file does not repeat them. This file is how
 the team works. Your first message names your seat and the channel file.
 

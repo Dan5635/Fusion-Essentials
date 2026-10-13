@@ -273,13 +273,13 @@ class TestIncludeSlices:
 
 class TestHonestReads:
     def test_unreadable_member_reports_null_and_is_counted(self, monkeypatch):
-        p = _make_prefs(raises={"graphics": ("autoThrottleEffects", "isLimitEffectsDuringNavigation")})
+        p = _make_prefs(raises={"graphics": ("degradedSelectionDisplayStyle", "isDynamic")})
         monkeypatch.setattr(get, "app", FakeApplication(preferences=p))
         out = _payload(get.handler(include=["graphics"]))
-        rec = out["preferences"]["graphics"]["autoThrottleEffects"]
+        rec = out["preferences"]["graphics"]["degradedSelectionDisplayStyle"]
         assert rec["value"] is None and rec["unreadable"] is True
         assert out["unreadable_count"] == 2
-        assert "graphics.autoThrottleEffects" in out["unreadable"]
+        assert "graphics.degradedSelectionDisplayStyle" in out["unreadable"]
 
     def test_a_member_this_build_does_not_carry_is_unknown_not_unreadable(self, monkeypatch):
         # The two are different facts. A member that RAISES is a platform fact about this build; a
@@ -414,7 +414,6 @@ class TestTierRefusals:
         ("general.activeUserInterfaceTheme", "read-only"),
         ("compatibility.chromiumGraphicsBackend", "unrenderable"),
         ("compatibility.isAcceleratedDataTransfer", "cloud upload/download"),
-        ("products.Design.isAutoLookAtSketch", "isAutoLookAtSketch2"),
         ("compatibility.isLogHTTPRequestAndResponseBodies", "credentials and tokens"),
         ("compatibility.isUseLatestSpaceMouseDriver", "3D input device"),
     ])
@@ -427,6 +426,43 @@ class TestTierRefusals:
         before = prefs.networkPreferences.proxyPort
         setp.handler(member="network.proxyPort", value=8080)
         assert prefs.networkPreferences.proxyPort == before
+
+
+class TestMembersOutsideTheTable:
+    """The group objects still answer these three names, with readable values; the table holds
+    none of them, so neither tool reaches the member."""
+
+    _CARRIED = {"graphics": {"autoThrottleEffects": True, "isLimitEffectsDuringNavigation": True},
+                "products": {"isAutoLookAtSketch": True}}
+
+    @pytest.fixture
+    def carried(self, monkeypatch):
+        p = _make_prefs(values=self._CARRIED)
+        for mod in (get, setp):
+            monkeypatch.setattr(mod, "app", FakeApplication(preferences=p))
+        return p
+
+    def test_the_read_publishes_none_of_them(self, carried):
+        out = _payload(get.handler(include=["graphics", "products"]))
+        listed = set(out["preferences"]["graphics"]) | set(out["preferences"]["products"]["Design"])
+        assert not listed & {"autoThrottleEffects", "isLimitEffectsDuringNavigation",
+                             "isAutoLookAtSketch"}
+        assert {"isDynamic", "isAutoLookAtSketch2"} <= listed
+        assert "unreadable" not in out and "unknown_members" not in out
+
+    @pytest.mark.parametrize("path,group,holder", [
+        ("graphics.autoThrottleEffects", "graphics", "graphicsPreferences"),
+        ("graphics.isLimitEffectsDuringNavigation", "graphics", "graphicsPreferences"),
+        ("products.Design.isAutoLookAtSketch", "products", "productPreferences"),
+    ])
+    def test_a_write_to_one_is_refused_as_no_member_of_its_group(self, carried, path, group,
+                                                                 holder):
+        name = path.split(".")[-1]
+        msg = _message(setp.handler(member=path, value=False))
+        assert f"'{group}' has no member '{name}'. Members: " in msg
+        assert "Nothing was written" in msg
+        obj = getattr(carried, holder)
+        assert getattr(obj.item(0) if group == "products" else obj, name) is True
 
 
 class TestWriteProtocol:
@@ -443,10 +479,10 @@ class TestWriteProtocol:
         assert back["now"] == 3 and prefs.unitAndValuePreferences.generalPrecision == 3
 
     def test_write_is_refused_when_the_current_value_cannot_be_read(self, monkeypatch):
-        p = _make_prefs(raises={"graphics": ("autoThrottleEffects",)})
+        p = _make_prefs(raises={"graphics": ("isDynamic",)})
         monkeypatch.setattr(setp, "app", FakeApplication(preferences=p))
-        msg = _message(setp.handler(member="graphics.autoThrottleEffects", value=True))
-        assert "autoThrottleEffects" in msg and "not written" in msg
+        msg = _message(setp.handler(member="graphics.isDynamic", value=True))
+        assert "isDynamic" in msg and "not written" in msg
 
     def test_a_silent_noop_setter_is_an_error(self, monkeypatch):
         p = _make_prefs(values={"display": {"generalPrecision": 3}},

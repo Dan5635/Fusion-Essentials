@@ -4,7 +4,7 @@ Pins: ALL input bodies are handed to reverseNormalFeatures.add; reversed_confirm
 the isParamReversed read-back shows every face toggled and FALSE (an honest ok, not an error) when it
 doesn't; a solid body is rejected; missing bodies is rejected; a null feature is an error.
 
-Uses the shared install()/make_design() plumbing (both design seams patched) per tests/CLAUDE.md; the
+Uses the shared install()/make_design() plumbing (both design seams patched) per tests/AGENTS.md; the
 shared BRepBody/BRepFace fakes are monkeypatched onto adsk.fusion so the input-kind isinstance
 checks fire.
 """

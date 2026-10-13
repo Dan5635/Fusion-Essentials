@@ -1,4 +1,4 @@
-"""Lint: the generated docs (TOOL_MANIFEST/TOOL_POINTER_MAP/PERMISSION_POSTURE + the CLAUDE.md map) match the live tree.
+"""Lint: the generated docs (TOOL_MANIFEST/TOOL_POINTER_MAP/PERMISSION_POSTURE + the AGENTS.md map) match the live tree.
 This shells ``gen_all.py --check`` so a stale artifact fails as a normal test - skipped only when a
 content FINGERPRINT over every generator INPUT and OUTPUT matches one a passing check already saw.
 A generator reading something outside those two sets joins ``_fingerprinted_paths`` in the same change."""
@@ -20,7 +20,7 @@ _CACHE_KEY = "fusion_essentials/generated_docs_fingerprint"
 # gen_posture load every module through the registry, gen_wiring parses every tool's source) and the
 # scripts under tests/ that do the deriving.
 _INPUT_TREE = os.path.join(REPO_ROOT, "commands", "mcpServer")
-# What they WRITE. The two CLAUDE.md files are SPLICED, so only a block of each is generated - the
+# What they WRITE. The two AGENTS.md files are SPLICED, so only a block of each is generated - the
 # whole file is fingerprinted anyway, which costs a needless miss on an unrelated edit and never a
 # missed staleness.
 _OUTPUT_TREE = os.path.join(TESTS_DIR, "generated")
@@ -30,8 +30,8 @@ _SKILL_TREE = os.path.join(REPO_ROOT, ".claude", "skills", "parametric-cad-desig
 _OUTPUT_FILES = (
     os.path.join(TESTS_DIR, "api_surface.py"),
     os.path.join(TESTS_DIR, "README.md"),
-    os.path.join(REPO_ROOT, "CLAUDE.md"),
-    os.path.join(REPO_ROOT, "commands", "mcpServer", "tools", "CLAUDE.md"),
+    os.path.join(REPO_ROOT, "AGENTS.md"),
+    os.path.join(REPO_ROOT, "commands", "mcpServer", "tools", "AGENTS.md"),
 )
 
 
@@ -59,7 +59,7 @@ def _bindings_identity():
 
 
 def _generated_artifacts():
-    """Every file a generator WRITES: the two spliced CLAUDE.md files, tests/api_surface.py, the
+    """Every file a generator WRITES: the two spliced AGENTS.md files, tests/api_surface.py, the
     generated tree and the guidance skill package."""
     paths = set(_OUTPUT_FILES)
     for tree in (_OUTPUT_TREE, _SKILL_TREE):
@@ -159,8 +159,8 @@ class TestTheFingerprintCoversEveryArtifact:
                          "tests/generated/TOOL_POINTER_MAP.md",
                          "tests/generated/PERMISSION_POSTURE.md",
                          "tests/api_surface.py",
-                         "CLAUDE.md",
-                         "commands/mcpServer/tools/CLAUDE.md",
+                         "AGENTS.md",
+                         "commands/mcpServer/tools/AGENTS.md",
                          ".claude/skills/parametric-cad-design/SKILL.md",
                          ".claude/skills/parametric-cad-design/playbooks/plan.md"):
             path = os.path.join(REPO_ROOT, *artifact.split("/"))

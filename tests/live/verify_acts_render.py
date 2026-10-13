@@ -305,12 +305,41 @@ def _camera_restored(p):
                      and (p.get("after") or {}).get("camera_type") == initial)
 
 
+_ASPECT = ("aspect_ratio", "aspect_width", "aspect_height")
+
+
 def _new_document_camera(p):
-    initial = _RECALL["render_scene_initial"]["camera_type"]
-    opened = (p.get("scene") or {}).get("camera_type")
-    return _measured("a new document opens with the camera type this act first read",
-                     {"new_document": opened, "first_read": initial},
-                     isinstance(initial, str) and opened == initial)
+    initial = _RECALL["render_scene_initial"]
+    opened = p.get("scene") or {}
+    keys = ("camera_type",) + _ASPECT
+    return _measured("a new document opens with the camera type and aspect this act first read",
+                     {"new_document": [opened.get(key) for key in keys],
+                      "first_read": [initial.get(key) for key in keys]},
+                     isinstance(initial.get("camera_type"), str)
+                     and all(opened.get(key) == initial.get(key) for key in keys))
+
+
+def _aspect_edit(p, prior_key, applied, landed):
+    after = p.get("after") or {}
+    return _measured("scene aspect applied and read back", p,
+                     p.get("failed") is None and p.get("mismatches") == {}
+                     and p.get("applied") == applied
+                     and p.get("before") == _RECALL[prior_key]
+                     and [after.get(key) for key in _ASPECT] == landed)
+
+
+def _aspect_restore_args(ctx):
+    """Ask for the aspect the scene read before the aspect rows, in the form the tool accepts."""
+    start = _ctx_get(ctx, "render_camera_restored", "scene before the aspect rows")
+    scene = ({"aspect_width": start["aspect_width"], "aspect_height": start["aspect_height"]}
+             if start.get("aspect_ratio") == "custom" else {"aspect_ratio": start["aspect_ratio"]})
+    return {"action": "scene", "scene": scene}
+
+
+def _aspect_restored(p):
+    return _measured("scene restored to the read before the aspect rows", p,
+                     p.get("failed") is None and p.get("mismatches") == {}
+                     and p.get("after") == _RECALL["render_camera_restored"])
 
 
 def _written_camera_reaches_new_document(p):
@@ -531,11 +560,16 @@ _RENDER_READ = [
      lambda p: _measured("refused depth-of-field edit changed nothing", p.get("scene"),
                          p.get("scene") == _RECALL["render_scene_initial"]), None),
     ("render_edit", {"action": "scene", "scene": {"aspect_ratio": "custom"}},
-     _refused("aspect_ratio", "read-only", "render_get(include=['scene'])"), None),
+     _refused("aspect_ratio='custom'", "aspect_width and aspect_height"), None),
+    ("render_edit", {"action": "scene", "scene": {"aspect_width": 7}},
+     _refused("aspect_width=7", "aspect_width and aspect_height"), None),
+    ("render_edit", {"action": "scene", "scene": {"aspect_ratio": "16:9", "aspect_width": 16,
+                                                 "aspect_height": 9}},
+     _refused("aspect_ratio='16:9'", "send the preset alone"), None),
     ("render_edit", {"action": "scene", "scene": {"background_type": "environment"}},
      _refused("background_type", "read-only", "background_rgb gives solid_color"), None),
     ("render_get", {"include": ["scene"]},
-     lambda p: _measured("refused read-only edits changed nothing", p.get("scene"),
+     lambda p: _measured("refused aspect and read-only edits changed nothing", p.get("scene"),
                          p.get("scene") == _RECALL["render_scene_initial"]), None),
     ("render_edit", {"action": "scene", "scene": {"ground_roughness": 0.35}},
      _refused("ground_roughness requires ground_reflect=true", "enable ground reflections"), None),
@@ -672,6 +706,12 @@ _RENDER_READ = [
                          p.get("scene") == _RECALL["render_camera_restored"]
                          and (p.get("scene") or {}).get("camera_type")
                          == _RECALL["render_scene_initial"]["camera_type"]), None),
+    ("render_edit", {"action": "scene", "scene": {"aspect_width": 7, "aspect_height": 5}},
+     lambda p: isinstance(p.get("after"), dict) and _aspect_edit(
+         p, "render_camera_restored", ["aspect_width", "aspect_height"], ["custom", 7, 5]),
+     ("render_aspect_pair", _recall("render_aspect_pair", lambda p: p["after"]))),
+    ("render_get", {"include": ["scene"]},
+     lambda p: _coupled_read(p, "render_aspect_pair"), None),
     ("doc_get", {}, _home_document, ("render_home", _home_address)),
     ("doc_new", lambda c: {"expect_document": _ctx_get(c, "render_home", "render scratch")},
      _new_document, ("render_new_document", lambda p: p["document_handle"])),
@@ -684,4 +724,13 @@ _RENDER_READ = [
                              "save_changes": False,
                              "expect_document": _ctx_get(c, "render_home", "render scratch")},
      _document_closed, None),
+    ("render_edit", {"action": "scene", "scene": {"aspect_ratio": "16:9"}},
+     lambda p: isinstance(p.get("after"), dict) and _aspect_edit(
+         p, "render_aspect_pair", ["aspect_ratio"], ["16:9", 16, 9]),
+     ("render_aspect_preset", _recall("render_aspect_preset", lambda p: p["after"]))),
+    ("render_get", {"include": ["scene"]},
+     lambda p: _coupled_read(p, "render_aspect_preset"), None),
+    ("render_edit", _aspect_restore_args, _aspect_restored, None),
+    ("render_get", {"include": ["scene"]},
+     lambda p: _coupled_read(p, "render_camera_restored"), None),
 ]

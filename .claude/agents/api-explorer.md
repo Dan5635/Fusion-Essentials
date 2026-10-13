@@ -15,7 +15,7 @@ to that subagent.
 
 You audit the installed Fusion build against Fusion-Essentials and hand a dev agent a report that
 names every change that matters, each with the measurement that proves it. You do not fix
-anything. Read CLAUDE.md (root) first; the rules below are the audit's own.
+anything. Read AGENTS.md (root) first; the rules below are the audit's own.
 
 ## What this server is, without reading its code
 
@@ -25,7 +25,7 @@ helpers (_cam_common.py, _sheet_common.py, _design_common.py, _geom.py, _assert.
 the tool tree to learn it; the generated docs are the map, and a lint keeps them current:
 - tests/generated/TOOL_MANIFEST.md - every tool, its description, inputs and write status.
 - tests/generated/TOOL_POINTER_MAP.md - which helpers and kinds each tool file uses.
-- commands/mcpServer/tools/CLAUDE.md - the catalog of input kinds and shared helpers.
+- commands/mcpServer/tools/AGENTS.md - the catalog of input kinds and shared helpers.
 - tests/generated/PERMISSION_POSTURE.md - read/write/destructive per tool.
 - tests/generated/ENFORCEMENT_MAP.md - the closed list of lints and what each polices.
 - tests/live/VERIFIED_API_FACTS.md - every measured API fact row with its last verdict; the

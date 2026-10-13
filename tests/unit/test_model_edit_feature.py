@@ -995,11 +995,13 @@ def test_patch_definition_requires_and_retains_scalar_patch_controls(monkeypatch
     circle = SimpleNamespace(entityToken="patch-boundary", objectType="adsk::fusion::SketchCircle")
     boundary = _FakeObjectCollection()
     boundary.add(circle)
+    # The stand-in carries groupContinuity and no 'continuity' member, so a read of that member
+    # lands in 'unavailable'.
     feature = SimpleNamespace(
         objectType="adsk::fusion::PatchFeature", name="Patch1",
         timelineObject=FakeTimelineObject("Patch1", 0), boundaryCurve=boundary,
         operation=adsk.fusion.FeatureOperations.NewBodyFeatureOperation,
-        continuity=2, isGroupEdges=True)
+        groupContinuity=2, isGroupEdges=True)
     monkeypatch.setattr(mod._edit, "reference_descriptor", lambda *_args: {
         "handle": "patch-boundary", "kind": "entity", "owner": {"component": "Part"},
         "geometry": {"world_cm": [1, 2, 0]}})
@@ -1027,13 +1029,37 @@ def test_patch_definition_refuses_multiple_boundary_curve_members(monkeypatch):
         objectType="adsk::fusion::PatchFeature", name="Patch1",
         timelineObject=FakeTimelineObject("Patch1", 0), boundaryCurve=members,
         operation=adsk.fusion.FeatureOperations.NewBodyFeatureOperation,
-        continuity=2, isGroupEdges=True)
+        groupContinuity=2, isGroupEdges=True)
 
     state, definition, unavailable = mod._edit.feature_edit_state(feature)
 
     assert state["boundary"] is None
     assert definition["boundary"] is None
     assert unavailable["boundary"] == "boundaryCurve must contain exactly one readable SketchCircle"
+
+
+def _edge_patch(grouped):
+    """A patch stand-in over an unreadable boundary. DECLARED, not measured: an ungrouped patch
+    keeps answering one groupContinuity, and a grouping read that answers no bool."""
+    return SimpleNamespace(
+        objectType="adsk::fusion::PatchFeature", name="Patch1",
+        timelineObject=FakeTimelineObject("Patch1", 0), boundaryCurve=_FakeObjectCollection(),
+        operation=adsk.fusion.FeatureOperations.NewBodyFeatureOperation,
+        groupContinuity=2, isGroupEdges=grouped)
+
+
+def test_ungrouped_patch_publishes_no_single_continuity():
+    state, definition, unavailable = mod._edit.feature_edit_state(_edge_patch(False))
+    assert definition["is_group_edges"] is False
+    assert definition["continuity"] is None and state["continuity"] is None
+    assert "continuity" not in unavailable and "is_group_edges" not in unavailable
+
+
+def test_patch_continuity_is_unavailable_when_the_grouping_does_not_read():
+    state, definition, unavailable = mod._edit.feature_edit_state(_edge_patch(None))
+    assert definition["continuity"] is None and definition["is_group_edges"] is None
+    assert unavailable["is_group_edges"] == "value is not a readable boolean"
+    assert unavailable["continuity"] == "isGroupEdges did not read, so groupContinuity was not read"
 
 
 def test_untrim_manual_loop_mode_is_preserved_even_though_it_is_not_an_edit_choice(monkeypatch):

@@ -42,15 +42,15 @@ def _sketch(name, profile_count=1, curve_count=0, profiles=None, text_count=0,
 
 
 class FakeExtrudeInput:
+    """Local double of ExtrudeFeatureInput, a type with no measured shape. It carries the supported
+    extent setters only, so a call to a retired setter raises AttributeError. DECLARED, not
+    measured: every setter answers true."""
     def __init__(self, profile, operation):
         self.profile = profile
         self.operation = operation
-        self.distance_extent = None     # (isSymmetric, ValueInput) captured
-        self.one_side = None
+        self.one_side = None            # (extent, direction, taper) captured
         self.symmetric_extent = None    # (distance, isFullLength, taper) captured
-        self.all_extent = None          # direction captured (the RETIRED setAllExtent)
         self.two_sides_extent = None    # (sideOne, sideTwo, taperOne, taperTwo) captured
-        self.two_sides_distance = None  # (distanceOne, distanceTwo) captured (extent=two_side)
         self.participantBodies = None
         self.isSolid = True             # default solid; surface path sets this False
         self.thin = None
@@ -58,10 +58,6 @@ class FakeExtrudeInput:
         # EVERY extent setter is documented "Returns true if successful" - the fake returns the
         # bool as live does, so a handler that ignores it has something to be caught ignoring.
         self.next_result = True
-
-    def setDistanceExtent(self, isSymmetric, distance):
-        self.distance_extent = (isSymmetric, distance)
-        return self.next_result
 
     def setOneSideExtent(self, extent, direction, taper=None):
         self.one_side = (extent, direction, taper)
@@ -71,22 +67,20 @@ class FakeExtrudeInput:
         self.symmetric_extent = (distance, isFullLength, taper)
         return self.next_result
 
-    def setAllExtent(self, direction):
-        # The retired setter carries the one-sided negative direction.
-        self.all_extent = direction
-        return self.next_result
-
     def setTwoSidesExtent(self, sideOne, sideTwo, taperOne=None, taperTwo=None):
         self.two_sides_extent = (sideOne, sideTwo, taperOne, taperTwo)
-        return self.next_result
-
-    def setTwoSidesDistanceExtent(self, distanceOne, distanceTwo):
-        self.two_sides_distance = (distanceOne, distanceTwo)
         return self.next_result
 
     def setThinExtrude(self, *args):
         self.thin = args
         return self.next_result
+
+
+class _ThroughAll(list):
+    """A through-all definition: it compares as its marker and carries the side flag."""
+    def __init__(self):
+        super().__init__(["through_all"])
+        self.isPositiveDirection = True
 
 
 class FakeFeature(_SharedFeature):
@@ -111,7 +105,6 @@ class FakeExtrudeFeatures:
         return self.last_input
 
     def add(self, inp):
-        import adsk.fusion
         self.added = True
         if self.on_add:
             self.on_add(inp)
@@ -125,11 +118,12 @@ class FakeExtrudeFeatures:
             if len(inp.thin) > 2:
                 feature.thinExtrudeWallLocationTwo = inp.thin[2]
                 feature.thinExtrudeWallThicknessTwo = types.SimpleNamespace(value=inp.thin[3][1])
-        positive = adsk.fusion.ExtentDirections.PositiveExtentDirection
-        side = (inp.all_extent if inp.all_extent is not None else
-                inp.one_side[1] if inp.one_side and inp.one_side[0] == ["through_all"] else None)
+        side = inp.one_side[1] if inp.one_side and inp.one_side[0] == ["through_all"] else None
         if side is not None:
-            flag = side == positive if self.landed_positive == "requested" else self.landed_positive
+            # MEASURED: the landed side follows the definition's own flag; the direction
+            # argument alone leaves the extent on the positive side.
+            flag = (inp.one_side[0].isPositiveDirection if self.landed_positive == "requested"
+                    else self.landed_positive)
             feature.extentOne = types.SimpleNamespace(
                 objectType="adsk::fusion::ThroughAllExtentDefinition", isPositiveDirection=flag)
         elif inp.one_side is not None and hasattr(inp.one_side[0], "entity"):
@@ -170,7 +164,7 @@ def _wire_adsk():
     adsk.fusion.DistanceExtentDefinition.create = staticmethod(
         lambda value: types.SimpleNamespace(distance=types.SimpleNamespace(name="distance", value=value)))
     # A FRESH definition object per call, so a test can tell one shared object from two real ones.
-    adsk.fusion.ThroughAllExtentDefinition.create = staticmethod(lambda: ["through_all"])
+    adsk.fusion.ThroughAllExtentDefinition.create = staticmethod(_ThroughAll)
 
 
 def _install_start_offset_casts(monkeypatch):
@@ -195,6 +189,11 @@ def _install(sketches):
     install(ex, make_design(comp=_component("Root", sketches=sketches, ef=ef)))
     _wire_adsk()
     return ef
+
+
+def _blind_distance(ef):
+    """The ValueInput the last input's one-sided distance definition was built from."""
+    return ef.last_input.one_side[0].distance.value
 
 
 # ── guards ───────────────────────────────────────────────────────────────────
@@ -700,17 +699,18 @@ class TestExtrude:
         assert out["extruded"] is True
         assert out["operation"] == "new"
         assert out["result_bodies"] == ["Body1"]
-        # 6 mm -> 0.6 cm handed to the API
-        sym, dist = ef.last_input.distance_extent
+        # 6 mm -> 0.6 cm handed to the API on a one-sided distance definition, with no taper
+        extent, direction, taper = ef.last_input.one_side
+        dist = extent.distance.value
         assert dist[0] == "real" and abs(dist[1] - 0.6) < 1e-9
-        assert sym is False
+        assert direction == adsk.fusion.ExtentDirections.PositiveExtentDirection and taper is None
+        assert ef.last_input.symmetric_extent is None
         assert ef.last_input.operation == adsk.fusion.FeatureOperations.NewBodyFeatureOperation
 
     def test_inch_scaling(self):
         ef = _install([_sketch("Base")])
         _payload(ex.handler(sketch_name="Base", distance=1, units="in"))
-        _, dist = ef.last_input.distance_extent
-        assert dist == ("real", 2.54)
+        assert _blind_distance(ef) == ("real", 2.54)
 
     def test_most_recent_sketch_when_unnamed(self):
         ef = _install([_sketch("First"), _sketch("Last")])
@@ -722,24 +722,29 @@ class TestExtrude:
         _payload(ex.handler(sketch_name="S", distance=5, operation="cut"))
         assert ef.last_input.operation == adsk.fusion.FeatureOperations.CutFeatureOperation
 
-    def test_symmetric_flag_passed(self):
+    def test_symmetric_takes_the_per_side_symmetric_extent(self):
+        # isFullLength False keeps 'distance' the per-side number the wire promises; True would
+        # halve the solid. No taper argument is passed when none was asked for.
         ef = _install([_sketch("S")])
         _payload(ex.handler(sketch_name="S", distance=5, symmetric=True))
-        sym, _ = ef.last_input.distance_extent
-        assert sym is True
+        assert ef.last_input.symmetric_extent == (("real", 0.5), False, None)
+        assert ef.last_input.one_side is None
 
-    def test_negative_distance_allowed(self):
+    def test_negative_distance_keeps_its_sign_on_the_positive_direction(self):
+        # DECLARED, not measured: the signed distance alone reverses a one-sided extent, so the
+        # direction argument stays positive and the definition carries -0.4 cm.
         ef = _install([_sketch("S")])
         out = _payload(ex.handler(sketch_name="S", distance=-4, units="mm"))
-        _, dist = ef.last_input.distance_extent
+        extent, direction, _taper = ef.last_input.one_side
+        dist = extent.distance.value
         assert dist[0] == "real" and abs(dist[1] - (-0.4)) < 1e-9
+        assert direction == adsk.fusion.ExtentDirections.PositiveExtentDirection
         assert out["distance"] == -4
 
 
 # ── taper (draft angle) ─────────────────────────────────────────────────────────────────────────
 # A one-sided extrude with taper_deg builds a DistanceExtentDefinition + a 'N deg' taper ValueInput and
-# calls setOneSideExtent(extent, dir, taper). A SYMMETRIC extrude with taper needs setSymmetricExtent
-# (which carries a taper) - setDistanceExtent cannot, so the taper would otherwise be silently dropped.
+# calls setOneSideExtent(extent, dir, taper); a SYMMETRIC extrude hands the taper to setSymmetricExtent.
 # Pinned: the one-sided taper path, the distance still scaled onto the DistanceExtentDefinition, and that
 # symmetric+taper applies the taper via setSymmetricExtent instead of dropping it.
 
@@ -749,9 +754,7 @@ class TestTaper:
         import adsk.fusion
         adsk.fusion.DistanceExtentDefinition.create = staticmethod(lambda v: ("dist_ext", v))
         out = _payload(ex.handler(sketch_name="S", distance=6, units="mm", taper_deg=3))
-        # taper path: one_side set, NOT the plain distance extent
-        assert ef.last_input.one_side is not None
-        assert ef.last_input.distance_extent is None
+        assert ef.last_input.symmetric_extent is None
         extent, direction, taper = ef.last_input.one_side
         # distance still scaled to cm onto the DistanceExtentDefinition (6mm -> 0.6cm)
         assert extent[0] == "dist_ext" and extent[1][0] == "real" and abs(extent[1][1] - 0.6) < 1e-9
@@ -760,22 +763,21 @@ class TestTaper:
         assert out["taper_deg"] == 3.0
 
     def test_symmetric_with_taper_uses_symmetric_extent(self):
-        # symmetric + taper: setDistanceExtent carries no taper, so the handler must use
-        # setSymmetricExtent (which does) - not drop the taper onto a plain distance extent.
+        # symmetric + taper: the taper rides setSymmetricExtent, never dropped onto a one-sided extent.
         ef = _install([_sketch("S")])
         out = _payload(ex.handler(sketch_name="S", distance=5, units="mm", taper_deg=10, symmetric=True))
-        assert ef.last_input.distance_extent is None      # NOT the taper-dropping path
+        assert ef.last_input.one_side is None             # NOT the taper-dropping path
         dist, is_full, taper = ef.last_input.symmetric_extent
         assert dist[0] == "real" and abs(dist[1] - 0.5) < 1e-9   # 5 mm -> 0.5 cm (per-side half-length)
-        assert is_full is False                                  # 'distance' is per-side, matching setDistanceExtent
+        assert is_full is False                                  # 'distance' is per side
         assert taper[0] == "str" and "10" in taper[1] and "deg" in taper[1]
         assert out["taper_deg"] == 10.0                   # the reported taper is the one applied
 
-    def test_zero_taper_is_plain_distance(self):
+    def test_zero_taper_passes_no_taper_argument(self):
         ef = _install([_sketch("S")])
         _payload(ex.handler(sketch_name="S", distance=5, taper_deg=0))
-        assert ef.last_input.distance_extent is not None
-        assert ef.last_input.one_side is None
+        _extent, _direction, taper = ef.last_input.one_side
+        assert taper is None
 
 
 # ── as_surface (open-profile extrude into a surface wall) ───────────────────
@@ -790,7 +792,7 @@ class TestAsSurface:
         assert out["as_surface"] is False
         assert out["is_solid"] is True
         assert ef.last_input.isSolid is True            # never touched the surface path
-        assert ef.last_input.distance_extent is not None
+        assert _blind_distance(ef) == ("real", 0.5)
 
     def test_as_surface_true_sets_isSolid_false(self):
         ef = _install([_sketch("S", profile_count=1, curve_count=4)])
@@ -1037,9 +1039,8 @@ class TestToObject:
         out = _payload(ex.handler(sketch_name="S", to_object="F"))
         assert out["extent"] == "to_object"
         assert out["distance"] is None
-        # a ToEntityExtentDefinition was used (one_side set, distance_extent not)
-        assert ef.last_input.one_side is not None
-        assert ef.last_input.distance_extent is None
+        # a ToEntityExtentDefinition was used: the one-sided extent carries the face, not a distance
+        assert ef.last_input.one_side[0].entity is face
 
     def test_to_face_publishes_the_bodys_length_along_the_sketch_normal(self, monkeypatch):
         import adsk.core
@@ -1070,7 +1071,7 @@ class TestToObject:
         face = BRepFace(None)
         ef = _install_geom(faces={"F": face})
         out = _payload(ex.handler(sketch_name="S", distance=999, to_object="F"))
-        assert out["extent"] == "to_object" and ef.last_input.distance_extent is None
+        assert out["extent"] == "to_object" and ef.last_input.one_side[0].entity is face
 
     def test_bad_to_object_handle_errors(self):
         _install_geom(faces={})
@@ -1171,11 +1172,13 @@ class TestExtentSetterRefusals:
     """Each extent setter answers "did it take". A false answer left on the floor means add() builds
     the feature on its DEFAULT extent while the payload reports the requested one."""
 
-    def test_a_refused_distance_extent_is_an_error_and_nothing_is_added(self):
+    @pytest.mark.parametrize("symmetric,named", [(False, "refused a distance extent of 10 mm"),
+                                                 (True, "refused a symmetric distance extent of 10 mm")])
+    def test_a_refused_distance_extent_is_an_error_and_nothing_is_added(self, symmetric, named):
         ef = _install([_sketch("S")])
         ef.next_result = False
-        res = ex.handler(sketch_name="S", profile_index=0, distance=10)
-        assert res["isError"] is True and "distance extent" in res["message"]
+        res = ex.handler(sketch_name="S", profile_index=0, distance=10, symmetric=symmetric)
+        assert res["isError"] is True and named in res["message"]
         assert ef.added is False
 
     def test_a_refused_symmetric_tapered_extent_is_an_error(self):
@@ -1299,7 +1302,7 @@ class TestExtentGuards:
 
 
 # ── through_all extent (ThroughAllExtentDefinition) ──────────────────────────
-# Negative one-sided through-all uses the retired setter; positive and symmetric use modern extents.
+# One-sided through-all hands setOneSideExtent the requested direction; symmetric sets two sides.
 
 class TestThroughAll:
     def test_default_direction_is_positive(self):
@@ -1310,22 +1313,24 @@ class TestThroughAll:
         assert extent == ["through_all"]
         assert direction == adsk.fusion.ExtentDirections.PositiveExtentDirection
         assert taper is None
-        assert ef.last_input.all_extent is None       # the retired setter is never called
         assert out["extent"] == "through_all" and out["direction"] == "positive"
         assert out["distance"] is None
 
-    def test_scoped_negative_cut_uses_retired_direction_setter_without_modern_fallback(self):
+    def test_scoped_negative_cut_flags_the_definition_negative_and_passes_the_direction(self):
         import adsk.fusion
         body = BRepBody("Stock", volume=1.0)
         ef = _install_geom(bodies={"Stock": body})
         ef.on_add = lambda inp: setattr(body, "volume", .996073009183)
         out = _payload(ex.handler(sketch_name="S", extent="through_all", distance=-1,
                                   operation="cut", target_bodies=["Stock"]))
-        assert ef.last_input.all_extent == adsk.fusion.ExtentDirections.NegativeExtentDirection
-        assert ef.last_input.one_side is None and ef.last_input.two_sides_extent is None
+        extent, direction, taper = ef.last_input.one_side
+        assert extent == ["through_all"] and taper is None
+        assert extent.isPositiveDirection is False
+        assert direction == adsk.fusion.ExtentDirections.NegativeExtentDirection
+        assert ef.last_input.two_sides_extent is None
         assert ef.last_input.participantBodies == [body]
         assert out["direction"] == "negative"
-        assert "retired setAllExtent compatibility" in out["note"]
+        assert "retired" not in out["note"]
 
     def test_positive_distance_picks_positive_direction(self):
         import adsk.fusion
@@ -1333,9 +1338,8 @@ class TestThroughAll:
         _payload(ex.handler(sketch_name="S", extent="through_all", distance=5))
         _extent, direction, _taper = ef.last_input.one_side
         assert direction == adsk.fusion.ExtentDirections.PositiveExtentDirection
-        assert ef.last_input.all_extent is None
 
-    def test_symmetric_sets_both_sides_and_never_the_retired_setter(self):
+    def test_symmetric_sets_one_definition_per_side(self):
         # setAllExtent(SymmetricExtentDirection) answers true and cuts ONE direction (measured live:
         # a mid-plane cut removed exactly half the expected material), so a symmetric through-all
         # must hand setTwoSidesExtent a ThroughAllExtentDefinition PER SIDE.
@@ -1345,7 +1349,6 @@ class TestThroughAll:
         assert side_one == ["through_all"] and side_two == ["through_all"]
         assert side_one is not side_two          # one definition per side, not one object twice
         assert (taper_one, taper_two) == (None, None)
-        assert ef.last_input.all_extent is None
         assert ef.last_input.one_side is None    # a symmetric cut is never routed one-sided
         assert out["direction"] == "symmetric"
 
@@ -1379,26 +1382,15 @@ class TestThroughAll:
         assert res["isError"] is True
         assert "through_all" in res["message"] and "taper" in res["message"]
 
-    def test_setOneSideExtent_false_is_reported(self):
+    @pytest.mark.parametrize("distance,side", [(5, "positive"), (-1, "negative")])
+    def test_setOneSideExtent_false_is_reported(self, distance, side):
         ef = _install([_sketch("S")])
         ef.next_result = False
-        res = ex.handler(sketch_name="S", extent="through_all", distance=5)
+        res = ex.handler(sketch_name="S", extent="through_all", distance=distance)
         assert res["isError"] is True
-        assert "setOneSideExtent returned false" in res["message"]
-        assert "positive" in res["message"]
+        assert (f"Fusion rejected a {side} extent=through_all (setOneSideExtent returned false)."
+                == res["message"])
         assert ef.added is False
-
-    @pytest.mark.parametrize("available", [True, False])
-    def test_negative_compatibility_refusal_never_adds_or_falls_back(self, monkeypatch, available):
-        ef = _install([_sketch("S")])
-        if available:
-            ef.next_result = False
-        else:
-            monkeypatch.setattr(FakeExtrudeInput, "setAllExtent", None)
-        res = ex.handler(sketch_name="S", extent="through_all", distance=-1)
-        assert res["isError"] is True and "setAllExtent" in res["message"]
-        assert "model_measure_between" in res["message"] and "extent='distance'" in res["message"]
-        assert ef.added is False and ef.last_input.one_side is None
 
     def test_setTwoSidesExtent_false_is_reported(self):
         ef = _install([_sketch("S")])
@@ -1505,17 +1497,19 @@ class TestThroughAllVolumeCheck:
         assert "through_all_volume_removed_cm3" not in out
 
 
-# ── two_side extent (setTwoSidesDistanceExtent) ──────────────────────────────
-# Independent distances per side, no taper, no 'symmetric' (equal distance/distance2 already
+# ── two_side extent (setTwoSidesExtent) ──────────────────────────────────────
+# An extent definition per side, no 'symmetric' (equal distance/distance2 already
 # expresses a symmetric two-sided extrude without a second flag).
 
 class TestTwoSide:
-    def test_calls_setTwoSidesDistanceExtent_with_scaled_distances(self):
+    def test_two_distances_ride_one_definition_per_side_scaled(self):
         ef = _install([_sketch("S")])
         out = _payload(ex.handler(sketch_name="S", extent="two_side", distance=10, distance2=5, units="mm"))
-        d1, d2 = ef.last_input.two_sides_distance
+        one, two, taper_one, taper_two = ef.last_input.two_sides_extent
+        d1, d2 = one.distance.value, two.distance.value
         assert d1[0] == "real" and abs(d1[1] - 1.0) < 1e-9    # 10mm -> 1.0cm
         assert d2[0] == "real" and abs(d2[1] - 0.5) < 1e-9    # 5mm -> 0.5cm
+        assert (taper_one, taper_two) == (None, None)
         assert out["extent"] == "two_side"
         assert out["distance"] == 10.0 and out["distance2"] == 5.0
 
@@ -1693,12 +1687,23 @@ class TestTwoSide:
         res = ex.handler(sketch_name="S", extent="two_side", distance=10, distance2=0)
         assert res["isError"] is True and "non-zero" in res["message"]
 
-    def test_setTwoSidesDistanceExtent_false_is_reported(self):
+    def test_refused_two_side_distances_are_reported_and_nothing_is_added(self):
         ef = _install([_sketch("S")])
         ef.next_result = False
         res = ex.handler(sketch_name="S", extent="two_side", distance=10, distance2=5)
         assert res["isError"] is True
-        assert "setTwoSidesDistanceExtent returned false" in res["message"]
+        assert "two-sided extents (setTwoSidesExtent returned false)" in res["message"]
+        assert ef.added is False
+
+    def test_a_two_side_request_that_evaluates_to_no_number_is_disclosed(self):
+        # A side with nothing to judge it against is named in the note, never passed as verified.
+        ef = _install([_sketch("S")])
+        _with_units_mgr(types.SimpleNamespace(
+            evaluateExpression=lambda expr, units=None: "eleven", defaultLengthUnits="mm"))
+        out = _payload(ex.handler(sketch_name="S", extent="two_side", distance="StockZ/2",
+                                  distance2=10, units="mm"))
+        assert "Side-one distance was not depth-verified" in out["note"]
+        assert "answered no number" in out["note"]
 
 
 # ── parameter-expression distance (createByString) + the model-parameter linkage read-back ──────────
@@ -1743,7 +1748,7 @@ class TestExpressionDistance:
         ef = _install([_sketch("S")])
         _with_units_mgr()
         out = _payload(ex.handler(sketch_name="S", distance="25 mm", units="mm"))
-        sym, dist = ef.last_input.distance_extent
+        dist = _blind_distance(ef)
         assert dist == ("str", "25 mm")        # createByString - NOT a scaled createByReal
         assert out["distance"] == "25 mm"      # echoed as the expression, not a rounded number
 
@@ -1751,14 +1756,13 @@ class TestExpressionDistance:
         ef = _install([_sketch("S")])
         _with_units_mgr()
         _payload(ex.handler(sketch_name="S", distance="StockZ/2"))
-        _sym, dist = ef.last_input.distance_extent
-        assert dist == ("str", "StockZ/2")
+        assert _blind_distance(ef) == ("str", "StockZ/2")
 
     def test_numeric_string_is_a_literal_scaled_via_createByReal(self):
         # a PLAIN numeric string is a literal, not an expression - it still scales through createByReal.
         ef = _install([_sketch("S")])
         out = _payload(ex.handler(sketch_name="S", distance="6", units="mm"))
-        _sym, dist = ef.last_input.distance_extent
+        dist = _blind_distance(ef)
         assert dist[0] == "real" and abs(dist[1] - 0.6) < 1e-9   # "6" mm -> 0.6 cm, the literal path
         assert out["distance"] == 6.0
 
@@ -1773,8 +1777,8 @@ class TestExpressionDistance:
         ef = _install([_sketch("S")])
         _with_units_mgr(_units_mgr(valid=("StockZ/2", "10 mm")))
         _payload(ex.handler(sketch_name="S", extent="two_side", distance="StockZ/2", distance2="10 mm"))
-        d1, d2 = ef.last_input.two_sides_distance
-        assert d1 == ("str", "StockZ/2") and d2 == ("str", "10 mm")
+        one, two, _taper_one, _taper_two = ef.last_input.two_sides_extent
+        assert one.distance.value == ("str", "StockZ/2") and two.distance.value == ("str", "10 mm")
 
 
 class TestModelParameterLinkage:

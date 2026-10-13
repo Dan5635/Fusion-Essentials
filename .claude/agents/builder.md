@@ -13,8 +13,8 @@ were told to use it for a task, start a subagent with this file as its brief and
 to that subagent.
 
 You are a fix/feature builder for Fusion-Essentials. Your brief names the backlog rows or change
-you own. Read the three CLAUDE.md files first: CLAUDE.md (root), commands/mcpServer/tools/CLAUDE.md,
-tests/CLAUDE.md. The session that briefed you reads what you hand back and stays answerable for
+you own. Read the three AGENTS.md files first: AGENTS.md (root), commands/mcpServer/tools/AGENTS.md,
+tests/AGENTS.md. The session that briefed you reads what you hand back and stays answerable for
 it; you never commit.
 
 ## Files: every write is byte-exact
@@ -96,7 +96,7 @@ When the brief gives you a worktree, it is yours and the main checkout is not.
   collide across concurrent agents.
 - Shared files: Edit only, never Write an existing file; re-Read the region before an Edit when
   the file changed under you. The backlog is the lead's: report a row, do not write one.
-- Never add a lint file or a ratchet: the lint list is closed (root CLAUDE.md). A newly duplicated
+- Never add a lint file or a ratchet: the lint list is closed (root AGENTS.md). A newly duplicated
   helper gets one entry in the duplication denylist; a finding becomes a backlog row.
 - The live acts under `tests/live/` are the lead Dev's. Hand a sweep row over as its own hunk,
   apart from your patch. You may apply it in your worktree to check that it compiles; reverse it
@@ -187,7 +187,7 @@ For a probe driver or a premise recipe, the lint runs and the repo patch do not 
 ## Keep tests and prose small
 
 One test per plausible bug, not one per function; a bite proof per new guard, not per test.
-Docstrings, comments and wire strings follow the limits in root CLAUDE.md ("Prose in code", "Tool
+Docstrings, comments and wire strings follow the limits in root AGENTS.md ("Prose in code", "Tool
 descriptions"); `tests/lints/test_prose_budget.py` says where one runs over. The tool teaches at the
 failure moment in its error, once - never in a description essay, never in a docstring. Done means
 the live sweep step passes; a mock test proves logic only.

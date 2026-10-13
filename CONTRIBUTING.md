@@ -56,7 +56,7 @@ and few blind spots.
   tool's source and named on that line. Where a tool's unit test also calls the kind's
   `assert_present` on a real payload, a renamed id field fails the suite instead of silently
   misleading every consumer that reads it. How a tool reports failure is the honesty contract in
-  root [CLAUDE.md](CLAUDE.md).
+  root [AGENTS.md](AGENTS.md).
 
 - **The live add-in is a development surface.** `sys_reload_addin` hot-reloads without restarting
   Fusion, and `sys_get_api_doc` + `sys_execute_script` let you try an `adsk.*` call against the live
@@ -115,7 +115,7 @@ tool, replace `tests/unit` with its test file. You do not need the coverage or e
 `pytest` and `numpy` are the only packages the unit tests and lints import, and a `--no-cov` or
 `--cov` flag copied from elsewhere works only after `pytest-cov` is installed.
 Scratch files and task artifacts go in the gitignored `outputs/` directory (root
-[CLAUDE.md](CLAUDE.md), "Planning files").
+[AGENTS.md](AGENTS.md), "Planning files").
 
 | Check | What it requires and establishes |
 |---|---|
@@ -139,8 +139,18 @@ they go red between a new measurement row and the full run that lands it.
 
 Windows is the tested development platform. The manifest lists macOS too, but developing and
 running on macOS are untested. Keep production code under `commands/mcpServer/` modular and
-dual-licensed (MIT/Apache headers). Read [tests/CLAUDE.md](tests/CLAUDE.md) before adding tests and
-the [tool-authoring guide](commands/mcpServer/tools/CLAUDE.md) before adding tools.
+dual-licensed (MIT/Apache headers). Read [tests/AGENTS.md](tests/AGENTS.md) before adding tests and
+the [tool-authoring guide](commands/mcpServer/tools/AGENTS.md) before adding tools.
+
+Claude Code 2.1.296 was measured reading `AGENTS.md` when no `CLAUDE.md` exists, and 2.1.197 was
+measured not reading it; other versions are untested. On a client that does not read it, make a
+local untracked `CLAUDE.md` whose one line imports the `AGENTS.md` beside it (`@AGENTS.md`);
+`.gitignore` keeps it out of a commit.
+
+Some tools stand on Fusion API members that Autodesk marks "not officially supported" and for which
+the API names no alternative. They are listed, with the tool that uses each and what it would lose,
+in [commands/mcpServer/UNSUPPORTED_API.md](commands/mcpServer/UNSUPPORTED_API.md). A new use of a
+member marked unsupported, preview or retired needs the owner's word.
 
 ## Add-in command convention
 
@@ -271,7 +281,7 @@ audit: the "Blindspots" section of [tests/generated/TOOL_POINTER_MAP.md](tests/g
 
 To check that a regression test can detect its intended defect, temporarily change the condition it
 exercises, run that test, and restore the source. Use the procedure in
-[tests/CLAUDE.md](tests/CLAUDE.md#prove-a-test-bites); `test_assert_strength.py` also rejects
+[tests/AGENTS.md](tests/AGENTS.md#prove-a-test-bites); `test_assert_strength.py` also rejects
 assertions that rely only on a bare error flag.
 
 ### Testing a tool
@@ -289,7 +299,7 @@ Mocks can't catch a wrong `adsk.*` signature, so geometry-touching tools are als
   test.
 - **Fakes.** Build the design from the shared fakes in `tests/fakes/` and wire it in with
   `install(mod, design)` inside a fixture, never by assigning to the module's `app`.
-  [tests/CLAUDE.md](tests/CLAUDE.md) says which pattern to copy, and
+  [tests/AGENTS.md](tests/AGENTS.md) says which pattern to copy, and
   [tests/README.md](tests/README.md) has the rules for the shared fakes. Assert on the JSON payload
   the handler returns (decode `result["content"][0]["text"]`) and on the exact `adsk.*` calls the
   fake captured, so a regression to a wrong method name or argument fails here.
@@ -308,7 +318,7 @@ Mocks can't catch a wrong `adsk.*` signature, so geometry-touching tools are als
   (the call did not fail, but nothing about its effect was read). A new step for an Edit tool should
   read the effect back, not just `ok`.
 - **Regenerate the docs:** run `python tests/gen_all.py` whenever check_all says a generated file is
-  stale; [tests/CLAUDE.md](tests/CLAUDE.md), "Regenerating docs", says what it rebuilds.
+  stale; [tests/AGENTS.md](tests/AGENTS.md), "Regenerating docs", says what it rebuilds.
 - **New adsk API?** If your tool references an enum family the generated `live_api_facts.py` has
   not measured, the suite goes red with the one command that fixes it: run
   `python tests/live/measure_api.py` with Fusion up, then commit the regenerated facts.

@@ -1641,7 +1641,7 @@ _OVERTURE = [
                 and "BodyRef" in {row.get("kind") for row in p.get("kinds", [])}
                 and "tool's schema" in p.get("note", "")
                 and "handle, name or index" in p.get("note", "")
-                and not any(text in p.get("note", "") for text in ("CLAUDE.md", "_inputs.py", "hand-roll"))), None),
+                and not any(text in p.get("note", "") for text in ("AGENTS.md", "_inputs.py", "hand-roll"))), None),
     ("sys_get_api_doc", {"searchPattern": "a+"}, _refused("unsupported repetition"), None),
     # the introspection FOUND the class in the module it lives in: an adsk submodule that would not
     # import is skipped silently, and the search then answers ok with nothing in it.
@@ -1724,14 +1724,17 @@ _OVERTURE = [
      lambda p: p["preferences"]["compatibility"]["recoverSaveScanFrequency"]["value"] > 0,
      ("pref_scan",
       lambda p: p["preferences"]["compatibility"]["recoverSaveScanFrequency"]["value"])),
-    # the members that RAISE on read are published as null + named in 'unreadable', never dropped -
-    # all THREE of the raising members the [F21] census found on this build, and none of them
-    # miscategorised as a member the build does not carry ('unknown_members' must be absent).
+    # the member that RAISES on read is published as null + named in 'unreadable', never dropped,
+    # and not miscategorised as a member the build does not carry ('unknown_members' must be
+    # absent). The two graphics members the binding marks retired are no rows of the table, so the
+    # group lists neither and 'unreadable' names neither.
     ("sys_get_preferences", {"include": ["graphics"]},
      lambda p: ("graphicsPreset" in p["preferences"]["graphics"]
-                and set(p.get("unreadable") or []) >= {"graphics.autoThrottleEffects",
-                                                       "graphics.degradedSelectionDisplayStyle",
-                                                       "graphics.isLimitEffectsDuringNavigation"}
+                and "graphics.degradedSelectionDisplayStyle" in (p.get("unreadable") or [])
+                and not {"autoThrottleEffects", "isLimitEffectsDuringNavigation"}
+                & set(p["preferences"]["graphics"])
+                and not {"graphics.autoThrottleEffects", "graphics.isLimitEffectsDuringNavigation"}
+                & set(p.get("unreadable") or [])
                 and "unknown_members" not in p), None),
     ("sys_set_preferences", lambda c: {"member": "compatibility.recoverSaveScanFrequency",
                                        "value": _ctx_get(c, "pref_scan", "the scan frequency") + 1},

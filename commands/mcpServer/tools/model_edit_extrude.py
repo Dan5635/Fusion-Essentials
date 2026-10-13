@@ -14,7 +14,7 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from . import _assert, _common, _design_common, _geom, _inputs
 from ._common import counted, error, ok, outcome_clause, safe
-from ._edit_feature_common import (at_address, failed, health as _health,
+from ._edit_feature_common import (at_address, extrude_tapers, failed, health as _health,
                                    identical_geometry_reply, later_operand_refusal, matched,
                                    read_extrude_definition, extrude_extent_kind as _extent_kind,
                                    restore_definition, restore_gaps,
@@ -97,21 +97,18 @@ def _definition_matches(feature, action, values):
             or values.get("start_offset_expression") is not None
             and safe(lambda: offset.expression) != values["start_offset_expression"]):
         return False
-    current_tapers = [safe(lambda: feature.taperAngleOne)]
-    if safe(lambda: feature.hasTwoExtents) is True:
-        current_tapers.append(safe(lambda: feature.taperAngleTwo))
+    current_tapers = extrude_tapers(feature)
     expected_tapers = values.get("expected_taper_expressions")
     if expected_tapers is not None:
         expected_values = values["expected_taper_values"]
         expected_names = values["expected_taper_names"]
         if len(current_tapers) != len(expected_tapers):
             return False
-        for index, (parameter, expression) in enumerate(zip(current_tapers, expected_tapers)):
-            if (safe(lambda p=parameter: p.expression) != expression
-                    or safe(lambda p=parameter: p.value) is None
-                    or abs(safe(lambda p=parameter: p.value) - expected_values[index]) > 1e-12
+        for index, (row, expression) in enumerate(zip(current_tapers, expected_tapers)):
+            if (row["expression"] != expression or row["value"] is None
+                    or abs(row["value"] - expected_values[index]) > 1e-12
                     or (expected_names[index] is not None
-                        and safe(lambda p=parameter: p.name) != expected_names[index])):
+                        and row["name"] != expected_names[index])):
                 return False
     if kind == "to_face":
         return safe(lambda: _common._native_of(feature.extentOne.entity) == values["to_object"]
@@ -229,12 +226,10 @@ def _prepare(action, values, raw, design, entity):
     values["start_kind"], values["start_offset_cm"], values["start_entity"] = (
         start_kind, start_offset, start_entity)
     values["start_offset_name"], values["start_offset_expression"] = offset_name, offset_expression
-    taper_parameters = [safe(lambda: entity.taperAngleOne)]
-    if safe(lambda: entity.hasTwoExtents) is True:
-        taper_parameters.append(safe(lambda: entity.taperAngleTwo))
-    taper_expressions = [safe(lambda p=p: p.expression) for p in taper_parameters]
-    taper_values = [safe(lambda p=p: p.value) for p in taper_parameters]
-    taper_names = [safe(lambda p=p: p.name) for p in taper_parameters]
+    tapers = extrude_tapers(entity)
+    taper_expressions = [row["expression"] for row in tapers]
+    taper_values = [row["value"] for row in tapers]
+    taper_names = [row["name"] for row in tapers]
     if (any(value is None or not math.isfinite(value) for value in taper_values)
             or any(not isinstance(expression, str) or not expression.strip()
                    for expression in taper_expressions)
@@ -246,7 +241,7 @@ def _prepare(action, values, raw, design, entity):
     if (_extent_kind(entity) == "two_side" and kind != "two_side"
             and any(abs(value) > 1e-12 for value in taper_values)):
         return "A two-sided source cannot change to this extent without losing side parameter identity."
-    values["taper_parameters"], values["taper_expressions"] = taper_parameters, taper_expressions
+    values["taper_expressions"] = taper_expressions
     values["has_two_extents"] = safe(lambda: entity.hasTwoExtents) is True
     values["taper_inputs"] = [adsk.core.ValueInput.createByString(expression)
                                for expression in taper_expressions]
@@ -536,11 +531,6 @@ def _definition(feature):
     start_entity = safe(lambda: start.entity) if start_kind == "adsk::fusion::FromEntityStartDefinition" else None
     start_offset = safe(lambda: start.offset) if start_kind in (
         "adsk::fusion::OffsetStartDefinition", "adsk::fusion::FromEntityStartDefinition") else None
-    taper_parameters = [safe(lambda: feature.taperAngleOne)]
-    if safe(lambda: feature.hasTwoExtents) is True:
-        taper_parameters.append(safe(lambda: feature.taperAngleTwo))
-    tapers = [{"name": safe(lambda p=p: p.name), "expression": safe(lambda p=p: p.expression),
-               "value": safe(lambda p=p: p.value)} for p in taper_parameters]
     return {"profile_sketch": safe(lambda: sketch.name),
             "profile_index": address[2] if address and address[1] == "profile" else None,
             "start_kind": start_kind,
@@ -552,8 +542,7 @@ def _definition(feature):
             "start_entity": _common.native_identity(start_entity) if start_entity is not None else None,
             "start_entity_name": safe(lambda: start_entity.name),
             **{key: read[key] for key in ("operation", "extent", "distance_cm", "distance2_cm",
-                "distance_parameter", "distance_expression", "participants")},
-            "tapers": tapers,
+                "distance_parameter", "distance_expression", "participants", "tapers")},
             "side": _side(feature, read["extent"])}
 
 def _described(definition):

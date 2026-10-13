@@ -1,6 +1,6 @@
 """Tests for `cam_get` — the CAM rich read (setups default + include= deeper slices).
 
-Same fixture-based pattern as test_design_get.py (CLAUDE.md "Tests"): stub
+Same fixture-based pattern as test_design_get.py (AGENTS.md "Tests"): stub
 the _slice_* SEAMS and assert the ROUTER's composition (default = setups orientation only; an include=
 returns that slice INSTEAD of the orientation unless 'default'/'setups' is named beside it; the note
 advertises the rest; unknown include + no-CAM guards). The slice→source-handler
@@ -2606,3 +2606,11 @@ class TestAdditiveSlices:
         out = _payload(cg.handler(include=["additive_results"], operation="Orient1"))["additive_results"]
         assert out["orientation"]["count"] == 9 and "orientation_candidate" in out["note"]
         assert "pass 'operation'" in error_message(cg.handler(include=["additive_results"]))
+
+    def test_additive_results_keeps_the_note_of_an_operation_without_orientation_rows(self, monkeypatch):
+        self._rig(monkeypatch)
+        monkeypatch.setattr(cg, "_resolve_op_in_scope", lambda cam, operation, setup: (object(), None))
+        monkeypatch.setattr(cg._cam_additive, "additive_results", lambda cam, target: {
+            "generated_result_count": 0, "note": "zero is not an absence"})
+        out = _payload(cg.handler(include=["additive_results"], operation="Support1"))["additive_results"]
+        assert out == {"generated_result_count": 0, "note": "zero is not an absence"}

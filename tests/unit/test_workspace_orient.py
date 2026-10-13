@@ -129,7 +129,7 @@ class BrokenOcc:
 
 
 def FakeOcc(name, comp=None, children=0, bodies=1, grounded=False, xref=False,
-            broken_children=()):
+            broken_children=(), ground_to_parent=False):
     """One occurrence in the browser digest, on the shared occurrence fake.
 
     component.occurrences is the COMPONENT-LOCAL superset - the only collection an unresolved child
@@ -137,7 +137,8 @@ def FakeOcc(name, comp=None, children=0, bodies=1, grounded=False, xref=False,
     component = MakeComp(name=comp or name.split(":")[0],
                          occurrences=list(broken_children) + [None] * children)
     return make_occurrence(path=name, component=component, children=[None] * children,
-                           bodies=[None] * bodies, grounded=grounded, referenced=xref)
+                           bodies=[None] * bodies, grounded=grounded, referenced=xref,
+                           ground_to_parent=ground_to_parent)
 
 
 class FakeJoint(_SharedJoint):
@@ -158,7 +159,7 @@ class FakeTimelineHealthOnly:
     classes are indistinguishable to this read.
 
     The absence is an object that genuinely lacks the attribute, never a member deleted off the
-    shared adsk mock - that deletion does not reliably undo itself (tests/CLAUDE.md), and an ABSENT
+    shared adsk mock - that deletion does not reliably undo itself (tests/AGENTS.md), and an ABSENT
     attribute is exactly what has to stay distinguishable from a state that read fine."""
     def __init__(self, name, tl_health=0):
         self.name = name
@@ -488,6 +489,45 @@ class TestOrientation:
         out = _payload(wo.handler())
         assert len(out["browser_digest"]) == wo._DIGEST_LIMIT      # capped, not all 40
         assert out["design"]["top_level_occurrences"] == 40        # but the true count is reported
+
+
+# ── the two ground flags: the UI Ground/Fix flag and the parent lock, reported apart ─────────────
+
+class TestGroundFlags:
+    @pytest.fixture
+    def orient(self, monkeypatch):
+        def run(occs):
+            des = FakeDesign(FakeRoot(top_occs=occs), timeline=[FakeTL(0)])
+            app = FakeApplication(active_document=_doc(design=des), active_product=des)
+            monkeypatch.setattr(wo, "app", app)
+            monkeypatch.setattr(wo._common, "app", app)
+            monkeypatch.setattr(adsk.fusion.Design, "cast", lambda value: des)
+            monkeypatch.setattr(adsk.cam.CAM, "cast", lambda value: None)
+            return _payload(wo.handler())
+        return run
+
+    def test_a_parent_locked_occurrence_is_reported_without_counting_as_grounded(self, orient):
+        # the first component of a design: isGroundToParent true, isGrounded false
+        out = orient([FakeOcc("WebCoupon:1", grounded=False, ground_to_parent=True)])
+        assert out["health"]["grounded_occurrences"] == 0
+        assert out["health"]["ground_to_parent_occurrences"] == 1
+        row = out["browser_digest"][0]
+        assert (row["grounded"], row["ground_to_parent"]) == (False, True)
+
+    def test_each_flag_is_counted_apart_over_every_top_level_occurrence(self, orient):
+        # the counts cover the whole top level, past the digest cap, and neither flag stands in
+        # for the other: two grounded, three parent-locked, one of them both
+        occs = [FakeOcc(f"P{i}:1") for i in range(wo._DIGEST_LIMIT + 5)]
+        occs[0] = FakeOcc("Locked:1", ground_to_parent=True)
+        occs[1] = FakeOcc("Fixed:1", grounded=True)
+        occs[-2] = FakeOcc("LockedLate:1", ground_to_parent=True)
+        occs[-1] = FakeOcc("BothLate:1", grounded=True, ground_to_parent=True)
+        out = orient(occs)
+        assert out["health"]["grounded_occurrences"] == 2
+        assert out["health"]["ground_to_parent_occurrences"] == 3
+        # a row carries ground_to_parent only where it reads true
+        flags = [(r["grounded"], r.get("ground_to_parent")) for r in out["browser_digest"][:3]]
+        assert flags == [(False, True), (True, None), (False, None)]
 
 
 # ── timeline markers (null health) + rolled-back marker + warnings surfaced distinctly ────────────

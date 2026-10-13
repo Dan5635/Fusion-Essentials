@@ -1,7 +1,7 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""The rich CAM read (CLAUDE.md "Reads are RICH"): the active document's CAM state, zoomed via
+"""The rich CAM read (AGENTS.md "Reads are RICH"): the active document's CAM state, zoomed via
 include=[...]. The handler is a thin router over _slice_*() helpers, one per slice. Operation
 validity is only trustworthy once the Manufacture workspace has been entered."""
 
@@ -196,7 +196,7 @@ def _slice_references(cam, setup):
 def _slice_nc_programs(cam):
     """NC/post summary: listing name, emitted number, machine, post, counts and parameter count. The
     full post_parameters are the post's static schema (often 60+ rows, identical across programs), a
-    deeper level not dumped here - point at it rather than flooding (CLAUDE.md 'point, don't inline')."""
+    deeper level not dumped here - point at it rather than flooding (AGENTS.md 'point, don't inline')."""
     payload, err = _unwrap(_cr.get_nc_programs_handler())
     if payload:
         for p in payload.get("nc_programs", []):

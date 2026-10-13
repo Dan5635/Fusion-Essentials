@@ -19,6 +19,7 @@ from ..mcp_primitives.registry import register
 from ._common import component_contains, error, occurrence_paths, ok, safe, scale
 from . import _common
 from . import _inputs
+from . import _joints
 from . import _outputs
 from ._doc_common import component_solids as _solids
 
@@ -68,8 +69,8 @@ def _rigid_inverse(m):
     return [*rot[0], back[0], *rot[1], back[1], *rot[2], back[2], 0.0, 0.0, 0.0, 1.0]
 
 
-def _world_at_path(design, comp, path):
-    """World cells of one uniquely addressed component placement, or None."""
+def _at_path(design, comp, path):
+    """The one occurrence of `comp` placed at `path`, read from the root, or None."""
     if comp is None or not isinstance(path, str) or not path:
         return None
     occs = safe(lambda: design.rootComponent.allOccurrencesByComponent(comp))
@@ -84,7 +85,30 @@ def _world_at_path(design, comp, path):
             return None
         if found == path:
             matches.append(occ)
-    return _cells(safe(lambda: matches[0].transform2)) if len(matches) == 1 else None
+    return matches[0] if len(matches) == 1 else None
+
+
+def _world_at_path(design, comp, path):
+    """World cells of one uniquely addressed component placement, or None."""
+    occ = _at_path(design, comp, path)
+    return _cells(safe(lambda: occ.transform2)) if occ is not None else None
+
+
+def _place_copy(design, made, placements, host, want):
+    """Assign the host-local cells `want` to a copy under each (host path, copy path); the copy
+    paths that were assigned. A placement whose occurrence or host pose does not read is skipped."""
+    done = set()
+    for prefix, path in placements:
+        occ = _at_path(design, made, path)
+        host_world = _world_at_path(design, host, prefix) if host is not None else _IDENTITY
+        cells = adsk.core.Matrix3D.create()
+        if occ is None or host_world is None or not cells.setWithArray(_mul(host_world, want)):
+            continue
+        # The MUTATION - not safe-wrapped. The occurrence read from the root takes WORLD cells and
+        # moves the copy under its own host placement only.
+        occ.transform2 = cells
+        done.add(path)
+    return done
 
 
 def _landed_local(design, comp, path, host, host_path):
@@ -175,6 +199,20 @@ def _copy_fault(design, comp, comp_name, occ, components_before, source_before):
     return ""
 
 
+def _missed(comp_name, landed, path, label, got, want, k, units, assigned):
+    """The error for a kept instance whose landed local cells at `path` leave the requested ones."""
+    (ox, oy, oz), axes = _frame(got, k)[0].values(), _frame(got, k)[1]
+    offset = math.dist([got[i] for i in _ORIGIN_CELLS], [want[i] for i in _ORIGIN_CELLS]) / k
+    return error(
+        f"Instanced '{comp_name}' as '{landed}' at '{path}' (kept), but not at the "
+        f"requested placement: its local origin in {label} reads ({ox}, {oy}, {oz}) "
+        f"{units}, {round(offset, 6)} {units} from the requested one, local axes x {axes['x']} "
+        f"y {axes['y']} z {axes['z']}. "
+        + ("It was assigned the request there after the copy and still reads off it."
+           if assigned else "Its transform was not reset to the request.")
+        + " Move it with assembly_move, then read it with assembly_get.")
+
+
 def handler(component: str = "", into_component: str = "", x: float = 0.0, y: float = 0.0,
             z: float = 0.0, units: str = "mm", rotate_deg: float = 0.0,
             rotate_axis: str = "z", independent: bool = False) -> dict:
@@ -259,6 +297,7 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
     if x or y or z:
         matrix.translation = adsk.core.Vector3D.create(float(x) * k, float(y) * k, float(z) * k)
 
+    pending_before = _joints.pending_position(design) if independent else None
     before = occurrence_paths(design)
     occurrences = safe(lambda: host.occurrences)
     if occurrences is None:
@@ -311,25 +350,86 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
     full_path = (under_host or new_paths)[0]
     landed = full_path.split("+")[-1] or safe(lambda: occ.name)
 
-    # The landed local matrix is read back and judged against the request, never the passed matrix.
-    got = _landed_local(design, safe(lambda: occ.component), full_path, nested_host, host_path)
-    frame = _frame(got, k) if got is not None else None
-    placed = bool(x or y or z or rotate_deg)
-    off = want is not None and frame is not None and _off_request(want, got)
-    if off and placed:
-        (ox, oy, oz), axes = frame[0].values(), frame[1]
-        offset = math.dist([got[i] for i in _ORIGIN_CELLS], [want[i] for i in _ORIGIN_CELLS]) / k
-        return error(
-            f"Instanced '{comp_name}' as '{landed}' at '{full_path}' (kept), but not at the "
-            f"requested placement: its local origin in {host_label} reads ({ox}, {oy}, {oz}) "
-            f"{units}, {round(offset, 6)} {units} from the requested one, local axes x {axes['x']} "
-            f"y {axes['y']} z {axes['z']}. Its transform was not reset to the request. Move it "
-            "with assembly_move, then read it with assembly_get.")
-
     # Host instances are counted by their distinct PREFIXES, never by counting leftover paths: each
     # host instance also contributes the new instance's children, which are not host instances.
     children = [p for p in new_paths if p.startswith(full_path + "+")]
     host_instances = _host_prefixes(new_paths, landed) or {host_path}
+    placed = bool(x or y or z or rotate_deg)
+    # A placed copy is judged under EVERY placement of its host, not only the one that was named.
+    others = sorted(host_instances - {host_path}) if independent and placed and want else []
+
+    made = safe(lambda: occ.component)
+
+    def read_back():
+        """Landed local cells under the named host, and (placement, cells) under each other one."""
+        return (_landed_local(design, made, full_path, nested_host, host_path),
+                [(p, _landed_local(design, made, f"{p}+{landed}", nested_host, p)) for p in others])
+
+    def misplaced(got, elsewhere):
+        """The kept-instance error for the first placement that reads off the request, or None."""
+        if placed and want is not None and got is not None and _off_request(want, got):
+            return _missed(comp_name, landed, full_path, host_label, got, want, k, units,
+                           full_path in moved)
+        for prefix, there in elsewhere:
+            if there is not None and _off_request(want, there):
+                return _missed(comp_name, landed, f"{prefix}+{landed}", f"host placement '{prefix}'",
+                               there, want, k, units, f"{prefix}+{landed}" in moved)
+        return None
+
+    # The landed local matrix is read back and judged against the request, never the passed matrix.
+    got, elsewhere = read_back()
+    moved = set()
+    if independent and placed and want and any(
+            cells is not None and _off_request(want, cells)
+            for cells in [got] + [there for _prefix, there in elsewhere]):
+        # A copy shows the matrix the adder was given under ONE placement of its host, so the
+        # request is assigned under each of them and every placement is read again.
+        try:
+            moved = _place_copy(design, made, [(host_path, full_path)]
+                                + [(p, f"{p}+{landed}") for p in others], nested_host, want)
+        except Exception as e:
+            return error(f"Copied '{comp_name}' as '{landed}' at '{full_path}' (kept), but its "
+                         f"transform could not be set to the requested placement: {e} Move it "
+                         "with assembly_move, then read it with assembly_get.")
+        got, elsewhere = read_back()
+    fault = misplaced(got, elsewhere)
+    if fault:
+        return fault
+    # A copy's placement is a pending position: uncaptured, the next feature moves the copy to the
+    # source's pose. It is captured here only when no position was pending before the call.
+    pending = _joints.pending_position(design) if independent else False
+    captured = pending is True and pending_before is False
+
+    def uncaptured(why):
+        return error(f"Copied '{comp_name}' as '{landed}' at '{full_path}' (kept), but its "
+                     f"position was not captured{why}. Capture it with assembly_capture_position("
+                     "action='capture'), or the next feature moves the copy to the pose of "
+                     f"'{comp_name}'.")
+    if captured:
+        try:
+            # The MUTATION - not safe-wrapped, so a refusal is reported instead of swallowed.
+            snap = design.snapshots.add()
+        except Exception as e:
+            return uncaptured(f": {e}")
+        still = _joints.pending_position(design)
+        if still is True:
+            return uncaptured(" - the design still reads a pending position")
+        if not snap or still is None:
+            return error(f"Copied '{comp_name}' as '{landed}' at '{full_path}' (kept), but its "
+                         "capture is not verified: snapshots.add() "
+                         + ("returned a snapshot" if snap else "returned no snapshot")
+                         + " and the pending-position flag "
+                         + ("reads false" if still is False else "did not read")
+                         + ". assembly_capture_position(action='status') lists the markers; "
+                         "without one for it, the next feature moves the copy to the pose of "
+                         f"'{comp_name}'.")
+        got, elsewhere = read_back()
+        fault = misplaced(got, elsewhere)
+        if fault:
+            return fault
+    frame = _frame(got, k) if got is not None else None
+    off = want is not None and frame is not None and _off_request(want, got)
+    unread_hosts = [prefix for prefix, there in elsewhere if there is None]
 
     note = (f"Instanced '{comp_name}' - it LANDED as '{landed}' at '{full_path}'. Fusion numbers a "
             "new instance from a per-component counter across the whole design, so use the landed "
@@ -347,15 +447,30 @@ def handler(component: str = "", into_component: str = "", x: float = 0.0, y: fl
     if len(host_instances) > 1:
         note += (f" The host has {len(host_instances)} instances, so the one call landed the instance "
                  "under each of them (see 'paths').")
-    # An x/y placement sets no pending-position flag, so assembly_capture_position refuses it with
-    # "Nothing to capture", and in a design holding captured position markers a later joint creation
-    # reverts the instance to the origin.
-    if x or y or z or rotate_deg:
+    # A shared instance's placement sets no pending-position flag, so assembly_capture_position
+    # refuses it with "Nothing to capture", and in a design holding captured position markers a
+    # later joint creation reverts the instance to the origin.
+    direct = safe(lambda: design.designType == adsk.fusion.DesignTypes.DirectDesignType)
+    if placed and not independent:
         note += (" The placement cannot be captured - it sets no pending-position flag, so "
                  "assembly_capture_position refuses it. In a design that HOLDS captured position "
                  "markers, a later joint creation can revert this instance to the ORIGIN. Read the "
                  "position back with model_inspect after the next joint creation, or place the "
                  "instance BY that joint instead of by x/y/z.")
+    elif captured:
+        note += (" Its position was captured (one position marker in the timeline), so a later "
+                 "feature keeps it.")
+    elif independent and pending is True:
+        note += (" Its position is PENDING, not captured: positions were pending before this call, "
+                 "or that did not read. assembly_capture_position(action='capture') records them "
+                 f"all; uncaptured, the next feature moves the copy to the pose of '{comp_name}'.")
+    elif independent and pending is None and direct is not True:
+        note += (" Whether its position is pending did not read - assembly_capture_position("
+                 "action='status') says. Uncaptured, the next feature moves the copy to the pose "
+                 f"of '{comp_name}'.")
+    if unread_hosts:
+        note += (f" Under {len(unread_hosts)} other placement(s) of the host its frame could not "
+                 f"be read ('{unread_hosts[0]}'); read it with assembly_get.")
     if off:
         ox, oy, oz = frame[0].values()
         note += f" No placement was requested; it reads at ({ox}, {oy}, {oz}) {units} in {host_label}."
@@ -404,7 +519,8 @@ tool = (
     .add_input_property(*_inputs.frame_axis("rotate_axis", default="z",
             description="World axis.").as_property())
     .add_input_property("independent", {"type": "boolean", "description": (
-        "true = a NEW local component; external references refused.")})
+        "true = a NEW local component; a parametric design captures its position when "
+        "none was pending before the call. External references refused.")})
     .strict_schema()
 )
 item = Item.create_tool_item(

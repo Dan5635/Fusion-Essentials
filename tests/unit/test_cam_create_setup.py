@@ -390,6 +390,19 @@ class TestAdditive:
         assert cam.setups._added[-1].printSetting is None
         assert out["machine"] == "EOS M 290" and "print_setting" not in out
 
+    def test_the_advertised_vendor_model_form_reaches_the_shared_resolver_whole(self, monkeypatch):
+        # The 'machine' input advertises 'vendor|model', and resolve_machine is what answers that
+        # form - a request split or re-cased on the way there is a different request.
+        asked = []
+        _, cam, machine, _s = _additive(monkeypatch)
+        inner = cs.resolve_machine
+        monkeypatch.setattr(cs, "resolve_machine", lambda req: asked.append(req) or inner(req))
+        out = _payload(cs.handler(operation_type="additive", machine="EOS|M 290"))
+        assert asked == ["EOS|M 290"]
+        assert cam.setups._added[-1].machine is machine and out["machine"] == "EOS M 290"
+        described = cs.tool.to_dict()["inputSchema"]["properties"]["machine"]["description"]
+        assert "'vendor|model'" in described
+
     def test_a_machine_that_does_not_read_back_is_an_error_not_a_note(self, monkeypatch):
         # A swallowed machine assignment must not report created=true: the setup would print on a
         # printer nothing asked for.

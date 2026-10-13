@@ -56,7 +56,8 @@ def receipt_closures():
     """Return current family closures with explicit facade hook providers."""
     return verify_receipts.family_closures(
         REPO_ROOT, facade("ACTS"), facade("FAMILY_PROGRAM"), fixture_steps,
-        providers=(facade("reload_smoke"), facade("poll_generation"),
+        providers=(facade("reload_smoke"), facade("family_switch_smoke"),
+                   facade("poll_generation"),
                    facade("poll_render_job"), probe_capabilities,
                    run_steps, _document_now, _shoot, _precondition_holds))
 
@@ -351,6 +352,8 @@ def resume_refusal(state, run_id, current_hash, document, current_identity=None)
     already walked the program (a resume would stamp from its saved ledger without driving a step),
     a SOURCE that moved (the receipt binds one hash), or a DOCUMENT that is not the one the last
     chunk left open (the remaining acts would run against a world that was never built)."""
+    if state is not None and state.get("failed_families"):
+        return "run has failed families; its failure cannot be resumed into a receipt. Start a new run id."
     if state is None:
         return ("no run state for {0!r} - {1} does not exist, so there is nothing to resume; start "
                 "the run with --run {0}".format(run_id, run_state_path(run_id)))
@@ -472,7 +475,10 @@ def _refresh_pin(document_pin):
 
 def _complete_open_documents():
     """Return a complete doc_get census and active handle, or a refusal."""
-    is_error, payload = facade("call")("doc_get", {"max_results": 1000})
+    try:
+        is_error, payload = facade("call")("doc_get", {"max_results": 1000})
+    except Exception as exc:
+        return None, None, "document census transport raised: " + str(exc)
     if is_error or not isinstance(payload, dict):
         return None, None, "doc_get did not return a document census"
     rows = payload.get("open_documents")
@@ -494,6 +500,33 @@ def _complete_open_documents():
             or active_rows[0]["document_handle"] != active_handle):
         return None, None, "doc_get did not identify the active document exactly"
     return rows, active_handle, None
+
+
+def _continuation_census(documents, active, health):
+    """Validate exact identities and the sparse flags doc_get reports."""
+    census = {"complete": True, "documents": documents, "active": active,
+              "open_count": len(documents)}
+    verify_receipts.exact_start(verify_receipts.normalized_health(health), census,
+                               require_build=False)
+    defaults = {"is_active": False, "is_visible": True, "is_saved": True, "is_modified": False}
+    if any(not isinstance(row.get("name"), str) or not row["name"]
+           or any(type(row.get(key, value)) is not bool for key, value in defaults.items())
+           for row in documents):
+        raise ValueError("document census has unreadable names or state flags")
+    return census
+
+
+def _cloud_recovery_checks():
+    """Return the authored cloud seam, generation and local-template restore gates."""
+    import verify_acts_cloud as cloud
+    probes = ((cloud._capped_name_move_probe, cloud._capped_name_move_result),
+              (cloud._duplicate_project_probe, cloud._duplicate_project_result),
+              (cloud._duplicate_hub_probe, cloud._duplicate_hub_result),
+              (cloud._hub_edit_preflight_probe, cloud._hub_edit_preflight_result))
+    return [("sys_execute_script", args, expect, None) for args, expect in probes] + [
+        step for step in cloud._CLOUD_CAM_PERSISTENCE + cloud._CLOUD_DRAWING
+        if step[0] in {"cam_delete_template", "drawing_get_status"}
+        or (step[0] == "cam_get_status" and not isinstance(step[2], _Refusal))]
 
 
 def _resolve_document_target(document_pin, target):
@@ -800,16 +833,29 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
         print(f"    -> {tool} {act}".rstrip()
               + (f" {json.dumps(arguments)[:120]}" if trace else ""), flush=True)
         t0 = time.time()
-        if tool == "data_get_upload_status":
-            is_error, payload, calls = _settle_upload_status(call, arguments)
-        else:
-            is_error, payload = call(tool, arguments)
-            calls = 1
+        try:
+            if tool == "data_get_upload_status":
+                is_error, payload, calls = _settle_upload_status(call, arguments)
+            else:
+                is_error, payload = call(tool, arguments)
+                calls = 1
+        except Exception as exc:
+            if not stop_on_failure or not document_pin.get("track_continuation"):
+                raise
+            document_pin["continuation_refusal"] = "tool transport raised: " + str(exc)
+            document_pin["transport_uncertain"] = True
+            block(tool, document_pin["continuation_refusal"])
+            return rows
         if timings is not None:
             spent, count = timings.get(tool, (0.0, 0))
             timings[tool] = (spent + time.time() - t0, count + calls)
 
         identity_problem = None
+        if (document_pin.get("track_continuation") and is_error and isinstance(payload, str)
+                and payload.startswith("Handler is still running after ")):
+            document_pin["continuation_refusal"] = payload
+            document_pin["transport_uncertain"] = True
+            identity_problem = payload
         if tool == "doc_get" and not deliberate_refusal:
             if is_error:
                 _invalidate_pin(document_pin, "doc_get could not read the active document identity")
@@ -836,7 +882,12 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
                     good = bool(expect(payload))
                 except Exception as e:
                     good, payload = False, f"predicate raised: {e}"
-                status, note = ("pass", "") if good else ("FAIL", str(payload)[:NOTE_MAX])
+                    if document_pin.get("track_continuation") and isinstance(e, OSError):
+                        document_pin["continuation_refusal"] = "predicate transport raised: " + str(e)
+                        document_pin["transport_uncertain"] = True
+                status, note = (("pass", "") if good else (
+                    "blocked" if document_pin.get("continuation_refusal", "").startswith(
+                        "predicate transport raised:") else "FAIL", str(payload)[:NOTE_MAX]))
         elif expect == "ok" and not is_error:
             status, note = "pass", ""
         elif expect == "refused" and is_error:
@@ -904,6 +955,42 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
                 status, note = "pass*", f"saved-value extraction failed: {e}"
 
         rows.append((tool, status, note))
+        if document_pin.get("track_continuation"):
+            if (tool in {"sys_set_preferences", "data_switch_hub", "cam_create_machine",
+                         "cam_delete_machine", "render_create", "render_edit"}
+                    or (tool == "cam_edit_tools" and arguments.get("scope", "document") != "document")
+                    or (tool == "view_set" and arguments.get("action") == "orient"
+                        and arguments.get("projection"))
+                    or (tool == "sys_execute_script" and not any(
+                        args is authored[1] and expect is authored[2]
+                        for authored in document_pin.get("cloud_audited_probes", [])))):
+                document_pin.setdefault("continuation_global_refusal",
+                                        "shared state restoration is uncertified: " + tool)
+            if (tool in {"sys_execute_script", "sys_set_preferences", "data_switch_hub",
+                         "cam_save_template", "cam_delete_template", "cam_create_machine",
+                         "cam_delete_machine", "cam_generate", "render_create", "render_edit"}
+                    or (tool == "cam_edit_tools" and arguments.get("scope", "document") != "document")
+                    or (tool.startswith("cam_") and arguments.get("generate") not in (None, False, "skip"))
+                    or arguments.get("deferred") is True):
+                document_pin.setdefault("continuation_refusal",
+                                        "shared state or asynchronous dispatch is uncertified: " + tool)
+            if isinstance(payload, dict) and payload.get("upload_handle"):
+                document_pin.setdefault("continuation_uploads", set()).add(payload["upload_handle"])
+            elif tool == "data_upload_file" or (tool == "doc_copy" and arguments.get("occurrence")):
+                document_pin.setdefault("continuation_async_refusal",
+                                        "publication dispatch returned no poll handle: " + tool)
+            if tool == "data_get_upload_status" and isinstance(payload, dict):
+                if payload.get("state") in {"complete", "failed"}:
+                    document_pin.setdefault("continuation_uploads", set()).discard(payload.get("handle"))
+            if (isinstance(payload, dict) and payload.get("pending") is True
+                    and not (tool in {"doc_save", "doc_save_as"}
+                             and payload.get("cloud_processing_complete") is True)):
+                document_pin.setdefault("continuation_async_refusal",
+                                        "asynchronous reply is uncertified: " + tool)
+            if tool in {"doc_save", "doc_save_as"} and (not isinstance(payload, dict)
+                    or payload.get("cloud_processing_complete") is not True):
+                document_pin.setdefault("continuation_publication_refusal",
+                                        "held document publication is uncertified: " + tool)
         if on_result:
             try:
                 on_result(*rows[-1])
@@ -976,7 +1063,7 @@ def select_acts(acts, spec):
 
 
 def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None,
-        run_id=None, resume=False, families_spec=None):
+        run_id=None, resume=False, families_spec=None, continue_families=False):
     """Run owned document families and stamp only an unselected complete candidate."""
     # The wire reads, the act program and the ledger tables as the FACADE holds them at the moment
     # the run starts - see verify_core.facade for why they are not this module's own globals.
@@ -984,12 +1071,16 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     attestation_identity = facade("attestation_identity")
     source_hash, write_verified = facade("source_hash"), facade("write_verified")
     poll_generation, reload_smoke = facade("poll_generation"), facade("reload_smoke")
+    family_switch_smoke = facade("family_switch_smoke")
     ACTS, POLL_AFTER, STORY, EXCLUDED = (facade("ACTS"), facade("POLL_AFTER"), facade("STORY"),
                                          facade("EXCLUDED"))
     ACT_NEEDS = facade("ACT_NEEDS")
 
     declared_families = facade("FAMILY_PROGRAM")
     family_mode = declared_families is not None
+    if continue_families and (not family_mode or keep_open or resume or families_spec):
+        print("run refused: --continue-families needs fresh owned families and cleanup")
+        return 1
     families = family_names(ACTS) if family_mode else {}
     if family_mode and families != declared_families:
         print("run refused: act program differs from its declared family ownership")
@@ -1072,7 +1163,13 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     print(f"server ok: {health.get('server')} v{health.get('version', '?')}")
 
     def current_attestation():
-        return attestation_identity(health_gate())
+        try:
+            return attestation_identity(health_gate())
+        except (Exception, SystemExit):
+            if not continue_families:
+                raise
+            document_pin["transport_uncertain"] = True
+            return None
 
     current_document = _document_now() if run_id and resume else None
     if run_id and resume:
@@ -1121,7 +1218,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     receipt_run_id = prior.get("receipt_run_id") or run_id or verify_receipts.execution_id()
     executions = dict(prior.get("family_executions") or {})
     initial_census = prior.get("initial_census")
-    if receipt_mode and initial_census is None:
+    if (receipt_mode or continue_families) and initial_census is None:
         census, active, problem = _complete_open_documents()
         if problem:
             print("run refused: receipt opening census: " + problem)
@@ -1129,6 +1226,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         initial_census = {"complete": True, "documents": census, "active": active,
                           "open_count": len(census)}
         try:
+            if continue_families:
+                initial_census = _continuation_census(census, active, health)
             verify_receipts.exact_start(verify_receipts.normalized_health(health), initial_census,
                                        require_build=False)
         except ValueError as exc:
@@ -1170,6 +1269,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         "dependency_candidates": list(prior.get("dependency_candidates") or [])}
     if family_mode:
         document_pin["track_owned_open"] = True
+        document_pin["track_continuation"] = continue_families
         document_pin["lifecycle_owned_documents"] = list(
             prior.get("lifecycle_owned_documents") or [])
     _remember_document(document_pin, document)
@@ -1190,6 +1290,16 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     current_family = prior.get("family") if family_mode else None
     family_events = list(prior.get("family_events") or []) if family_mode else []
     family_open_handles = set(prior.get("family_open_handles") or []) if family_mode else set()
+    family_start_census = None
+    family_outcomes = {}
+    blocked_acts = []
+    blocked_steps = []
+    recovered_families = set()
+    cleanup_attempted = set()
+    last_fixture_rows = []
+    cloud_checks = _cloud_recovery_checks() if continue_families else []
+    cloud_checks_passed = set()
+    document_pin["cloud_audited_probes"] = cloud_checks[:4]
     fusion_version = prior.get("fusion_version") or health.get("version", "?")
     anchor_document = prior.get("anchor_document")
     walked = 0
@@ -1235,6 +1345,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             "recorded_scope": recorded_scope,
             "initial_census": initial_census,
             "family": current_family, "family_events": family_events,
+            "failed_families": [family for family, outcome in family_outcomes.items()
+                                if outcome == "failed"],
             "family_open_handles": sorted(family_open_handles),
             "owned_documents": list(document_pin.get("owned_documents") or []),
             "owned_lineages": list(document_pin.get("owned_lineages") or []),
@@ -1267,6 +1379,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
 
     def fixture(rows_to_run, family, phase):
         """Run a local producer separately from the original judged-row ledger."""
+        nonlocal last_fixture_rows
         phase_started = time.perf_counter()
         for step in judged_steps(rows_to_run):
             met(step_capability(step[2]))
@@ -1280,6 +1393,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                          guarded_tools=guarded_tools | {"doc_new", "doc_open", "doc_close",
                                                         "doc_activate"},
                          stop_on_failure=True)
+        last_fixture_rows = made
         family_events.append({"family": family, "phase": phase,
                               "steps": [list(row) for row in made],
                               "elapsed_s": max(0.0, time.perf_counter() - phase_started)})
@@ -1339,6 +1453,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         cleanup_started = time.perf_counter()
         census, _active, problem = _complete_open_documents()
         if problem:
+            if problem.startswith("document census transport raised:"):
+                document_pin["transport_uncertain"] = True
             family_events.append({"family": family, "phase": "cleanup",
                                   "steps": [["doc_get", "blocked", problem]],
                                   "elapsed_s": max(0.0, time.perf_counter() - cleanup_started)})
@@ -1365,28 +1481,97 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             if not fixture([("doc_get", {}, lambda p: (p.get("active") or {}).get(
                 "document_handle") == home, None)], family, "restore-read"):
                 return False
-        if receipt_mode:
-            final_census, final_active, final_problem = _complete_open_documents()
-            final_handles = {row["document_handle"] for row in (final_census or [])}
-            owned = set(document_pin.get("owned_documents") or [])
-            if (final_problem or not family_open_handles <= final_handles
-                    or owned & final_handles or final_active != home):
-                family_events.append({"family": family, "phase": "cleanup-verification",
-                                      "steps": [["doc_get", "blocked", final_problem or
-                                                 "owned document or home census did not restore"]]})
-                return False
-            executions[family]["end_census"] = {
+        final_census, final_active, final_problem = _complete_open_documents()
+        final_handles = {row["document_handle"] for row in (final_census or [])}
+        owned = set(document_pin.get("owned_documents") or [])
+        if (final_problem or not family_open_handles <= final_handles
+                or owned & final_handles or final_active != home):
+            family_events.append({"family": family, "phase": "cleanup-verification",
+                                  "steps": [["doc_get", "blocked", final_problem or
+                                             "owned document or home census did not restore"]]})
+            return False
+        if receipt_mode or continue_families:
+            end_census = {
                 "complete": True, "documents": final_census, "active": final_active,
                 "open_count": len(final_census)}
+            if continue_families:
+                try:
+                    end_census = _continuation_census(final_census, final_active, health)
+                    verify_receipts.preserved_census(family_start_census, end_census)
+                    if _refresh_pin(document_pin):
+                        raise ValueError("restored document pin is unresolved")
+                except ValueError as exc:
+                    family_events.append({"family": family, "phase": "cleanup-verification",
+                                          "steps": [["doc_get", "blocked", str(exc)]]})
+                    return False
+                except Exception as exc:
+                    document_pin["transport_uncertain"] = True
+                    family_events.append({"family": family, "phase": "cleanup-verification",
+                                          "steps": [["doc_get", "blocked", str(exc)]]})
+                    return False
+            if receipt_mode:
+                executions[family]["end_census"] = end_census
         document_pin["owned_documents"] = []
         document_pin["owned_lineages"] = []
         document_pin["dependency_candidates"] = []
         family_events.append({"family": family, "phase": "after-census",
-                              "documents": sorted(open_handles), "active": home})
+                              "documents": sorted(final_handles), "active": final_active})
         family_events.append({"family": family, "phase": "cleanup-total",
                               "elapsed_s": max(0.0, time.perf_counter() - cleanup_started)})
         if receipt_mode:
             executions[family]["cleanup"] = True
+        family_outcomes.setdefault(family, "passed")
+        return True
+
+    def continue_after_failure(name, made):
+        """Retain this failure and resume only after a certified family teardown."""
+        family_outcomes[current_family] = "failed"
+        for act, _pre, _narrative, _fallback in ACTS:
+            if (families[act] == current_family and act not in acts_done and act != name
+                    and (selected is None or act in selected)):
+                blocked_acts.append({"family": current_family, "act": act,
+                                     "reason": "failed family: " + name})
+        if not continue_families:
+            return False
+        problem = document_pin.get("continuation_refusal")
+        problem = problem or document_pin.get("continuation_async_refusal")
+        problem = problem or document_pin.get("continuation_global_refusal")
+        problem = problem or document_pin.get("continuation_publication_refusal")
+        if document_pin.get("continuation_uploads"):
+            problem = problem or "an upload or component publication remains unresolved"
+        cleaned = False
+        if not document_pin.get("transport_uncertain"):
+            try:
+                problem = problem or _refresh_pin(document_pin)
+            except Exception as exc:
+                document_pin["transport_uncertain"] = True
+                problem = "document pin could not be certified: " + str(exc)
+            if not document_pin.get("transport_uncertain"):
+                cleaned = finish_family(current_family)
+        cleanup_attempted.add(current_family)
+        if any(row[1] != "FAIL" for row in made if row[1] in verify_receipts.BAD):
+            problem = problem or "failure was not a completed-call logical failure"
+        if not cleaned:
+            problem = problem or "family cleanup did not restore opening documents and home"
+        if problem is None:
+            try:
+                if source_hash() != pinned_source_hash:
+                    problem = "source changed during this run"
+                else:
+                    problem = _identity_refusal(pinned_attestation, current_attestation())
+            except (Exception, SystemExit) as exc:
+                problem = "loaded identity could not be certified: " + str(exc)
+        family_events.append({"family": current_family, "phase": "continuation",
+                              "allowed": problem is None, "reason": problem,
+                              "blocked_acts": [row["act"] for row in blocked_acts
+                                               if row["family"] == current_family],
+                              "owned_scratch": list(document_pin.get("owned_documents") or [])})
+        if problem:
+            print("family continuation refused: " + problem)
+            return False
+        recovered_families.add(current_family)
+        if run_id and not checkpoint():
+            return False
         return True
 
     stopped = False
@@ -1398,6 +1583,19 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             home_document = anchor_document
             document_pin["lifecycle_owned_documents"] = [anchor_document["document_handle"]]
             document_pin["owned_documents"] = []
+            if continue_families:
+                census, active, problem = _complete_open_documents()
+                try:
+                    if problem:
+                        raise ValueError(problem)
+                    original = [row for row in census
+                                if row["document_handle"] != anchor_document["document_handle"]]
+                    verify_receipts.preserved_census(initial_census, dict(
+                        initial_census, documents=original, open_count=len(original)))
+                    initial_census = _continuation_census(census, active, health)
+                except ValueError as exc:
+                    print("run refused: anchor opening census: " + str(exc))
+                    stopped = True
 
     for name, pre, narrative, fallback in ACTS:
         if stopped:
@@ -1406,16 +1604,40 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             continue
         if selected is not None and name not in selected:
             continue
+        if family_mode and families[name] in recovered_families:
+            continue
         if family_mode:
             family = families[name]
             if current_family != family:
                 census, _active, problem = _complete_open_documents()
                 if problem:
+                    if problem.startswith("document census transport raised:"):
+                        document_pin["transport_uncertain"] = True
                     family_events.append({"family": family, "phase": "before-census",
                                           "steps": [["doc_get", "blocked", problem]]})
                     stopped = True
                     break
                 family_open_handles = {row["document_handle"] for row in census}
+                if continue_families:
+                    try:
+                        if source_hash() != pinned_source_hash:
+                            raise ValueError("source changed before family " + family)
+                        identity_problem = _identity_refusal(pinned_attestation, current_attestation())
+                        if identity_problem:
+                            raise ValueError(identity_problem)
+                        family_start_census = _continuation_census(census, _active, health)
+                        expected = dict(initial_census, active=home_document.get("document_handle"))
+                        verify_receipts.preserved_census(expected, family_start_census)
+                    except ValueError as exc:
+                        family_events.append({"family": family, "phase": "before-census",
+                                              "steps": [["doc_get", "blocked", str(exc)]]})
+                        stopped = True
+                        break
+                    document_pin.pop("continuation_refusal", None)
+                    document_pin.pop("continuation_async_refusal", None)
+                    document_pin.pop("continuation_global_refusal", None)
+                    document_pin.pop("continuation_publication_refusal", None)
+                    document_pin.pop("continuation_uploads", None)
                 family_events.append({"family": family, "phase": "before-census",
                                       "documents": sorted(family_open_handles),
                                       "active": _active})
@@ -1454,15 +1676,21 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                     if family not in ("sketch", "sheet_coupon",
                                       "sheet_positions", "sheet_flange") and not fixture(
                             [("doc_new", {}, "ok", None)], family, "open"):
+                        if continue_families and continue_after_failure(name, last_fixture_rows):
+                            continue
                         stopped = True
                         break
                     if family not in ("sketch", "sheet_coupon",
                                       "sheet_positions", "sheet_flange"):
                         if not fixture([("view_switch_workspace", {"workspace": "design"},
                                          "ok", None)], family, "workspace"):
+                            if continue_families and continue_after_failure(name, last_fixture_rows):
+                                continue
                             stopped = True
                             break
                     if not fixture(fixture_steps(family), family, "setup"):
+                        if continue_families and continue_after_failure(name, last_fixture_rows):
+                            continue
                         stopped = True
                         break
             fixture_entitled = (met(MACHINING_EXTENSION)
@@ -1470,6 +1698,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                                 else met(ACT_NEEDS.get(name)))
             before = fixture_steps(family, before_act=name, entitled=fixture_entitled)
             if before and met(ACT_NEEDS.get(name)) and not fixture(before, family, "before " + name):
+                if continue_families and continue_after_failure(name, last_fixture_rows):
+                    continue
                 stopped = True
                 break
             if before and met(ACT_NEEDS.get(name)) and name.startswith(("ACT 10e", "ACT 10c15")):
@@ -1550,6 +1780,11 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                                   "elapsed_s": max(0.0, time.perf_counter() - narrative_started)})
         for step, (tool, status, note) in zip(judged_steps(steps), act_rows):
             rows.append((tool, status, note))
+            if continue_families and current_family == "cloud" and status == "pass":
+                for index, authored in enumerate(cloud_checks):
+                    if (tool == authored[0] and step[2] is authored[2]
+                            and (step[1] is authored[1] or step[1] == authored[1])):
+                        cloud_checks_passed.add(index)
             if status in ("pass", "pass*") and predicate_kind(step[2]) == "value":
                 valued.add(tool)
             if receipt_mode:
@@ -1577,6 +1812,14 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                 and document_pin.get("handle") == owned_handles[0]):
             story_document = dict(document_pin.get("snapshot") or {})
         if any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in act_rows):
+            if continue_families:
+                blocked_steps.extend({"family": current_family, "act": name, "tool": step[0],
+                                      "step_index": index}
+                                     for index, step in enumerate(judged_steps(steps))
+                                     if index >= len(act_rows))
+            if continue_families and continue_after_failure(name, act_rows):
+                story_document = None
+                continue
             stopped = True
             break
         if name.startswith("ACT 15 - RENDER: LOCAL "):
@@ -1631,6 +1874,16 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         if receipt_mode:
             executions[current_family]["acts"].append(name)
         walked += 1
+        if (continue_families and current_family == "cloud"
+                and name == "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE"
+                and cloud_checks and cloud_checks_passed == set(range(len(cloud_checks)))
+                and all(act in acts_done for act in (
+                    "ACT 11a - CLOUD: THE DATA MODEL", "ACT 11b - CLOUD: THE SAVED DOCUMENT",
+                    "ACT 11c - CLOUD: THE DRAWING"))):
+            document_pin.pop("continuation_refusal", None)
+            document_pin.pop("continuation_async_refusal", None)
+            family_events.append({"family": "cloud", "phase": "shared-state-restoration",
+                                  "passed_checks": sorted(cloud_checks_passed)})
         if name == "ACT 0 - OVERTURE" and ctx.get("fusion_version"):
             fusion_version = ctx["fusion_version"]
         if family_mode and family_ends_at(name) and not (keep_open and name == last_requested_act):
@@ -1640,12 +1893,12 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             story_document = None
         # THE CHUNK BOUNDARY: an act is the unit a resume restarts from, so the state is saved here
         # - after the act's own boundary poll, with everything a later act reads.
-        if not develop and source_hash() != pinned_source_hash:
+        if (not develop or continue_families) and source_hash() != pinned_source_hash:
             print("run refused: source changed during this run; no state or receipt written")
             stopped = True
             break
         identity_problem = _identity_refusal(pinned_attestation, current_attestation())
-        if not develop and identity_problem:
+        if (not develop or continue_families) and identity_problem:
             print("run refused: " + identity_problem + "; no state or receipt written")
             stopped = True
             break
@@ -1654,16 +1907,18 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             stopped = True
             break
 
-    if family_mode and stopped and current_family is not None:
+    if (family_mode and stopped and current_family is not None
+            and current_family not in cleanup_attempted and not document_pin.get("transport_uncertain")):
         finish_family(current_family)
-    if family_mode and anchor_document is not None:
+    if family_mode and anchor_document is not None and not document_pin.get("transport_uncertain"):
         if not fixture([("doc_close", {"name": anchor_document["document_handle"],
                          "save_changes": False}, "ok", None)], "lifecycle", "anchor-close"):
             stopped = True
 
     # A run is COMPLETE when every act of the program has run under this id - in this chunk or an
     # earlier one. Only a complete run stamps, and only a complete run fires the reload beat.
-    complete = (not develop and not stopped and (selected is None or receipt_selection is not None)
+    complete = (not develop and not stopped
+                and (selected is None or receipt_selection is not None)
                 and set(selected if receipt_selection is not None else program) <= set(acts_done))
 
     needs_home_restore = (not family_mode and (story_document is not None
@@ -1739,10 +1994,19 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     pre_reload_failures = [row for row in rows
                            if row[1] in ("FAIL", "blocked", "pass*")]
     final_attestation = pinned_attestation
+    # THE FAMILY SWITCH BEAT first: it reloads twice and ends on a new load of the same build,
+    # so the identity it returns is the one the reload beat starts from (family_switch_smoke).
+    switched_attestation = None
     if complete and not pre_reload_failures:
+        switched_attestation = family_switch_smoke(
+            rows, pinned_attestation, all_tools, valued=valued)
+        if switched_attestation is None:
+            print("run refused: the family switch beat did not end on the starting tools")
+            stopped, complete = True, False
+    if switched_attestation is not None:
         lifecycle_evidence = {} if receipt_mode else None
         reloaded = reload_smoke(rows, notes, valued=valued,
-                                expected_attestation=pinned_attestation,
+                                expected_attestation=switched_attestation,
                                 expected_fusion_version=fusion_version if receipt_mode else None,
                                 evidence=lifecycle_evidence,
                                 before_tool_census=all_tools)
@@ -1828,6 +2092,16 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     # pass* blocks the receipt: the payload did not carry a key the step contract expected - a
     # payload-shape mismatch is a real signal, not a pass.
     fails = [r for r in rows if r[1] in ("FAIL", "blocked", "pass*")]
+    if continue_families:
+        fails += [tuple(row) for event in family_events for row in event.get("steps", [])
+                  if row[1] in verify_receipts.BAD and tuple(row) not in fails]
+    if continue_families:
+        for family in dict.fromkeys(families[n] for n in (selected or program)):
+            family_outcomes.setdefault(family, "not-run")
+        print("\nfamily continuation" + (" discovery (no receipt)" if develop else "") + ": " + ", ".join(
+            family + "=" + outcome for family, outcome in family_outcomes.items()))
+        for blocked in blocked_acts:
+            print("  blocked " + blocked["act"] + ": " + blocked["reason"])
     # A run that walked only PART of the program judges the slice it walked: its ledger reads PENDING
     # for every tool the unrun acts drive, and the receipt would publish that as the tool surface's
     # coverage. The union of a run id's chunks is what makes the program whole again.
@@ -1905,6 +2179,10 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         # the id is spent: its acts have all run, so a later --resume of it would stamp from the
         # saved ledger without driving a step.
         save_run_state(run_id, dict(load_run_state(run_id) or {}, complete=True))
+    if continue_families and run_id and (fails or stopped):
+        save_run_state(run_id, dict(load_run_state(run_id) or {},
+                                   failed_families=[family for family, outcome in family_outcomes.items()
+                                                    if outcome == "failed"] or [current_family]))
     if stopped:
         print("\nVERIFIED_TOOLS.md NOT rewritten - resolve the FAIL/blocked/pass* steps first.")
     if not complete:
@@ -1942,8 +2220,14 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             json.dump({"source_hash": pinned_source_hash, "attestation": pinned_attestation,
                        "selected": selected, "acts": act_modes, "narrative_steps": rows,
                        "family_events": family_events, "home_document": home_document,
+                       "continue_families": continue_families,
+                       "family_outcomes": family_outcomes, "blocked_acts": blocked_acts,
+                       "blocked_steps": blocked_steps,
+                       "failures": fails,
+                       "transport_uncertain": bool(document_pin.get("transport_uncertain")),
+                       "owned_scratch": list(document_pin.get("owned_documents") or []),
                        "fusion_version": fusion_version, "elapsed_s": elapsed,
                        "complete": complete, "stopped": stopped,
                        "receipt_written": receipt_written}, fh, indent=2)
         print("\nwrote family evidence " + evidence_path)
-    return 1 if fails or stopped else 0
+    return 1 if fails or stopped or "failed" in family_outcomes.values() else 0

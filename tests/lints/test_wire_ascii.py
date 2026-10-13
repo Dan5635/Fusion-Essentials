@@ -1,4 +1,4 @@
-"""Lint: every agent-facing wire string is pure ASCII (CLAUDE.md "Tool descriptions").
+"""Lint: every agent-facing wire string is pure ASCII (AGENTS.md "Tool descriptions").
 The strings cross the wire JSON-encoded with ensure_ascii, so a non-ASCII character becomes a
 6-character \\uXXXX escape - use the plain-ASCII spelling (' - ', '...', '->', 'deg'). Three
 surfaces: the live registry's descriptions, module-level constants, and ok()/error() literals."""

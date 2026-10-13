@@ -573,7 +573,9 @@ STORY = {
                          "answering its own isGenerationAllowed flag rather than reading null. It "
                          "is the same read the run's capability probe takes, which is what routes "
                          "the extension acts to skipped(machining_extension not entitled) instead "
-                         "of into the refusal an unlicensed installation answers them with"),
+                         "of into the refusal an unlicensed installation answers them with; and "
+                         "on the joint bench a parent-locked part counted apart from grounded, "
+                         "against assembly_get's rows"),
     "sys_capability_map": "survey the server's tool families at cold start",
     "sys_find_tool": ("search the surface for the revolve verb - a registry read, so it carries no "
                       "'active_document' stamp (design_get's final read is the other half)"),
@@ -887,7 +889,10 @@ STORY = {
                           "per action, with length read-backs; split's two halves must carry "
                           "distinct ids; constrain both halves separately and compare sketch_get's "
                           "labels with endpoint-selected identities, preserving endpoints, control "
-                          "line and history; a chamfer across an offset pair refused"),
+                          "line and history; a chamfer across an offset pair refused; an offset "
+                          "picked on each side of an open chain's first and second line and of a "
+                          "closed loop, and one past a fillet's radius, the new lines read back "
+                          "by coordinates on the pick's side"),
     "model_scale": ("uniform x8 and per-axis x*y*z scales with ratio read-backs; unresolvable, "
                     "length, and angle expressions refused; a bare unitless parameter accepted; "
                     "a vertex-anchored scale"),

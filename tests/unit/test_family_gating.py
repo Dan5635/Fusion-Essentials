@@ -11,6 +11,7 @@ source text for the ``family_enabled_<fam>`` settings-key contract (same source-
 ``test_cold_start_onboarding.py``).
 """
 
+import ast
 import json
 import os
 import re
@@ -49,10 +50,9 @@ class TestFamilyOf:
 
 # ── GATEABLE_FAMILIES ───────────────────────────────────────────────────────────────────────────
 
-def _real_family_set():
-    """Every family that actually appears in the registered tool surface - ground truth for
-    checking GATEABLE_FAMILIES membership. Built by sweeping tools/ and registering everything,
-    the same way entry._collect_items() and test_tool_autodiscovery.py's sweep do."""
+def _register_everything():
+    """Reset the registry and register every tool module, the way entry._collect_items() and
+    test_tool_autodiscovery.py's sweep do; the registered tool names."""
     names = [fn[:-3] for fn in sorted(os.listdir(TOOLS_DIR))
              if fn.endswith(".py") and not fn.startswith("_")]
     load_tool(names[0])
@@ -62,7 +62,13 @@ def _real_family_set():
         reg = getattr(mod, "register_tool", None)
         if callable(reg):
             reg()
-    return {registry.family_of(it.get_name()) for it in registry.get_tools()}
+    return sorted(it.get_name() for it in registry.get_tools())
+
+
+def _real_family_set():
+    """Every family that actually appears in the registered tool surface - ground truth for
+    checking GATEABLE_FAMILIES membership."""
+    return {registry.family_of(name) for name in _register_everything()}
 
 
 class TestGateableFamilies:
@@ -204,6 +210,64 @@ class TestEntrySettingsKeyContract:
                 src)
             assert m, f"family_enabled_{fam} block not found in entry.py"
             assert m.group(1) == "True", f"family_enabled_{fam} must default to True"
+
+
+# ── a switched-off family, from its Settings row to the tool list and the capability map ───────
+
+def _entry_function(name, namespace):
+    """One entry.py function, compiled from its own source into `namespace`."""
+    tree = ast.parse(_entry_source(), filename=_ENTRY_SRC)
+    fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+    assert len(fns) == 1, f"entry.py must define exactly one {name}(); found {len(fns)}"
+    exec(compile(ast.Module(body=fns, type_ignores=[]), _ENTRY_SRC, "exec"), namespace)
+    return namespace[name]
+
+
+def _disabled_by(rows):
+    """entry._disabled_families() reading `rows` as the MCP Server group's stored settings."""
+    store = types.SimpleNamespace(load_settings=lambda _module_id: rows)
+    return _entry_function("_disabled_families", {
+        "shared_state": store, "SETTINGS_ID": "GTF_Test_MCP",
+        "GATEABLE_FAMILIES": registry.GATEABLE_FAMILIES})()
+
+
+def _map_payload():
+    return _payload(load_tool("sys_capability_map").handler())
+
+
+class TestSwitchedOffFamilies:
+    OFF = ("sheet", "pmi", "render")
+
+    @pytest.fixture
+    def everything(self):
+        yield _register_everything()
+        registry.reset_registry()
+
+    def test_only_an_explicit_false_row_switches_a_family_off(self):
+        rows = {f"family_enabled_{fam}": {"type": "checkbox", "default": fam not in self.OFF}
+                for fam in registry.GATEABLE_FAMILIES}
+        assert _disabled_by(rows) == set(self.OFF)
+        # a file from before the three rows existed reads every family as enabled
+        assert _disabled_by({"family_enabled_cam": {"type": "checkbox", "default": True}}) == set()
+
+    def test_the_three_leave_the_tool_list_and_the_capability_map(self, everything):
+        before = _map_payload()
+        gone = [name for name in everything if registry.family_of(name) in self.OFF]
+        assert {registry.family_of(name) for name in gone} == set(self.OFF)
+        assert set(self.OFF) <= {row["family"] for row in before["families"]}
+
+        # entry._collect_items() purges by registered tool name, after every module registered
+        for name in everything:
+            if registry.family_of(name) in self.OFF:
+                assert registry.unregister(name) is True
+
+        assert sorted(it.get_name() for it in registry.get_tools()) == [
+            name for name in everything if name not in gone]
+        after = _map_payload()
+        assert ({row["family"] for row in before["families"]}
+                - {row["family"] for row in after["families"]}) == set(self.OFF)
+        assert after["tool_count"] == before["tool_count"] - len(gone)
+        assert after["family_count"] == before["family_count"] - len(self.OFF)
 
 
 # ── GATED_TOOLS: entry.py's gate must be DERIVED from the shared map, not a second hand-typed copy

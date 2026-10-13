@@ -4,11 +4,36 @@
 """The live sweep's own program tables and placement: producers, dependencies and layout agree."""
 
 import sys
+import pytest
 
 from conftest import load_tool_verify as _load_verify
 
 
 class TestToolVerifyProgram:
+    def test_nested_insertion_witness_requires_the_frame_limit(self):
+        _load_verify()
+        cloud = sys.modules["verify_acts_cloud"]
+        payload = {"is_reference": True, "new_occurrence_name": "Part:1"}
+        phrases = ["placed_at is in the host component's frame",
+                   "world placements are unconfirmed", "read each path with assembly_get"]
+        assert cloud._cr_insert_landed({**payload, "note": "; ".join(phrases)}, nested=True)
+        assert cloud._cr_insert_landed(payload)
+        for missing in phrases:
+            with pytest.raises(AssertionError):
+                cloud._cr_insert_landed({**payload, "note": "; ".join(
+                    phrase for phrase in phrases if phrase != missing)}, nested=True)
+
+    def test_later_copy_feature_requires_its_independent_root_solid(self):
+        _load_verify()
+        motion = sys.modules["verify_acts_motion"]
+        root = {"occurrence": None, "is_solid": True, "volume": 160}
+        mass = {"units": "mm", "accuracy": "very_high", "per_body_truncated": False}
+        assert motion._after_copy_feature_landed({"mass": {**mass, "per_body": [root]}})
+        for rows in ([], [{**root, "occurrence": "Existing:1"}],
+                     [{"is_solid": True, "volume": 160}], [{**root, "volume": 0}]):
+            with pytest.raises(AssertionError, match="later feature added its own"):
+                motion._after_copy_feature_landed({"mass": {**mass, "per_body": rows}})
+
     def test_matching_fixture_is_not_republished(self, monkeypatch, tmp_path):
         verify = _load_verify().verify_core
         path = tmp_path / "fixture.svg"

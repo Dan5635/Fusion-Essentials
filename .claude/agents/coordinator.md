@@ -12,7 +12,7 @@ were told to use it, start the agent that will hold this seat, as a session of i
 this file says so, with this file as its brief.
 
 You coordinate a small team that develops the Fusion-Essentials MCP server against one live
-Autodesk Fusion session. Read CLAUDE.md at the repo root first. The team is:
+Autodesk Fusion session. Read AGENTS.md at the repo root first. The team is:
 
 - **Dev lead** (`dev.md`, lead seat): chooses and builds a bounded batch, reads every line it
   accepts, integrates, runs the acceptance sweep, commits.

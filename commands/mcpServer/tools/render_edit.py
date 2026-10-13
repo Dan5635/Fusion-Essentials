@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 import adsk.core
+import adsk.fusion
 
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
@@ -22,13 +23,16 @@ _SCENE_KEYS = (
     "brightness_lux", "exposure_ev", "focal_length_mm", "camera_type",
     "ground_offset", "ground_roughness",
     "show_ground", "flatten_ground", "ground_reflect", "light_angle_deg",
+    "aspect_ratio", "aspect_width", "aspect_height",
 )
 _ORDER = (
     "environment_id", "environment_name", "background_rgb",
     "brightness_lux", "exposure_ev", "camera_type", "focal_length_mm",
     "show_ground", "flatten_ground", "ground_reflect", "ground_offset",
     "ground_roughness", "light_angle_deg",
+    "aspect_ratio", "aspect_width", "aspect_height",
 )
+_ASPECT_KEYS = ("aspect_ratio", "aspect_width", "aspect_height")
 _NUMBER_BOUNDS = {
     "brightness_lux": (0, 100000), "exposure_ev": (-15, 25),
     "ground_roughness": (0, 1),
@@ -42,9 +46,9 @@ _SCALAR_ATTRS = {
     "show_ground": "isGroundDisplayed", "flatten_ground": "isGroundFlattened",
     "ground_reflect": "isGroundReflections",
     "light_angle_deg": "lightAngle",
+    "aspect_width": "aspectRatioWidth", "aspect_height": "aspectRatioHeight",
 }
-_READ_ONLY_KEYS = ("aspect_ratio", "aspect_width", "aspect_height", "ground_position",
-                   "background_type", "environment_custom", "units")
+_READ_ONLY_KEYS = ("ground_position", "background_type", "environment_custom", "units")
 _READ_ONLY_REMEDIES = {
     "background_type": " background_type follows the background written: background_rgb gives "
                        "solid_color; environment_id or environment_name gives environment.",
@@ -93,6 +97,27 @@ def _validate_scene(scene):
         return "background_rgb must contain three integers in 0..255."
     if "camera_type" in scene and scene["camera_type"] not in _render_scene.CAMERAS:
         return f"camera_type={scene['camera_type']!r} is not a listed camera type."
+    return _validate_aspect(scene)
+
+
+def _validate_aspect(scene):
+    """Return a preflight error unless the aspect fields form one writable request."""
+    ratio = scene.get("aspect_ratio")
+    sides = [key for key in ("aspect_width", "aspect_height") if key in scene]
+    if "aspect_ratio" in scene and (not isinstance(ratio, str) or ratio not in _render_common.ASPECT):
+        return f"aspect_ratio={ratio!r} is not a listed aspect ratio."
+    for key in sides:
+        if type(scene[key]) is not int or scene[key] < 1:
+            return f"{key}={scene[key]!r} must be a positive integer."
+    if len(sides) == 1:
+        return (f"{sides[0]}={scene[sides[0]]!r} cannot be written alone; send aspect_width and "
+                "aspect_height in the same scene edit.")
+    if sides and ratio not in (None, "custom"):
+        return (f"aspect_ratio={ratio!r} cannot be combined with aspect_width or aspect_height; "
+                "send the preset alone, or both dimensions with aspect_ratio omitted or 'custom'.")
+    if ratio == "custom" and not sides:
+        return ("aspect_ratio='custom' cannot be written alone; send aspect_width and "
+                "aspect_height in the same scene edit.")
     return None
 
 
@@ -149,6 +174,8 @@ def _set_scene_value(settings, key, value, environment, units):
         settings.backgroundSolidColor = adsk.core.Color.create(*value, 255)
     elif key == "camera_type":
         settings.cameraType = getattr(adsk.core.CameraTypes, _render_scene.CAMERAS[value])
+    elif key == "aspect_ratio":
+        settings.aspectRatio = getattr(adsk.fusion.RenderAspectRatios, _render_common.ASPECT[value])
     else:
         native = value * math.pi / 180 if key == "light_angle_deg" else value
         setattr(settings, _SCALAR_ATTRS[key], native)
@@ -195,10 +222,12 @@ def _edit_scene(manager, scene, units):
     if "ground_roughness" in scene and scene.get("ground_reflect", before.get("ground_reflect")) is not True:
         return error("ground_roughness requires ground_reflect=true; set it in this scene edit or "
                      "enable ground reflections first.")
+    # The width and height setters carry a custom ratio; its label is judged, never written.
+    carried = "aspect_ratio" if "aspect_width" in scene and "aspect_ratio" in scene else None
     applied, already_set = [], []
     failure, how = None, "raised"
     for key in _ORDER:
-        if key not in scene:
+        if key not in scene or key == carried:
             continue
         try:
             state = _set_scene_value(settings, key, scene[key], environment, units)
@@ -211,11 +240,13 @@ def _edit_scene(manager, scene, units):
             break
         (applied if state == "assigned" else already_set).append(key)
     after = _render_scene.scene_row(settings, units)
-    mismatches = _differences({key: scene[key] for key in applied + already_set},
-                              after, environment)
+    judged = applied + already_set + ([carried] if carried and "aspect_height" in applied else [])
+    mismatches = _differences({key: scene[key] for key in judged}, after, environment)
     requested = set(scene)
     if requested & {"environment_id", "environment_name"}:
         requested |= {"environment_id", "environment_name", "environment_custom", "background_type"}
+    if requested & set(_ASPECT_KEYS):
+        requested |= set(_ASPECT_KEYS)
     changed_unrequested = {key: {"before": value, "after": after.get(key)}
                            for key, value in before.items()
                            if key not in requested and after.get(key) != value}
@@ -381,6 +412,8 @@ tool = (
             "ground_roughness": {"type": "number"}, "show_ground": {"type": "boolean"},
             "flatten_ground": {"type": "boolean"}, "ground_reflect": {"type": "boolean"},
             "light_angle_deg": {"type": "number"},
+            "aspect_ratio": {"type": "string", "enum": list(_render_common.ASPECT)},
+            "aspect_width": {"type": "integer"}, "aspect_height": {"type": "integer"},
         }})
     .add_input_property("units", {"type": "string", "enum": ["mm", "cm", "in"]})
     .add_input_property("file_path", {"type": "string"})

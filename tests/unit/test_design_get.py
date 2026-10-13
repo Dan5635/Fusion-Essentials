@@ -1,6 +1,6 @@
 """Tests for `design_get` - the first RICH READ (one tool, default slice + include= deeper slices).
 
-The rich-read shape tests/CLAUDE.md names as the canonical one to copy.
+The rich-read shape tests/AGENTS.md names as the canonical one to copy.
 
 Pinned: the DEFAULT call returns only the orientation slice (mode summary + health + tree_summary) and
 NONE of the heavy slices; an include= returns exactly its slice, the orientation omitted unless
@@ -345,6 +345,7 @@ def extrude_definition_scene(definition_scene, monkeypatch):
     feature.extentOne = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
         distance=FakeModelParameter(name="d1", expression="-15 mm", value=-1.5))
     feature.extentTwo = None
+    feature.taperAngleOne = FakeModelParameter(name="d5", expression="0 deg", value=0.0, unit="deg")
     feature.read_participants = False
     feature.participants = []
 
@@ -393,11 +394,58 @@ def test_the_controls_an_extrude_read_omits_are_listed_as_not_read(extrude_defin
     s = extrude_definition_scene
     s.hole.extentOne.objectType = "adsk::fusion::" + extent
     out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
-    assert out["not_read"] == (["taper_angle", "thin", "start_extent", "is_solid"]
+    assert out["not_read"] == (["thin", "start_extent", "is_solid"]
                                + (["extent_target"] if target else []))
     assert "extent" not in out["unavailable"]
     assert out["note"].endswith(" This Extrude definition is partial: not_read lists fields it "
                                 "omits.")
+
+
+def test_a_one_sided_extrude_reads_no_taper_as_zero_degrees_not_unknown(extrude_definition_scene):
+    out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert out["taper_deg"] == 0 and out["taper_deg"] is not None
+    assert out["taper_parameter"] == "d5" and out["taper_expression"] == "0 deg"
+    assert out["taper_two_applicable"] is False
+    assert (out["taper_two_deg"], out["taper_two_parameter"], out["taper_two_expression"]) == (
+        None, None, None)
+    assert "taper" not in out["unavailable"] and "taper_two" not in out["unavailable"]
+
+
+def test_each_side_of_a_two_sided_extrude_reads_its_own_taper_in_degrees(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.hasTwoExtents = True
+    s.hole.extentTwo = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
+        distance=FakeModelParameter(name="d2", expression="4 mm", value=0.4))
+    s.hole.taperAngleOne = FakeModelParameter(name="d5", expression="3 deg",
+                                              value=0.05235987755982989, unit="deg")
+    s.hole.taperAngleTwo = FakeModelParameter(name="d6", expression="-4 deg",
+                                              value=-0.06981317007977318, unit="deg")
+    out = _payload(dg.handler(include=["definition"], feature="Hole4", units="in"))["definition"]
+    assert (out["taper_deg"], out["taper_parameter"], out["taper_expression"]) == (3.0, "d5", "3 deg")
+    assert out["taper_two_applicable"] is True
+    assert (out["taper_two_deg"], out["taper_two_parameter"], out["taper_two_expression"]) == (
+        -4.0, "d6", "-4 deg")
+
+
+def test_an_unread_taper_is_unknown_with_its_getter_error_not_zero(extrude_definition_scene,
+                                                                   monkeypatch):
+    def unread(_feature):
+        raise RuntimeError("taper unread")
+    monkeypatch.setattr(FakeFeature, "taperAngleOne", property(unread), raising=False)
+    out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert (out["taper_deg"], out["taper_parameter"], out["taper_expression"]) == (None, None, None)
+    assert out["unavailable"]["taper"] == "taper unread"
+    assert out["distance"] == -15
+
+
+def test_an_unread_side_count_leaves_the_second_taper_unknown_not_inapplicable(
+        extrude_definition_scene, monkeypatch):
+    def unread(_feature):
+        raise RuntimeError("side count unread")
+    monkeypatch.setattr(FakeFeature, "hasTwoExtents", property(unread), raising=False)
+    out =_payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert out["taper_two_applicable"] is None and out["taper_two_deg"] is None
+    assert out["taper_deg"] == 0
 
 
 @pytest.mark.parametrize("two", ["ToEntityExtentDefinition", "DistanceExtentDefinition"])

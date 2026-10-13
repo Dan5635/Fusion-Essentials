@@ -167,7 +167,7 @@ _font_read_back = font_read_back
 # holding its referenced SKETCH entities. A surface-side attribute is a model face or construction
 # plane, outside this sketch's id space, so listing it would only add a '?'.
 _CONSTRAINT_REFS = {
-    "PerpendicularConstraint": ("perpendicular", ("lineOne", "lineTwo")),
+    "PerpendicularConstraint": ("perpendicular", ("line", "curve")),
     "ParallelConstraint": ("parallel", ("lineOne", "lineTwo")),
     "CollinearConstraint": ("collinear", ("lineOne", "lineTwo")),
     "TangentConstraint": ("tangent", ("curveOne", "curveTwo")),
@@ -186,7 +186,7 @@ _CONSTRAINT_REFS = {
     "MidPointConstraint": ("midpoint", ("point", "midPointCurve")),
     "SmoothConstraint": ("smooth", ("curveOne", "curveTwo")),
     "OffsetConstraint": ("offset", ("parentCurves", "childCurves")),
-    "PolygonConstraint": ("polygon", ("lines",)),          # 'lines' is a vector (many)
+    "PolygonConstraint": ("polygon", ("points",)),         # the vertices; published as the sides
     "CircularPatternConstraint": ("circular_pattern", ("centerPoint", "entities")),
     "RectangularPatternConstraint": ("rectangular_pattern",
                                      ("entities", "directionOneEntity", "directionTwoEntity")),
@@ -563,7 +563,12 @@ def _describe_constraint(c, sketch, token_ids):
         if ent is None:
             continue
         items = _vector_items(ent)
-        if items is not None:        # a vector of entities (e.g. PolygonConstraint.lines)
+        if items is not None and cls == "PolygonConstraint":
+            # Published by its SIDES, the lines sketch_constrain takes; by its vertex points where
+            # the sides do not read.
+            ids.extend(_polygon_sides(sketch, items, token_ids)
+                       or [_identical_id(sketch, sub, token_ids) for sub in items])
+        elif items is not None:      # a vector of entities (e.g. OffsetConstraint.childCurves)
             for sub in items:
                 ids.append(_identical_id(sketch, sub, token_ids))
         else:
@@ -571,10 +576,39 @@ def _describe_constraint(c, sketch, token_ids):
     return {"type": friendly, "entities": ids}
 
 
+# Two side lengths within this share of the shortest are one length.
+_SIDE_LENGTH_REL = 1e-6
+
+
+def _polygon_sides(sketch, points, token_ids):
+    """The ids of the lines joining a polygon's vertex points - its sides, in id order - or None
+    when they do not read as one side per vertex."""
+    def vertex(point):
+        return point is not None and any(safe(lambda v=v: v == point) is True for v in points)
+
+    lengths = {}
+    for point in points:
+        for ent in _vector_items(safe(lambda point=point: point.connectedEntities)) or []:
+            ref = _identical_id(sketch, ent, token_ids)
+            if (ref.startswith("line:") and ref not in lengths
+                    and vertex(safe(lambda ent=ent: ent.startSketchPoint))
+                    and vertex(safe(lambda ent=ent: ent.endSketchPoint))):
+                lengths[ref] = _common.finite_number(safe(lambda ent=ent: ent.length))
+    known = [n for n in lengths.values() if n is not None]
+    if not known:
+        return None
+    # A longer line between two vertices is a diagonal: the sides are the shortest such lines.
+    longest_side = min(known) * (1.0 + _SIDE_LENGTH_REL)
+    sides = [ref for ref, n in lengths.items() if n is not None and n <= longest_side]
+    if len(sides) != len(points):
+        return None
+    return sorted(sides, key=lambda ref: int(ref.rpartition(":")[2]))
+
+
 def _vector_items(ent):
     """If ent is a vector/collection of entities, return a list of them; else None. Handles both the
-    .count/.item collection idiom AND the SketchLineVector len()/[i] idiom (used by PolygonConstraint
-    .lines). A single BRep/sketch entity is NOT a vector - so a plain SketchLine returns None."""
+    .count/.item collection idiom AND the SWIG vector len()/[i] idiom (PolygonConstraint.points).
+    A single BRep/sketch entity is NOT a vector - so a plain SketchLine returns None."""
     # A single sketch entity exposes entityToken; treat that as NOT a vector even if it has len.
     if safe(lambda: ent.entityToken) is not None:
         return None

@@ -945,6 +945,22 @@ def test_extent_rejects_setter_that_renames_existing_taper_parameter(scene):
     assert result["details"]["mutation_attempted"] is True
 
 
+def test_extent_rejects_setter_that_lands_another_taper_expression(scene, monkeypatch):
+    scene.feature.taperAngleOne.expression = "3.0 deg"
+    scene.feature.taperAngleOne.value = 0.05235987755982989
+    landed = scene.feature.setSymmetricExtent
+
+    def setter(distance, full, taper):
+        applied = landed(distance, full, taper)
+        scene.feature.taperAngleOne.expression = "3 deg"
+        scene.feature.taperAngleOne.value = 0.05235987755982989
+        return applied
+    monkeypatch.setattr(scene.feature, "setSymmetricExtent", setter)
+    result = mod.handler(feature="Extrude1", action="extent", extent="symmetric", distance=8)
+    assert result["isError"] is True
+    assert result["details"]["definition_matches"] is False
+
+
 def test_extent_rejects_setter_that_changes_start_offset_expression(scene):
     scene.feature.startExtent = SimpleNamespace(
         objectType="adsk::fusion::OffsetStartDefinition",
@@ -1018,6 +1034,23 @@ def test_two_sided_source_negative_distance_keeps_first_taper_identity(scene):
     assert result["definition_matches"] is True
     assert result["definition_after"]["side"] == "negative"
     assert result["definition_after"]["tapers"][0]["name"] == scene.feature.taperAngleOne.name
+
+
+def test_the_edit_reply_and_the_definition_read_report_one_taper_read(scene):
+    scene.feature.hasTwoExtents = True
+    scene.feature.extentTwo = SimpleNamespace(objectType=_DISTANCE, distance=Distance(
+        scene.feature, name="d10", expression="6 mm", value=0.6))
+    scene.feature.taperAngleOne.expression = "3.0 deg"
+    scene.feature.taperAngleOne.value = 0.05235987755982989
+    scene.feature.taperAngleTwo.expression = "4.0 deg"
+    scene.feature.taperAngleTwo.value = 0.06981317007977318
+    rows = mod._definition(scene.feature)["tapers"]
+    assert rows == [{"name": "d3", "expression": "3.0 deg", "value": 0.05235987755982989},
+                    {"name": "d4", "expression": "4.0 deg", "value": 0.06981317007977318}]
+    view = load_tool("_edit_feature_common").feature_definition(scene.feature, 10.0)
+    assert [view["taper_parameter"], view["taper_two_parameter"]] == [row["name"] for row in rows]
+    assert (view["taper_deg"], view["taper_two_deg"]) == (3.0, 4.0)
+    assert view["taper_two_applicable"] is True and "taper_angle" not in view["not_read"]
 
 
 def test_two_sided_zero_taper_converts_to_symmetric_half_length(scene):

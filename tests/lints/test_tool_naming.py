@@ -1,4 +1,4 @@
-"""Lint/contract for the TOOL NAMING SCHEMA (CLAUDE.md "Read vs Edit").
+"""Lint/contract for the TOOL NAMING SCHEMA (AGENTS.md "Read vs Edit").
 
 Every tool name is ``<domain>_<verb>[_<noun>]`` with ``<verb>`` from the closed set below, the
 verb's KIND must agree with write=: a read-verb tool is read-only, an edit-verb tool is not - and

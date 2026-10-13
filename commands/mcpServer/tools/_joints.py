@@ -33,7 +33,7 @@ def is_as_built_joint(x):
     except TypeError:
         return False
 
-# The "what to reuse from here" catalog line for the generated CLAUDE.md helper map.
+# The "what to reuse from here" catalog line for the generated AGENTS.md helper map.
 MAP_BLURB = (
     "build_joint_geometry/apply_motion - keypoint factory + motion dispatch; all_joints/"
     "find_joint - walks joints+asBuiltJoints, REFUSING a shared name; DRIVES_ANY - drivable "
@@ -117,7 +117,7 @@ OFFSET_PARAM_NOTE = (
 def pending_position(design):
     """Design.snapshots.hasPendingSnapshot as True / False / None - None when the flag cannot be
     read at all, which is NOT evidence either way. A free move and a joint_drive pose both set it;
-    a design_add_instance placement does not."""
+    a shared design_add_instance placement does not, an independent copy's does."""
     return _common.read_flag(lambda: design.snapshots.hasPendingSnapshot)
 
 

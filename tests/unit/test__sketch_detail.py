@@ -89,8 +89,10 @@ class _Vec:
 
 
 class PolygonConstraint:
-    def __init__(self, lines):
-        self.lines = _Vec(lines)
+    """Local double - no live_api_facts.SHAPES entry. It carries `points`, the vertices; the retired
+    `lines` is absent, so a read of it answers nothing."""
+    def __init__(self, points):
+        self.points = _Vec(points)
 
 
 class TangentConstraint:
@@ -120,8 +122,10 @@ class _Coll(_NamedCollection):
 
 # constraint fakes (named to match real adsk class names so the describer maps them)
 class PerpendicularConstraint:
-    def __init__(self, l1, l2):
-        self.lineOne, self.lineTwo = l1, l2
+    """Local double - no live_api_facts.SHAPES entry. It carries `line` and `curve`; the retired
+    lineOne/lineTwo are absent, so a read of either answers nothing."""
+    def __init__(self, line, curve):
+        self.line, self.curve = line, curve
 
 
 class HorizontalConstraint:
@@ -420,7 +424,15 @@ class TestConstraints:
         _install(_rich_sketch())
         out = _payload(sd.handler(sketch_name="S4", include_entities=True))
         perp = next(c for c in out["constraints"] if c["type"] == "perpendicular")
-        assert set(perp["entities"]) == {"line:0", "line:1"}
+        assert perp["entities"] == ["line:0", "line:1"]
+
+    def test_perpendicular_to_a_circle_lists_the_line_then_the_circle(self):
+        line, circle = FakeLine("t0", 0, 0, 10, 0), FakeCircle("tcir", 5, 5, 3)
+        _install(FakeSketch("PC", lines=[line], circles=[circle],
+                            constraints=[PerpendicularConstraint(line, circle)]))
+        out = _payload(sd.handler(sketch_name="PC", include_entities=True))
+        assert out["constraints"][0] == {"type": "perpendicular",
+                                         "entities": ["line:0", "circle:0"]}
 
     def test_horizontal_links_one_line(self):
         _install(_rich_sketch())
@@ -512,15 +524,72 @@ class TestConstraintState:
 
 # ── ellipses + list-valued (polygon) constraints ────────────────────────────
 
+def _ring(coords, extra=(), spur=None, spur_ends_on_vertex=False):
+    """(vertex points, lines) of a closed run of lines around `coords`, one shared sketch point per
+    vertex, plus one line per (i, j) vertex pair in `extra` and one joining vertex 0 and the free
+    point `spur`. BINDINGS-SOURCED, not measured: a point lists the lines ending on it as
+    connectedEntities."""
+    points = [FakeSketchPoint(f"v{i}", x, y) for i, (x, y) in enumerate(coords)]
+    ends = [(points[i], points[(i + 1) % len(points)]) for i in range(len(points))]
+    ends += [(points[i], points[j]) for i, j in extra]
+    if spur:
+        pair = (points[0], FakeSketchPoint("free", *spur))
+        ends.append(pair[::-1] if spur_ends_on_vertex else pair)
+    lines = []
+    for n, (a, b) in enumerate(ends):
+        line = FakeLine(f"side{n}", a.geometry.x, a.geometry.y, b.geometry.x, b.geometry.y)
+        line.startSketchPoint, line.endSketchPoint = a, b
+        line.length = math.hypot(b.geometry.x - a.geometry.x, b.geometry.y - a.geometry.y)
+        lines.append(line)
+    for point in points:
+        point.connectedEntities = _Coll([ln for ln in lines if point in (ln.startSketchPoint,
+                                                                        ln.endSketchPoint)])
+    return points, lines
+
+
+_SQUARE = ((0, 0), (1, 0), (1, 1), (0, 1))
+
+
 class TestEllipseAndPolygon:
     def _sketch(self):
-        l0 = FakeLine("p0", 0, 0, 1, 0)
-        l1 = FakeLine("p1", 1, 0, 1, 1)
-        l2 = FakeLine("p2", 1, 1, 0, 1)
+        points, (l0, l1, l2) = _ring(((0, 0), (1, 0), (0.5, math.sqrt(0.75))))
         el = FakeEllipse("tel", 4, 4, 5, 2)
-        # polygon over the 3 lines; tangent referencing the ELLIPSE
-        cons = [PolygonConstraint([l0, l1, l2]), TangentConstraint(el, l0)]
-        return FakeSketch("E", lines=[l0, l1, l2], ellipses=[el], constraints=cons)
+        # polygon over the triangle's 3 vertices; tangent referencing the ELLIPSE
+        cons = [PolygonConstraint(points), TangentConstraint(el, l0)]
+        return FakeSketch("E", lines=[l0, l1, l2], ellipses=[el], points=points,
+                          constraints=cons)
+
+    def _polygon(self, points, lines):
+        _install(FakeSketch("P", lines=lines, points=points,
+                            constraints=[PolygonConstraint(points)]))
+        out = _payload(sd.handler(sketch_name="P", include_entities=True))
+        return out["constraints"][0]["entities"]
+
+    def test_a_line_between_two_vertices_that_is_not_a_side_is_left_out(self):
+        # line:4 is the square's diagonal: both its ends are vertices, and it is not a side
+        points, lines = _ring(_SQUARE, extra=[(0, 2)])
+        assert self._polygon(points, lines) == ["line:0", "line:1", "line:2", "line:3"]
+
+    @pytest.mark.parametrize("ends_on_vertex", [False, True])
+    def test_a_line_joining_a_vertex_and_a_free_point_is_not_a_side(self, ends_on_vertex):
+        # line:4 is as long as a side and has ONE end on a vertex
+        points, lines = _ring(_SQUARE, spur=(-1, 0), spur_ends_on_vertex=ends_on_vertex)
+        assert self._polygon(points, lines) == ["line:0", "line:1", "line:2", "line:3"]
+
+    def test_a_polygon_whose_sides_do_not_read_lists_its_vertex_points(self):
+        points, lines = _ring(_SQUARE)
+        for point in points:
+            del point.connectedEntities
+        assert self._polygon(points, lines) == ["point:0", "point:1", "point:2", "point:3"]
+
+    def test_a_side_at_the_length_band_counts_and_one_past_it_does_not(self):
+        # 1.0 * (1 + band) is the same product the walk forms, so the equal case sits ON the band
+        sides, vertices = [f"line:{i}" for i in range(4)], [f"point:{i}" for i in range(4)]
+        for stretch, want in ((1e-6, sides), (2e-6, vertices)):
+            points, lines = _ring(_SQUARE)
+            lines[3].length = 1.0 * (1.0 + stretch)
+            assert self._polygon(points, lines) == want, stretch
+        assert sd._SIDE_LENGTH_REL == 1e-6
 
     def test_ellipse_enumerated(self):
         # FakeEllipse raw major/minor are cm (5, 2); default units=mm scales x10.
@@ -535,7 +604,7 @@ class TestEllipseAndPolygon:
         _install(self._sketch())
         out = _payload(sd.handler(sketch_name="E", include_entities=True))
         poly = next(c for c in out["constraints"] if c["type"] == "polygon")
-        assert set(poly["entities"]) == {"line:0", "line:1", "line:2"}
+        assert poly["entities"] == ["line:0", "line:1", "line:2"]
 
     def test_constraint_referencing_ellipse_resolves(self):
         # a tangent on an ellipse must map to 'ellipse:0', not '?'
@@ -985,7 +1054,7 @@ class TestProgressiveDisclosure:
         assert "profiles" in out                              # the light layer still comes along
 
 
-# ── BOUNDED READS: the opt-in X-ray caps entities/constraints/dimensions (CLAUDE.md "Bound it") ──
+# ── BOUNDED READS: the opt-in X-ray caps entities/constraints/dimensions (AGENTS.md "Bound it") ──
 
 class TestXrayCaps:
     def test_under_cap_untruncated_and_unchanged(self):
@@ -1177,7 +1246,7 @@ class TestUnitsScaling:
         assert "banana" in res["message"]
 
     def test_handle_locator_area_stays_raw_cm_regardless_of_units(self):
-        # the handle is a stable re-find locator (CLAUDE.md "Handles/ids unchanged") - it must embed
+        # the handle is a stable re-find locator (AGENTS.md "Handles/ids unchanged") - it must embed
         # the SAME raw-cm area no matter what display 'units' this particular call used, so a caller
         # who reads in 'in' and later resolves the handle from an 'mm' context still finds it.
         _install(_face_sketch())

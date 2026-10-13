@@ -400,9 +400,9 @@ def handler(body_name: str = "", radius: float = 1.0, units: str = "mm",
             return _full_round_fillet(center_face, faces, second_faces)
         return _rule_fillet(radius, units, faces, second_faces, topology)
     if not tangent_chain and ftype == "variable" and continuity is None:
-        return error("A variable-radius fillet without continuity cannot take tangent_chain=false: the legacy API's "
-                     "variable-radius edge set has no such argument, and it cuts the edges handed "
-                     "in. Drop 'tangent_chain', or use fillet_type='constant'.")
+        return error("A variable-radius fillet without continuity cannot take tangent_chain=false: "
+                     "this tool does not offer that combination. Drop 'tangent_chain', or use "
+                     "fillet_type='constant'.")
 
     variant, size = None, radius
     if ftype == "asymmetric":

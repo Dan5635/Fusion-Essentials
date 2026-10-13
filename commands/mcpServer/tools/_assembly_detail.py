@@ -15,7 +15,7 @@ from . import _inputs
 from . import _joints
 from . import _relations
 
-# The "what to reuse from here" catalog line for the generated CLAUDE.md helper map.
+# The "what to reuse from here" catalog line for the generated AGENTS.md helper map.
 MAP_BLURB = (
     "the row SERIALIZERS behind assembly_get, one per array in its payload - reach for one only "
     "from there. _occ_record/_all_occurrence_rows - occurrence identity, placement behind "
@@ -48,8 +48,7 @@ def _occ_record(occ, inv_k, joint_memberships, include_joints, full_path=False, 
     rec = {
     "name": name,
     "component": safe(lambda: occ.component.name),
-    "grounded": bool(safe(lambda: occ.isGrounded, False)),
-    "ground_to_parent": bool(safe(lambda: occ.isGroundToParent, False)),
+    **_common.ground_flags(occ),
     "body_count": safe(lambda: occ.bRepBodies.count, 0),
     }
     if full_path:

@@ -40,6 +40,14 @@ Narrative time starts after gate filtering and ends before its later generation 
 poll has its own span. The existing `act_seconds` still includes its generation poll, so those values
 are not additive; `cleanup-total` covers teardown and home restoration as one span.
 
+`tool_verify.py --continue-families` continues a fresh acceptance run after a logical failure.
+Any failure forbids all receipts; `--acts` discovery writes none even when every family passes.
+A logical failure blocks the rest of its owned family; other families run
+only after exact document cleanup, restored home flags and unchanged source and loaded identity.
+Uncertain transport, publication, preferences, camera state, local libraries or arbitrary scripts
+stop the walk. Cloud recovery admits only the authored seam, drawing-job, generation and template
+restoration gates that passed before its configuration act; failed gates forbid continuation.
+
 <!-- BEGIN GENERATED ACT DEPENDENCIES (py -3 tests/gen_manifest.py) -->
 ### Family inputs and local producers
 
@@ -266,7 +274,7 @@ keeps a local double, whose one-line docstring says so.
 
 ## Adding or updating a test
 
-[CLAUDE.md](CLAUDE.md) is the recipe: which pattern to copy (a rich read, a fuller fake object
+[AGENTS.md](AGENTS.md) is the recipe: which pattern to copy (a rich read, a fuller fake object
 model, or a pure function), the shape every new test follows, and how to update a test when the
 behavior it pins changes.
 

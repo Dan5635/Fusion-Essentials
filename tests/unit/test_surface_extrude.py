@@ -56,14 +56,25 @@ class FakeFeature(_SharedFeature):
 
 
 class FakeExtrudeInput:
-    def __init__(self, profile, op):
+    """Local double of ExtrudeFeatureInput, a type with no measured shape: the two supported
+    distance setters only, so a retired setter call raises AttributeError. DECLARED, not
+    measured: a setter answers true unless a test injects a refusal."""
+    def __init__(self, profile, op, accepts=True):
         self.profile = profile
         self.operation = op
         self.isSolid = None
-        self.distance_extent = None
-    def setDistanceExtent(self, sym, dist):
-        self.distance_extent = (sym, dist)
-        return True
+        self.one_side = None            # (extent, direction) captured
+        self.symmetric_extent = None    # (distance, isFullLength) captured
+        self._accepts = accepts
+    def setOneSideExtent(self, extent, direction):
+        self.one_side = (extent, direction)
+        return self._accepts
+    def setSymmetricExtent(self, distance, is_full_length):
+        self.symmetric_extent = (distance, is_full_length)
+        return self._accepts
+    def requested(self):
+        """The ValueInput whichever setter was handed."""
+        return self.symmetric_extent[0] if self.symmetric_extent else self.one_side[0][1]
 
 
 class FakeRevolveInput:
@@ -79,24 +90,25 @@ class FakeRevolveInput:
 
 
 class FakeExtrudeFeatures:
-    def __init__(self, result_bodies=None, landed_cm=None, extent_readable=True):
+    def __init__(self, result_bodies=None, landed_cm=None, extent_readable=True, accepts=True):
         # landed_cm: the depth the created feature's extent parameter reads back, when it differs
-        # from the depth handed to setDistanceExtent (live, the two agree). extent_readable=False
-        # models a feature whose extent parameter cannot be read at all.
+        # from the depth handed to the extent setter. extent_readable=False models a feature whose
+        # extent parameter cannot be read at all. accepts=False injects a refused setter.
         self.last_input = None
         self.added = False
         self._result = result_bodies
         self._landed_cm = landed_cm
         self._extent_readable = extent_readable
+        self._accepts = accepts
     def createInput(self, profile, op):
-        self.last_input = FakeExtrudeInput(profile, op)
+        self.last_input = FakeExtrudeInput(profile, op, accepts=self._accepts)
         return self.last_input
     def add(self, inp):
         self.added = True
         extent = None
         if self._extent_readable:
             extent = (self._landed_cm if self._landed_cm is not None
-                      else inp.distance_extent[1][1])
+                      else inp.requested()[1])
         return FakeFeature(bodies=self._result, extent_cm=extent)
 
 
@@ -130,6 +142,8 @@ def wire(monkeypatch):
         install(sc, design)
         monkeypatch.setattr(adsk.core.ValueInput, "createByReal",
                             staticmethod(lambda v: ("real", v)))
+        monkeypatch.setattr(adsk.fusion.DistanceExtentDefinition, "create",
+                            staticmethod(lambda v: ("distance_extent", v)))
         monkeypatch.setattr(adsk.fusion, "BRepEdge", BRepEdge)
         return design
     return _wire
@@ -144,8 +158,10 @@ class TestSurfaceExtrude:
         assert out["created"] is True
         assert out["is_solid"] is False
         assert ef.last_input.isSolid is False        # the surface switch was actually set
-        sym, dist = ef.last_input.distance_extent
-        assert dist == ("real", 0.5)                 # 5 mm -> 0.5 cm
+        extent, direction = ef.last_input.one_side
+        assert extent == ("distance_extent", ("real", 0.5))    # 5 mm -> 0.5 cm, one side
+        assert direction == adsk.fusion.ExtentDirections.PositiveExtentDirection
+        assert ef.last_input.symmetric_extent is None
         assert ef.last_input.operation == adsk.fusion.FeatureOperations.NewBodyFeatureOperation
 
     def test_reports_result_is_solid_read_back(self, wire):
@@ -200,7 +216,8 @@ class TestSurfaceExtrude:
         assert "furlong" in res["message"] and "mm, cm, or in" in res["message"]
 
     def test_join_op_and_symmetric_passed_through(self, wire):
-        # operation=join maps to the JoinFeatureOperation enum; symmetric flows to setDistanceExtent
+        # operation=join maps to the JoinFeatureOperation enum; symmetric takes the symmetric
+        # extent with isFullLength False, so 'distance' stays the per-side number the wire promises
         ef = FakeExtrudeFeatures(result_bodies=[_body("Surf1")])
         wire(_comp(FakeFeatures(ef=ef), sketches=[_sketch("S")]))
         out = payload(sc.handler(sketch_name="S", distance=5, operation="join",
@@ -208,8 +225,28 @@ class TestSurfaceExtrude:
         assert out["operation"] == "join"
         assert out["symmetric"] is True
         assert ef.last_input.operation == adsk.fusion.FeatureOperations.JoinFeatureOperation
-        sym, _dist = ef.last_input.distance_extent
-        assert sym is True
+        assert ef.last_input.symmetric_extent == (("real", 0.5), False)
+        assert ef.last_input.one_side is None
+
+    def test_negative_distance_keeps_its_sign_on_the_positive_direction(self, wire):
+        # DECLARED, not measured: the signed distance alone reverses a one-sided extent, so the
+        # direction argument stays positive and the definition carries -1.5 cm.
+        ef = FakeExtrudeFeatures(result_bodies=[_body("Surf1")])
+        wire(_comp(FakeFeatures(ef=ef), sketches=[_sketch("S")]))
+        out = payload(sc.handler(sketch_name="S", distance=-15, units="mm"))
+        extent, direction = ef.last_input.one_side
+        assert extent[1][0] == "real" and extent[1][1] == pytest.approx(-1.5)
+        assert direction == adsk.fusion.ExtentDirections.PositiveExtentDirection
+        assert out["distance"] == -15.0
+
+    @pytest.mark.parametrize("symmetric,named", [(False, "refused a distance extent of 5 mm"),
+                                                 (True, "refused a symmetric distance extent of 5 mm")])
+    def test_a_refused_extent_is_an_error_and_nothing_is_added(self, wire, symmetric, named):
+        ef = FakeExtrudeFeatures(result_bodies=[_body("Surf1")], accepts=False)
+        wire(_comp(FakeFeatures(ef=ef), sketches=[_sketch("S")]))
+        res = sc.handler(sketch_name="S", distance=5, symmetric=symmetric)
+        assert res["isError"] is True and named in res["message"]
+        assert ef.added is False
 
     def test_symmetric_input_description_states_per_side(self):
         assert "per side" in sc.tool.input_schema["properties"]["symmetric"]["description"]

@@ -115,4 +115,4 @@ class TestKindSearch:
         assert [row["tool"] for row in body_search["tools"]] == ["model_edit_body"]
         note = body_search["note"]
         assert "tool's schema" in note and "handle, name or index" in note
-        assert not any(text in note for text in ("CLAUDE.md", "_inputs.py", "hand-roll"))
+        assert not any(text in note for text in ("AGENTS.md", "_inputs.py", "hand-roll"))

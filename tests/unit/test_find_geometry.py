@@ -983,7 +983,7 @@ class TestPlanarFaceFrame:
         assert "frame" not in out["matches"][0]
 
 
-# ── BOUNDED READS: 'matches' is capped (CLAUDE.md "Bound it") ────────────────────────────────────
+# ── BOUNDED READS: 'matches' is capped (AGENTS.md "Bound it") ────────────────────────────────────
 
 class TestCaps:
     def _many_faces(self, n):

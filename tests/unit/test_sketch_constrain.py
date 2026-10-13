@@ -178,12 +178,9 @@ class FakeConstraints:
         ka, kb = getattr(a, "kind", None), getattr(b, "kind", None)
         if ka != kb:
             raise TypeError(f"invalid argument value: {ka} and {kb} are different kinds")
-    # live-verified type gates: perpendicular/parallel/collinear/horizontal/vertical and
-    # symmetry's axis take a typed SketchLine; coincident/midpoint take a typed SketchPoint.
-    def addPerpendicular(self, a, b):
-        self._require(a, "line")
-        self._require(b, "line")
-        return self._rec("perpendicular", a, b)
+    # live-verified type gates: parallel/collinear/horizontal/vertical and symmetry's axis take a
+    # typed SketchLine; coincident/midpoint take a typed SketchPoint. The retired addPerpendicular
+    # is absent, so a call that reaches for it fails.
     def addParallel(self, a, b):
         self._require(a, "line")
         self._require(b, "line")
@@ -277,14 +274,15 @@ class FakeConstraints:
             self._require(c, *_CURVE_KINDS)
         return FakeOffsetInput(curves, offset)
     def addPerpendicular2(self, line, curve):
-        # measured: the order is strict and a spline is refused "3 : invalid argument curve"
+        # measured: the order is strict and a spline is refused "3 : invalid argument curve".
+        # BINDINGS-SOURCED, not measured: a second LINE is taken ("a line, circle, or arc").
         self._require(line, "line")
         if getattr(curve, "kind", None) not in ("line", "arc", "circle"):
             raise RuntimeError("3 : invalid argument curve")
-        if self.perpendicular2_solves:
+        if self.perpendicular2_solves and curve.kind != "line":
             centre = curve.centerSketchPoint.geometry
             line.endSketchPoint.geometry.x, line.endSketchPoint.geometry.y = centre.x, centre.y
-        return self._rec("perpendicular_to_curve", line, curve)
+        return self._rec("addPerpendicular2", line, curve)
     def addOffset2(self, oin):
         if self.offset_collapses and oin.isTopologyMatched:
             raise RuntimeError(
@@ -560,8 +558,23 @@ class TestTwoCurve:
         s = _two_line_sketch(); install(s)
         out = _one_row(_constrain(constraint="perpendicular", sketch_name="S",
                                   entity_one="line:0", entity_two="line:1"))
-        assert s.geometricConstraints.calls[0][0] == "perpendicular"
+        name, args = s.geometricConstraints.calls[0]
+        lines = s.sketchCurves.sketchLines
+        # entity_one is the call's line and entity_two its curve
+        assert name == "addPerpendicular2" and args == (lines.item(0), lines.item(1))
         assert out["applied"] == "perpendicular"
+
+    @pytest.mark.parametrize("two, remedy", [("arc:0", True), ("circle:0", True),
+                                             ("spline:0", False)])
+    def test_perpendicular_refuses_a_second_operand_that_is_not_a_line(self, install, two, remedy):
+        # addPerpendicular2 takes an arc or circle second, which would land the OTHER constraint
+        s = _spoke_sketch(); install(s)
+        res = _constrain(constraint="perpendicular", sketch_name="S",
+                         entity_one="line:0", entity_two=two)
+        assert res["isError"] is True
+        assert f"'perpendicular' takes two lines. Got '{two}' as entity_two." in res["message"]
+        assert ("constraint=perpendicular_to_curve" in res["message"]) is remedy
+        assert s.geometricConstraints.calls == []
 
     def test_parallel_equal_tangent_concentric_collinear(self, install):
         # tangent needs curves (line+circle is the canonical pair).
@@ -2605,13 +2618,14 @@ def _spoke_sketch():
 
 
 class TestPerpendicularToCurve:
-    def test_the_line_goes_first_and_the_reply_names_the_read_gap(self, install):
+    def test_the_line_goes_first_and_the_reply_names_the_centre_it_passes(self, install):
         s = _spoke_sketch(); install(s)
         out = _one_row(_constrain(constraint="perpendicular_to_curve", entity_one="line:0",
                                   entity_two="arc:0"))
         name, args = s.geometricConstraints.calls[0]
-        assert name == "perpendicular_to_curve" and (args[0].name, args[1].name) == ("L0", "A0")
-        assert "centre of 'arc:0'" in out["note"] and "line only" in out["note"]
+        assert name == "addPerpendicular2" and (args[0].name, args[1].name) == ("L0", "A0")
+        # sketch_get lists the constraint with its line AND its curve, so the note claims no gap
+        assert out["note"] == "'line:0' extended now passes through the centre of 'arc:0'."
 
     def test_a_constraint_that_leaves_the_line_off_the_centre_is_an_error(self, install):
         s = _spoke_sketch(); install(s)

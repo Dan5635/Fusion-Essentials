@@ -306,7 +306,7 @@ class TestUnreadableReads:
         assert out["same_parameter_count"] == 1
 
 
-# ── BOUNDED READS: 'differences' is capped (CLAUDE.md "Bound it") ────────────────────────────────
+# ── BOUNDED READS: 'differences' is capped (AGENTS.md "Bound it") ────────────────────────────────
 
 class TestCaps:
     def test_under_cap_untruncated_and_unchanged(self, install):

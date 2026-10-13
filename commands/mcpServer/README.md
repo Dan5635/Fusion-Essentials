@@ -33,8 +33,8 @@ before it reports success (see *What makes the tools trustworthy*).
 
 To turn it off, untick **Enable MCP Server** and reload. Stopping the add-in also stops its server.
 
-Optional tool **families** (`appearance`, `cam`, `data`, `drawing`, `form`, `mesh`, `save`, `surface`)
-can each be disabled with a checkbox under **Settings → MCP Server**, to shrink the tool list an
+Optional tool **families** (`appearance`, `cam`, `data`, `drawing`, `form`, `mesh`, `pmi`, `render`,
+`save`, `sheet`, `surface`) can each be disabled with a checkbox under **Settings → MCP Server**, to shrink the tool list an
 agent has to load when you don't need that area. All families are enabled by default. A disabled
 family takes effect on reload: its tools are not registered, and `workspace_orient`,
 `sys_capability_map` and `sys_find_tool` reflect what is available. Reconnect your MCP client after
@@ -104,7 +104,7 @@ until Manufacture has been opened, saves and exports complete asynchronously, an
 no name uniqueness anywhere.
 
 If you are writing tools rather than using them, the rules and the reasoning behind them live in
-the `CLAUDE.md` files beside the code.
+the `AGENTS.md` files beside the code.
 
 ## Tools
 
@@ -257,7 +257,7 @@ checks, the suite and maintainer live acceptance. Generated inventories live in 
 [`TOOL_MANIFEST.md`](../../tests/generated/TOOL_MANIFEST.md) (per-tool) and
 [`TOOL_POINTER_MAP.md`](../../tests/generated/TOOL_POINTER_MAP.md) (how tools point to each other, plus a
 self-audit of the guidance strings). Authoring conventions live in
-[`CONTRIBUTING.md`](../../CONTRIBUTING.md) and the `CLAUDE.md` files beside the code.
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md) and the `AGENTS.md` files beside the code.
 
 ## How it was built
 

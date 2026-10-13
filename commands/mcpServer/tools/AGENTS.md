@@ -1,9 +1,9 @@
 # Adding or editing a tool here
 
 How to add or change a tool in `commands/mcpServer/tools/`. Read the root
-[CLAUDE.md](../../../CLAUDE.md) first for the project rules.
+[AGENTS.md](../../../AGENTS.md) first for the project rules.
 [CONTRIBUTING.md](../../../CONTRIBUTING.md) explains the ideas behind them, and
-[tests/CLAUDE.md](../../../tests/CLAUDE.md) covers testing what you add here.
+[tests/AGENTS.md](../../../tests/AGENTS.md) covers testing what you add here.
 
 ## Adding a tool
 
@@ -187,7 +187,7 @@ tool passes `postconditions=[...]` to `Item.create_tool_item`. That wrapper runs
 4. **Teaches at the failure moment, in one shared home, not in every description.** Failure-time
    teaching goes in the error, once, in the shared resolver (`_cam_common.get_cam`'s Manufacture-gate
    error). Purpose and next step go in a lean description; input legality goes in a typed kind. Root
-   CLAUDE.md, "Tool descriptions and agent-facing strings", sets the same rule for everything on
+   AGENTS.md, "Tool descriptions and agent-facing strings", sets the same rule for everything on
    the wire.
 5. **Reuses one resolver, one parser, one health signal; never re-rolls it.** Shared logic lives
    once, in its owner module (`find_setup`, `live_readiness`, `_data_common._resolve_data_file` for
@@ -215,7 +215,7 @@ tool passes `postconditions=[...]` to `Item.create_tool_item`. That wrapper runs
 
 A tool module may carry a docstring of a few lines (`test_prose_budget.py` caps a module docstring
 at six): what the tool or tools do, plus at most one API gotcha the code depends on. Function
-docstrings and `#` comments follow root CLAUDE.md, "Prose in code": a function's docstring is one
+docstrings and `#` comments follow root AGENTS.md, "Prose in code": a function's docstring is one
 line as the aim, at most four. No design history, migration or review narrative
 anywhere; `test_evergreen_no_baggage.py` catches the history and plan phrases, dates and work-item
 labels on its own list, under `commands/mcpServer/` and `tests/`. API facts beyond that one gotcha
@@ -253,7 +253,7 @@ re-type) carries no default. `test_wire_shape.TestSchemaDefaults` keeps the sche
 in agreement both ways.
 
 Don't restate the schema (the agent sees the JSON), and never write a tutorial-style comment block
-into a description. For ASCII and the wire budget, see root CLAUDE.md.
+into a description. For ASCII and the wire budget, see root AGENTS.md.
 
 ## Reads are RICH: one `<domain>_get` per domain, not a tool per slice
 

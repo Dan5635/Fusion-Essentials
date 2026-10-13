@@ -129,7 +129,8 @@ from tests.fakes.data_docs import FakeUserInterface, _CloudArray, _ExportOptions
 from tests.fakes.data_docs import make_data_tree, make_document_world  # noqa: E402
 from tests.fakes.design import BRepBody, BRepEdge, BRepFace  # noqa: E402
 from tests.fakes.design import FakeBaseFeature, FakeBaseFeatures, FakeFeature  # noqa: E402
-from tests.fakes.design import FakeFeatures, FakeModelParameter, FakeOccurrence  # noqa: E402
+from tests.fakes.design import FakeFeatures, LinkedInsertOccurrences  # noqa: E402
+from tests.fakes.design import FakeModelParameter, FakeOccurrence  # noqa: E402
 from tests.fakes.design import FakeTimeline, FakeTimelineObject, FakeUnitsManager  # noqa: E402
 from tests.fakes.design import FakeUserParameter, FakeUserParameters  # noqa: E402
 from tests.fakes.design import MakeComp, MakeDesign, body_proxy, make_occurrence  # noqa: E402

@@ -102,9 +102,24 @@ DEFAULT_SETTINGS = {
         "label": "Enable mesh MCP tools",
         "default": True,
     },
+    "family_enabled_pmi": {
+        "type": "checkbox",
+        "label": "Enable pmi MCP tools",
+        "default": True,
+    },
+    "family_enabled_render": {
+        "type": "checkbox",
+        "label": "Enable render MCP tools",
+        "default": True,
+    },
     "family_enabled_save": {
         "type": "checkbox",
         "label": "Enable save MCP tools",
+        "default": True,
+    },
+    "family_enabled_sheet": {
+        "type": "checkbox",
+        "label": "Enable sheet metal MCP tools",
         "default": True,
     },
     "family_enabled_surface": {

@@ -16,6 +16,7 @@ import types
 import pytest
 
 from conftest import load_mcp_server, load_tool
+from fakes.protocol import _PostProbe, _ScriptedTasks
 
 
 @pytest.fixture
@@ -602,36 +603,6 @@ class TestNotificationsAndPing:
 # manager below stands in for TaskManager so each race (completed / timed out+cancelled /
 # timed out+claimed / finished inside the cancel window) is forced deterministically.
 
-class _ScriptedTasks:
-    """A TaskManager stand-in: post() captures the callback; the test decides when (or whether)
-    it runs, and what cancel() answers."""
-    def __init__(self, cancel_answer=True, run_after_s=None, run_on_cancel=False):
-        self.callback = None
-        self.data = None
-        self.cancel_answer = cancel_answer
-        self.run_after_s = run_after_s      # run the callback from a timer thread after this delay
-        self.run_on_cancel = run_on_cancel  # the finished-inside-the-cancel-window race
-        self.cancel_called = False
-
-    def is_running(self):
-        return True
-
-    def start(self):
-        return True
-
-    def post(self, command, callback, data, on_drop=None):
-        self.callback, self.data = callback, data
-        self.on_drop = on_drop
-        if self.run_after_s is not None:
-            import threading
-            threading.Timer(self.run_after_s, lambda: callback(data)).start()
-        return "task-1"
-
-    def cancel(self, task_id):
-        self.cancel_called = True
-        if self.run_on_cancel and self.callback:
-            self.callback(self.data)
-        return self.cancel_answer
 
 
 @pytest.fixture
@@ -921,41 +892,6 @@ class TestTaskManager:
 # Python's decoder accepts the three NON-STANDARD literals by default, and a non-finite number
 # passes every zero/negative guard it later meets, so the refusal belongs at the parse.
 
-class _PostProbe:
-    """The slice of MCPHandler that do_POST's PARSE step touches: a body to read, a send_error to
-    capture the refusal, and just enough of the accept path for a well-formed body to reach 202."""
-
-    def __init__(self, body: bytes, mcp_server=None):
-        self.path = '/mcp'
-        self.headers = {'Content-Length': str(len(body))}
-        self.rfile = io.BytesIO(body)
-        self.wfile = io.BytesIO()
-        self.errors = []
-        self.responses = []
-        self.response_headers = []
-
-        async def _accept(_request):
-            return None                 # a notification - do_POST answers 202 with no body
-        self.mcp_server = mcp_server or types.SimpleNamespace(handle_request=_accept, session_id="s1")
-
-    def _origin_ok(self):
-        return True
-
-    def send_error(self, code, message=None):
-        self.errors.append((code, message))
-
-    def _send_json(self, response):
-        self.send_response(200)
-        self.wfile.write(json.dumps(response).encode("utf-8"))
-
-    def send_response(self, code, message=None):
-        self.responses.append(code)
-
-    def send_header(self, name, value):
-        self.response_headers.append((name, value))
-
-    def end_headers(self):
-        pass
 
 
 def _post(mcp_server_module, body: bytes, server=None, headers=None):
@@ -1300,28 +1236,83 @@ def _initialize_body(name):
 
 
 class TestIdentifyListener:
-    def _identify(self, mcp, monkeypatch, reply):
+    def _identify(self, mcp, monkeypatch, reply, ping_reply=None):
         import urllib.request
 
         asked = []
 
         def urlopen(request, timeout=None):
-            asked.append((request.full_url, request.get_method(), timeout))
-            if isinstance(reply, Exception):
-                raise reply
-            return reply
+            asked.append((request.full_url, request.get_method(), timeout,
+                          json.loads(request.data), dict(request.header_items())))
+            chosen = reply if len(asked) == 1 else ping_reply
+            if isinstance(chosen, Exception):
+                raise chosen
+            return chosen
 
         monkeypatch.setattr(urllib.request, "urlopen", urlopen)
         found = mcp.identify_listener("127.0.0.1", 40123, deadline_s=1.0)
-        assert asked == [("http://127.0.0.1:40123/mcp", "POST", 1.0)]
+        assert asked[0][:3] == ("http://127.0.0.1:40123/mcp", "POST", 1.0)
+        assert len(asked) == (1 if ping_reply is None else 2)
+        if ping_reply is not None:
+            assert asked[1][:2] == ("http://127.0.0.1:40123/mcp", "POST")
+            assert 0 < asked[1][2] <= 1.0
+            assert asked[1][3] == {"jsonrpc": "2.0", "id": 2, "method": "ping"}
+            assert not any(key.lower() == "mcp-session-id" for key in asked[1][4])
         return found
 
     def test_our_own_server_is_named_with_its_session(self, mcp_server_module, monkeypatch):
         mcp = mcp_server_module
         reply = _Reply(json.dumps(json.loads(_initialize_body(mcp.SERVER_NAME)), indent=2).encode(),
-                       session="s-1")
-        assert self._identify(mcp, monkeypatch, reply) == {
+                       session="private-scope")
+        ping = _Reply(b'{"jsonrpc":"2.0","id":2,"result":{}}', session="s-1")
+        assert self._identify(mcp, monkeypatch, reply, ping) == {
             "kind": mcp.LISTENER_OURS, "name": mcp.SERVER_NAME, "session_id": "s-1"}
+
+    @pytest.mark.parametrize("ping", [
+        OSError("ping unavailable"),
+        _Reply(b'{"jsonrpc":"2.0","id":2,"result":{}}'),
+        _Reply(b'{"jsonrpc":"2.0","id":99,"result":{}}', session="s-1"),
+        _Reply(b'{"jsonrpc":"2.0","id":2,"error":{},"result":{}}', session="s-1"),
+    ])
+    def test_unread_serving_identity_never_uses_the_private_scope(self, mcp_server_module,
+                                                               monkeypatch, ping):
+        mcp = mcp_server_module
+        initial = _Reply(_initialize_body(mcp.SERVER_NAME).encode(), session="private-scope")
+        assert self._identify(mcp, monkeypatch, initial, ping) == {
+            "kind": mcp.LISTENER_UNIDENTIFIED, "name": None, "session_id": None}
+
+    def test_real_signed_initialize_is_identified_by_the_serving_load(
+            self, server, mcp_server_module, cancel_transport):
+        from urllib.parse import urlsplit
+        address = urlsplit(cancel_transport['url'])
+        assert cancel_transport['scope']() != server.session_id
+        assert mcp_server_module.identify_listener(address.hostname, address.port) == {
+            "kind": mcp_server_module.LISTENER_OURS,
+            "name": mcp_server_module.SERVER_NAME, "session_id": server.session_id}
+
+    @pytest.mark.parametrize("completed_at", [.75, 1.25])
+    def test_ping_identity_is_published_only_before_the_original_deadline(
+            self, mcp_server_module, monkeypatch, completed_at):
+        from types import SimpleNamespace
+        mcp = mcp_server_module
+        now = [0.0]
+        monkeypatch.setattr(mcp, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+        monkeypatch.setattr(mcp, 'threading', SimpleNamespace(Thread=lambda target, **kw:
+                            SimpleNamespace(start=target, join=lambda timeout: None)))
+        initial = _Reply(_initialize_body(mcp.SERVER_NAME).encode(), session='private-scope')
+        ping = _Reply(b'data: {"jsonrpc":"2.0","id":2,"result":{}}\n\n',
+                      content_type='text/event-stream', session='s-1')
+        read = ping.read1
+
+        def completing_read(size):
+            now[0] = completed_at
+            return read(size)
+
+        monkeypatch.setattr(ping, 'read1', completing_read)
+        found = self._identify(mcp, monkeypatch, initial, ping)
+        assert found == ({'kind': mcp.LISTENER_OURS, 'name': mcp.SERVER_NAME, 'session_id': 's-1'}
+                         if completed_at < 1.0 else
+                         {'kind': mcp.LISTENER_UNIDENTIFIED, 'name': None, 'session_id': None})
 
     def test_another_server_is_named_from_an_event_stream_reply(self, mcp_server_module,
                                                                monkeypatch):
@@ -1390,3 +1381,362 @@ class TestIdentifyListenerDeadline:
             listener.shutdown()
             listener.server_close()
             serving.join(2)
+
+
+class TestCancellationClientScope:
+    def test_http_initializations_issue_distinct_client_scopes(
+            self, server, mcp_server_module):
+        import threading
+        import urllib.request
+
+        bound = type('CancellationScopeHandler', (mcp_server_module.MCPHandler,),
+                     {'mcp_server': server})
+        httpd = mcp_server_module.ThreadedHTTPServer(('127.0.0.1', 0), bound)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = 'http://127.0.0.1:%d/mcp' % httpd.server_address[1]
+            scopes = []
+            for request_id in (1, 2):
+                body = json.dumps({'jsonrpc': '2.0', 'id': request_id,
+                                   'method': 'initialize', 'params': {}}).encode('utf-8')
+                with urllib.request.urlopen(urllib.request.Request(
+                        url, data=body, headers={'Content-Type': 'application/json'}),
+                        timeout=2) as response:
+                    scopes.append(response.headers[mcp_server_module.SESSION_HEADER])
+                    assert json.load(response)['result']['protocolVersion'] == '2025-03-26'
+            assert scopes[0] != scopes[1]
+            assert server.health()['session_id'] == server.session_id
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=2)
+
+
+@pytest.fixture
+def cancel_transport(server, mcp_server_module, task_manager):
+    import concurrent.futures
+    import threading
+    import time
+    import urllib.request
+
+    bound = type('QueuedCancellationHandler', (mcp_server_module.MCPHandler,),
+                 {'mcp_server': server})
+    httpd = mcp_server_module.ThreadedHTTPServer(('127.0.0.1', 0), bound)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    url = 'http://127.0.0.1:%d/mcp' % httpd.server_address[1]
+    effects = []
+    server.register(_make_tool_item('queued', lambda a: effects.append(a) or {'applied': a},
+                                    optional=(), run_on_main_thread=True))
+    server.tools['queued'].enforce_timeout = False
+
+    def post(body, scope=None):
+        headers = {'Content-Type': 'application/json'}
+        if scope is not None:
+            headers[mcp_server_module.SESSION_HEADER] = scope
+        request = urllib.request.Request(url, data=json.dumps(body).encode('utf-8'), headers=headers)
+        with urllib.request.urlopen(request, timeout=2) as response:
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else None, response.headers.get(
+                mcp_server_module.SESSION_HEADER)
+
+    def scope():
+        return post({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}})[2]
+
+    def call(scope_id, request_id, value):
+        return pool.submit(post, {'jsonrpc': '2.0', 'id': request_id, 'method': 'tools/call',
+                                  'params': {'name': 'queued', 'arguments': {'a': value}}}, scope_id)
+
+    def pending(values):
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            with task_manager._tasks_lock:
+                found = {info['data']['arguments']['a']: task_id for task_id, info
+                         in task_manager._pending_tasks.items()}
+            if set(found) == set(values):
+                return found
+            time.sleep(0.001)
+        pytest.fail('controlled pending values did not arrive: %r' % found)
+
+    yield {'post': post, 'scope': scope, 'call': call, 'pending': pending, 'effects': effects,
+           'url': url, 'pool': pool, 'bound_handler': bound}
+    task_manager.stop()
+    httpd.shutdown()
+    httpd.server_close()
+    thread.join(timeout=2)
+    pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _cancel_notice(request_id):
+    return {'jsonrpc': '2.0', 'method': 'notifications/cancelled',
+            'params': {'requestId': request_id}}
+
+
+class TestQueuedCancellation:
+    def test_cancelled_queue_does_not_run_and_the_next_call_runs_once(
+            self, server, mcp_server_module, task_manager, cancel_transport):
+        wire = cancel_transport
+        scope = wire['scope']()
+        first = wire['call'](scope, 7, 'abandoned')
+        old_id = wire['pending'](['abandoned'])['abandoned']
+        assert wire['post'](_cancel_notice(7), scope)[:2] == (202, None)
+        assert first.result(timeout=2)[:2] == (202, None)
+        _notify(task_manager, mcp_server_module, old_id)
+        assert wire['effects'] == []
+        assert server._active_calls == {}
+        second = wire['call'](scope, 8, 'next')
+        task_id = wire['pending'](['next'])['next']
+        _notify(task_manager, mcp_server_module, task_id)
+        reply = second.result(timeout=2)
+        assert reply[0] == 200 and reply[1]['result'] == {'applied': 'next'}
+        assert wire['effects'] == ['next']
+        assert server._active_calls == {}
+
+    def test_same_request_id_in_other_client_is_not_cancelled(
+            self, server, mcp_server_module, task_manager, cancel_transport):
+        wire = cancel_transport
+        first_scope, other_scope = wire['scope'](), wire['scope']()
+        first = wire['call'](first_scope, 7, 'first')
+        other = wire['call'](other_scope, 7, 'other')
+        ids = wire['pending'](['first', 'other'])
+        wire['post'](_cancel_notice(7), first_scope)
+        assert first.result(timeout=2)[:2] == (202, None)
+        assert not other.done()
+        assert task_manager.get_pending_task_count() == 1
+        _notify(task_manager, mcp_server_module, ids['first'])
+        _notify(task_manager, mcp_server_module, ids['other'])
+        assert other.result(timeout=2)[1]['result'] == {'applied': 'other'}
+        assert wire['effects'] == ['other']
+        assert server._active_calls == {}
+
+    @pytest.mark.parametrize('sender', ['anonymous', 'legacy', 'other_client'])
+    def test_unowned_notice_cannot_drop_a_queued_call(
+            self, server, mcp_server_module, task_manager, cancel_transport, sender):
+        wire = cancel_transport
+        scope = wire['scope']()
+        first = wire['call'](scope, 7, 'kept')
+        task_id = wire['pending'](['kept'])['kept']
+        sender_scope = {'anonymous': None, 'legacy': server.session_id,
+                        'other_client': wire['scope']()}[sender]
+        assert wire['post'](_cancel_notice(7), sender_scope)[0] == 202
+        assert task_manager.get_pending_task_count() == 1
+        assert not first.done()
+        _notify(task_manager, mcp_server_module, task_id)
+        assert first.result(timeout=2)[1]['result'] == {'applied': 'kept'}
+        assert wire['effects'] == ['kept']
+        assert server._active_calls == {}
+
+    @pytest.mark.parametrize('params', [None, [], {}, {'requestId': True},
+        {'requestId': []}, {'requestId': {}}, {'requestId': 99}, {'requestId': 7, 'reason': []}])
+    def test_unknown_or_malformed_notice_does_not_cancel(
+            self, server, mcp_server_module, task_manager, cancel_transport, params):
+        wire = cancel_transport
+        scope = wire['scope']()
+        first = wire['call'](scope, 7, 'kept')
+        task_id = wire['pending'](['kept'])['kept']
+        assert wire['post']({'jsonrpc': '2.0', 'method': 'notifications/cancelled',
+                             'params': params}, scope)[0] == 202
+        assert task_manager.get_pending_task_count() == 1
+        _notify(task_manager, mcp_server_module, task_id)
+        assert first.result(timeout=2)[1]['result'] == {'applied': 'kept'}
+        assert wire['effects'] == ['kept']
+
+    def test_numeric_and_string_ids_are_distinct(
+            self, server, mcp_server_module, task_manager, cancel_transport):
+        wire = cancel_transport
+        scope = wire['scope']()
+        numeric = wire['call'](scope, 7, 'number')
+        string = wire['call'](scope, '7', 'string')
+        ids = wire['pending'](['number', 'string'])
+        wire['post'](_cancel_notice(7), scope)
+        assert numeric.result(timeout=2)[:2] == (202, None)
+        _notify(task_manager, mcp_server_module, ids['number'])
+        _notify(task_manager, mcp_server_module, ids['string'])
+        assert string.result(timeout=2)[1]['result'] == {'applied': 'string'}
+        assert wire['effects'] == ['string']
+
+    def test_duplicate_live_id_refuses_without_replacing_the_original(
+            self, server, mcp_server_module, task_manager, cancel_transport):
+        wire = cancel_transport
+        scope = wire['scope']()
+        first = wire['call'](scope, 7, 'first')
+        task_id = wire['pending'](['first'])['first']
+        second = wire['call'](scope, 7, 'duplicate').result(timeout=2)
+        assert second[1]['error']['code'] == -32600
+        assert 'already in progress' in second[1]['error']['message']
+        _notify(task_manager, mcp_server_module, task_id)
+        assert first.result(timeout=2)[1]['result'] == {'applied': 'first'}
+        assert wire['effects'] == ['first']
+
+    def test_notice_during_post_is_bound_and_removed_before_late_notify(
+            self, server, mcp_server_module, task_manager, cancel_transport, monkeypatch):
+        wire = cancel_transport
+        scope = wire['scope']()
+        original = task_manager.post
+        posted = []
+
+        def post_and_cancel(*args, **kwargs):
+            task_id = original(*args, **kwargs)
+            posted.append(task_id)
+            server._cancel_request(scope, {'requestId': 7})
+            return task_id
+
+        monkeypatch.setattr(task_manager, 'post', post_and_cancel)
+        first = wire['call'](scope, 7, 'never')
+        assert first.result(timeout=2)[:2] == (202, None)
+        assert len(posted) == 1 and task_manager.get_pending_task_count() == 0
+        _notify(task_manager, mcp_server_module, posted[0])
+        assert wire['effects'] == []
+        assert server._active_calls == {}
+
+    def test_cancellation_after_handler_entry_keeps_the_real_result(
+            self, server, mcp_server_module, task_manager, cancel_transport, monkeypatch):
+        import threading
+        wire = cancel_transport
+        scope = wire['scope']()
+        entered, release = threading.Event(), threading.Event()
+        applied = []
+
+        def handler(a):
+            entered.set()
+            assert release.wait(timeout=2)
+            applied.append(a)
+            return {'applied': a}
+
+        monkeypatch.setattr(server.tools['queued'], 'handler', handler)
+        first = wire['call'](scope, 7, 'running')
+        task_id = wire['pending'](['running'])['running']
+        delivery = wire['pool'].submit(_notify, task_manager, mcp_server_module, task_id)
+        try:
+            assert entered.wait(timeout=1)
+            assert wire['post'](_cancel_notice(7), scope)[:2] == (202, None)
+            assert not first.done() and applied == []
+        finally:
+            release.set()
+        delivery.result(timeout=2)
+        assert first.result(timeout=2)[1]['result'] == {'applied': 'running'}
+        assert applied == ['running'] and server._active_calls == {}
+
+    def test_forged_or_previous_load_scope_is_refused_before_dispatch(
+            self, server, mcp_server_module, task_manager, cancel_transport):
+        import urllib.error
+        wire = cancel_transport
+        scope = wire['scope']()
+        parts = scope.split('.')
+        parts[1] = ('0' if parts[1][0] != '0' else '1') + parts[1][1:]
+        previous = mcp_server_module.SimpleMCPServer()._new_client_session()
+        for refused in ('.'.join(parts), previous):
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                wire['post']({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call',
+                              'params': {'name': 'queued', 'arguments': {'a': 'bad'}}}, refused)
+            assert exc.value.code == 404
+        assert task_manager.get_pending_task_count() == 0 and wire['effects'] == []
+
+    def test_disconnection_without_notice_keeps_the_authorized_callback(
+            self, server, mcp_server_module, task_manager, cancel_transport):
+        import http.client
+        import time
+        from urllib.parse import urlsplit
+        wire = cancel_transport
+        scope = wire['scope']()
+        target = urlsplit(wire['url'])
+        connection = http.client.HTTPConnection(target.hostname, target.port, timeout=2)
+        connection.request('POST', '/mcp', body=json.dumps({
+            'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call',
+            'params': {'name': 'queued', 'arguments': {'a': 'disconnected'}}}),
+            headers={mcp_server_module.SESSION_HEADER: scope, 'Content-Type': 'application/json'})
+        task_id = wire['pending'](['disconnected'])['disconnected']
+        connection.close()
+        assert task_manager.get_pending_task_count() == 1
+        _notify(task_manager, mcp_server_module, task_id)
+        deadline = time.monotonic() + 1
+        while server._active_calls and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert wire['effects'] == ['disconnected'] and server._active_calls == {}
+
+    def test_cancel_between_dispatcher_claim_and_handler_entry_skips_the_effect(
+            self, server, mcp_server_module, task_manager, cancel_transport, monkeypatch):
+        import threading
+        wire = cancel_transport
+        scope = wire['scope']()
+        claimed, release = threading.Event(), threading.Event()
+        original = task_manager.post
+
+        def held_post(command, callback, data, on_drop=None):
+            def held_callback(arguments):
+                claimed.set()
+                assert release.wait(timeout=2)
+                callback(arguments)
+            return original(command, held_callback, data, on_drop=on_drop)
+
+        monkeypatch.setattr(task_manager, 'post', held_post)
+        first = wire['call'](scope, 7, 'never')
+        task_id = wire['pending'](['never'])['never']
+        delivery = wire['pool'].submit(_notify, task_manager, mcp_server_module, task_id)
+        try:
+            assert claimed.wait(timeout=1)
+            assert task_manager.get_pending_task_count() == 0
+            wire['post'](_cancel_notice(7), scope)
+            assert first.result(timeout=2)[:2] == (202, None)
+        finally:
+            release.set()
+        delivery.result(timeout=2)
+        assert wire['effects'] == [] and server._active_calls == {}
+
+    def test_completed_request_notice_does_not_affect_the_next_request(
+            self, server, mcp_server_module, task_manager, cancel_transport):
+        wire = cancel_transport
+        scope = wire['scope']()
+        first = wire['call'](scope, 7, 'first')
+        _notify(task_manager, mcp_server_module, wire['pending'](['first'])['first'])
+        assert first.result(timeout=2)[1]['result'] == {'applied': 'first'}
+        second = wire['call'](scope, 8, 'second')
+        task_id = wire['pending'](['second'])['second']
+        wire['post'](_cancel_notice(7), scope)
+        assert task_manager.get_pending_task_count() == 1
+        _notify(task_manager, mcp_server_module, task_id)
+        assert second.result(timeout=2)[1]['result'] == {'applied': 'second'}
+        assert wire['effects'] == ['first', 'second'] and server._active_calls == {}
+
+    def test_anonymous_and_legacy_tools_list_keep_the_attested_load_header(
+            self, server, mcp_server_module, cancel_transport, monkeypatch):
+        wire = cancel_transport
+        monkeypatch.setattr(server, '_attestation', {'load_id': 'loaded-one',
+                             'implementation_fingerprint': 'same-code', 'complete': True})
+        scope = wire['scope']()
+        health = server.health()
+        for header in (None, server.session_id):
+            reply = wire['post']({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}, header)
+            assert reply[0] == 200 and reply[1]['result']['tools'][0]['name'] == 'queued'
+            assert reply[2] == health['session_id']
+        private = wire['post']({'jsonrpc': '2.0', 'id': 3, 'method': 'tools/list'}, scope)
+        assert private[2] == scope and scope != health['session_id']
+        assert server.health() == health
+        assert health['attestation']['load_id'] == 'loaded-one'
+
+    def test_new_serving_instance_invalidates_client_scopes_and_keeps_health_distinct(
+            self, server, mcp_server_module, cancel_transport, monkeypatch):
+        import urllib.error
+        wire = cancel_transport
+        old_scope = wire['scope']()
+        old_load_session = server.health()['session_id']
+        replacement = mcp_server_module.SimpleMCPServer(attestation={
+            'load_id': 'loaded-two', 'implementation_fingerprint': 'same-code', 'complete': True})
+        replacement.register(server.tools['queued'])
+        monkeypatch.setattr(wire['bound_handler'], 'mcp_server', replacement)
+        for stale in (old_scope, old_load_session):
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                wire['post']({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}, stale)
+            assert exc.value.code == 404
+        new_scope = wire['scope']()
+        new_health = replacement.health()
+        anonymous = wire['post']({'jsonrpc': '2.0', 'id': 3, 'method': 'tools/list'})
+        assert anonymous[2] == new_health['session_id'] != old_load_session
+        assert new_scope != new_health['session_id'] and new_scope != old_scope
+        assert replacement._valid_client_session(new_scope)
+        assert not replacement._valid_client_session(old_scope)
+        assert new_health['attestation']['load_id'] == 'loaded-two'
+        assert new_health['attestation']['implementation_fingerprint'] == 'same-code'
+        assert replacement.health() == new_health

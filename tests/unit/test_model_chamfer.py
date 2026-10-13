@@ -58,62 +58,6 @@ def make_body(name, edge_kinds, volume=None, area=None):
     return body
 
 
-class FakeFilletInput:
-    """FilletFeatureInput. Each add*EdgeSet returns True (the API returns a bool), and the arity of
-    each matches the real one - addVariableRadiusEdgeSet has NO isTangentChain argument, and its
-    positions/radii are plain Python lists (a vector argument): an ObjectCollection raises live, so
-    it raises here."""
-
-    def __init__(self):
-        self.edge_set = None
-        self.variable_set = None
-        self.chord_set = None
-        self.refuse = False
-
-    def addConstantRadiusEdgeSet(self, edges, val, tangent):
-        self.edge_set = (edges, val, tangent)
-        return not self.refuse
-
-    def addVariableRadiusEdgeSet(self, tangentEdges, startRadius, endRadius, positions, radii):
-        for name, arg in (("positions", positions), ("radii", radii)):
-            if not isinstance(arg, list):
-                raise TypeError(f"in method 'FilletFeatureInput_addVariableRadiusEdgeSet', "
-                                f"argument '{name}' is not a vector")
-        self.variable_set = (tangentEdges, startRadius, endRadius, positions, radii)
-        return not self.refuse
-
-    def addChordLengthEdgeSet(self, edges, chordLength, tangent):
-        self.chord_set = (edges, chordLength, tangent)
-        return not self.refuse
-
-
-class FakeRuleFilletInput:
-    """RuleFilletFeatureInput. setByAllEdges/setByBetweenFacesOrFeatures take plain Python lists of
-    faces (not an ObjectCollection) and return a bool; radius and topologyType are settable."""
-
-    def __init__(self):
-        self.all_edges = None
-        self.between = None
-        self.radius = None
-        self.topologyType = None
-        self.refuse = False
-
-    def _check(self, name, arg):
-        if not isinstance(arg, list):
-            raise TypeError(f"in method 'RuleFilletFeatureInput_{name}', argument is not a vector")
-
-    def setByAllEdges(self, facesOrFeatures):
-        self._check("setByAllEdges", facesOrFeatures)
-        self.all_edges = facesOrFeatures
-        return not self.refuse
-
-    def setByBetweenFacesOrFeatures(self, one, two):
-        self._check("setByBetweenFacesOrFeatures", one)
-        self._check("setByBetweenFacesOrFeatures", two)
-        self.between = (one, two)
-        return not self.refuse
-
-
 # The sentinel a fresh ChamferFeatureInput carries, so "never assigned" is distinguishable from
 # "assigned Fusion's own default member".
 _UNSET_CORNER = "corner:api-default"
@@ -180,44 +124,6 @@ class FakeCountingFeature:
         return True
 
 
-class FakeFilletFeatures:
-    def __init__(self):
-        self.last = None
-        self.rule_last = None
-        # default created feature answers only .name (no .faces/.edges - the attribute-silent case)
-        self.result = type("F", (), {"name": "Fillet1"})()
-        self.rule_result = FakeCountingFeature("RuleFillet1", faces=4)
-        self.rule_settings_override = None   # set to model a radius/topology that did not land
-        # applied when a feature is added, so a test can model the geometry actually moving
-        self.on_add = None
-        self.refuse_edge_set = False
-    def createInput(self):
-        self.last = FakeFilletInput()
-        self.last.refuse = self.refuse_edge_set
-        return self.last
-    def add(self, inp):
-        if self.on_add:
-            self.on_add()
-        return self.result
-    def createRuleFilletInput(self):
-        self.rule_last = FakeRuleFilletInput()
-        self.rule_last.refuse = self.refuse_edge_set
-        return self.rule_last
-    def addRuleFillet(self, inp):
-        if self.on_add:
-            self.on_add()
-        # A live RuleFilletFeature reports what it applied through ruleFilletSettings; the fake
-        # echoes the input unless a test overrides it to model a setter the API ignored.
-        if self.rule_result is not None and self.rule_settings_override is None:
-            applied = getattr(inp.radius, "value", inp.radius)
-            self.rule_result.ruleFilletSettings = type(
-                "S", (), {"radius": type("V", (), {"value": applied})(),
-                          "topologyType": inp.topologyType})()
-        elif self.rule_result is not None:
-            self.rule_result.ruleFilletSettings = self.rule_settings_override
-        return self.rule_result
-
-
 class FakeChamferFeatures:
     """A live ChamferFeature reports what it BUILT, and that is the only signal a wrong corner type
     or angle leaves - all three corner types build the same face count. So the created feature
@@ -271,8 +177,8 @@ class FakeChamferFeatures:
 
 
 def _component(bodies, ff, cf):
-    """The active component: its bodies, plus the fillet/chamfer feature collections the handler
-    builds through."""
+    """The active component: its bodies, plus the chamfer feature collection the handler builds
+    through. No chamfer call reaches the fillet collection, so `ff` is None here."""
     comp = MakeComp(name="Comp")
     comp.bRepBodies = _NamedCollection(bodies)
     comp.features = type("F", (), {"filletFeatures": ff, "chamferFeatures": cf})()
@@ -280,7 +186,7 @@ def _component(bodies, ff, cf):
 
 
 def _install(bodies):
-    ff = FakeFilletFeatures(); cf = FakeChamferFeatures()
+    ff = None; cf = FakeChamferFeatures()
     install(fl, make_design(comp=_component(bodies, ff, cf)))
     import adsk.fusion, adsk.core
     # BodyRef(kind='solid') does isinstance(body, adsk.fusion.BRepBody) + checks isSolid — make the
@@ -315,7 +221,7 @@ def _install_handles(handle_map, timeline=None):
     """Install a design whose findEntityByToken resolves `handle_map` - the seam a face/edge handle
     list reads through before its isinstance(BRepEdge/BRepFace) gate. `timeline` is the marker the
     resolved-edge-set read rolls and puts back."""
-    ff = FakeFilletFeatures(); cf = FakeChamferFeatures()
+    ff = None; cf = FakeChamferFeatures()
     install(fl, make_design(comp=_component([], ff, cf), tokens=handle_map, timeline=timeline))
     import adsk.fusion, adsk.core
     adsk.fusion.BRepEdge = BRepEdge

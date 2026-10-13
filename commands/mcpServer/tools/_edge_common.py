@@ -224,22 +224,28 @@ def _collect_edges(body, edge_filter):
 
 def _build_edge_set(fillet_input, variant, edges, val, k, tangent_chain):
     """Add the requested edge set to a FilletFeatureInput. Returns an error string, or ''."""
+    edge_inputs = fillet_input.edgeSetInputs
     if variant is None:
-        added = fillet_input.addConstantRadiusEdgeSet(edges, val, tangent_chain)
+        added = edge_inputs.addConstantRadiusEdgeSet(edges, val, tangent_chain)
         label = "constant-radius"
     elif variant["type"] == "chord_length":
-        added = fillet_input.addChordLengthEdgeSet(edges, val, tangent_chain)
+        added = edge_inputs.addChordLengthEdgeSet(edges, val, tangent_chain)
         label = "chord-length"
     else:
-        # addVariableRadiusEdgeSet takes no isTangentChain argument and the set it builds reads the
-        # flag back False; positions and radii cross as plain Python lists (the API takes a vector
-        # there), where an ObjectCollection raises a vector-type argument error.
-        added = fillet_input.addVariableRadiusEdgeSet(
-            edges, val, adsk.core.ValueInput.createByReal(variant["end_radius"] * k),
-            [adsk.core.ValueInput.createByReal(p) for p in variant["positions"]],
-            [adsk.core.ValueInput.createByReal(r * k) for r in variant["radii"]])
+        # A variable-radius set is built with chaining off; its intermediate radii and positions
+        # cross as plain Python lists (the API takes a vector there), radii first.
+        added = edge_inputs.addVariableRadiusEdgeSet(
+            edges, val, adsk.core.ValueInput.createByReal(variant["end_radius"] * k), False)
         label = "variable-radius"
-    if added is False:
+        if added is not None and variant["positions"]:
+            mid_result = added.setMidRadii(
+                [adsk.core.ValueInput.createByReal(r * k) for r in variant["radii"]],
+                [adsk.core.ValueInput.createByReal(p) for p in variant["positions"]])
+            if mid_result is not True:
+                return (f"The variable-radius edge set did not take its intermediate radii "
+                        f"(setMidRadii returned {mid_result!r}), so no fillet was created. Check "
+                        "'positions' and 'radii'.")
+    if added is None:
         return (f"The {label} edge set was refused, so no fillet was created. Re-run find_geometry "
                 "for fresh edge handles; a variable-radius chain must be tangentially connected "
                 "and listed in order from its start end.")
@@ -976,8 +982,8 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
         if rerr:
             return error(rerr + " " + _common.delete_failed_feature(design, feature)[1])
 
-    # The tangent-chain flag the FEATURE reports. A variable-radius set is given no such argument,
-    # so nothing was requested for it and there is nothing to compare its reading against.
+    # The tangent-chain flag the FEATURE reports. A variable-radius set is built with chaining off
+    # whatever was requested, so its reading is published and never compared against the request.
     chain_requested = not measured_route and (kind == "chamfer" or vtype in ("constant", "chord_length"))
     got_chain = _tangent_chain_read(kind, feature) if not measured_route else None
     if chain_requested and got_chain is not None and got_chain != bool(tangent_chain):
@@ -1032,9 +1038,9 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
         verified["edges_cut"] = edges_cut
     if not chain_requested and got_chain is not None:
         # The wire default is true, so a read-back of false here would otherwise read as a declined
-        # request rather than as the one edge set that is given no such argument.
-        chain_note += (f" tangent_chain reads {got_chain} because a {vtype} edge set takes no such "
-                       "argument - it cuts the edges handed in.")
+        # request rather than as the one edge set that is built with chaining off.
+        chain_note += (f" tangent_chain reads {got_chain} because a {vtype} edge set is built with "
+                       "chaining off - it cuts the edges handed in.")
     if marker_clause:
         chain_note += " " + marker_clause + "."
     requested = edges.count if handles_sent is None else handles_sent

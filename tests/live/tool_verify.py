@@ -94,6 +94,7 @@ from verify_acts_hub import (  # noqa: F401
     HUB_COMP, HUB_MILL_SETUP, HUB_TURN_SETUP, _HUB, _HUB_JOB, _fully_constrained, _hub_box,
     _hub_setups, _hub_tools_landed, _rim_edge, _threaded, _tilt_frame, _tilt_v)
 from verify_acts_render import _RENDER_READ, _RENDER_START, poll_render_job  # noqa: F401
+from verify_family_switch import family_switch_smoke  # noqa: F401
 
 from verify_program import (  # noqa: F401
     _ACT_PROGRAM, _SKETCH_PHASE, _placed_boxes, ACTS, FAMILY_PROGRAM,
@@ -143,6 +144,9 @@ if __name__ == "__main__":
     ap.add_argument("--resume", action="store_true",
                     help="continue an unselected full --run ID from its owned-family checkpoint; "
                          "old single-document checkpoints and --resume --acts are refused")
+    ap.add_argument("--continue-families", action="store_true",
+                    help="continue independent families after a logical failure and certified cleanup; "
+                         "fresh run only; any failure forbids receipts")
     args = ap.parse_args()
     shots = args.shots
     if shots:
@@ -154,4 +158,5 @@ if __name__ == "__main__":
     sys.exit(check(full_scope=args.full_scope) if args.check else run(args.json, keep_open=args.keep_open, trace=args.trace,
                                             shots_dir=shots, acts_spec=args.acts,
                                             run_id=args.run_id, resume=args.resume,
-                                            families_spec=args.families))
+                                            families_spec=args.families,
+                                            continue_families=args.continue_families))

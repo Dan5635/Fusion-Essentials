@@ -25,8 +25,9 @@ app = adsk.core.Application.get()
 
 
 _REQUIRES = {
-    # live-verified: perpendicular/parallel/collinear/horizontal/vertical are LINE-ONLY - their
-    # curve argument is typed SketchLine.
+    # live-verified: parallel/collinear/horizontal/vertical are LINE-ONLY - their curve argument is
+    # typed SketchLine. addPerpendicular2 takes a curve second, so _one holds 'perpendicular' to
+    # two lines itself.
     "perpendicular": "two lines",
     "parallel": "two lines",
     "tangent": "two curves",
@@ -69,7 +70,7 @@ _REQUIRES = {
 # constraint -> ("kind", method-or-None). kinds: two_curve | point_curve | two_point | one_line |
 # symmetry | entity_surface | entity_list | offset | rect_pattern | circ_pattern | auto | fix
 _CONSTRAINTS = {
-    "perpendicular": ("two_curve", "addPerpendicular"),
+    "perpendicular": ("two_curve", "addPerpendicular2"),
     "parallel": ("two_curve", "addParallel"),
     "tangent": ("two_curve", "addTangent"),
     "smooth": ("two_curve", "addSmooth"),
@@ -699,6 +700,10 @@ def _one(sketch, k, entry):
         if not e2:
             return refuse(f"'{cname}' needs 'entity_two' (a second '<type>:<index>'). "
                           f"Got '{entity_two}'.")
+    if cname == "perpendicular" and _ref_kind(base_two) != "line":
+        return refuse(f"'perpendicular' takes two lines. Got '{entity_two}' as entity_two."
+                      + (" A line and an arc or circle take constraint=perpendicular_to_curve."
+                         if _ref_kind(base_two) in ("arc", "circle") else ""))
     if cname == "perpendicular_to_curve":
         if _ref_kind(base_one) != "line":
             return refuse(f"perpendicular_to_curve needs a LINE as entity_one. Got '{entity_one}'.")
@@ -956,7 +961,7 @@ def _one(sketch, k, entry):
             payload["note"] += curve_note
     if cname == "perpendicular_to_curve":
         payload["note"] = (f"'{entity_one}' extended now passes through the centre of "
-                           f"'{entity_two}'. sketch_get lists this constraint with the line only.")
+                           f"'{entity_two}'.")
     if kind in _CREATOR_KINDS or kind == "entity_list":
         payload["entities"] = entities
     if not match_topology:

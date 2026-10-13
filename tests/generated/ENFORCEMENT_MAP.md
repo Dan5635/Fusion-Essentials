@@ -17,12 +17,12 @@ of them is unguarded: treat that as a defect to ledger, not a freedom.
 | test_dead_code.py | Lint: no dead module-level code under commands/mcpServer/, tests/, or the doc generators. |
 | test_doc_citations.py | Lint: every cited file is a tracked path, every cited tool is registered, every dotted symbol is defined by the module it names. |
 | test_enum_families_measured.py | Lint: every adsk enum family the tools reference is MEASURED - first contact fails loudly. |
-| test_evergreen_no_baggage.py | Lint: the codebase is EVERGREEN (tools/CLAUDE.md, "Module docstrings"). |
+| test_evergreen_no_baggage.py | Lint: the codebase is EVERGREEN (tools/AGENTS.md, "Module docstrings"). |
 | test_export_knob_preread.py | Lint: an export-options knob is written through ``_export.applied_pair``, never a bare set-then-read-back. |
 | test_fake_shapes_exist.py | Lint: every public attribute a SHARED fake exposes exists on its live adsk counterpart, and every shared fake declares the live type it stands for plus the MEASURED rows behind it. |
 | test_frame_disclosure.py | Lint: a tool that publishes a coordinate FRAME is classified, and mints the keys it claims. |
-| test_generated_docs_current.py | Lint: the generated docs (TOOL_MANIFEST/TOOL_POINTER_MAP/PERMISSION_POSTURE + the CLAUDE.md map) match the live tree. |
-| test_helper_duplication.py | Lint: a shared helper lives in exactly ONE module - its home (CLAUDE.md "Reuse before you write"). |
+| test_generated_docs_current.py | Lint: the generated docs (TOOL_MANIFEST/TOOL_POINTER_MAP/PERMISSION_POSTURE + the AGENTS.md map) match the live tree. |
+| test_helper_duplication.py | Lint: a shared helper lives in exactly ONE module - its home (AGENTS.md "Reuse before you write"). |
 | test_input_property_names.py | Every property assigned onto a FeatureInput must exist on that input's real class. |
 | test_material_effect_verified.py | Lint: a write tool whose 'operation' enum offers cut or intersect fails unless its handler (or a same-module helper it directly calls) takes a MATERIAL reading - volume, face count, lump, body census, native token - AFTER a features.<x>.... |
 | test_native_identity_keys.py | Lint: a de-dup/comparison key over Fusion entities is ``_common.native_identity``, never a bare ``entityToken`` - keyed, or compared with ``==``. |
@@ -38,11 +38,11 @@ of them is unguarded: treat that as a defect to ledger, not a freedom.
 | test_rename_adoption.py | Gate: no tool renames an entity through a swallowed setattr - apply_rename is the one home. |
 | test_strict_schema.py | Lint: every registered tool's inputSchema carries additionalProperties:false. |
 | test_tool_autodiscovery.py | Lint/contract for the AUTO-DISCOVERED tool registration (entry.py::_collect_items). |
-| test_tool_naming.py | Lint/contract for the TOOL NAMING SCHEMA (CLAUDE.md "Read vs Edit"). |
+| test_tool_naming.py | Lint/contract for the TOOL NAMING SCHEMA (AGENTS.md "Read vs Edit"). |
 | test_tool_verify_complete.py | Gate: every registered tool is accounted for in the live tool verification. |
 | test_unit_coverage_complete.py | Gate: every tool module is exercised by a unit test, or excused with a recorded reason. |
 | test_units.py | Lint: a numeric input naming a unit in prose (mm/cm/inch) whose tool exposes no 'units' selector fails; a read REPORTING a 'units' field whose 'units' input is not the shared _inputs.UNITS enum kind fails; raw UNIT_TO_CM access or a loca... |
-| test_wire_ascii.py | Lint: every agent-facing wire string is pure ASCII (CLAUDE.md "Tool descriptions"). |
+| test_wire_ascii.py | Lint: every agent-facing wire string is pure ASCII (AGENTS.md "Tool descriptions"). |
 | test_wire_budget.py | Wire budget: the tools/list payload is bounded per entry and across the fleet. |
 | test_wire_caps_interpolated.py | Lint: a cap/limit a wire description STATES is interpolated from the constant that ENFORCES it. |
 | test_wire_shape.py | Wire format: the JSON-RPC tools/list response includes annotations and strict schemas. |
@@ -63,7 +63,7 @@ drift from what it describes; test_generated_docs_current.py runs the check in t
 
 ## Typed seams - contracts enforced at construction, not by scanning
 
-- Input kinds: commands/mcpServer/tools/_inputs.py (the catalog table in tools/CLAUDE.md).
+- Input kinds: commands/mcpServer/tools/_inputs.py (the catalog table in tools/AGENTS.md).
 - Postcondition kinds: commands/mcpServer/tools/_assert.py (capture -> mutate -> verify).
 - Verification declarations: commands/mcpServer/mcp_primitives/item.py (closed kinds;
   every reference resolved by test_postconditions_declared.py).

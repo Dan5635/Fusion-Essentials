@@ -4196,8 +4196,13 @@ def _perpendicular_to_curve_rows():
     read("sketch_get", _xray("PcSk"), lambda p: p.get("constraint_count") == 0)
     constrain("line:0", "arc:0",
               lambda p: p["results"][0].get("applied") == "perpendicular_to_curve"
-              and "line only" in p["results"][0].get("note", ""))
-    read("sketch_get", _xray("PcSk"), _through("line:0", 0, 0, True))
+              and "centre of 'arc:0'" in p["results"][0].get("note", ""))
+    # the read names the constraint's line AND the arc it is perpendicular to
+    read("sketch_get", _xray("PcSk"),
+         lambda p: _through("line:0", 0, 0, True)(p)
+         and _measured("the perpendicular names its line and its arc", p.get("constraints"),
+                       [c.get("entities") for c in p.get("constraints") or []]
+                       == [["line:0", "arc:0"]]))
     read("sketch_get", _xray("PcSk"), _through("line:0", 60, 0, False))
     read("sketch_get", _xray("PcSk"), _round_row("arc:0", 0, 0, 20))
     read("sketch_get", _xray("PcSk"),
@@ -4241,6 +4246,72 @@ def _offset_topology_rows():
 
 
 _SKETCHWORK += _offset_topology_rows()
+
+
+def _offset_landed(count, want):
+    """sketch_get: line:0 still lies on y = 0, and the `count` lines an offset of `count` source
+    lines added each lie level at one of the `want` (axis, mm) places - the pick point's side."""
+    def check(p):
+        rows = _rows_by_id(p)
+
+        def level(ref):
+            a, b = (rows.get(ref) or {}).get("start") or {}, (rows.get(ref) or {}).get("end") or {}
+            flat = [(axis, a[axis]) for axis in "xy"
+                    if _num(a.get(axis)) and _near(b.get(axis), a[axis], 0.001)]
+            return flat[0] if len(flat) == 1 else None
+        source, got = level("line:0"), [level(f"line:{i}") for i in range(count, 2 * count)]
+        placed = None not in got and len(got) == len(want) and all(
+            axis == wanted and _near(at, mm, 0.001)
+            for (axis, at), (wanted, mm) in zip(sorted(got), sorted(want)))
+        return _measured("the offset's new lines against line:0 and the pick point",
+                         {"line:0": source, "new": got, "want": want},
+                         p.get("truncated") is False and source is not None
+                         and source[0] == "y" and _near(source[1], 0, 0.001)
+                         and p["counts"]["lines"] == 2 * count and placed)
+    return check
+
+
+def _offset_side_rows():
+    """sketch_edit_curve offset with the pick on EACH side of an open chain (asked on its first and
+    on its second line) and of a closed loop; and one offset past a fillet's radius. The new
+    curves are read back by coordinates, on the pick point's side."""
+    rows, write, read, close = _scratch_rows("os_doc")
+    chain = [{"kind": "polyline", "points": [[0, 0], [40, 0], [40, 30]]}]
+    loop = [{"kind": "closed_path", "points": [[0, 0], [40, 0], [40, 30], [0, 30]]}]
+    fillet = ("sketch_edit_curve", {"action": "fillet", "entity_one": "line:0", "x1": 35, "y1": 0,
+                                    "entity_two": "line:1", "x2": 40, "y2": 5, "radius": 3})
+    # line:0 lies on y = 0 and line:1 on x = 40. A pick at y = +10 (or, beside line:1, x = 30) is
+    # inside the corner and the loop, one at y = -10 (x = 50) is outside both; the offset is 5, so
+    # the two sides read 10 mm apart. Past the 3 mm fillet the offset lands the two lines alone.
+    inside, outside = [("x", 35), ("y", 5)], [("x", 45), ("y", -5)]
+    for name, shapes, then, source, entity, x1, y1, want in (
+            ("OsChainIn", chain, None, 2, "line:0", 20, 10, inside),
+            ("OsChainOut", chain, None, 2, "line:0", 20, -10, outside),
+            ("OsChainLaterIn", chain, None, 2, "line:1", 30, 15, inside),
+            ("OsChainLaterOut", chain, None, 2, "line:1", 50, 15, outside),
+            ("OsLoopIn", loop, None, 4, "line:0", 20, 10,
+             [("x", 5), ("x", 35), ("y", 5), ("y", 25)]),
+            ("OsLoopOut", loop, None, 4, "line:0", 20, -10,
+             [("x", -5), ("x", 45), ("y", -5), ("y", 35)]),
+            ("OsPastFillet", chain, fillet, 3, "line:0", 20, 10, inside)):
+        drawn = len(want)
+        write("sketch_create", {"plane": "xy", "name": name})
+        write("sketch_add_geometry", {"sketch_name": name, "geometry": [dict(s) for s in shapes]},
+              lambda p, drawn=drawn: sum(r.get("curves_added") or 0
+                                         for r in p["results"]) == drawn)
+        if then:
+            write(then[0], {"sketch_name": name, **then[1]})
+        # the reply knows how many curves it offset and how many the sketch holds, not where
+        write("sketch_edit_curve", {"sketch_name": name, "action": "offset", "entity_one": entity,
+                                    "x1": x1, "y1": y1, "distance": 5},
+              lambda p, source=source, drawn=drawn: p.get("source_curve_count") == source
+              and p.get("curve_count_after") == source + drawn)
+        read("sketch_get", _xray(name), _offset_landed(drawn, want))
+    close()
+    return rows
+
+
+_SKETCHWORK += _offset_side_rows()
 
 
 def _edge_at(length, y, z):

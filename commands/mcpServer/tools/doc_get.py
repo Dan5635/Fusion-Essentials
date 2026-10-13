@@ -35,7 +35,7 @@ RETURNS = [
 ]
 
 # A healthy open doc collapses to {name, is_active}; an unsaved/modified/hidden one keeps the flag that
-# makes it interesting (the terse razor - CLAUDE.md "Reuse before you write").
+# makes it interesting (the terse razor - AGENTS.md "Reuse before you write").
 _DOC_NOISE = {"is_active": False, "is_visible": True, "is_saved": True, "is_modified": False}
 
 
