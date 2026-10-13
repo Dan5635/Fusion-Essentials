@@ -20,12 +20,42 @@ on top of these calls in your client, not something the server decides for you. 
 a vague reference is refused rather than guessed at, and a tool that writes checks its own effect
 before it reports success (see *What makes the tools trustworthy*).
 
+## Why specific tools instead of "just let it write scripts"
+
+Fusion has a Python API, and a capable model can write against it. Handing an assistant a single
+"run this script" endpoint is a fair design, and it covers a lot of ground fast. This server went
+the other way for one reason: writing the code was never the part that went wrong. Knowing whether
+it had done the right thing was.
+
+Working without checks, an LLM gets caught out in a few recurring ways.
+
+**It gets a convention wrong.** Sketch planes, hole directions and pattern axes do not always line
+up with the axes you would expect. A script built on the wrong assumption still runs, still reports
+success, and quietly builds the wrong shape. Nothing in the result says so.
+
+**It loses track of what it is pointing at.** References to faces and edges shift when a model
+rebuilds, and Fusion does not require names to be unique anywhere. A reference that finds
+*something* is not the same as a reference that finds the right thing.
+
+**It cannot check its own work.** "Success" on its own proves very little, and the obvious sanity
+checks (a count, a total volume) often cannot tell two quite different designs apart. An assistant
+can verify what it did and still be wrong about it.
+
+The tools are shaped around those three. Reads hand back the plane's orientation, the units and a
+handle to the exact entity before you act on anything. Inputs refuse a vague reference rather than guess at
+it. Anything that writes reads the model back afterwards and reports the change it measured. The
+mechanisms are in *What makes the tools trustworthy*, below.
+
+There is still a general script tool, `sys_execute_script`, for cases the others do not cover. It is
+off by default and gated separately from everything else (see [Security](#security)). Most of the work here
+exists so that you rarely need to reach for it.
+
 ## Enabling it
 
 1. [Install and run Fusion-Essentials](../../README.md#installation) in Fusion.
 2. Open **Fusion Essentials Settings**, and on the feature-enablement tab tick
    **Enable MCP Server**.
-3. Reload Fusion-Essentials (Add-Ins dialog → Stop, then Run). The setting takes effect on reload.
+3. Reload Fusion-Essentials (`Ctrl+S` to open the Add-Ins dialog → Stop, then Run). The setting takes effect on reload.
 4. Open `http://127.0.0.1:37182/health` in a browser and check both `"status": "healthy"` and
    `"server": "Fusion-Essentials MCP Server"`. The same page shows the address the server bound,
    under `"bound"`.
@@ -40,6 +70,89 @@ family takes effect on reload: its tools are not registered, and `workspace_orie
 `sys_capability_map` and `sys_find_tool` reflect what is available. Reconnect your MCP client after
 a reload so it refreshes its tool list.
 
+## Connecting a client
+
+Your LLM agent needs one thing from you: the address `http://127.0.0.1:37182/mcp`. The server speaks
+MCP's **Streamable HTTP** transport, so an agent on the same machine speaks to it directly. There
+is no bridge, Node package or extra program to install.
+
+### The easy way: ask your assistant
+
+An assistant that can edit its own settings will usually add the connection for you and tell you
+what to restart afterwards. Open the one you want to use and say something like:
+
+> Add an MCP server to this app. Name it `fusion-essentials`. It is a Streamable HTTP server at
+> `http://127.0.0.1:37182/mcp` and needs no sign-in. Then tell me how to reload so its tools appear.
+
+Claude Code and Codex can both do this: the agent finds the right settings file, makes the change
+and walks you through whatever it cannot do itself. If you are not sure where your client keeps its
+MCP settings, ask it that first.
+
+### Doing it by hand
+
+**Claude Code** (terminal, desktop app or editor extension). One command adds it:
+
+```bash
+claude mcp add --transport http fusion-essentials http://127.0.0.1:37182/mcp
+```
+
+If you opened this repository's folder in Claude Code, the connection is already offered: the
+project file [`.mcp.json`](../../.mcp.json) at the repo root holds it, and Claude Code asks you to
+approve it the first time.
+
+```json
+{
+  "mcpServers": {
+    "fusion-essentials": {
+      "type": "http",
+      "url": "http://127.0.0.1:37182/mcp"
+    }
+  }
+}
+```
+
+**Codex.** Add this to `config.toml` in your Codex settings folder:
+
+```toml
+[mcp_servers.fusion-essentials]
+url = "http://127.0.0.1:37182/mcp"
+```
+
+Inside this repository, [`.codex/config.toml`](../../.codex/config.toml) already names the server
+and lists an approval mode for each tool.
+
+**VS Code** (GitHub Copilot's agent mode). Create `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "fusion-essentials": {
+      "type": "http",
+      "url": "http://127.0.0.1:37182/mcp"
+    }
+  }
+}
+```
+
+Keep that file open in the editor: VS Code 
+
+**Any other client.** Add a Streamable HTTP server with the same URL, then approve or enable it in
+the client if it asks.
+
+### Check that it worked
+
+Ask the assistant what you have open in Fusion. It should call `workspace_orient` and describe your
+active document. If it says it has no such tool:
+
+- Make sure the health page from *Enabling it* still answers. The page can be healthy while the
+  client is not connected, so a healthy page is not the whole answer.
+- Restart or reconnect the client. A client that was already running when you enabled the server,
+  or when you changed its port, keeps what it knew until it is restarted.
+- Look for an approval the client is waiting on. Some clients list a new server as pending until
+  you allow it.
+
+Before you let an assistant work unattended, read the client permission presets under [Security](#security).
+
 ### The port
 
 Fusion-Essentials listens on `http://127.0.0.1:37182/mcp`. The port is its own (it does not share
@@ -47,7 +160,7 @@ Fusion's built-in port 27182), so Fusion's built-in MCP server and this one can 
 neither has to be turned off. If your MCP client still points at port 27182, change the port in its
 server URL once, or set `mcp_port` as below to keep another port.
 
-To change the port:
+To change the port (uncommon):
 
 1. Open `FusionEssentialsSettings.json`. On Windows it is in `%APPDATA%\GTF_<add-in folder name>`
    (for example `GTF_Fusion-Essentials`); on macOS, in
@@ -63,48 +176,26 @@ Fusion session running Fusion-Essentials, another MCP server by the name it repo
 could not identify) and does not start a server. Pick another `mcp_port` or stop the other program,
 then reload.
 
-## Connecting a client
-
-The server speaks the **Streamable HTTP** MCP transport, so clients that support an HTTP transport
-can connect directly from the same machine. No `mcp-remote` or Node bridge is needed.
-
-**Claude Code** reads the project-scoped [`.mcp.json`](../../.mcp.json) at the repo root:
-
-```json
-{
-  "mcpServers": {
-    "fusion-essentials": {
-      "type": "http",
-      "url": "http://127.0.0.1:37182/mcp"
-    }
-  }
-}
-```
-
-**Codex** reads [`.codex/config.toml`](../../.codex/config.toml), which names the same URL and
-lists an approval mode per tool.
-
-For another client, add a Streamable HTTP server with the same URL. Approve or enable the server in
-the client as required, then check that its tool list contains `workspace_orient`. The endpoint can
-be healthy while the client is still not connected, and a client that was running before you
-changed the port keeps its earlier address until it is restarted. Review the client permission presets
-under *Security* before adopting them.
-
 ## What the agent is told
 
-You do not have to coach the assistant on how to use this. When a client connects, the server sends
-an instruction block that sends it to two cheap reads before it touches anything else:
-`sys_capability_map` (what this server can do) and `workspace_orient` (what is in front of it). Each
-tool then carries its own contract, its next-step pointers, and whichever Fusion traps apply to it.
+You do not have to coach the assistant on how to use this. It learns it from the server, in three
+places:
 
-Fusion is several environments glued together (CAD, assemblies, the parametric timeline, CAM, the
-cloud data model), and most wasted effort comes from acting before knowing which one you are in.
-Each tool warns about its own traps when they apply, for example: CAM validity is untrustworthy
-until Manufacture has been opened, saves and exports complete asynchronously, and Fusion enforces
-no name uniqueness anywhere.
+- **When it connects**, the server sends a short instruction block. It tells the agent to make two
+  cheap reads before anything else: `sys_capability_map` (what this server can do, by tool family)
+  and `workspace_orient` (what is open in Fusion and what state it is in). It also says how to
+  search for a tool by keyword (`sys_find_tool`), that a `<family>_get` read returns a small default
+  with more on request (`include=`), and that a write can be pinned to the document it was meant
+  for (`expect_document`), so that it is refused if the active document has changed.
+- **With each tool**, its description: what it does, what it needs and what to call next. That
+  description is the whole of what an agent knows about a tool before using it.
+- **In each reply**: a note saying what was observed and the next step, or an error naming the
+  offending value and the remedy. What is awkward about Fusion is taught there, at the moment it
+  applies, not up front.
 
-If you are writing tools rather than using them, the rules and the reasoning behind them live in
-the `AGENTS.md` files beside the code.
+Design practice, meaning how to build a part or an assembly well as opposed to which tool to call,
+is not pushed at the agent. It is there to be asked for through `sys_get_guidance`: an index first,
+then one section or one recipe per call.
 
 ## Tools
 
@@ -141,7 +232,6 @@ These describe behavior; the client's permission policy determines whether it as
 
 ### A few core tools
 
-Start with these:
 
 - **`workspace_orient`**: the first call. One call reports what's open, its health, whether CAM
   data exists, the major pieces, and *pointers* to the right narrow tool next.
@@ -164,36 +254,6 @@ Start with these:
 - `cam_get(include=['time'])` needs generated toolpaths to be meaningful.
 - `cam_generate` is fire-and-poll: it returns immediately with a handle; poll `cam_get_status`
   until done (it never blocks for the multi-minute compute).
-
-## Why specific tools instead of "just let it write scripts"
-
-Fusion has a Python API, and a capable model can write against it. Handing an assistant a single
-"run this script" endpoint is a fair design, and it covers a lot of ground fast. This server went
-the other way for one reason: writing the code was never the part that went wrong. Knowing whether
-it had done the right thing was.
-
-Working without checks, an assistant gets caught out in a few recurring ways.
-
-**It gets a convention wrong.** Sketch planes, hole directions and pattern axes do not always line
-up with the axes you would expect. A script built on the wrong assumption still runs, still reports
-success, and quietly builds the wrong shape. Nothing in the result says so.
-
-**It loses track of what it is pointing at.** References to faces and edges shift when a model
-rebuilds, and Fusion does not require names to be unique anywhere. A reference that finds
-*something* is not the same as a reference that finds the right thing.
-
-**It cannot check its own work.** "Success" on its own proves very little, and the obvious sanity
-checks (a count, a total volume) often cannot tell two quite different designs apart. An assistant
-can verify what it did and still be wrong about it.
-
-The tools are shaped around those three. Reads hand back the plane's orientation, the units and a
-handle to the exact entity before you act on anything. Inputs refuse a vague reference rather than guess at
-it. Anything that writes reads the model back afterwards and reports the change it measured. The
-mechanisms are in *What makes the tools trustworthy*, below.
-
-There is still a general script tool, `sys_execute_script`, for cases the others do not cover. It is
-off by default and gated separately from everything else (see *Security*). Most of the work here
-exists so that you rarely need to reach for it.
 
 ## What it gets used for
 
@@ -267,14 +327,14 @@ in beside the code, so you can run it the same way on your own machine or borrow
 suit you.
 
 The team has four seats, each a separate agent session with its own role file in
-[`.claude/agents/`](../../.claude/agents/):
+[`.agents/roles/`](../../.agents/roles/):
 
 | Seat | Role file | What it does |
 |------|-----------|--------------|
-| Coordinator | [`coordinator.md`](../../.claude/agents/coordinator.md) | Schedules the one Fusion session, passes messages between the others, recovers Fusion when it stalls, and reports to the owner. Writes no tool code. |
-| Lead developer | [`dev.md`](../../.claude/agents/dev.md) | Picks a bounded batch of work, builds part of it, reads every line it accepts, integrates, runs the acceptance and commits. |
-| Second developer | [`dev.md`](../../.claude/agents/dev.md) | Builds the rest of the batch in its own checkout and reviews the lead's code; the lead reviews its code in turn. |
-| Evaluator | [`evaluator.md`](../../.claude/agents/evaluator.md) | Hands each finished batch to a fresh agent that has only the tools and a task, then grades what that agent actually built. |
+| Coordinator | [`coordinator.md`](../../.agents/roles/coordinator.md) | Schedules the one Fusion session, passes messages between the others, recovers Fusion when it stalls, and reports to the owner. Writes no tool code. |
+| Lead developer | [`dev.md`](../../.agents/roles/dev.md) | Picks a bounded batch of work, builds part of it, reads every line it accepts, integrates, runs the acceptance and commits. |
+| Second developer | [`dev.md`](../../.agents/roles/dev.md) | Builds the rest of the batch in its own checkout and reviews the lead's code; the lead reviews its code in turn. |
+| Evaluator | [`evaluator.md`](../../.agents/roles/evaluator.md) | Hands each finished batch to a fresh agent that has only the tools and a task, then grades what that agent actually built. |
 
 The four seat descriptions are written to work with different clients. The seats have been held
 by different agents at different times, and a client that does not load these files by name can be
@@ -299,11 +359,11 @@ A few rules carry most of the weight:
 - **A live failure narrows the tool.** When Fusion ignores an input or resets a setting, the tool
   stops offering it or says what to do instead. The check is not loosened to make the test pass.
 
-Three helper agents are there for a developer to brief when a batch is wide enough to split:
-[`builder.md`](../../.claude/agents/builder.md) for a scoped change,
-[`code-reviewer.md`](../../.claude/agents/code-reviewer.md) for an independent read, and
-[`api-explorer.md`](../../.claude/agents/api-explorer.md) for auditing a new Fusion build against the
-tools. [`blind-evaluator.md`](../../.claude/agents/blind-evaluator.md) is a first-time-user run with
+Three kinds of helper are there for a developer to brief when a batch is wide enough to split:
+another developer from [`dev.md`](../../.agents/roles/dev.md) for a scoped change,
+[`code-reviewer.md`](../../.agents/roles/code-reviewer.md) for an independent read, and
+[`api-explorer.md`](../../.agents/roles/api-explorer.md) for auditing a new Fusion build against the
+tools. [`blind-evaluator.md`](../../.agents/roles/blind-evaluator.md) is a first-time-user run with
 a deliberately narrow tool list. None of them is required; two developers reviewing each other is
 the core of it.
 

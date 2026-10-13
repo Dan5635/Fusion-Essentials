@@ -413,7 +413,7 @@
     {
       "id": "surface",
       "title": "Surface",
-      "use_when": "a shell, skin or product form that no extrude or revolve describes",
+      "use_when": "a shell, skin or product form that is not required to be manifold",
       "rules": [
         {
           "id": "skin-first-solid-later",
@@ -523,7 +523,7 @@
     {
       "id": "assemble",
       "title": "Assemble",
-      "use_when": "more than one component - how they are held, joined and moved",
+      "use_when": "more than one component - how they are referenced, joined and moved",
       "rules": [
         {
           "id": "one-assembly-idiom",

@@ -16,7 +16,7 @@ cell names. `--check` fails when the stamp differs from the installed Fusion or 
 neither PASS nor CARRIED.
 
 Stamp: Fusion 2706.0.116 | verified 2026-10-12 | source 4979abadfddf3e72b3d666c3c9f6d7f57c1647c91ff053442e66ab573bf80e71
-Loaded: implementation 1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f | schema 871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42 | load 0201cb1132144bdeac252ec4799cc22d | session 428a0afa5354465e9892906232140af2
+Loaded: implementation 1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f | schema 871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42 | load 878dd6f5e9d145e0902f549826a6ae87 | session a9d30e4caceb4a218e7d512cbf710617
 
 | result | claim id | claim | encoded in |
 |---|---|---|---|

@@ -35,4 +35,6 @@ update.
 
 When a tool starts or stops using a marked member, change the row in the same commit. After a Fusion
 update, read the marks again with `tests/api_inventory.py` and check each row against the code: a
-member can lose its mark, gain a supported sibling, or disappear.
+member can lose its mark, gain a supported sibling, or disappear. The API explorer
+(`.agents/roles/api-explorer.md`) reviews and updates this page in every audit, and can be briefed
+to do only that.

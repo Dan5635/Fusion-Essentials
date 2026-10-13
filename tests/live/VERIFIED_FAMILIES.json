@@ -53,12 +53,12 @@
     ],
     "fusion_version": "2706.0.116",
     "raw": {
-      "file": "family-evidence-7003c959a9a51fc281505ecd93c807f155faad874c7f98916eaf9fc4d25b94c6.json",
-      "sha256": "7003c959a9a51fc281505ecd93c807f155faad874c7f98916eaf9fc4d25b94c6"
+      "file": "family-evidence-25efd194d8b8925c4bdc7c1948c7380e6ea9129fb69a88be5b2bc5743cb441f9.json",
+      "sha256": "25efd194d8b8925c4bdc7c1948c7380e6ea9129fb69a88be5b2bc5743cb441f9"
     },
-    "run_id": "u1bootstrap1012c"
+    "run_id": "restamp1012a"
   },
-  "bootstrap_run_id": "u1bootstrap1012c",
+  "bootstrap_run_id": "restamp1012a",
   "families": {
     "cloud": {
       "act_modes": [
@@ -107,10 +107,10 @@
       ],
       "acts_hash": "2729a343032f2ed9677500eb6cf6d8d147c2b6e11f71287dc644fe70baecf3d4",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "fd22b607422a3aa272d95b82dd14584b13400364e0cd163713b2f85c7e081e6c",
+      "closure_hash": "5fca38c0fa5220ed1f897363ee16f548226ca1c5f3d48bbdb63d682e743ed5df",
       "evidence": {
         "buckets": {
           "called": [
@@ -119,7 +119,9 @@
             "joint_create_as_built",
             "view_switch_workspace"
           ],
-          "covered": [],
+          "covered": [
+            "doc_insert_occurrence"
+          ],
           "refusals-only": [],
           "self-reported": [
             "assembly_get",
@@ -151,7 +153,6 @@
             "doc_copy",
             "doc_get",
             "doc_insert_derive",
-            "doc_insert_occurrence",
             "doc_new",
             "doc_open",
             "doc_restore_version",
@@ -190,21 +191,21 @@
         },
         "counts": {
           "called": 4,
-          "covered": 0,
+          "covered": 1,
           "refusals-only": 0,
-          "self-reported": 64
+          "self-reported": 63
         }
       },
       "family": "cloud",
-      "family_run_id": "e8f845b7d55442598a9770804779c8ce",
+      "family_run_id": "4cabe4d59fd24e6585cf5bdbfe153fab",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [
         {
@@ -231,20 +232,57 @@
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-9665c8a50fe0b2d4d41d8af3094cdac7a147fbb7179db0c17469d08961809c54.json",
-        "sha256": "9665c8a50fe0b2d4d41d8af3094cdac7a147fbb7179db0c17469d08961809c54"
+        "file": "family-evidence-7967d472e2304e47f0d42d2d7216f73b57af57ed5947b08c8f5d8dda18178b0d.json",
+        "sha256": "7967d472e2304e47f0d42d2d7216f73b57af57ed5947b08c8f5d8dda18178b0d"
       },
-      "row_count": 994,
-      "run_id": "u1bootstrap1012c",
+      "row_count": 1001,
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
         ]
       },
       "state": "executed",
-      "witnesses": []
+      "witnesses": [
+        {
+          "reader_is_read": true,
+          "row_index": 912,
+          "targets": [
+            "doc_insert_occurrence"
+          ],
+          "tool": "assembly_get",
+          "witness": "tool:assembly_get"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 913,
+          "targets": [
+            "doc_insert_occurrence"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 915,
+          "targets": [
+            "doc_insert_occurrence"
+          ],
+          "tool": "assembly_get",
+          "witness": "tool:assembly_get"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 916,
+          "targets": [
+            "doc_insert_occurrence"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        }
+      ]
     },
     "details": {
       "act_modes": [
@@ -258,10 +296,10 @@
       ],
       "acts_hash": "2ce9cb9f35363cc8ab870b7d7b0cb3428ae315f44a4b7f814e5651b86fdaf4d1",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "dc3d7d36a9236dcdb36af55b6f051ba986c5642924a422ccc5415a59c32bcb8a",
+      "closure_hash": "22861120624802f2ec24809b74989fd89a0a306abefda78222574e2c77450ba8",
       "evidence": {
         "buckets": {
           "called": [
@@ -360,15 +398,15 @@
         }
       },
       "family": "details",
-      "family_run_id": "0493d35cb1af4519a63ebc66df27054d",
+      "family_run_id": "9103aab39cfc483f940a805c71d8ffb3",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [
         {
@@ -385,27 +423,27 @@
         }
       ],
       "producer_run_ids": [
-        "284c6af822754ea6bd0710db92504959"
+        "a0030ffc9f5a4862966fdefc02bffb4f"
       ],
       "producers": [
         {
-          "closure_hash": "dc3d7d36a9236dcdb36af55b6f051ba986c5642924a422ccc5415a59c32bcb8a",
-          "family_run_id": "0493d35cb1af4519a63ebc66df27054d",
+          "closure_hash": "22861120624802f2ec24809b74989fd89a0a306abefda78222574e2c77450ba8",
+          "family_run_id": "9103aab39cfc483f940a805c71d8ffb3",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 74,
           "rows_hash": "829694266d28606f0230aaf1e99206df089c32b074ea3130d1bc8de850c7abf2",
-          "run_id": "284c6af822754ea6bd0710db92504959"
+          "run_id": "a0030ffc9f5a4862966fdefc02bffb4f"
         }
       ],
       "raw": {
-        "file": "family-evidence-87f76fc597135c6054bcb24da25a3b962b9e8dca5511881e16ee90cd7c1770cd.json",
-        "sha256": "87f76fc597135c6054bcb24da25a3b962b9e8dca5511881e16ee90cd7c1770cd"
+        "file": "family-evidence-04205802a9cf2dac87cd23535bf4e2619bd75f38619c5dcbe538db5c2c084622.json",
+        "sha256": "04205802a9cf2dac87cd23535bf4e2619bd75f38619c5dcbe538db5c2c084622"
       },
-      "row_count": 3232,
-      "run_id": "u1bootstrap1012c",
+      "row_count": 3235,
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -415,7 +453,7 @@
       "witnesses": [
         {
           "reader_is_read": true,
-          "row_index": 1715,
+          "row_index": 1718,
           "targets": [
             "model_edit_feature"
           ],
@@ -424,7 +462,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 1752,
+          "row_index": 1755,
           "targets": [
             "model_edit_feature"
           ],
@@ -433,7 +471,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 1789,
+          "row_index": 1792,
           "targets": [
             "model_edit_feature"
           ],
@@ -442,7 +480,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 1826,
+          "row_index": 1829,
           "targets": [
             "model_edit_feature"
           ],
@@ -451,7 +489,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 1847,
+          "row_index": 1850,
           "targets": [
             "model_edit_feature"
           ],
@@ -460,7 +498,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 1880,
+          "row_index": 1883,
           "targets": [
             "model_edit_feature"
           ],
@@ -469,7 +507,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 1918,
+          "row_index": 1921,
           "targets": [
             "model_edit_feature"
           ],
@@ -478,7 +516,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 1942,
+          "row_index": 1945,
           "targets": [
             "model_edit_feature"
           ],
@@ -487,7 +525,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 1978,
+          "row_index": 1981,
           "targets": [
             "model_edit_feature"
           ],
@@ -496,7 +534,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 2021,
+          "row_index": 2024,
           "targets": [
             "model_edit_feature"
           ],
@@ -505,7 +543,7 @@
         },
         {
           "reader_is_read": true,
-          "row_index": 2045,
+          "row_index": 2048,
           "targets": [
             "model_edit_feature"
           ],
@@ -526,10 +564,10 @@
       ],
       "acts_hash": "fd0d2a4c8d80b11203e240a938d3fb0b454c57ab55ddff7c344b19e441663977",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "208ef42745a735cc3f21457b6ff8a9253935e28b24b294196b075f70ce04f5e7",
+      "closure_hash": "ba56f5ea4a193f5b96ae95a07458b84faa306b65d2c38b0b4af9c4b14384d72c",
       "evidence": {
         "buckets": {
           "called": [
@@ -564,27 +602,27 @@
         }
       },
       "family": "fff_export",
-      "family_run_id": "82ef47e3956649c2b6837a0efdec37de",
+      "family_run_id": "a3a7cbcf496d4ff68ee2c0bffb50cbfb",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-d7d7b40b94a088b14ef288690dbdc15c48b44233458600a0eab236027f9fb35e.json",
-        "sha256": "d7d7b40b94a088b14ef288690dbdc15c48b44233458600a0eab236027f9fb35e"
+        "file": "family-evidence-163123a2bcedfa25270a9ff8cf61f174378e71ab8a018f2fb2b225e6560bd4c5.json",
+        "sha256": "163123a2bcedfa25270a9ff8cf61f174378e71ab8a018f2fb2b225e6560bd4c5"
       },
       "row_count": 29,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -605,10 +643,10 @@
       ],
       "acts_hash": "b1a690b3085bd1693bd31bb122cf29906a78879338aa3a8d783a94e8d60f4562",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "bf94d86ce78bafae6c2290342af1a339904dafb3b5f7caaa9bd8eb27184db88f",
+      "closure_hash": "d54ee1339f966f6ab6d8e6d5bc5b193ac9f40620d61a549c3f981fabfd6c76d3",
       "evidence": {
         "buckets": {
           "called": [
@@ -632,39 +670,39 @@
         }
       },
       "family": "finale",
-      "family_run_id": "62d097e49aa8484e819784f8be07ba63",
+      "family_run_id": "153fbe271f184af1af798d9df8c136b7",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [
-        "2771d5d549f943ef89e6391e05e7fdb4"
+        "c184311b76c9454fa4f6b725adb53874"
       ],
       "producers": [
         {
-          "closure_hash": "bf94d86ce78bafae6c2290342af1a339904dafb3b5f7caaa9bd8eb27184db88f",
-          "family_run_id": "62d097e49aa8484e819784f8be07ba63",
+          "closure_hash": "d54ee1339f966f6ab6d8e6d5bc5b193ac9f40620d61a549c3f981fabfd6c76d3",
+          "family_run_id": "153fbe271f184af1af798d9df8c136b7",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 2,
           "rows_hash": "135710d54dbf27d35b38a59af8cdb24812b022c198baac0cb83a30f2268d1dbd",
-          "run_id": "2771d5d549f943ef89e6391e05e7fdb4"
+          "run_id": "c184311b76c9454fa4f6b725adb53874"
         }
       ],
       "raw": {
-        "file": "family-evidence-91ffcd919ce94c1b317f80a6883b929debd0f99882fe3e245833e57956150818.json",
-        "sha256": "91ffcd919ce94c1b317f80a6883b929debd0f99882fe3e245833e57956150818"
+        "file": "family-evidence-734ee02b0527f882c42c506c453132b65f81810c9585b9f5afdab25c9c159a0d.json",
+        "sha256": "734ee02b0527f882c42c506c453132b65f81810c9585b9f5afdab25c9c159a0d"
       },
       "row_count": 10,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -770,10 +808,10 @@
       ],
       "acts_hash": "505cd3149a18f7b6bdccf80c86b23216daa6023b8c73037422ac72e7090312a4",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "686971fee7df249ec6b09d1cefec08ba686de0958373461c6827ff52374e50fe",
+      "closure_hash": "47ec710cd7c9219603c54336c4ebd9d1cc7218e81d4ae510519d219cb2f18f7c",
       "evidence": {
         "buckets": {
           "called": [
@@ -835,15 +873,15 @@
         }
       },
       "family": "hub_cam",
-      "family_run_id": "38da7a62f4ff4c1c81cd820e39fa469d",
+      "family_run_id": "2b480543cd414a9c9828b72803b8798e",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [
         {
@@ -872,57 +910,57 @@
         }
       ],
       "producer_run_ids": [
-        "c19f795bbd69460e8e92a58a06ca40de",
-        "7f66a9e759ea4ff3aa2bc29422d9f4d8",
-        "544cad9931a3486d882cb7adf6e28573",
-        "a8a49046fa194c40960ab7efed94c093"
+        "ee64529662af4dbab0b02063e30b28b0",
+        "18d2366021b440db868e6a0d2c7b9635",
+        "9339dc379d0f46c9bd52d19ea7b4418a",
+        "c9c9a51a1d184e39acb58d8cf37daeab"
       ],
       "producers": [
         {
-          "closure_hash": "686971fee7df249ec6b09d1cefec08ba686de0958373461c6827ff52374e50fe",
-          "family_run_id": "38da7a62f4ff4c1c81cd820e39fa469d",
+          "closure_hash": "47ec710cd7c9219603c54336c4ebd9d1cc7218e81d4ae510519d219cb2f18f7c",
+          "family_run_id": "2b480543cd414a9c9828b72803b8798e",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 3,
           "rows_hash": "e01b4c6e1d00ad0437394fabe2203af8feb9f3d9cd9f1cb07be060aa12520d19",
-          "run_id": "c19f795bbd69460e8e92a58a06ca40de"
+          "run_id": "ee64529662af4dbab0b02063e30b28b0"
         },
         {
-          "closure_hash": "686971fee7df249ec6b09d1cefec08ba686de0958373461c6827ff52374e50fe",
-          "family_run_id": "38da7a62f4ff4c1c81cd820e39fa469d",
+          "closure_hash": "47ec710cd7c9219603c54336c4ebd9d1cc7218e81d4ae510519d219cb2f18f7c",
+          "family_run_id": "2b480543cd414a9c9828b72803b8798e",
           "fusion_version": "2706.0.116",
           "phase": "before ACT 10c4 - CAM: THE HUB JOB",
           "row_count": 1,
           "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
-          "run_id": "7f66a9e759ea4ff3aa2bc29422d9f4d8"
+          "run_id": "18d2366021b440db868e6a0d2c7b9635"
         },
         {
-          "closure_hash": "686971fee7df249ec6b09d1cefec08ba686de0958373461c6827ff52374e50fe",
-          "family_run_id": "38da7a62f4ff4c1c81cd820e39fa469d",
+          "closure_hash": "47ec710cd7c9219603c54336c4ebd9d1cc7218e81d4ae510519d219cb2f18f7c",
+          "family_run_id": "2b480543cd414a9c9828b72803b8798e",
           "fusion_version": "2706.0.116",
           "phase": "before ACT 10c4b - CAM: THE TURNED PART",
           "row_count": 1,
           "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
-          "run_id": "544cad9931a3486d882cb7adf6e28573"
+          "run_id": "9339dc379d0f46c9bd52d19ea7b4418a"
         },
         {
-          "closure_hash": "686971fee7df249ec6b09d1cefec08ba686de0958373461c6827ff52374e50fe",
-          "family_run_id": "38da7a62f4ff4c1c81cd820e39fa469d",
+          "closure_hash": "47ec710cd7c9219603c54336c4ebd9d1cc7218e81d4ae510519d219cb2f18f7c",
+          "family_run_id": "2b480543cd414a9c9828b72803b8798e",
           "fusion_version": "2706.0.116",
           "phase": "before ACT 10c15 - CAM: THE ADDITIVE BUILD",
           "row_count": 84,
           "rows_hash": "b86d39cd5341bd03b3652f5b66d6e9d0f0ff08d9e378c58d2ec71ea15d9a87c0",
-          "run_id": "a8a49046fa194c40960ab7efed94c093"
+          "run_id": "c9c9a51a1d184e39acb58d8cf37daeab"
         }
       ],
       "raw": {
-        "file": "family-evidence-98002be055171358a72a5bd688aa68cc491f20e95cf17f873887e944e2653dea.json",
-        "sha256": "98002be055171358a72a5bd688aa68cc491f20e95cf17f873887e944e2653dea"
+        "file": "family-evidence-ad49758c1b648f595de52c030b51e33d088a688ed1e4b0058133cdd125f3470f.json",
+        "sha256": "ad49758c1b648f595de52c030b51e33d088a688ed1e4b0058133cdd125f3470f"
       },
       "row_count": 579,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -943,10 +981,10 @@
       ],
       "acts_hash": "7483473e6685571c4c1c2b013972d96dabc23ab585f313d307b08c2b02e09491",
       "census": {
-        "end": "9be686e89d03febacf28a41fda24369464e76d287fba23c08ec7667851822710",
-        "start": "9be686e89d03febacf28a41fda24369464e76d287fba23c08ec7667851822710"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "8b772727e365ad88cc96b7ab3f1324be81d484986c180eea3ecda7f4597030e2",
+      "closure_hash": "179c4d7c6a9ad81316327ec1d618ac3c0ed72668171f62547d3ee9390212f1b3",
       "evidence": {
         "buckets": {
           "called": [
@@ -977,39 +1015,39 @@
         }
       },
       "family": "lookup",
-      "family_run_id": "fe89b3c882ad4123a2498208d7266ff0",
+      "family_run_id": "cbe72f35d7c34baa8e1f84cc5524c93b",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "3014a0ccc9834187a0005cbd4d9cbeb4",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "b7c3fce14ba646c78d2f5bee0a62e0f8"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [
-        "4d75899470e14d84a22628c0fa2c374d"
+        "7ecf1c709cc94976a112872b07e631b8"
       ],
       "producers": [
         {
-          "closure_hash": "8b772727e365ad88cc96b7ab3f1324be81d484986c180eea3ecda7f4597030e2",
-          "family_run_id": "fe89b3c882ad4123a2498208d7266ff0",
+          "closure_hash": "179c4d7c6a9ad81316327ec1d618ac3c0ed72668171f62547d3ee9390212f1b3",
+          "family_run_id": "cbe72f35d7c34baa8e1f84cc5524c93b",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 4,
           "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
-          "run_id": "4d75899470e14d84a22628c0fa2c374d"
+          "run_id": "7ecf1c709cc94976a112872b07e631b8"
         }
       ],
       "raw": {
-        "file": "family-evidence-05eaa549f95da4c4f739a2e7ce7f00fb734199f59d535a232fb84b92396b5c05.json",
-        "sha256": "05eaa549f95da4c4f739a2e7ce7f00fb734199f59d535a232fb84b92396b5c05"
+        "file": "family-evidence-3ddce5ef19a1fefc612da8c5a2f5ad29e8d0ba0ec62b259fd1940314f2c7ac05.json",
+        "sha256": "3ddce5ef19a1fefc612da8c5a2f5ad29e8d0ba0ec62b259fd1940314f2c7ac05"
       },
       "row_count": 23,
-      "run_id": "u1lookup1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1030,10 +1068,10 @@
       ],
       "acts_hash": "1d5f65c07ad27e8944a33978b1a7b8904db90186f76b0fde0f21f5d6ab48ab77",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "84c8c482e733e0c08e762d75e6a32ff2c69da1681df7655eea2be78749a7fa07",
+      "closure_hash": "bcb4747a1b3be27ef37d9a3b129e42a02ba93761450211e72ffc91d82c2bb806",
       "evidence": {
         "buckets": {
           "called": [
@@ -1096,27 +1134,27 @@
         }
       },
       "family": "mesh",
-      "family_run_id": "4557186fe6ed4230a437c75477d228b0",
+      "family_run_id": "2573a0480cc24f4f83dc516549e630cb",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-c73562238a212394a53cf753af52f5923f290f8ad287506b8c21e041c2bef074.json",
-        "sha256": "c73562238a212394a53cf753af52f5923f290f8ad287506b8c21e041c2bef074"
+        "file": "family-evidence-b38e45a8009ea8481b8055189cc7b06126d790880ac535b68283a1c427e141ef.json",
+        "sha256": "b38e45a8009ea8481b8055189cc7b06126d790880ac535b68283a1c427e141ef"
       },
       "row_count": 374,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1137,10 +1175,10 @@
       ],
       "acts_hash": "3e82942108d2b7f93e4022b07527557463d21b6fe0006fe24404ca445ad6390d",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "d1da298bfa945786694acce9299075743fdd1e780c0df1ff0e89b1f27d47f7f9",
+      "closure_hash": "857f132a85530d63c20babfceb9ff00d200a80b4cc4d52a7fd975fef4ff84578",
       "evidence": {
         "buckets": {
           "called": [
@@ -1196,38 +1234,39 @@
             "param_set",
             "surface_fill",
             "sys_execute_script",
-            "view_set"
+            "view_set",
+            "workspace_orient"
           ]
         },
         "counts": {
           "called": 11,
           "covered": 0,
           "refusals-only": 0,
-          "self-reported": 38
+          "self-reported": 39
         }
       },
       "family": "motion",
-      "family_run_id": "8085355dcd9a4e319c0f57fe3368ca2c",
+      "family_run_id": "3db0b7e0eddd4ce8978b70bdc7e6d11e",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-fd30fc7f7ea38d7844a18e45e65446847b61b9349ec5339726d00a8c6b36ed9e.json",
-        "sha256": "fd30fc7f7ea38d7844a18e45e65446847b61b9349ec5339726d00a8c6b36ed9e"
+        "file": "family-evidence-549efc948e322f61b9fc8af4d305052e71c5e3721c3157ef0561db7f4a3b341a.json",
+        "sha256": "549efc948e322f61b9fc8af4d305052e71c5e3721c3157ef0561db7f4a3b341a"
       },
-      "row_count": 986,
-      "run_id": "u1bootstrap1012c",
+      "row_count": 1005,
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1248,10 +1287,10 @@
       ],
       "acts_hash": "0edc120cdf62352554c6fdc1b2830ab0eaec26ca086094b46663fb79bcf440b9",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "abcb50e0144363bc6f473862f3fb50c568e50f4a15b8db8e6270d848bc6a52ee",
+      "closure_hash": "f44e92527a8f59f311ae1d3225a24ac0b66116ac0dd9d3f7a3a9b1e8e29caa82",
       "evidence": {
         "buckets": {
           "called": [
@@ -1286,15 +1325,15 @@
         }
       },
       "family": "nesting",
-      "family_run_id": "80f0eb62f154408e89f1c6ade0d2f9dd",
+      "family_run_id": "1e3c1139e4f145b88166804bd12afc74",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [
         {
@@ -1313,13 +1352,13 @@
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-15c2fdf83e29142ba999ca1a71105761fd8c3922aa0a483544fa768d350ef106.json",
-        "sha256": "15c2fdf83e29142ba999ca1a71105761fd8c3922aa0a483544fa768d350ef106"
+        "file": "family-evidence-0c4ddfd9522d737dbdc840e1388aaccf45c1d15612953b336f903f768758f534.json",
+        "sha256": "0c4ddfd9522d737dbdc840e1388aaccf45c1d15612953b336f903f768758f534"
       },
       "row_count": 45,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1370,10 +1409,10 @@
       ],
       "acts_hash": "6a505c3eee398a258b0e8f3f45b137f22f7b099314c6a8a7bec721c3965d0cee",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "361f6aef118424dd9028170a904354249bb4f0789770a2af50182653a5a0a0fe",
+      "closure_hash": "aeb1f62f1e03f9ea6de11af971a0089d6c5de56d3b5dd5e77689c7a5755ebb86",
       "evidence": {
         "buckets": {
           "called": [
@@ -1448,15 +1487,15 @@
         }
       },
       "family": "part_cam",
-      "family_run_id": "2d2c19bc0d18406ea7a2c6d020100cc4",
+      "family_run_id": "f3ea243a0c4b43c792c15a6d9fa9fd16",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [
         {
@@ -1473,37 +1512,37 @@
         }
       ],
       "producer_run_ids": [
-        "b4212fcd7da9419a82150521d5280c60",
-        "bea4ad8c54fc4be483aef8acb1f1665c"
+        "3c27ab76c8ce49668abd851017a80b2f",
+        "35710ca866f44ae4b602affd5db796a8"
       ],
       "producers": [
         {
-          "closure_hash": "361f6aef118424dd9028170a904354249bb4f0789770a2af50182653a5a0a0fe",
-          "family_run_id": "2d2c19bc0d18406ea7a2c6d020100cc4",
+          "closure_hash": "aeb1f62f1e03f9ea6de11af971a0089d6c5de56d3b5dd5e77689c7a5755ebb86",
+          "family_run_id": "f3ea243a0c4b43c792c15a6d9fa9fd16",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 104,
           "rows_hash": "ad51edfe6ccf5501e469a80b7106f44a1813330b41e0803b487c799b7b9dd61f",
-          "run_id": "b4212fcd7da9419a82150521d5280c60"
+          "run_id": "3c27ab76c8ce49668abd851017a80b2f"
         },
         {
-          "closure_hash": "361f6aef118424dd9028170a904354249bb4f0789770a2af50182653a5a0a0fe",
-          "family_run_id": "2d2c19bc0d18406ea7a2c6d020100cc4",
+          "closure_hash": "aeb1f62f1e03f9ea6de11af971a0089d6c5de56d3b5dd5e77689c7a5755ebb86",
+          "family_run_id": "f3ea243a0c4b43c792c15a6d9fa9fd16",
           "fusion_version": "2706.0.116",
           "phase": "before ACT 10e - CAM: MULTI-SETUP POST",
           "row_count": 97,
           "rows_hash": "7298e82b2278cfd18335e2a51d1bc71a74fa33fffae17e358af206f1353a8bda",
-          "run_id": "bea4ad8c54fc4be483aef8acb1f1665c"
+          "run_id": "35710ca866f44ae4b602affd5db796a8"
         }
       ],
       "raw": {
-        "file": "family-evidence-640d65d1f6c4cb5bb9fa958d5023a0527dbf73f467cffbdfacd5f0a62668f432.json",
-        "sha256": "640d65d1f6c4cb5bb9fa958d5023a0527dbf73f467cffbdfacd5f0a62668f432"
+        "file": "family-evidence-6b0ddd92aaaca2a9caaf15ba271d183d90918f2994ba9faa0c251a2c6e6ff67a.json",
+        "sha256": "6b0ddd92aaaca2a9caaf15ba271d183d90918f2994ba9faa0c251a2c6e6ff67a"
       },
       "row_count": 839,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1549,10 +1588,10 @@
       ],
       "acts_hash": "4c7b9e6cd088efeaf03fde0ee6823bf9e3e4fab2d8dd3d4899a8e6796dc7c576",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "3093c73940acf75a72cbe6b380301b48de467eee102033ed5dfe5f581d387df2",
+      "closure_hash": "179c4d7c6a9ad81316327ec1d618ac3c0ed72668171f62547d3ee9390212f1b3",
       "evidence": {
         "buckets": {
           "called": [
@@ -1583,39 +1622,39 @@
         }
       },
       "family": "render",
-      "family_run_id": "23a2596f36a244a5a0869f3fd4e36896",
+      "family_run_id": "7d915ef8508c42fdbb9b21d7705a9b65",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [
-        "a38cf34270c04c68b6113c37c717c710"
+        "c43637e3c0b04dc3927e373a4d6bca9e"
       ],
       "producers": [
         {
-          "closure_hash": "3093c73940acf75a72cbe6b380301b48de467eee102033ed5dfe5f581d387df2",
-          "family_run_id": "23a2596f36a244a5a0869f3fd4e36896",
+          "closure_hash": "179c4d7c6a9ad81316327ec1d618ac3c0ed72668171f62547d3ee9390212f1b3",
+          "family_run_id": "7d915ef8508c42fdbb9b21d7705a9b65",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 4,
           "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
-          "run_id": "a38cf34270c04c68b6113c37c717c710"
+          "run_id": "c43637e3c0b04dc3927e373a4d6bca9e"
         }
       ],
       "raw": {
-        "file": "family-evidence-58af98e39a88bc18da06f7b0b9e88327d78bc470f1c6f687bf7077adc931acdc.json",
-        "sha256": "58af98e39a88bc18da06f7b0b9e88327d78bc470f1c6f687bf7077adc931acdc"
+        "file": "family-evidence-1e53f744d0e8e0dd93fc1ee6b1e18b35fc3f3d3c7294bfcd884928c4ffb5e5f8.json",
+        "sha256": "1e53f744d0e8e0dd93fc1ee6b1e18b35fc3f3d3c7294bfcd884928c4ffb5e5f8"
       },
-      "row_count": 88,
-      "run_id": "u1bootstrap1012c",
+      "row_count": 96,
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1636,10 +1675,10 @@
       ],
       "acts_hash": "fa2682462d01b9f6970ab6167881c5d3d34d58b7b6647264bbb8bba168bb4590",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "9a4ced52f48c20a1d9fc5809518564ad68e75cab125657c5446d14cc0659fdd0",
+      "closure_hash": "af7c1d136f0711ed0f1bb39e2a83ed9c32a3c9e337127778acc22f7c0a93c7d9",
       "evidence": {
         "buckets": {
           "called": [
@@ -1694,39 +1733,39 @@
         }
       },
       "family": "resize",
-      "family_run_id": "9db9b3d8bf5c4f15bdbf96fe783bb79a",
+      "family_run_id": "b3ed321791e543dfa13543c88f1b8d84",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [
-        "9c8dd0c743694e759fa6a533a7d4ccc9"
+        "c3ed8a564684499aa2e14bc54f34c3bd"
       ],
       "producers": [
         {
-          "closure_hash": "9a4ced52f48c20a1d9fc5809518564ad68e75cab125657c5446d14cc0659fdd0",
-          "family_run_id": "9db9b3d8bf5c4f15bdbf96fe783bb79a",
+          "closure_hash": "af7c1d136f0711ed0f1bb39e2a83ed9c32a3c9e337127778acc22f7c0a93c7d9",
+          "family_run_id": "b3ed321791e543dfa13543c88f1b8d84",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 71,
           "rows_hash": "ded6ed4d6ba8c07c3af9dbd12fbafa5414bd39d09554e840ebe71ff09cfa92c7",
-          "run_id": "9c8dd0c743694e759fa6a533a7d4ccc9"
+          "run_id": "c3ed8a564684499aa2e14bc54f34c3bd"
         }
       ],
       "raw": {
-        "file": "family-evidence-44988d64ae96ee09df19118f01823c83edd518495631c76b5a183af7aff913cd.json",
-        "sha256": "44988d64ae96ee09df19118f01823c83edd518495631c76b5a183af7aff913cd"
+        "file": "family-evidence-bbaa8ef90e780a5cfd98fd5ddb0f07f0c090ec1cc78dc9760f7cd673bd9b2a10.json",
+        "sha256": "bbaa8ef90e780a5cfd98fd5ddb0f07f0c090ec1cc78dc9760f7cd673bd9b2a10"
       },
       "row_count": 226,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1772,10 +1811,10 @@
       ],
       "acts_hash": "227bd099b5142075e0493bece3334f72f3732603d555fc5ca48f3ceeec4faa9f",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "ccc6862c956de70072fc1a8983e5b3d2ceb3aeb038bc45f5bbcd442a1824f78c",
+      "closure_hash": "2def26342933d4042c059a3832eeb431689554e7d8ec889c4702477ebbb5a3eb",
       "evidence": {
         "buckets": {
           "called": [
@@ -1847,27 +1886,27 @@
         }
       },
       "family": "sheet_coupon",
-      "family_run_id": "9da7d09521b54382aead8e198bfbda94",
+      "family_run_id": "346cb6e09d644ddf9a31e319c0d21278",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-1617c29bc24246fecbf895799dac6b501a0b59c6527ac0fd509a98f7f121268f.json",
-        "sha256": "1617c29bc24246fecbf895799dac6b501a0b59c6527ac0fd509a98f7f121268f"
+        "file": "family-evidence-aeba4594a10f93cbede25c67a5cb7b5b74db2b15586c134973f7a26b21cb8904.json",
+        "sha256": "aeba4594a10f93cbede25c67a5cb7b5b74db2b15586c134973f7a26b21cb8904"
       },
       "row_count": 224,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1888,10 +1927,10 @@
       ],
       "acts_hash": "555befef6644d0f9e6d6071ba43417c73f57479277af96e36307dbda92bbc088",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "7b798ab9ebf43ea325dc600e53fff87aa5f6ea0a75125ad7a02bc63704f8d0c4",
+      "closure_hash": "427bfd17b2933add7c304ae9915a1dcf475e98fef247ba04fae1fc399797bce8",
       "evidence": {
         "buckets": {
           "called": [
@@ -1942,27 +1981,27 @@
         }
       },
       "family": "sheet_flange",
-      "family_run_id": "de566696837644398998e0d80f9c05f4",
+      "family_run_id": "5abeb2d19fd14d23b0cca7c66d319e1b",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-1a429dafb959e8266919218f4c7fa0fc59d7501459e7348c6f11ab60d042f05c.json",
-        "sha256": "1a429dafb959e8266919218f4c7fa0fc59d7501459e7348c6f11ab60d042f05c"
+        "file": "family-evidence-f98291457121aec950efbb25545ac189f849b023dc3f67d530b49ef9affdd9bf.json",
+        "sha256": "f98291457121aec950efbb25545ac189f849b023dc3f67d530b49ef9affdd9bf"
       },
       "row_count": 423,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -1983,10 +2022,10 @@
       ],
       "acts_hash": "a531e30034585f68ddb6fea98bed08a1225b4c3430910b3ad932221f5521243f",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "765bcc76858dddc26096878550e2ae6f70b0322cbe4ced87f225e777a5110f0c",
+      "closure_hash": "efd447fbe4ff24268d4599b2a8ba9bf393f41548361f08902d053c183ee6475d",
       "evidence": {
         "buckets": {
           "called": [
@@ -2027,27 +2066,27 @@
         }
       },
       "family": "sheet_positions",
-      "family_run_id": "8517b67f372947c4af2ac19a1b2e47df",
+      "family_run_id": "c5dfe5f0fd314004899c3cf7fe110d77",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-23afef6e27353f0abba7220870b6b812e9d64dc1a2ab6d1849402353906ccd02.json",
-        "sha256": "23afef6e27353f0abba7220870b6b812e9d64dc1a2ab6d1849402353906ccd02"
+        "file": "family-evidence-d286f2f3883d6e16ca6befd2bd64fb6938d32c0c083ab86094a1155a2cbcae0d.json",
+        "sha256": "d286f2f3883d6e16ca6befd2bd64fb6938d32c0c083ab86094a1155a2cbcae0d"
       },
       "row_count": 132,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -2068,10 +2107,10 @@
       ],
       "acts_hash": "d4b575460bdca8b239e01e261cc849e86d9936e6d35a231fbbad3c60b1dccca7",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "20b3305db580c0d1cb38e44630545edba23233d92f15a664dc9e33f9afa51298",
+      "closure_hash": "949971851774592b2b7c1e34ac95bce1569e9f482dd174121cf67124cef21473",
       "evidence": {
         "buckets": {
           "called": [
@@ -2116,27 +2155,27 @@
         }
       },
       "family": "sheet_selected",
-      "family_run_id": "8ecdc9116cbf4e068139240f57606f00",
+      "family_run_id": "02cd9fa76c7d4d94a822510823366b22",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-19aa86a6b19003bb48e5cde7648ab7994bd3295abe201410f037d66285b4653d.json",
-        "sha256": "19aa86a6b19003bb48e5cde7648ab7994bd3295abe201410f037d66285b4653d"
+        "file": "family-evidence-13e6abac197bf353e2e16b4b25c1347f95cccc3dc24d1013747218ad5f9d3b67.json",
+        "sha256": "13e6abac197bf353e2e16b4b25c1347f95cccc3dc24d1013747218ad5f9d3b67"
       },
       "row_count": 241,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -2157,10 +2196,10 @@
       ],
       "acts_hash": "e030e582feb410b8632256bb424679a6b800c39103b4a6c5e428f3f73fe0d0cb",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "66f06ae37796acc0ecd63166fcf4113e115ad7937570b61ade7ef2d0bab29cc8",
+      "closure_hash": "f0f048f79985babbab403fa0cdd679988f9cca82b8e7a25734a3f883bdfc57b6",
       "evidence": {
         "buckets": {
           "called": [
@@ -2232,39 +2271,39 @@
         }
       },
       "family": "showcase",
-      "family_run_id": "8aab142f56ce40818e967f8e04bb1b2b",
+      "family_run_id": "b9d2000b0b7448f486fd01b8daabef56",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [
-        "1097de04a66c46e79b1d285c55f29ea4"
+        "4598a80471d144dbb06ea3dbbb637cae"
       ],
       "producers": [
         {
-          "closure_hash": "66f06ae37796acc0ecd63166fcf4113e115ad7937570b61ade7ef2d0bab29cc8",
-          "family_run_id": "8aab142f56ce40818e967f8e04bb1b2b",
+          "closure_hash": "f0f048f79985babbab403fa0cdd679988f9cca82b8e7a25734a3f883bdfc57b6",
+          "family_run_id": "b9d2000b0b7448f486fd01b8daabef56",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 197,
           "rows_hash": "75531d880d52978a04fe20a6f4a6318f47f46a4a94ffc863624d186a290560db",
-          "run_id": "1097de04a66c46e79b1d285c55f29ea4"
+          "run_id": "4598a80471d144dbb06ea3dbbb637cae"
         }
       ],
       "raw": {
-        "file": "family-evidence-c215775bb985fec67953187b436facf0b6e80855103e1ae7b25aeb7e08f8f31f.json",
-        "sha256": "c215775bb985fec67953187b436facf0b6e80855103e1ae7b25aeb7e08f8f31f"
+        "file": "family-evidence-9e4469d9389a3a88fa1d50fb8b3ec1969ec4242e928bf5ca25ae5f6574112806.json",
+        "sha256": "9e4469d9389a3a88fa1d50fb8b3ec1969ec4242e928bf5ca25ae5f6574112806"
       },
       "row_count": 341,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -2295,10 +2334,10 @@
       ],
       "acts_hash": "0ba81069df81f573b84c36f01ee76492129681d800a25652109391747e0b3e15",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "3a5d482c2e5f02f33be9cac5ccca5f34f0765cf65f5f198dfeaef51708050ed7",
+      "closure_hash": "906f56e70b6d1a458bdc4004e91f84e76095c7c630bf63bcf0a349a001928a95",
       "evidence": {
         "buckets": {
           "called": [
@@ -2373,27 +2412,27 @@
         }
       },
       "family": "sketch",
-      "family_run_id": "35e179c708dc4a17a5f455f935394890",
+      "family_run_id": "5076190bf2e24488a9c5237882c14cb0",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-6266324e0fc95c96b89a133274d6ea8e440c7f02d0fbacdaf85941411cb9a5ca.json",
-        "sha256": "6266324e0fc95c96b89a133274d6ea8e440c7f02d0fbacdaf85941411cb9a5ca"
+        "file": "family-evidence-6a1213ac689f5155a8e1c9e45ca1b42244412a5b1178b10e542fb451be104488.json",
+        "sha256": "6a1213ac689f5155a8e1c9e45ca1b42244412a5b1178b10e542fb451be104488"
       },
-      "row_count": 1763,
-      "run_id": "u1bootstrap1012c",
+      "row_count": 1797,
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -2414,10 +2453,10 @@
       ],
       "acts_hash": "e06417db4f7164a2315c13a57a88283781dafa5dc6dae3aa31bbd6416fe3c828",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "41536398820e4ca2240809be115e5c127c9b845a5e5d167d30141414d582f6a9",
+      "closure_hash": "2d3714f25db49b4fad1195e108129034d82dc279e0017dad46faf884866c1048",
       "evidence": {
         "buckets": {
           "called": [
@@ -2454,39 +2493,39 @@
         }
       },
       "family": "small_edits",
-      "family_run_id": "ece92653b61c44deb5b1be47ce3e097a",
+      "family_run_id": "5a8dcbb4a84142e4b2af644c86da6471",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [
-        "659714845bbf42aea858acc7239acd81"
+        "072cd16b4bdb4fb19fd38376d54a27eb"
       ],
       "producers": [
         {
-          "closure_hash": "41536398820e4ca2240809be115e5c127c9b845a5e5d167d30141414d582f6a9",
-          "family_run_id": "ece92653b61c44deb5b1be47ce3e097a",
+          "closure_hash": "2d3714f25db49b4fad1195e108129034d82dc279e0017dad46faf884866c1048",
+          "family_run_id": "5a8dcbb4a84142e4b2af644c86da6471",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 4,
           "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
-          "run_id": "659714845bbf42aea858acc7239acd81"
+          "run_id": "072cd16b4bdb4fb19fd38376d54a27eb"
         }
       ],
       "raw": {
-        "file": "family-evidence-424227736ce65b5f1b2cd69a0e29c155434052ffd8b4ca775f576fa121e58835.json",
-        "sha256": "424227736ce65b5f1b2cd69a0e29c155434052ffd8b4ca775f576fa121e58835"
+        "file": "family-evidence-bcee0afd667d1da934dc7f63b3ac6269275a5a3094ec4b1644a25f70617446db.json",
+        "sha256": "bcee0afd667d1da934dc7f63b3ac6269275a5a3094ec4b1644a25f70617446db"
       },
       "row_count": 65,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -2507,10 +2546,10 @@
       ],
       "acts_hash": "803f3f3ea52399d0201652dde73e4012834109630c711f3c29142fab6baf831e",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "f8ff77d3a7cbd43fdbb6bfee7e1caf928ef3344f7f28a596e5c41672a86d8c0a",
+      "closure_hash": "ab9749eb3421c5ec676a0430376c40232564b20b05cfe1fe2962f89c8711f432",
       "evidence": {
         "buckets": {
           "called": [
@@ -2594,15 +2633,15 @@
         }
       },
       "family": "solids",
-      "family_run_id": "6402b8812693452d9cc32d4a10e7632c",
+      "family_run_id": "f2dc8bcf42ef41d3a53f530d159f6620",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [
         {
@@ -2643,27 +2682,27 @@
         }
       ],
       "producer_run_ids": [
-        "aa5b63befe8d477582defa09b53920b4"
+        "b9929c6e80e54ed3827153f2c948dcfc"
       ],
       "producers": [
         {
-          "closure_hash": "f8ff77d3a7cbd43fdbb6bfee7e1caf928ef3344f7f28a596e5c41672a86d8c0a",
-          "family_run_id": "6402b8812693452d9cc32d4a10e7632c",
+          "closure_hash": "ab9749eb3421c5ec676a0430376c40232564b20b05cfe1fe2962f89c8711f432",
+          "family_run_id": "f2dc8bcf42ef41d3a53f530d159f6620",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 39,
           "rows_hash": "8ca30e5cd38605eeed15710abdeb367294629f0522ad0e4e418c5409afb3345f",
-          "run_id": "aa5b63befe8d477582defa09b53920b4"
+          "run_id": "b9929c6e80e54ed3827153f2c948dcfc"
         }
       ],
       "raw": {
-        "file": "family-evidence-40329cea51b850cdfdf6bca76186d76056f22251ef52831ab0b3f2a31b02a127.json",
-        "sha256": "40329cea51b850cdfdf6bca76186d76056f22251ef52831ab0b3f2a31b02a127"
+        "file": "family-evidence-ef90f721c7471fd699888596dc7d60d228d75002017ffa63e8bda0cd9eda2436.json",
+        "sha256": "ef90f721c7471fd699888596dc7d60d228d75002017ffa63e8bda0cd9eda2436"
       },
       "row_count": 2439,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -2694,10 +2733,10 @@
       ],
       "acts_hash": "9c097678938dee44bd0427f54ebdef59846ab1030fcc129a6a98aef7434fb25c",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "744d304b829fb759362fb43315da3190101e49abd3a3d4c62556bbdc6c307f7e",
+      "closure_hash": "635525d742aee6a0cde964482688cb7a9aded6ed51bd1cdc6d1f396a734824d0",
       "evidence": {
         "buckets": {
           "called": [
@@ -2765,27 +2804,27 @@
         }
       },
       "family": "surfaces",
-      "family_run_id": "ccf5e7a6883d41c3989bdb882557b9c5",
+      "family_run_id": "a09f0c309d204313ab5853500b954dda",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-6a41e271cfeb05885fdd7663d84a6b02cc60bd24ae269047f7f4483dd3f087fa.json",
-        "sha256": "6a41e271cfeb05885fdd7663d84a6b02cc60bd24ae269047f7f4483dd3f087fa"
+        "file": "family-evidence-24ab00359bb22e132946b9b57daba1afdab15efbc61e6130f4e3804de56ac9bc.json",
+        "sha256": "24ab00359bb22e132946b9b57daba1afdab15efbc61e6130f4e3804de56ac9bc"
       },
       "row_count": 557,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -2821,10 +2860,10 @@
       ],
       "acts_hash": "70d424a921a00b23dd029106b74b1fe85d3a9175abe72f7e117c5659f42cc05b",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "ed25ea44fc8e9e4f2175e8ad89512ae8fac612bba5e82301ff8b2724e35a1243",
+      "closure_hash": "326df278b5f5089e1a109b7c8011d0008dbfbbe3b23c768e2bceedba056e4757",
       "evidence": {
         "buckets": {
           "called": [
@@ -2868,49 +2907,49 @@
         }
       },
       "family": "swarf_cam",
-      "family_run_id": "47eb00e4a40049efb7ee4935610b4743",
+      "family_run_id": "ccff539d527d405ab0677c165196881f",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [
-        "eaad322f408644848d01b870338baba9",
-        "f37d31e81a6a4539b21494bcabf50d83"
+        "54c86f65a93449dfae84a256bf0f084a",
+        "26e55a7965c6437e84cc3eac3f3d81fe"
       ],
       "producers": [
         {
-          "closure_hash": "ed25ea44fc8e9e4f2175e8ad89512ae8fac612bba5e82301ff8b2724e35a1243",
-          "family_run_id": "47eb00e4a40049efb7ee4935610b4743",
+          "closure_hash": "326df278b5f5089e1a109b7c8011d0008dbfbbe3b23c768e2bceedba056e4757",
+          "family_run_id": "ccff539d527d405ab0677c165196881f",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 3,
           "rows_hash": "e01b4c6e1d00ad0437394fabe2203af8feb9f3d9cd9f1cb07be060aa12520d19",
-          "run_id": "eaad322f408644848d01b870338baba9"
+          "run_id": "54c86f65a93449dfae84a256bf0f084a"
         },
         {
-          "closure_hash": "ed25ea44fc8e9e4f2175e8ad89512ae8fac612bba5e82301ff8b2724e35a1243",
-          "family_run_id": "47eb00e4a40049efb7ee4935610b4743",
+          "closure_hash": "326df278b5f5089e1a109b7c8011d0008dbfbbe3b23c768e2bceedba056e4757",
+          "family_run_id": "ccff539d527d405ab0677c165196881f",
           "fusion_version": "2706.0.116",
           "phase": "before ACT 10b2 - CAM: COMPONENT SCOPE",
           "row_count": 1,
           "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
-          "run_id": "f37d31e81a6a4539b21494bcabf50d83"
+          "run_id": "26e55a7965c6437e84cc3eac3f3d81fe"
         }
       ],
       "raw": {
-        "file": "family-evidence-541dc53946053a88996cafc095fb78890dfb492bb84e86be74bb21ccd2a47eb6.json",
-        "sha256": "541dc53946053a88996cafc095fb78890dfb492bb84e86be74bb21ccd2a47eb6"
+        "file": "family-evidence-c412a1d6dc9c40f128c9ac304b5b352086eca092cb3c5fd00daf099574ff69ef.json",
+        "sha256": "c412a1d6dc9c40f128c9ac304b5b352086eca092cb3c5fd00daf099574ff69ef"
       },
       "row_count": 120,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -2931,10 +2970,10 @@
       ],
       "acts_hash": "82ed5efb5c03223830fb8ee88624ae8b146cd4d1dcfc920f389225f04727b664",
       "census": {
-        "end": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67",
-        "start": "dea74ea28b9e2e6d0ffb86beb49d762dcdcbb219f480cf68f0c1931585af9e67"
+        "end": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79",
+        "start": "5805d921d875b5e34d5c54ed37a5b10bdeb040faf9e943a1bf10f0b672d5fa79"
       },
-      "closure_hash": "ce4a09e657b214d3ecac849bddbdb6f32359df4ca1b3531532d4234d7565b732",
+      "closure_hash": "9f791cb5632daef8cfacdbaa55acd8938929a14f79d26cb5355c38b16fef4cfb",
       "evidence": {
         "buckets": {
           "called": [
@@ -2987,39 +3026,39 @@
         }
       },
       "family": "vise",
-      "family_run_id": "61bfec0ace7e48aeaf462b3a90e9d94e",
+      "family_run_id": "c1b5378d9e6943e7a8eab664a9dd96eb",
       "fusion_version": "2706.0.116",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
+        "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+        "load_id": "b2dd96ca3c8646148046d2ef6e45d5dd",
         "loaded_matches_source": true,
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "07125c4737a24f79b899a02f0a1da819"
       },
       "omitted": [],
       "producer_run_ids": [
-        "2c06c46ead5d4a7d9d1a77de817c35b8"
+        "bed948409bd94811ba653d09d4172024"
       ],
       "producers": [
         {
-          "closure_hash": "ce4a09e657b214d3ecac849bddbdb6f32359df4ca1b3531532d4234d7565b732",
-          "family_run_id": "61bfec0ace7e48aeaf462b3a90e9d94e",
+          "closure_hash": "9f791cb5632daef8cfacdbaa55acd8938929a14f79d26cb5355c38b16fef4cfb",
+          "family_run_id": "c1b5378d9e6943e7a8eab664a9dd96eb",
           "fusion_version": "2706.0.116",
           "phase": "setup",
           "row_count": 66,
           "rows_hash": "2ed853303c49aa298917bf6e11c1575d221edd47124ad1dbf672dbf2c69c225d",
-          "run_id": "2c06c46ead5d4a7d9d1a77de817c35b8"
+          "run_id": "bed948409bd94811ba653d09d4172024"
         }
       ],
       "raw": {
-        "file": "family-evidence-a4c66ef87aed8fe8f1179f09987747e98864b88555a5181eb8396d7a0090f316.json",
-        "sha256": "a4c66ef87aed8fe8f1179f09987747e98864b88555a5181eb8396d7a0090f316"
+        "file": "family-evidence-46e812133d6d444b1c71a0a94bf6f6923af3403e32f4c1436e033d6651279b36.json",
+        "sha256": "46e812133d6d444b1c71a0a94bf6f6923af3403e32f4c1436e033d6651279b36"
       },
       "row_count": 130,
-      "run_id": "u1bootstrap1012c",
+      "run_id": "restamp1012a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
+        "cloud_config_hash": "d4f7bb6e1ac84b3068c6bbc94f6ef36f2c17176df35967fed9f1800dd9b2e51d",
         "cloud_tier": "requested",
         "quarantined": [
           "cloud_link_crash_review_authorization"
@@ -3038,16 +3077,16 @@
       ],
       "complete": true,
       "executed_module_count": 297,
-      "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-      "load_id": "01c72157d49d4bb88dc0267f12e316da",
+      "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+      "load_id": "878dd6f5e9d145e0902f549826a6ae87",
       "loaded_matches_source": true,
       "problems": [],
-      "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
+      "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
       "scope": "commands/mcpServer import closure",
-      "session_id": "db88497036644b4ab58d9bc68bbec14e"
+      "session_id": "a9d30e4caceb4a218e7d512cbf710617"
     },
     "after_fusion_version": "2706.0.116",
-    "after_mcp_session": "db88497036644b4ab58d9bc68bbec14e",
+    "after_mcp_session": "a9d30e4caceb4a218e7d512cbf710617.099c7a390e3b4680849bd24330301190.d696904cf64f91b9134e51d2f0676fd6550767c6c4a19ea7d1dda7edaab97847",
     "after_tool_census": [
       "appearance_set",
       "assembly_capture_position",
@@ -3281,15 +3320,15 @@
       ],
       "complete": true,
       "executed_module_count": 297,
-      "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-      "load_id": "3014a0ccc9834187a0005cbd4d9cbeb4",
+      "implementation_fingerprint": "1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f",
+      "load_id": "aa44d8317fed4398afe4130ab078f223",
       "loaded_matches_source": true,
       "problems": [],
-      "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
+      "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
       "scope": "commands/mcpServer import closure",
-      "session_id": "b7c3fce14ba646c78d2f5bee0a62e0f8"
+      "session_id": "fd85a683922d4c42b014fecd15abcb4b"
     },
-    "before_mcp_session": "b7c3fce14ba646c78d2f5bee0a62e0f8",
+    "before_mcp_session": "fd85a683922d4c42b014fecd15abcb4b.252cac038670456180b5fe4164102cdb.d22315f23ca9dafbe2a5346a1ed4a3eb485888168dfc01a4a2dc610805d105ac",
     "before_tool_census": [
       "appearance_set",
       "assembly_capture_position",
@@ -3535,18 +3574,18 @@
     "cleanup_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:8e3dee355df04b0794d75c94e85b0bcb",
+      "handle": "session:675bbdeaa5214233abb2c1019f676121",
       "name": "Untitled",
       "open_count": 2,
       "rows": [
         {
-          "document_handle": "session:a8abc74337184f1ebadf7765784b91f0",
+          "document_handle": "session:b641de58adc34e18a589b52a516f23f2",
           "is_saved": false,
           "name": "Untitled",
           "open_index": 0
         },
         {
-          "document_handle": "session:8e3dee355df04b0794d75c94e85b0bcb",
+          "document_handle": "session:675bbdeaa5214233abb2c1019f676121",
           "is_active": true,
           "is_modified": true,
           "is_saved": false,
@@ -3555,25 +3594,25 @@
         }
       ]
     },
-    "fresh_transport_document_handle": "session:8e3dee355df04b0794d75c94e85b0bcb",
+    "fresh_transport_document_handle": "session:675bbdeaa5214233abb2c1019f676121",
     "fusion_version": "2706.0.116",
-    "nonce_name": "ReloadNoncec651053f",
+    "nonce_name": "ReloadNonceeaad7247",
     "nonce_value_mm": 17,
     "post_reload_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:8e3dee355df04b0794d75c94e85b0bcb",
+      "handle": "session:675bbdeaa5214233abb2c1019f676121",
       "name": "Untitled",
       "open_count": 2,
       "rows": [
         {
-          "document_handle": "session:a8abc74337184f1ebadf7765784b91f0",
+          "document_handle": "session:b641de58adc34e18a589b52a516f23f2",
           "is_saved": false,
           "name": "Untitled",
           "open_index": 0
         },
         {
-          "document_handle": "session:8e3dee355df04b0794d75c94e85b0bcb",
+          "document_handle": "session:675bbdeaa5214233abb2c1019f676121",
           "is_active": true,
           "is_modified": true,
           "is_saved": false,
@@ -3585,12 +3624,12 @@
     "pre_reload_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:247957b6fb9742ca8622a33d09d5772f",
+      "handle": "session:392086be6e8b45aeb1e0f9916f133788",
       "name": "Untitled",
       "open_count": 1,
       "rows": [
         {
-          "document_handle": "session:247957b6fb9742ca8622a33d09d5772f",
+          "document_handle": "session:392086be6e8b45aeb1e0f9916f133788",
           "is_active": true,
           "is_saved": false,
           "name": "Untitled",
@@ -3599,18 +3638,18 @@
       ]
     },
     "raw": {
-      "file": "family-evidence-1c575943f4a69d5e49bcaae36130a93a2f1bb0627b5107e14038c6c86c362021.json",
-      "sha256": "1c575943f4a69d5e49bcaae36130a93a2f1bb0627b5107e14038c6c86c362021"
+      "file": "family-evidence-d362a7c46ee855eef09330f90c05767621c189122ade1c7ff5ee45a855fc1f21.json",
+      "sha256": "d362a7c46ee855eef09330f90c05767621c189122ade1c7ff5ee45a855fc1f21"
     },
     "restored_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:a8abc74337184f1ebadf7765784b91f0",
+      "handle": "session:b641de58adc34e18a589b52a516f23f2",
       "name": "Untitled",
       "open_count": 1,
       "rows": [
         {
-          "document_handle": "session:a8abc74337184f1ebadf7765784b91f0",
+          "document_handle": "session:b641de58adc34e18a589b52a516f23f2",
           "is_active": true,
           "is_saved": false,
           "name": "Untitled",
@@ -3618,16 +3657,16 @@
         }
       ]
     },
-    "run_id": "u1lookup1012c",
+    "run_id": "restamp1012a",
     "scratch_cleanup_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:a8abc74337184f1ebadf7765784b91f0",
+      "handle": "session:b641de58adc34e18a589b52a516f23f2",
       "name": "Untitled",
       "open_count": 1,
       "rows": [
         {
-          "document_handle": "session:a8abc74337184f1ebadf7765784b91f0",
+          "document_handle": "session:b641de58adc34e18a589b52a516f23f2",
           "is_active": true,
           "is_saved": false,
           "name": "Untitled",
@@ -3635,619 +3674,10 @@
         }
       ]
     },
-    "scratch_handle_before_reload": "session:c651053fa9a14b9fa0b2c776208e1578",
-    "source_hash": "070722fca562aa59b8f2733f6747f620828a755a71d90702da0298acbc717372"
+    "scratch_handle_before_reload": "session:eaad7247761b4b0189b62babebf8bb44",
+    "source_hash": "2ff1d0ca7bf9fb62cbead6674e3c25f5f1cc7ea9059be8b609207188d8b1c28d"
   },
-  "lifecycle_history": [
-    {
-      "after": {
-        "bootstrap_exclusions": [
-          "Fusion-Essentials.py",
-          "lib/loaded_attestation.py"
-        ],
-        "complete": true,
-        "executed_module_count": 297,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "3014a0ccc9834187a0005cbd4d9cbeb4",
-        "loaded_matches_source": true,
-        "problems": [],
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "scope": "commands/mcpServer import closure",
-        "session_id": "b7c3fce14ba646c78d2f5bee0a62e0f8"
-      },
-      "after_fusion_version": "2706.0.116",
-      "after_mcp_session": "b7c3fce14ba646c78d2f5bee0a62e0f8",
-      "after_tool_census": [
-        "appearance_set",
-        "assembly_capture_position",
-        "assembly_constrain",
-        "assembly_edit_contacts",
-        "assembly_edit_relations",
-        "assembly_get",
-        "assembly_ground",
-        "assembly_inspect_interference",
-        "assembly_move",
-        "assembly_rigid_group",
-        "cam_activate_setup",
-        "cam_apply_template",
-        "cam_compare_operations",
-        "cam_create_machine",
-        "cam_create_operation",
-        "cam_create_setup",
-        "cam_delete",
-        "cam_delete_machine",
-        "cam_delete_template",
-        "cam_edit_folders",
-        "cam_edit_operation",
-        "cam_edit_setup",
-        "cam_edit_tools",
-        "cam_export_setup",
-        "cam_find_holes",
-        "cam_find_pockets",
-        "cam_generate",
-        "cam_generate_setup_sheet",
-        "cam_get",
-        "cam_get_status",
-        "cam_inspect_toolpaths",
-        "cam_post",
-        "cam_reorder",
-        "cam_save_template",
-        "cam_select_geometry",
-        "cam_set_nc_comment",
-        "cam_show_toolpath",
-        "data_create_folder",
-        "data_create_project",
-        "data_delete_file",
-        "data_delete_folder",
-        "data_download_file",
-        "data_get",
-        "data_get_upload_status",
-        "data_move_file",
-        "data_switch_hub",
-        "data_upload_file",
-        "design_activate_component",
-        "design_add_instance",
-        "design_configure",
-        "design_delete_feature",
-        "design_delete_occurrence",
-        "design_edit_plastic_rule",
-        "design_edit_reference_image",
-        "design_edit_timeline",
-        "design_export",
-        "design_get",
-        "design_move_occurrence",
-        "design_recompute",
-        "design_remove_feature",
-        "design_set_metadata",
-        "design_set_mode",
-        "design_set_name",
-        "doc_activate",
-        "doc_close",
-        "doc_copy",
-        "doc_get",
-        "doc_insert_derive",
-        "doc_insert_import",
-        "doc_insert_occurrence",
-        "doc_new",
-        "doc_open",
-        "doc_restore_version",
-        "doc_save",
-        "doc_save_as",
-        "doc_save_milestone",
-        "doc_update_xref",
-        "drawing_add_sketch",
-        "drawing_add_symbol",
-        "drawing_create",
-        "drawing_delete_sketch",
-        "drawing_dimension",
-        "drawing_edit_revisions",
-        "drawing_edit_sheet",
-        "drawing_export",
-        "drawing_get",
-        "drawing_get_status",
-        "drawing_insert_image",
-        "drawing_update",
-        "find_geometry",
-        "form_create",
-        "form_edit",
-        "form_get",
-        "joint_at_geometry",
-        "joint_create",
-        "joint_create_as_built",
-        "joint_create_origin",
-        "joint_drive",
-        "joint_edit",
-        "joint_motion_link",
-        "mesh_combine",
-        "mesh_delete",
-        "mesh_export",
-        "mesh_find",
-        "mesh_generate_face_groups",
-        "mesh_get",
-        "mesh_insert",
-        "mesh_plane_cut",
-        "mesh_reduce",
-        "mesh_remesh",
-        "mesh_repair",
-        "mesh_reverse_normal",
-        "mesh_separate",
-        "mesh_shell",
-        "mesh_smooth",
-        "mesh_to_brep",
-        "model_arrange",
-        "model_base_feature",
-        "model_chamfer",
-        "model_combine",
-        "model_compute_holder",
-        "model_construction",
-        "model_create_component",
-        "model_create_rib",
-        "model_draft",
-        "model_edit_body",
-        "model_edit_extrude",
-        "model_edit_feature",
-        "model_edit_loft",
-        "model_edit_sweep",
-        "model_emboss",
-        "model_extrude",
-        "model_fillet",
-        "model_hole",
-        "model_inspect",
-        "model_loft",
-        "model_measure_between",
-        "model_measure_continuity",
-        "model_measure_relation",
-        "model_mirror",
-        "model_move",
-        "model_offset_face",
-        "model_pattern_circular",
-        "model_pattern_path",
-        "model_pattern_rectangular",
-        "model_pipe",
-        "model_replace_face",
-        "model_revolve",
-        "model_scale",
-        "model_set_material",
-        "model_shell",
-        "model_split",
-        "model_stitch",
-        "model_sweep",
-        "model_thread",
-        "model_unstitch",
-        "param_add",
-        "param_delete",
-        "param_get",
-        "param_set",
-        "param_set_favorite",
-        "pmi_create",
-        "pmi_delete",
-        "pmi_edit",
-        "pmi_get",
-        "render_create",
-        "render_edit",
-        "render_get",
-        "save_as_mesh",
-        "sheet_convert",
-        "sheet_create_flange",
-        "sheet_create_flat_pattern",
-        "sheet_create_fold",
-        "sheet_create_hem",
-        "sheet_create_join_by_bend",
-        "sheet_create_refold",
-        "sheet_create_rip",
-        "sheet_create_unfold",
-        "sheet_edit_rule",
-        "sheet_get",
-        "sketch_add_3d_line",
-        "sketch_add_3d_spline",
-        "sketch_add_geometry",
-        "sketch_constrain",
-        "sketch_copy",
-        "sketch_create",
-        "sketch_delete_entity",
-        "sketch_dimension",
-        "sketch_edit",
-        "sketch_edit_curve",
-        "sketch_get",
-        "sketch_insert_svg",
-        "sketch_move",
-        "sketch_project",
-        "sketch_set_text",
-        "surface_create_ruled",
-        "surface_delete_face",
-        "surface_extend",
-        "surface_extrude",
-        "surface_fill",
-        "surface_offset",
-        "surface_patch",
-        "surface_reverse_normal",
-        "surface_revolve",
-        "surface_thicken",
-        "surface_trim",
-        "surface_untrim",
-        "sys_capability_map",
-        "sys_execute_script",
-        "sys_find_tool",
-        "sys_get_api_doc",
-        "sys_get_guidance",
-        "sys_get_preferences",
-        "sys_get_selection",
-        "sys_reload_addin",
-        "sys_request_selection",
-        "sys_set_preferences",
-        "view_list_workspaces",
-        "view_screenshot",
-        "view_screenshot_multi",
-        "view_section",
-        "view_set",
-        "view_switch_workspace",
-        "workspace_orient"
-      ],
-      "before": {
-        "bootstrap_exclusions": [
-          "Fusion-Essentials.py",
-          "lib/loaded_attestation.py"
-        ],
-        "complete": true,
-        "executed_module_count": 297,
-        "implementation_fingerprint": "2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732",
-        "load_id": "1328c91163b649208b163483bcb5c5eb",
-        "loaded_matches_source": true,
-        "problems": [],
-        "schema_fingerprint": "374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3",
-        "scope": "commands/mcpServer import closure",
-        "session_id": "4f6b524ca48a495cb1d2e9a812447458"
-      },
-      "before_mcp_session": "4f6b524ca48a495cb1d2e9a812447458",
-      "before_tool_census": [
-        "appearance_set",
-        "assembly_capture_position",
-        "assembly_constrain",
-        "assembly_edit_contacts",
-        "assembly_edit_relations",
-        "assembly_get",
-        "assembly_ground",
-        "assembly_inspect_interference",
-        "assembly_move",
-        "assembly_rigid_group",
-        "cam_activate_setup",
-        "cam_apply_template",
-        "cam_compare_operations",
-        "cam_create_machine",
-        "cam_create_operation",
-        "cam_create_setup",
-        "cam_delete",
-        "cam_delete_machine",
-        "cam_delete_template",
-        "cam_edit_folders",
-        "cam_edit_operation",
-        "cam_edit_setup",
-        "cam_edit_tools",
-        "cam_export_setup",
-        "cam_find_holes",
-        "cam_find_pockets",
-        "cam_generate",
-        "cam_generate_setup_sheet",
-        "cam_get",
-        "cam_get_status",
-        "cam_inspect_toolpaths",
-        "cam_post",
-        "cam_reorder",
-        "cam_save_template",
-        "cam_select_geometry",
-        "cam_set_nc_comment",
-        "cam_show_toolpath",
-        "data_create_folder",
-        "data_create_project",
-        "data_delete_file",
-        "data_delete_folder",
-        "data_download_file",
-        "data_get",
-        "data_get_upload_status",
-        "data_move_file",
-        "data_switch_hub",
-        "data_upload_file",
-        "design_activate_component",
-        "design_add_instance",
-        "design_configure",
-        "design_delete_feature",
-        "design_delete_occurrence",
-        "design_edit_plastic_rule",
-        "design_edit_reference_image",
-        "design_edit_timeline",
-        "design_export",
-        "design_get",
-        "design_move_occurrence",
-        "design_recompute",
-        "design_remove_feature",
-        "design_set_metadata",
-        "design_set_mode",
-        "design_set_name",
-        "doc_activate",
-        "doc_close",
-        "doc_copy",
-        "doc_get",
-        "doc_insert_derive",
-        "doc_insert_import",
-        "doc_insert_occurrence",
-        "doc_new",
-        "doc_open",
-        "doc_restore_version",
-        "doc_save",
-        "doc_save_as",
-        "doc_save_milestone",
-        "doc_update_xref",
-        "drawing_add_sketch",
-        "drawing_add_symbol",
-        "drawing_create",
-        "drawing_delete_sketch",
-        "drawing_dimension",
-        "drawing_edit_revisions",
-        "drawing_edit_sheet",
-        "drawing_export",
-        "drawing_get",
-        "drawing_get_status",
-        "drawing_insert_image",
-        "drawing_update",
-        "find_geometry",
-        "form_create",
-        "form_edit",
-        "form_get",
-        "joint_at_geometry",
-        "joint_create",
-        "joint_create_as_built",
-        "joint_create_origin",
-        "joint_drive",
-        "joint_edit",
-        "joint_motion_link",
-        "mesh_combine",
-        "mesh_delete",
-        "mesh_export",
-        "mesh_find",
-        "mesh_generate_face_groups",
-        "mesh_get",
-        "mesh_insert",
-        "mesh_plane_cut",
-        "mesh_reduce",
-        "mesh_remesh",
-        "mesh_repair",
-        "mesh_reverse_normal",
-        "mesh_separate",
-        "mesh_shell",
-        "mesh_smooth",
-        "mesh_to_brep",
-        "model_arrange",
-        "model_base_feature",
-        "model_chamfer",
-        "model_combine",
-        "model_compute_holder",
-        "model_construction",
-        "model_create_component",
-        "model_create_rib",
-        "model_draft",
-        "model_edit_body",
-        "model_edit_extrude",
-        "model_edit_feature",
-        "model_edit_loft",
-        "model_edit_sweep",
-        "model_emboss",
-        "model_extrude",
-        "model_fillet",
-        "model_hole",
-        "model_inspect",
-        "model_loft",
-        "model_measure_between",
-        "model_measure_continuity",
-        "model_measure_relation",
-        "model_mirror",
-        "model_move",
-        "model_offset_face",
-        "model_pattern_circular",
-        "model_pattern_path",
-        "model_pattern_rectangular",
-        "model_pipe",
-        "model_replace_face",
-        "model_revolve",
-        "model_scale",
-        "model_set_material",
-        "model_shell",
-        "model_split",
-        "model_stitch",
-        "model_sweep",
-        "model_thread",
-        "model_unstitch",
-        "param_add",
-        "param_delete",
-        "param_get",
-        "param_set",
-        "param_set_favorite",
-        "pmi_create",
-        "pmi_delete",
-        "pmi_edit",
-        "pmi_get",
-        "render_create",
-        "render_edit",
-        "render_get",
-        "save_as_mesh",
-        "sheet_convert",
-        "sheet_create_flange",
-        "sheet_create_flat_pattern",
-        "sheet_create_fold",
-        "sheet_create_hem",
-        "sheet_create_join_by_bend",
-        "sheet_create_refold",
-        "sheet_create_rip",
-        "sheet_create_unfold",
-        "sheet_edit_rule",
-        "sheet_get",
-        "sketch_add_3d_line",
-        "sketch_add_3d_spline",
-        "sketch_add_geometry",
-        "sketch_constrain",
-        "sketch_copy",
-        "sketch_create",
-        "sketch_delete_entity",
-        "sketch_dimension",
-        "sketch_edit",
-        "sketch_edit_curve",
-        "sketch_get",
-        "sketch_insert_svg",
-        "sketch_move",
-        "sketch_project",
-        "sketch_set_text",
-        "surface_create_ruled",
-        "surface_delete_face",
-        "surface_extend",
-        "surface_extrude",
-        "surface_fill",
-        "surface_offset",
-        "surface_patch",
-        "surface_reverse_normal",
-        "surface_revolve",
-        "surface_thicken",
-        "surface_trim",
-        "surface_untrim",
-        "sys_capability_map",
-        "sys_execute_script",
-        "sys_find_tool",
-        "sys_get_api_doc",
-        "sys_get_guidance",
-        "sys_get_preferences",
-        "sys_get_selection",
-        "sys_reload_addin",
-        "sys_request_selection",
-        "sys_set_preferences",
-        "view_list_workspaces",
-        "view_screenshot",
-        "view_screenshot_multi",
-        "view_section",
-        "view_set",
-        "view_switch_workspace",
-        "workspace_orient"
-      ],
-      "checks": {
-        "fresh_handle_write_readback": true,
-        "fresh_session_changed": true,
-        "fresh_session_read_new_handle": true,
-        "new_load_and_session": true,
-        "nonce_read_back_before_reload": true,
-        "nonce_survived_reload": true,
-        "old_handle_refused": true,
-        "old_transport_refused_empty_404": true,
-        "recovery_parameter_removed": true,
-        "reload_scheduled": true,
-        "same_implementation_and_schema": true,
-        "scratch_closed_and_home_restored": true,
-        "stale_write_absent": true,
-        "tool_census_matches": true
-      },
-      "cleanup_census": {
-        "complete": true,
-        "document_id": null,
-        "handle": "session:874bbd4cf7c44cc79c6889f4839bf7c7",
-        "name": "Untitled",
-        "open_count": 2,
-        "rows": [
-          {
-            "document_handle": "session:247957b6fb9742ca8622a33d09d5772f",
-            "is_saved": false,
-            "name": "Untitled",
-            "open_index": 0
-          },
-          {
-            "document_handle": "session:874bbd4cf7c44cc79c6889f4839bf7c7",
-            "is_active": true,
-            "is_modified": true,
-            "is_saved": false,
-            "name": "Untitled",
-            "open_index": 1
-          }
-        ]
-      },
-      "fresh_transport_document_handle": "session:874bbd4cf7c44cc79c6889f4839bf7c7",
-      "fusion_version": "2706.0.116",
-      "nonce_name": "ReloadNonce1494008d",
-      "nonce_value_mm": 17,
-      "post_reload_census": {
-        "complete": true,
-        "document_id": null,
-        "handle": "session:874bbd4cf7c44cc79c6889f4839bf7c7",
-        "name": "Untitled",
-        "open_count": 2,
-        "rows": [
-          {
-            "document_handle": "session:247957b6fb9742ca8622a33d09d5772f",
-            "is_saved": false,
-            "name": "Untitled",
-            "open_index": 0
-          },
-          {
-            "document_handle": "session:874bbd4cf7c44cc79c6889f4839bf7c7",
-            "is_active": true,
-            "is_modified": true,
-            "is_saved": false,
-            "name": "Untitled",
-            "open_index": 1
-          }
-        ]
-      },
-      "pre_reload_census": {
-        "complete": true,
-        "document_id": null,
-        "handle": "session:cab8cda15a3145a98b9f863484b50434",
-        "name": "Untitled",
-        "open_count": 1,
-        "rows": [
-          {
-            "document_handle": "session:cab8cda15a3145a98b9f863484b50434",
-            "is_active": true,
-            "is_saved": false,
-            "name": "Untitled",
-            "open_index": 0
-          }
-        ]
-      },
-      "raw": {
-        "file": "family-evidence-6a51896f6e7b50bb20dc272c5829f3f2df521347788e78b691c3385c5e89f0ec.json",
-        "sha256": "6a51896f6e7b50bb20dc272c5829f3f2df521347788e78b691c3385c5e89f0ec"
-      },
-      "restored_census": {
-        "complete": true,
-        "document_id": null,
-        "handle": "session:247957b6fb9742ca8622a33d09d5772f",
-        "name": "Untitled",
-        "open_count": 1,
-        "rows": [
-          {
-            "document_handle": "session:247957b6fb9742ca8622a33d09d5772f",
-            "is_active": true,
-            "is_saved": false,
-            "name": "Untitled",
-            "open_index": 0
-          }
-        ]
-      },
-      "run_id": "u1bootstrap1012c",
-      "scratch_cleanup_census": {
-        "complete": true,
-        "document_id": null,
-        "handle": "session:247957b6fb9742ca8622a33d09d5772f",
-        "name": "Untitled",
-        "open_count": 1,
-        "rows": [
-          {
-            "document_handle": "session:247957b6fb9742ca8622a33d09d5772f",
-            "is_active": true,
-            "is_saved": false,
-            "name": "Untitled",
-            "open_index": 0
-          }
-        ]
-      },
-      "scratch_handle_before_reload": "session:1494008d12224bf783c31496f67a0ef0",
-      "source_hash": "070722fca562aa59b8f2733f6747f620828a755a71d90702da0298acbc717372"
-    }
-  ],
+  "lifecycle_history": [],
   "not_in_scope": {},
   "tool_census": [
     "appearance_set",

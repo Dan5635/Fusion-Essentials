@@ -1,5 +1,5 @@
 ---
-name: fusion-design-brief
+name: mcp-prompt-builder
 description: >-
   Author or revise a Fusion CAD/CAM product-design or recorded-showcase brief with
   reference-based quality criteria, staged reviews, and explicit evidence requirements.
@@ -21,7 +21,7 @@ must be visible before a run, not introduced afterward by its reviewer.
 
 Use a compact product description, a small reference board and an acceptance table. Keep
 supporting research separate from executor instructions. Include only criteria relevant to
-the product; do not turn every previous showcase failure into a universal requirement.
+the product; do not turn every previous usecase failure into a universal requirement.
 
 1. **Product and references.** State the intended user, function, manufacturing process and
    expected finish. Identify hard requirements, styling targets and later deliverables.

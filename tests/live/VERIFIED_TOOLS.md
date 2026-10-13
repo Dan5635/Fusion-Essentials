@@ -30,10 +30,10 @@ to match current acts. It also requires a current reload record bound to the sam
 Family refreshes
 may retain matching earlier executions; the table's run provenance identifies them.
 
-Stamp: source 070722fca562aa59b8f2733f6747f620828a755a71d90702da0298acbc717372 | Fusion 2706.0.116 | verified 2026-10-12
-Loaded: implementation 2d4725250fc09da86c057e1f12d76df4a000ec204695696afdc732f1a4e60732 | schema 374fc6ddb47fc0f3d0bb63976e8a1f551a0c8f61868bceb12354638a6748b8f3 | load 01c72157d49d4bb88dc0267f12e316da | session db88497036644b4ab58d9bc68bbec14e
+Stamp: source 2ff1d0ca7bf9fb62cbead6674e3c25f5f1cc7ea9059be8b609207188d8b1c28d | Fusion 2706.0.116 | verified 2026-10-12
+Loaded: implementation 1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f | schema 871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42 | load 878dd6f5e9d145e0902f549826a6ae87 | session a9d30e4caceb4a218e7d512cbf710617
 
-2 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending / 218 self-reported
+3 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending / 217 self-reported
 
 | act | mode |
 |---|---|
@@ -114,29 +114,29 @@ families to their closure and loaded identity; omissions have no evidence stamp.
 
 | family | native run | family execution | scope |
 |---|---|---|---|
-| cloud | u1bootstrap1012c | e8f845b7d55442598a9770804779c8ce | not in scope: cloud_link_crash_review_authorization; not applicable (conditional): none; held: none |
-| details | u1bootstrap1012c | 0493d35cb1af4519a63ebc66df27054d | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| fff_export | u1bootstrap1012c | 82ef47e3956649c2b6837a0efdec37de | not in scope: none; not applicable (conditional): none; held: none |
-| finale | u1bootstrap1012c | 62d097e49aa8484e819784f8be07ba63 | not in scope: none; not applicable (conditional): none; held: none |
-| hub_cam | u1bootstrap1012c | 38da7a62f4ff4c1c81cd820e39fa469d | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| lookup | u1lookup1012c | fe89b3c882ad4123a2498208d7266ff0 | not in scope: none; not applicable (conditional): none; held: none |
-| mesh | u1bootstrap1012c | 4557186fe6ed4230a437c75477d228b0 | not in scope: none; not applicable (conditional): none; held: none |
-| motion | u1bootstrap1012c | 8085355dcd9a4e319c0f57fe3368ca2c | not in scope: none; not applicable (conditional): none; held: none |
-| nesting | u1bootstrap1012c | 80f0eb62f154408e89f1c6ade0d2f9dd | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| part_cam | u1bootstrap1012c | 2d2c19bc0d18406ea7a2c6d020100cc4 | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| render | u1bootstrap1012c | 23a2596f36a244a5a0869f3fd4e36896 | not in scope: none; not applicable (conditional): none; held: none |
-| resize | u1bootstrap1012c | 9db9b3d8bf5c4f15bdbf96fe783bb79a | not in scope: none; not applicable (conditional): none; held: none |
-| sheet_coupon | u1bootstrap1012c | 9da7d09521b54382aead8e198bfbda94 | not in scope: none; not applicable (conditional): none; held: none |
-| sheet_flange | u1bootstrap1012c | de566696837644398998e0d80f9c05f4 | not in scope: none; not applicable (conditional): none; held: none |
-| sheet_positions | u1bootstrap1012c | 8517b67f372947c4af2ac19a1b2e47df | not in scope: none; not applicable (conditional): none; held: none |
-| sheet_selected | u1bootstrap1012c | 8ecdc9116cbf4e068139240f57606f00 | not in scope: none; not applicable (conditional): none; held: none |
-| showcase | u1bootstrap1012c | 8aab142f56ce40818e967f8e04bb1b2b | not in scope: none; not applicable (conditional): none; held: none |
-| sketch | u1bootstrap1012c | 35e179c708dc4a17a5f455f935394890 | not in scope: none; not applicable (conditional): none; held: none |
-| small_edits | u1bootstrap1012c | ece92653b61c44deb5b1be47ce3e097a | not in scope: none; not applicable (conditional): none; held: none |
-| solids | u1bootstrap1012c | 6402b8812693452d9cc32d4a10e7632c | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| surfaces | u1bootstrap1012c | ccf5e7a6883d41c3989bdb882557b9c5 | not in scope: none; not applicable (conditional): none; held: none |
-| swarf_cam | u1bootstrap1012c | 47eb00e4a40049efb7ee4935610b4743 | not in scope: none; not applicable (conditional): none; held: none |
-| vise | u1bootstrap1012c | 61bfec0ace7e48aeaf462b3a90e9d94e | not in scope: none; not applicable (conditional): none; held: none |
+| cloud | restamp1012a | 4cabe4d59fd24e6585cf5bdbfe153fab | not in scope: cloud_link_crash_review_authorization; not applicable (conditional): none; held: none |
+| details | restamp1012a | 9103aab39cfc483f940a805c71d8ffb3 | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| fff_export | restamp1012a | a3a7cbcf496d4ff68ee2c0bffb50cbfb | not in scope: none; not applicable (conditional): none; held: none |
+| finale | restamp1012a | 153fbe271f184af1af798d9df8c136b7 | not in scope: none; not applicable (conditional): none; held: none |
+| hub_cam | restamp1012a | 2b480543cd414a9c9828b72803b8798e | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| lookup | restamp1012a | cbe72f35d7c34baa8e1f84cc5524c93b | not in scope: none; not applicable (conditional): none; held: none |
+| mesh | restamp1012a | 2573a0480cc24f4f83dc516549e630cb | not in scope: none; not applicable (conditional): none; held: none |
+| motion | restamp1012a | 3db0b7e0eddd4ce8978b70bdc7e6d11e | not in scope: none; not applicable (conditional): none; held: none |
+| nesting | restamp1012a | 1e3c1139e4f145b88166804bd12afc74 | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| part_cam | restamp1012a | f3ea243a0c4b43c792c15a6d9fa9fd16 | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| render | restamp1012a | 7d915ef8508c42fdbb9b21d7705a9b65 | not in scope: none; not applicable (conditional): none; held: none |
+| resize | restamp1012a | b3ed321791e543dfa13543c88f1b8d84 | not in scope: none; not applicable (conditional): none; held: none |
+| sheet_coupon | restamp1012a | 346cb6e09d644ddf9a31e319c0d21278 | not in scope: none; not applicable (conditional): none; held: none |
+| sheet_flange | restamp1012a | 5abeb2d19fd14d23b0cca7c66d319e1b | not in scope: none; not applicable (conditional): none; held: none |
+| sheet_positions | restamp1012a | c5dfe5f0fd314004899c3cf7fe110d77 | not in scope: none; not applicable (conditional): none; held: none |
+| sheet_selected | restamp1012a | 02cd9fa76c7d4d94a822510823366b22 | not in scope: none; not applicable (conditional): none; held: none |
+| showcase | restamp1012a | b9d2000b0b7448f486fd01b8daabef56 | not in scope: none; not applicable (conditional): none; held: none |
+| sketch | restamp1012a | 5076190bf2e24488a9c5237882c14cb0 | not in scope: none; not applicable (conditional): none; held: none |
+| small_edits | restamp1012a | 5a8dcbb4a84142e4b2af644c86da6471 | not in scope: none; not applicable (conditional): none; held: none |
+| solids | restamp1012a | f2dc8bcf42ef41d3a53f530d159f6620 | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| surfaces | restamp1012a | a09f0c309d204313ab5853500b954dda | not in scope: none; not applicable (conditional): none; held: none |
+| swarf_cam | restamp1012a | ccff539d527d405ab0677c165196881f | not in scope: none; not applicable (conditional): none; held: none |
+| vise | restamp1012a | c1b5378d9e6943e7a8eab664a9dd96eb | not in scope: none; not applicable (conditional): none; held: none |
 
 | tool | status | step (the demo's shot list) |
 |---|---|---|
@@ -209,7 +209,7 @@ families to their closure and loaded identity; omissions have no evidence stamp.
 | doc_get | self-reported | read the document identity before discarding; and, on the cloud tier, which document the session is on before each write acts on it, plus the version history the save/milestone/restore beats built |
 | doc_insert_derive | self-reported |  |
 | doc_insert_import | self-reported | re-import that STEP from disk into the live design; then the DXF back onto a plane as sketches, an SVG into a sketch made for it, and IGES / SMT / f3d as solids - each with the format named explicitly, which is what makes the last row (a format contradicting its file's extension) a refusal instead of a silent mis-read |
-| doc_insert_occurrence | self-reported | insert the saved source into the host as an XREF - 'is_reference' is what gives doc_update_xref something to walk |
+| doc_insert_occurrence | covered | insert the saved source into the host as an XREF - 'is_reference' is what gives doc_update_xref something to walk |
 | doc_new | self-reported | open a local document for the current sweep family |
 | doc_open | self-reported | open the copy and then the generated drawing by lineage URN, each named back with the URN it resolved; the switch is async, so the doc_get after it is what says the session is on it |
 | doc_restore_version | self-reported | promote the FIRST version, one the tip has moved past - promoting the latest takes the tool's early return, with no promote call and no tip either side to compare. The open session keeps its parameters through it, and the save after it writes them as the new tip; a pending tip is reported, never called a failure |
@@ -329,7 +329,7 @@ families to their closure and loaded identity; omissions have no evidence stamp.
 | sketch_delete_entity | self-reported | delete a helper constraint; count drops - then a sketch text by its index, the deleted string reported back, and the empty index refused |
 | sketch_dimension | self-reported | drive the part's length, width and boss diameter by parameter expression; the wedge angle facing the sketch origin; offset against a non-parallel line (rotated, and the note says so) with linear_diameter refusing the same shape; line and point measured to a model face; then the dimension bench - a slanted line's horizontal span, a diameter, the gap between two circles on one centre, a line to a circle's near tangent, and an ellipse's two radii - each read back as a measured number, not a call that returned ok |
 | sketch_edit | self-reported |  |
-| sketch_edit_curve | self-reported | trim, extend, split, fillet, chamfer and offset on one scratch sketch per action, with length read-backs; split's two halves must carry distinct ids; constrain both halves separately and compare sketch_get's labels with endpoint-selected identities, preserving endpoints, control line and history; a chamfer across an offset pair refused |
+| sketch_edit_curve | self-reported | trim, extend, split, fillet, chamfer and offset on one scratch sketch per action, with length read-backs; split's two halves must carry distinct ids; constrain both halves separately and compare sketch_get's labels with endpoint-selected identities, preserving endpoints, control line and history; a chamfer across an offset pair refused; an offset picked on each side of an open chain's first and second line and of a closed loop, and one past a fillet's radius, the new lines read back by coordinates on the pick's side |
 | sketch_get | self-reported | read the skeleton and the part's own profiles back; then the hub's three PROOFS, each taken before a feature consumes the sketch - is_fully_constrained true with the constraint and dimension counts that closed it, which is the sketch recipes' own bar; and the keyway slot's own census, where WHICH of its three lines is the construction spine is read off the sketch rather than counted on (a solid side line is vertical too and spans the same length, so a dimension addressed at one lands the slot half a width off); a dimension row names the points the sketch_dimension call was given |
 | sketch_insert_svg | self-reported | import the logo art into a fresh sketch, its landed width measured against the 1/96-inch-per-user-unit convention, then a 96-user-unit square at scale 1 whose measured extent pins BOTH halves of that landing - one inch square, and Y-DOWN from the sketch origin (min y -25.4 mm); the missing file refused |
 | sketch_move | self-reported | shift a line by a known offset and read the new coordinates back, then spin it 180 deg about its own midpoint - the swap only the endpoints show; the negative-scale mirror and the empty transform refused |
@@ -363,4 +363,4 @@ families to their closure and loaded identity; omissions have no evidence stamp.
 | view_section | self-reported | section cut along the part's bore axis |
 | view_set | self-reported | orient the camera to the iso hero angle, with the perspective angle carried through to the camera and read back; then the whole verb set on the finished fixture - snapshot, a turntable through every camera preset (one framed orient sets the subject, the rest rotate about it with fit=false), every visual style, isolate/hide/show/clear_isolation, a persistent Named View saved, found in the document's own list and re-applied, and restore putting camera, style and every bulb back where the tour started. SKIPPED(rig): the snapshot/restore truncation beats (truncated + occurrence_cap) need an assembly with more occurrences than the cap, and the story document stays well under it |
 | view_switch_workspace | self-reported | switch to Manufacture, then back to Design |
-| workspace_orient | self-reported | orient: read the empty design before building; and the entitlement block as the CAM job opens - exactly the four sentinel strategies, each answering its own isGenerationAllowed flag rather than reading null. It is the same read the run's capability probe takes, which is what routes the extension acts to skipped(machining_extension not entitled) instead of into the refusal an unlicensed installation answers them with |
+| workspace_orient | self-reported | orient: read the empty design before building; and the entitlement block as the CAM job opens - exactly the four sentinel strategies, each answering its own isGenerationAllowed flag rather than reading null. It is the same read the run's capability probe takes, which is what routes the extension acts to skipped(machining_extension not entitled) instead of into the refusal an unlicensed installation answers them with; and on the joint bench a parent-locked part counted apart from grounded, against assembly_get's rows |

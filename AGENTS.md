@@ -115,23 +115,33 @@ default slice again.
 
 ## What "done" means
 
-A change is done when its row in the live sweep (`tests/live/tool_verify.py`) passes on the real Fusion
-session and its receipt (`tests/live/VERIFIED_TOOLS.md`) is restamped. Fixes and features may be
-committed only after an independent review, a live run of the affected capabilities on the exact code
-loaded in Fusion, matching receipts and passing required checks. A checkpoint verified only offline
-does not qualify; keep unfinished work in isolated worktrees and gitignored backups.
-Each changed behavior an agent can observe needs a reproducible demonstration in the existing live
-sweep, with an independent check of its effect in the same change. Internal helpers are exercised
-through the public behavior they affect; naming a tool in the sweep does not by itself validate new
-logic.
-Mock unit tests prove handler logic and nothing about Fusion: they encode the builder's beliefs, and a
-wrong belief pinned by a test is the most confident way to ship a lie. So: one test per plausible bug,
-not one per function; a reviewer runs a handful of mutants, not dozens; and the reviewer drives the
-live session to check API claims whenever it can. The three defects found on 2026-09-02 (a false `ok`
-pinned by a test, a classifier whose docstring asserted the opposite of the live shape, a remedy the
-agent could not act on) all came from thirty minutes of using the tools, none from 11,000 unit tests.
-Every wave (one batch of backlog work) ends with a cold eval run (`tests/live/evals/proctor.py`: a
-fresh agent with no skill appended), so only what the tools say on the wire is graded.
+A fix or feature is committed only when every requirement below is met. The agent that commits (the
+coordinator, or the lead it names) holds each agent that contributed, subagents included, to this
+list. The evidence for a requirement comes with the hand-over; a requirement claimed without its
+evidence is not met.
+
+1. **The sweep row passes live.** The change's row in the live sweep (`tests/live/tool_verify.py`)
+   passes on the real Fusion session.
+2. **The run was on the code being committed.** The affected capabilities ran live on the exact code
+   loaded in Fusion. A checkpoint verified only offline does not qualify.
+3. **The receipt is restamped.** `tests/live/VERIFIED_TOOLS.md` matches that code.
+4. **An independent agent reviewed it.** Not the agent that built it. The reviewer runs a handful of
+   mutants, not dozens, and drives the live session to check API claims whenever it can.
+5. **The required checks pass.**
+6. **Each changed behavior an agent can observe has a demonstration for feedback.** It is reproducible, it sits in
+   the existing live sweep, and an independent check of its effect lands in the same change. Internal
+   helpers are exercised through the public behavior they affect; naming a tool in the sweep does not
+   by itself validate new logic.
+7. **Unit tests are aimed, not counted.** One test per plausible bug, not one per function.
+8. **The wave ends with a cold eval run.** Every wave (one batch of backlog work) ends with one
+   (`tests/live/evals/proctor.py`: a fresh agent with no skill appended), so only what the tools say
+   on the wire is graded.
+
+Work that does not yet meet the list stays in isolated worktrees and gitignored backups.
+
+Why the weight is on the live session: mock unit tests prove handler logic and nothing about Fusion.
+They encode the builder's beliefs, and a wrong belief pinned by a test is the most confident way to
+ship a lie.
 
 ## Enforcement is a closed list
 
@@ -159,17 +169,3 @@ code cannot show (a platform trap at its point of use, with no history). A helpe
 one table row of at most 400 characters: its symbols and when to reach for it. `test_prose_budget.py`
 enforces these limits for the files in `commands/mcpServer/tools/`; elsewhere they are the habit to
 follow.
-
-## Running commands: never `cd` to the repo root, never redirect stderr
-
-Both shell tools already start in the repo root and already capture stderr, so `cd c:\Source\Fusion-Essentials`
-and `2>&1` are redundant. Together they are worse: a `cd` combined with an output redirect makes the
-permission layer ask the owner to approve the call by hand, **whatever the allow rules say**, because
-it cannot tell where the redirect target resolves after the `cd`. That habit causes more approval
-prompts than anything else in this repo, and every prompt interrupts a person.
-
-So: `py -3 -m pytest tests/unit/test_sketch_add_geometry.py -q`, not
-`cd c:\Source\Fusion-Essentials; py -3 -m pytest tests/unit/test_sketch_add_geometry.py -q 2>&1 | Select-String "passed|failed"`.
-To trim output, use `-q`/`--no-cov` and read the tail rather than filtering with a regex; a pipe is
-fine, the `cd` and the `2>&1` are not. Prefer the file tools (Read/Grep/Edit/Write) over shell
-equivalents for anything that touches files.
