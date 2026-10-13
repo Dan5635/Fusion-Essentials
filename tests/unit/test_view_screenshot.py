@@ -535,6 +535,18 @@ class TestFitParam:
         after = rig._assigned[-1]
         assert math.isclose(after.eye.distanceTo(after.target), before, rel_tol=1e-9)
 
+    def test_a_zoom_on_a_perspective_view_moves_the_eye(self, rig, monkeypatch):
+        # a perspective camera has no extents: showing half as much means half the eye distance
+        import adsk.core
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
+        rig.camera = Camera(eye=(0, -20, 0), target=(0, 0, 0), perspective_angle=0.4,
+                            camera_type=adsk.core.CameraTypes.PerspectiveCameraType)
+        result = gs.handler(view="current", zoom=0.5)
+        assert result["isError"] is False
+        assert not any("could NOT be applied" in (block.get("text") or "")
+                       for block in result["content"])
+        assert any(math.isclose(cam.eye.distanceTo(cam.target), 10.0) for cam in rig._assigned)
+
     def test_fit_true_frames_the_current_view(self, rig):
         result = gs.handler(view="current", fit=True)
         assert result["isError"] is False
@@ -729,13 +741,11 @@ class TestCameraRestore:
         platform that refuses the snapshot, or refuses the restore after accepting the move."""
 
         class _StuckExtents:
-            """A camera whose viewExtents will not be written - the zoom the platform drops."""
-            @property
-            def viewExtents(self):
-                return 1.0
+            """A camera whose extents read but will not be written - the zoom the platform drops."""
+            def getExtents(self):
+                return [True, 1.0, 1.0]
 
-            @viewExtents.setter
-            def viewExtents(self, value):
+            def setExtents(self, width, height):
                 raise RuntimeError("extents locked")
 
         def __init__(self, refuse_assign=False, zoom_raises=False, camera_unreadable=False,
@@ -769,6 +779,54 @@ class TestCameraRestore:
         monkeypatch.setattr(gs._view_common, "capture_png_b64",
                             lambda *a, **k: ("B64DATA", None))
         return monkeypatch
+
+    def test_a_dropped_non_square_restore_is_named_while_retaining_the_image(self, rig):
+        vp = Viewport(camera=Camera())
+        vp._cam.setExtents(3.8, 3.2)
+        rig.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
+        normal_set = Viewport.camera.fset
+
+        def drop_restore(self, value):
+            normal_set(self, value)
+            if value.getExtents() == [True, 3.8, 3.2]:
+                self._cam._sides = (100, 100)  # Injected extent loss on restore only.
+
+        def orient(viewport, *args, **kwargs):
+            viewport.camera = Camera(view_extents=100)
+            return None, None
+
+        rig.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_restore))
+        rig.setattr(gs._view_common, "apply_named_view", orient)
+        result = gs.handler(view="top")
+        assert result["isError"] is False
+        assert [c["type"] for c in result["content"]] == ["text", "image"]
+        assert "camera framing does not match" in result["content"][0]["text"]
+        assert vp.camera.getExtents() == [True, 100, 100]
+
+    @pytest.mark.parametrize("projection", ["orthographic", "perspective"])
+    def test_a_dropped_zoom_is_named_in_the_public_image_reply(self, rig, projection):
+        import adsk.core
+        rig.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
+        kind = (adsk.core.CameraTypes.OrthographicCameraType if projection == "orthographic"
+                else adsk.core.CameraTypes.PerspectiveCameraType)
+        vp = Viewport(camera=Camera(eye=(0, -20, 0), camera_type=kind, perspective_angle=.4))
+        vp._cam.setExtents(3.8, 3.2) if projection == "orthographic" else None
+        before = camera_state(vp.camera)
+        rig.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
+        normal_set = Viewport.camera.fset
+
+        def drop_zoom(self, value):
+            eye, sides = self._cam.eye, self._cam._sides
+            normal_set(self, value)
+            self._cam.eye, self._cam._sides = eye, sides  # Injected framing drop.
+
+        rig.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_zoom))
+        result = gs.handler(view="current", zoom=.5)
+        assert result["isError"] is False
+        assert [c["type"] for c in result["content"]] == ["text", "image"]
+        assert "zoom=0.5 could NOT be applied" in result["content"][0]["text"]
+        assert "read-back camera framing" in result["content"][0]["text"]
+        assert camera_state(vp.camera) == before
 
     def test_a_failed_orient_puts_the_camera_back(self, rig):
         # apply_named_view moves the camera and THEN fails; returning without restoring leaves the
@@ -804,7 +862,7 @@ class TestCameraRestore:
         result = gs.handler(view="top")
         assert result["isError"] is False                         # the picture WAS taken
         text = result["content"][0]["text"]
-        assert "could NOT be put back" in text and "do not match" in text
+        assert "could NOT be put back" in text and "does not match" in text
 
     def test_a_clean_restore_says_nothing_extra(self, rig):
         vp = self._Viewport()

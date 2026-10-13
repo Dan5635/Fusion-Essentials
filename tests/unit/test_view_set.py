@@ -171,7 +171,7 @@ class _WholeModelFitViewport(Viewport):
         if value.isFitView:
             self._cam.target = FakePoint(50, 50, 50)
             self._cam.eye = FakePoint(50, 50, 150)
-            self._cam.viewExtents = 100.0
+            self._cam.setExtents(100.0, 100.0)
             self._cam.isFitView = False
 
 
@@ -860,7 +860,7 @@ class TestFocusFraming:
         _install(monkeypatch, [near, far])
         out = _payload(iv.handler(action="orient", orientation="front", focus="Part"))
         assert out["applied"]["frame_ratio"] == pytest.approx(0.02 * iv._FRAME_MARGIN)
-        assert iv.app.activeViewport.camera.viewExtents == pytest.approx(100.0 * 0.02 * iv._FRAME_MARGIN)
+        assert max(iv.app.activeViewport.camera.getExtents()[1:]) == pytest.approx(100.0 * 0.02 * iv._FRAME_MARGIN)
         assert "framed on 'Part'" in out["note"]
 
     def test_framing_touches_no_visibility_at_all(self, monkeypatch):
@@ -873,6 +873,16 @@ class TestFocusFraming:
         assert near.isLightBulbOn is True and far.isLightBulbOn is True
         assert far.isIsolated is False
         assert "visibility_not_restored" not in out["applied"]
+
+    def test_a_false_extent_setter_never_certifies_the_requested_focus_frame(self, monkeypatch):
+        part = FakeOcc("Part", bbox=make_bbox((0, 0, 0), (2, 2, 2)))
+        _install(monkeypatch, [part])
+        monkeypatch.setattr(Camera, "setExtents", lambda *_args: False)
+        result = iv.handler(action="orient", orientation="front", focus="Part")
+        assert result["isError"] is True
+        assert "did not take the extents" in result["message"]
+        assert "NOT framed" in result["message"]
+        assert "fit=false" in result["message"]
 
     def test_the_taller_axis_wins_so_the_focus_is_never_cropped(self, monkeypatch):
         # A focus that is a small fraction ACROSS but a large one DOWN must be framed on the down
@@ -906,11 +916,11 @@ class TestFocusFraming:
         report ok for it. So it refuses, and leaves the camera alone."""
         part = FakeOcc("Part", bbox=make_bbox((0, 0, 0), (2, 2, 2)))
         _install(monkeypatch, [part])
-        before = iv.app.activeViewport.camera.viewExtents
+        before = max(iv.app.activeViewport.camera.getExtents()[1:])
         monkeypatch.setattr(iv.app.activeViewport, "width", 0)
         res = iv.handler(action="orient", orientation="front", focus="Part")
         assert res["isError"] is True and "NOT moved" in res["message"]
-        assert iv.app.activeViewport.camera.viewExtents == before
+        assert max(iv.app.activeViewport.camera.getExtents()[1:]) == before
         assert iv.app.activeViewport._fit_calls == 0
 
     def test_framing_zooms_OUT_when_the_focus_is_bigger_than_the_current_frame(self, monkeypatch):
@@ -922,7 +932,7 @@ class TestFocusFraming:
         out = _payload(iv.handler(action="orient", orientation="front", focus="Big"))
         # 400 across a 200-wide frame, 400 down a 100-tall one -> the DOWN axis needs 4x
         assert out["applied"]["frame_ratio"] == pytest.approx(4.0 * iv._FRAME_MARGIN)
-        assert iv.app.activeViewport.camera.viewExtents == pytest.approx(100.0 * 4.0 * iv._FRAME_MARGIN)
+        assert max(iv.app.activeViewport.camera.getExtents()[1:]) == pytest.approx(100.0 * 4.0 * iv._FRAME_MARGIN)
 
     def test_a_sketch_name_frames_the_sketch(self, monkeypatch):
         """Sketch work owns no occurrence, so an occurrence-only focus can never aim at it - and a
@@ -1042,9 +1052,9 @@ class TestFocusFraming:
         point = types.SimpleNamespace(name="W3Pt", boundingBox=make_bbox((5, 5, 0), (5, 5, 0)))
         _install(monkeypatch, [FakeOcc("Part", bbox=make_bbox((0, 0, 0), (2, 2, 2)))])
         monkeypatch.setattr(iv._common, "find_sketch", lambda d, n, remedy=None: (point, None))
-        before = iv.app.activeViewport.camera.viewExtents
+        before = max(iv.app.activeViewport.camera.getExtents()[1:])
         out = _payload(iv.handler(action="orient", orientation="top", focus="W3Pt", fit=fit))
-        assert iv.app.activeViewport.camera.viewExtents == before   # zoom untouched
+        assert max(iv.app.activeViewport.camera.getExtents()[1:]) == before   # zoom untouched
         assert "re-aimed" in out["note"] and "framed on" not in out["note"]
         if fit:
             assert out["applied"]["no_measurable_size"] is True
@@ -1661,6 +1671,15 @@ class TestNamedViews:
         assert row["projection"] == "orthographic"
         assert row["extents_cm"] == 55.0
 
+    def test_a_perspective_view_reports_no_extents(self, monkeypatch):
+        # a perspective camera has no window size to report; its eye and target carry the framing
+        import adsk.core
+        cam = Camera(eye=(1, 2, 3), target=(4, 5, 6), up=(0, 0, 1), perspective_angle=0.4,
+                     camera_type=adsk.core.CameraTypes.PerspectiveCameraType, view_extents=55.0)
+        _install(monkeypatch, [], named_views=FakeNamedViews([FakeNamedView("Angle", camera=cam)]))
+        row = _payload(iv.handler(action="list_views"))["named_views"][0]["camera"]
+        assert row["projection"] == "perspective" and row["extents_cm"] is None
+
     def test_list_views_camera_fields_are_independently_null(self, monkeypatch):
         # A camera whose eye will not read must not sink the row - target/up/projection/extents
         # still publish, and eye reads null rather than a fabricated point.
@@ -1863,6 +1882,27 @@ class TestSnapshotRestore:
         assert out["snapshot_kept"] is False and "failed_restores" not in out
         assert out["visual_style_restored"] is True and out["camera_restored"] is True
         assert key not in iv._SNAPSHOTS
+
+    def test_a_dropped_extent_restore_keeps_the_public_snapshot(self, monkeypatch):
+        _install(monkeypatch, [FakeOcc("A", full_path="A")], doc_name="ExtentRestore")
+        iv._SNAPSHOTS.clear()
+        vp = iv.app.activeViewport
+        vp._cam.setExtents(3.8, 3.2)
+        key = _payload(iv.handler(action="snapshot"))["saved_for"]
+        vp._cam.setExtents(100, 100)
+        normal_set = Viewport.camera.fset
+
+        def drop_sides(self, value):
+            sides = self._cam._sides
+            normal_set(self, value)
+            self._cam._sides = sides  # Injected restore assignment drops the extent pair.
+
+        monkeypatch.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_sides))
+        out = _payload(iv.handler(action="restore"))
+        assert out["camera_restored"] is False and out["snapshot_kept"] is True
+        assert out["failed_restores"] == ["camera"] and key in iv._SNAPSHOTS
+        assert "camera framing does not match" in out["note"]
+        assert vp.camera.getExtents() == [True, 100, 100]
 
     def test_a_camera_the_viewport_refuses_is_reported_and_keeps_the_snapshot(self, monkeypatch):
         a = FakeOcc("A", full_path="A", bulb=True)

@@ -1,12 +1,125 @@
 # Writing a test here
 
-Before calling any change done, run `py -3 tests/check_all.py`. It runs the generator checks, the
-suite, the live-run receipt check (`tests/live/VERIFIED_TOOLS.md`) and the live gate, and each
-failure names its repair; [tests/README.md](README.md) explains each stage.
+Before calling any change done, the lead schedules `py -3 tests/check_all.py` on the frozen
+candidate under a native lease. It runs generator checks, the suite, the live-run receipt check
+(`tests/live/VERIFIED_TOOLS.md`) and the live gate; [tests/README.md](README.md) explains each stage.
+Contributors run their focused offline checks and submit the native work still owed. A private
+checkout or successful unit run does not authorize a live gate or a full sweep.
 
 Root [AGENTS.md](../AGENTS.md) has the project rules. [tests/README.md](README.md) explains the
 harness: how `conftest.py` mocks `adsk`, the fakes, and which tools need tests at all. This file says
 which pattern a new test copies.
+
+## Contributing a live sweep case
+
+The sweep uses one working document per family. Cases share that document and declare their own
+inputs, names, retained handles, independent reads and cleanup. A second document needs a concrete
+reason: document lifecycle, a newly opened document's settings, destructive loss of history, or a
+condition the public tool can only read across an otherwise empty document. A familiar scratch
+helper, repeated names, unqualified body addresses and whole-document count assertions are reasons
+to repair the case's scope, not reasons to open another document. List every exception and the exact
+condition it protects in the handover. The runner owns closing family documents by handle, unsaved.
+
+**Where to put it.** `tests/live/verify_program.py` declares `_ACT_PROGRAM` and compiles `ACTS`;
+`verify_families.py` gives each act exactly one family through `FAMILY_GROUPS`. Find the existing
+family and add rows to its `verify_acts_*` module, normally through a named row factory. Geometry
+belongs in the appropriate family, even when a later CAM or showcase case consumes it. If adding
+an act, add its name/prefix ownership and preserve its family-local order. `STEPS` is the coverage
+union; it is not a place to append an unowned case. `STORY` describes the checks that actually run.
+
+**Rows.** Each row is `(tool, args, expect, save)`. `args` is a dictionary or a function taking the
+run context. `expect` is a strict payload predicate, `_refused(...)` for an expected refusal, or
+`"ok"` only for a call whose effect is checked separately. `save` is `None` or `(key, extractor)`;
+use `_recall(key, extractor)` when subsequent predicates also need the result in `_RECALL`.
+Retrieve required identities with `_ctx_get(ctx, key, explanation)`, which refuses missing input.
+Read payload fields in the tool's source; do not invent them from its name or from an adsk mock.
+
+**Inputs and independence.** A family must run by itself without objects left by another family.
+Reusable inputs are registered in `PRODUCER_ROWS`, with `PRODUCER_SLOTS` listing the handles they
+provide. `FAMILY_DEPENDENCIES` names the family's producers and inputs; act-specific producer
+changes go in `ACT_PRODUCER_OVERRIDES` or its conditional counterpart. `fixture_steps` supplies
+those producers in entitled and unentitled modes. Do not rerun the same expensive rig in each case
+when its geometry can be reused unchanged. Producer calls maintain inputs; they do not stamp the
+consumer tool. A precondition read and a fallback must consume only declared local inputs. An empty
+fallback earns no coverage; gates and skips must explain a real capability or scope condition.
+
+**Document and geometry scope.** `_family_rows(key)` in `verify_acts_sketch.py` supplies a document
+read, root activation, guarded `write`, `read`, and an exit read. Its `close()` closes the case's
+scope, not a document. Use it for ordinary geometry in the owned working document. Callers of the
+older `_scratch_rows` must justify the extra document. Give each case and control unique names;
+body names like `Body1` repeat between components, so retain a typed geometry handle or qualify the
+body as `Occurrence:1:Body1` (a root body uses the actual root component name). Qualify sketch/feature addresses where
+names repeat; a writer's generated name alone is not a globally unique selector. Return activation
+to the documented root context at case exit. Never save, close or change another family's document.
+
+**What to judge.** Follow a write with a separate read of its physical or persistent effect. For a
+18 x 10 x 6 mm box with a centred diameter-3 through-hole, the independent volume is
+`1080 - 13.5*pi` mm3, and its bounds remain 18 x 10 x 6 mm. Also read the hole's radius, axis and
+through extent, and prove a named neighbouring control unchanged. A successful write or its own
+volume echo is insufficient. Use `_measured(label, observed, valid)` to retain concrete evidence;
+attach `Independent` provenance only to a read that independently establishes the named write's
+effect, using the existing nearby case's target binding pattern. Inspect `judged_steps` and the
+family witness tests when choosing that pattern. Reject missing, ambiguous, truncated or non-finite
+measurements. Check units, accuracy and the actual selected target. For a refusal, retain baseline
+geometry/parameters/history before the attempted write and compare a fresh read afterwards. Do
+not replace a former numeric or control assertion with a count or a nonempty-list check.
+
+**Placement and view.** `verify_layout.py` owns chunk offsets (`_SLOTS`) and framing helpers;
+`verify_program.compile_program` applies family-local placement and sketch ordering. A component
+is one chunk so its overlapping operands move together. Keep unrelated cases in separate visible
+regions; never translate just one operand of an intersection or joint. Static dictionary rows can
+be placed by the compiler. Callable arguments and native script coordinates need an explicit
+frame audit; do not assume the compiler translated them. Use `_px(chunk, x)` and `_py(chunk, y)`
+for independent world-coordinate expectations when the chunk has an authored offset. Local sketch
+coordinates and occurrence transforms are different frames. Show the current subject and its
+control with `_watch`/the existing framing helpers or an explicit focused `view_set`; an overall
+fit of a document full of distant cases is not useful framing. Read back the camera and inspect
+PNG pixels under a lease when view quality is part of the claim. Do not change a global camera or
+preference without reading, restoring and checking it on a new document.
+
+**Example case structure.** Start with `_family_rows("coupon_doc")`; create and activate a uniquely
+named `ContributorCoupon` component; create `ContributorCouponProfile`; draw its rectangle;
+extrude it 6 mm; independently inspect the component and bank its bounds and volume. Acquire the
+hole face/axis from a scoped geometry read, create the centred through-hole, and independently read
+its volume and cylinder geometry. Inspect the control before and after. Finish with the helper's
+exit read. Each saved slot starts with `coupon_`. Add a focused unit for the effect predicate that
+accepts the actual correct payload and rejects a wrong volume, wrong target or changed control.
+Follow a comparable existing case for the tool's exact arguments; this outline is not a new API.
+
+**Receipts and cloud.** `verify_receipts.family_closures` binds the engine, selected authored rows,
+reachable checks and tool imports. Declaration selections retain their dependencies, including
+captured argument values; comments and line numbers are not checks. Shared engine changes still
+invalidate all families. Run identifiers, document handles and artifact paths do not prove source
+identity. A selected development run writes evidence only. A whole-family refresh can stamp only
+complete independent coverage, stable loaded/source identity and exact certified cleanup; manually
+editing a receipt is forbidden. Cloud cases use the run's admitted fresh destination, preserve the
+operator config and report saved leftovers and lineage. Extra saved source/host documents need
+explicit admission; an uncertain write is a stop, not a reason to retry or delete files.
+
+**Check and hand over.** Work in an isolated checkout. Reserve shared act/runner files with the
+lead and submit their changes as a transfer patch. Compile/import the real program without a
+transport; inspect the final family's rows, declared producers and document transitions. Run the
+existing focused program/receipt tests, update position pins when rows move, and run the existing
+lint list. Break the specific guard or predicate, prove the relevant check fails, and restore
+byte-identical source. A synthetic payload or mock proves logic only. Report the patch hash,
+changed acts/families, document exceptions, calls added/removed, mutation outcomes and native work
+still owed. Native premise checks and the affected family development run require a Coordinator
+lease: match the opening census before writes and close only owned unsaved documents by handle.
+Typical lead-scheduled commands are:
+
+```text
+py -3 -m pytest tests/unit/test_tool_verify_program.py tests/unit/test_family_receipts.py -q -p no:cacheprovider
+py -3 tests/live/tool_verify.py --acts "ACT 2 - SOLIDS" --run contributor-solids --trace
+py -3 tests/live/tool_verify.py --families solids --run refresh-solids --trace
+py -3 tests/live/tool_verify.py --check --full-scope
+```
+
+`--acts` exercises evidence without stamping; `--families` refreshes complete families after the
+required bootstrap and lifecycle guards. Do not launch these live commands without a lease or
+under another run. A stop, failed strict row, uncertain dispatch or unexpected census change must
+be retained and reported. The lead freezes the reviewed union, runs its pre-cases and acceptance,
+and commits it. Required `check_all.py` includes a live gate and belongs to that scheduled run;
+your private offline tests do not authorize that gate or a full sweep.
 
 ## The canonical pattern: every new test follows it
 
@@ -102,5 +215,5 @@ asserting an implementation detail -> fix the test).
 
 `py -3 tests/gen_all.py` rebuilds everything under `tests/generated/`, plus `tests/api_surface.py`,
 the marked blocks in root AGENTS.md, tools/AGENTS.md and tests/README.md, and the
-`parametric-cad-design` skill package; `--check` fails if anything is stale, and
+readable `commands/mcpServer/guidance/parametric_cad_design.md`; `--check` fails if anything is stale, and
 `test_generated_docs_current.py` enforces it.

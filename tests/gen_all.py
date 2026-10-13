@@ -1,15 +1,11 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Run every doc generator (or every --check) in ONE process.
+"""Run all repository generators or their freshness checks in one process.
 
-Each generator pays a full mocked-registry load when run as its own process; importing them here
-means that load happens once, so the staleness check stays fast. Same contracts as running them
-individually: writes tests/generated/* (plus the AGENTS.md spliced maps and the guidance-generated
-Claude skill), or with --check exits 1 naming what is stale.
-
-    py -3 tests/gen_all.py           # regenerate everything
-    py -3 tests/gen_all.py --check   # repository artifacts; API snapshot on its recorded build
+Generators share one mocked-registry load. Outputs include generated maps, the API surface,
+and readable guidance; the guidance generator can also export an optional skill package.
+--check names stale outputs without rewriting them.
 """
 
 import argparse

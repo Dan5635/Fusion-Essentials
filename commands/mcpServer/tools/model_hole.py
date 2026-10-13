@@ -589,7 +589,7 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
     thread_info = None
     if tap:
         thread_info, carried_by, terr = _threads.resolve_thread_info(
-            comp, tap.strip(), internal=True, thread_type=thread_type, thread_class=thread_class)
+            tap.strip(), internal=True, thread_type=thread_type, thread_class=thread_class)
         if terr:
             return error(terr)
         if tap_sizes_hole:

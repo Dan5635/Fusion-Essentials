@@ -1128,6 +1128,39 @@ class FakeFeature:
         return self._delete_ok
 
 
+@fusion_fake(scenario_double="an injected mirror plane-reset scene with unread and dropped-write "
+                            "faults; no new measured Fusion shape")
+class MirrorPlaneResetScene(FakeFeature):
+    """A shared feature scene with explicit mirror plane/reset/read/drop faults."""
+
+    def __init__(self, mirror, **kwargs):
+        super().__init__(**kwargs)
+        self._mirror = dict(mirror, plane_writes=[], combine_writes=[])
+
+    @property
+    def mirrorPlane(self):
+        return self._mirror["plane"]
+
+    @mirrorPlane.setter
+    def mirrorPlane(self, value):
+        self._mirror["plane_writes"].append(value)
+        self._mirror["plane"] = value
+        # This configured setter injects the plane-reset premise; faults are explicit below.
+        self._mirror["combine"] = False
+
+    @property
+    def isCombine(self):
+        if not self._mirror.get("readable", True):
+            raise RuntimeError("injected unread combine flag")
+        return self._mirror["combine"]
+
+    @isCombine.setter
+    def isCombine(self, value):
+        writes = self._mirror["combine_writes"]
+        writes.append(value)
+        if len(writes) not in self._mirror.get("drop_writes", ()):
+            self._mirror["combine"] = value
+
 @fusion_fake(live_type="BaseFeature",
              facts=("shape-dump-timeline-world", "basefeature-edit-scope"))
 class FakeBaseFeature:

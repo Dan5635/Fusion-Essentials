@@ -148,46 +148,6 @@ class FakeRuleFilletInput:
         return not self.refuse
 
 
-# The sentinel a fresh ChamferFeatureInput carries, so "never assigned" is distinguishable from
-# "assigned Fusion's own default member".
-_UNSET_CORNER = "corner:api-default"
-
-
-class FakeChamferInput:
-    """ChamferFeatureInput. Each setTo* returns its documented bool, and cornerType is a PROPERTY -
-    so the SWIG trap applies to it: an assignment the proxy drops leaves the API default in place
-    and only a read-back tells. `swallow_corner_set` models that."""
-
-    swallow_corner_set = False
-
-    def __init__(self, edges, tangent):
-        self.edges = edges
-        self.tangent = tangent
-        self.distance = None
-        self.two_distances = None
-        self.distance_and_angle = None
-        self.refuse = None            # the name of the setTo* that answers False
-        self._corner = _UNSET_CORNER
-    def setToEqualDistance(self, val):
-        self.distance = val
-        return self.refuse != "equal"
-    def setToTwoDistances(self, val1, val2):
-        self.two_distances = (val1, val2)
-        return self.refuse != "two"
-    def setToDistanceAndAngle(self, distance, angle):
-        self.distance_and_angle = (distance, angle)
-        return self.refuse != "angle"
-
-    @property
-    def cornerType(self):
-        return self._corner
-
-    @cornerType.setter
-    def cornerType(self, value):
-        if not self.swallow_corner_set:
-            self._corner = value
-
-
 class FakeFullRoundFaceSets:
     """FullRoundFilletFaceSets.add(centerFace, sideOneFaces, sideTwoFaces, areAutomaticSideFaces).
     The side sets are plain Python lists, and an EMPTY one raises 'invalid argument sideOneFaces'
@@ -299,55 +259,9 @@ class FakeFilletFeatures:
         return self.rule_result
 
 
-class FakeChamferFeatures:
-    """A live ChamferFeature reports what it BUILT, and that is the only signal a wrong corner type
-    or angle leaves - all three corner types build the same face count. So the created feature
-    carries cornerType, and (for a distance-and-angle chamfer) chamferType plus a
-    chamferTypeDefinition whose .distance/.angle are ModelParameters in CM and RADIANS. The fake
-    echoes what the input took; the *_override knobs model the platform building something else."""
-
-    def __init__(self):
-        self.last = None
-        self.result = type("F", (), {"name": "Chamfer1"})()
-        self.refuse = None            # 'equal' | 'two' | 'angle' - which setTo* answers False
-        self.added = 0
-        self.corner_override = None       # (value,) - what the FEATURE reports instead
-        self.definition_override = None   # (distance_cm, angle_rad) - ditto, or False for absent
-        self.chamfer_type_override = None
-        # applied when a feature is added, so a test can model the geometry actually moving
-        self.on_add = None
-    def createInput(self, edges, tangent):
-        self.last = FakeChamferInput(edges, tangent)
-        self.last.refuse = self.refuse
-        return self.last
-    def add(self, inp):
-        import adsk.fusion
-        self.added += 1
-        if self.on_add:
-            self.on_add()
-        if self.result is None:
-            return self.result
-        if self.corner_override is not False:      # False = the feature does not answer cornerType
-            self.result.cornerType = (self.corner_override[0] if self.corner_override
-                                      else inp.cornerType)
-        if inp.distance_and_angle is not None:
-            self.result.chamferType = (
-                self.chamfer_type_override[0] if self.chamfer_type_override
-                else getattr(adsk.fusion.ChamferTypes, "DistanceAndAngleChamferType"))
-            if self.definition_override is False:
-                self.result.chamferTypeDefinition = None
-            else:
-                dist_cm, angle_rad = (self.definition_override or
-                                      (inp.distance_and_angle[0][1], inp.distance_and_angle[1][1]))
-                self.result.chamferTypeDefinition = type("D", (), {
-                    "distance": type("P", (), {"value": dist_cm})(),
-                    "angle": type("P", (), {"value": angle_rad})()})()
-        return self.result
-
-
 def _component(bodies, ff, cf):
-    """The active component: its bodies, plus the fillet/chamfer feature collections the handler
-    builds through."""
+    """The active component: its bodies, plus the fillet feature collection the handler builds
+    through. No fillet call reaches the chamfer collection, so `cf` is None here."""
     comp = MakeComp(name="Comp")
     comp.bRepBodies = _NamedCollection(bodies)
     comp.features = type("F", (), {"filletFeatures": ff, "chamferFeatures": cf})()
@@ -355,7 +269,7 @@ def _component(bodies, ff, cf):
 
 
 def _install(bodies):
-    ff = FakeFilletFeatures(); cf = FakeChamferFeatures()
+    ff = FakeFilletFeatures(); cf = None
     install(fl, make_design(comp=_component(bodies, ff, cf)))
     import adsk.fusion, adsk.core
     # BodyRef(kind='solid') does isinstance(body, adsk.fusion.BRepBody) + checks isSolid — make the
@@ -390,7 +304,7 @@ def _install_edge_handles(handle_map, timeline=None):
     reads an edge/face handle through, before its isinstance(BRepEdge/BRepFace) gate. `timeline` is
     the marker the resolved-edge-set read rolls and puts back; a design without one is the shape
     where that read declines."""
-    ff = FakeFilletFeatures(); cf = FakeChamferFeatures()
+    ff = FakeFilletFeatures(); cf = None
     install(fl, make_design(comp=_component([], ff, cf), tokens=handle_map, timeline=timeline))
     import adsk.fusion, adsk.core
     adsk.fusion.BRepEdge = BRepEdge

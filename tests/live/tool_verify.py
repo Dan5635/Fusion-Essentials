@@ -19,6 +19,11 @@ import time   # noqa: F401 - surface: a consumer stubs tool_verify.time.sleep
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import cloud_config  # noqa: E402
+
+if __name__ == "__main__":
+    cloud_config.bootstrap(sys.argv[1:])
+
 import verify_core  # noqa: E402
 
 from verify_core import (  # noqa: F401

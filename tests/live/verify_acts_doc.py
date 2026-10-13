@@ -1556,12 +1556,23 @@ def _ap_faces_args(ctx):
 
 def _appearance_library_rows():
     """Assign a library appearance to a body and to one face, and clear each override again."""
-    from verify_acts_sketch import _boxed, _scratch_rows, _script_reply
-    rows, write, read, close = _scratch_rows("ap_doc")
+    from verify_acts_sketch import _boxed, _family_rows, _script_reply
+    rows, write, read, close = _family_rows("ap_doc")
+    control_geometry = {"target": "EditTarget:1", "include": ["default", "mass"],
+                        "per_body": True, "accuracy": "very_high", "units": "mm"}
+    control_appearance = {"target": "EditTarget:1:Body1", "include": ["appearance"]}
+    read("model_inspect", control_geometry,
+         _retire_compare("ap_neighbour_geometry", _retire_material_state, False))
+    read("model_inspect", control_appearance, _ap_body_reads(),
+         ("ap_neighbour_appearance", _recall("ap_neighbour_appearance", lambda p: (
+             p["appearance"]["bodies"][0]["appearance"],
+             p["appearance"]["bodies"][0]["appearance_source"]))))
+    write("model_create_component", {"name": "AppearanceLibraryCoupon", "activate": True,
+                                     "x": 100}, _made_component)
     _boxed(write, "ApBase", (0, 0, 20, 10), 8, "ap_body")
-    body = lambda c: _ctx_get(c, "ap_body", "the box")
+    body = lambda c: "AppearanceLibraryCoupon:1:" + _ctx_get(c, "ap_body", "the box")
     inspect = lambda c: {"target": body(c), "include": ["appearance"]}
-    for key, at in (("ap_top", [10, 5, 8]), ("ap_side", [10, 0, 4])):
+    for key, at in (("ap_top", [110, 5, 8]), ("ap_side", [110, 0, 4])):
         read("find_geometry", lambda c, at=at: {"target": body(c), "kind": "planar_face",
                                                 "nearest_to": at, "max_results": 1},
              lambda p: len(p.get("matches") or []) == 1, _fg(key))
@@ -1604,6 +1615,10 @@ def _appearance_library_rows():
           and p.get("appearance_source") == "MaterialAppearanceSource", clear=True)
     read("sys_execute_script", _ap_faces_args, plain)
     read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    write("view_set", {"action": "orient", "focus": ["AppearanceLibraryCoupon:1"], "fit": True})
+    read("model_inspect", control_geometry,
+         _retire_compare("ap_neighbour_geometry", _retire_material_state, True))
+    read("model_inspect", control_appearance, _ap_body_reads(recall="ap_neighbour_appearance"))
     close()
     return rows
 

@@ -8,15 +8,13 @@ builder hands start_server, so what is asserted here is what a client that speak
 receives - the capability advertised only when the content actually loaded, one listing row without
 the body in it, the read, and the two refusal codes.
 
-The parity class holds the served Markdown against the committed skill minus its frontmatter: one
-authored render with two consumers, rather than two renders that happen to agree today.
+The parity class holds the served Markdown against the readable guidance document.
 """
 
 import asyncio
 import hashlib
 import json
 import os
-import re
 import sys
 
 import pytest
@@ -29,7 +27,7 @@ if COMMANDS_DIR not in sys.path:                   # the flat package root the a
 from mcpServer.guidance import loader, render, resources  # noqa: E402
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_SKILL_PATH = os.path.join(_REPO, ".claude", "skills", "parametric-cad-design", "SKILL.md")
+_GUIDANCE_PATH = os.path.join(_REPO, "commands", "mcpServer", "guidance", "parametric_cad_design.md")
 
 # The addresses this server publishes: the whole document, then one per non-kernel section (the
 # kernel is IN every reading of the document, so it has no address of its own). Written out here
@@ -483,34 +481,29 @@ class TestTheCatalogBuilder:
         assert "gone.json" in str(exc.value)
 
 
-# ── parity: the resource body IS the committed skill's body ─────────────────
+# ── parity: the resource body IS the readable document ──────────────────────
 
 class TestTheServedTextIsTheCommittedPackage:
     def _committed_body(self):
-        with open(_SKILL_PATH, encoding="utf-8") as fh:
-            committed = fh.read()
-        match = re.match(r"^---\n.*?\n---\n+", committed, re.S)
-        assert match, "the committed skill lost its frontmatter block"
-        return committed[match.end():]
+        with open(_GUIDANCE_PATH, encoding="utf-8") as fh:
+            return fh.read()
 
-    def test_each_served_section_equals_the_committed_playbook_file(self, served):
-        # the two channels an agent can reach a playbook through - the resource read and the file
-        # on disk - are one render, not two that agree today.
+    def test_each_served_section_equals_the_explicitly_exported_playbook(self, served, tmp_path):
+        doc, _sha = loader.load()
+        gen_guidance.write_package(doc, str(tmp_path))
         for section_id in loader.SECTION_IDS:
             if section_id == loader.KERNEL:
                 continue
             text = _result(_request(served, "resources/read",
                                     {"uri": f"{URI}/{section_id}"}))["contents"][0]["text"]
-            with open(gen_guidance.playbook_path(section_id), encoding="utf-8") as fh:
+            with open(gen_guidance.playbook_path(section_id, str(tmp_path)), encoding="utf-8") as fh:
                 assert fh.read() == _unstamped(text), section_id
 
-    def test_the_committed_skill_is_the_map_while_the_resource_serves_the_document(self, served):
-        # the SKILL.md an agent carries is a MAP: the kernel plus where to fetch the rest. The
-        # resource channel is where the whole document lives, so they are NOT the same text.
+    def test_the_readable_document_equals_the_served_document_body(self, served):
         doc, _sha = loader.load()
-        assert self._committed_body() == render.map_text(doc)
+        assert self._committed_body() == render.body(doc)
         served_text = _result(_request(served, "resources/read", {"uri": URI}))["contents"][0]["text"]
-        assert _unstamped(served_text) == _body() != self._committed_body()
+        assert _unstamped(served_text) == _body() == self._committed_body()
 
     def test_the_frontmatter_a_skill_loader_needs_is_not_served(self, served):
         text = _result(_request(served, "resources/read", {"uri": URI}))["contents"][0]["text"]

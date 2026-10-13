@@ -1529,8 +1529,8 @@ def _slice_3mf(p):
 def _additive_slice_rows():
     """An FFF slice generated through the public tools: pathless before, a valid toolpath after."""
     from verify_acts_cam import _face_op_settled
-    from verify_acts_sketch import _scratch_rows
-    rows, write, read, close = _scratch_rows("as_doc")
+    from verify_acts_sketch import _family_rows
+    rows, write, read, close = _family_rows("as_doc")
     write("sketch_create", {"plane": "xy", "name": "AsSk"})
     write("sketch_add_geometry", {"sketch_name": "AsSk", "geometry": [
         {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 30, "y2": 20}]})

@@ -128,7 +128,7 @@ generates both from `_inputs.py` and each helper's `MAP_BLURB`; don't edit betwe
 | `_sys_common` | the Fusion SELECTION substrate: _selection_record - the ONE per-entity record sys_request_selection and sys_get_selection both publish (a _classify() dispatch by runtime type, the click point, and a find_geometry-style 'handle' for a face/edge/vertex); RETURNS - the handle output both declare; _ui - the userInterface read, None when there is none |
 | `_threads` | resolve_thread_info - the ONE thread-table walk turning a bare designation ('M5x0.8', '1/4-20 UNC') into a ThreadInfo, shared by model_hole's tap and model_thread; also returns every thread type carrying that designation |
 | `_tsm` | the T-spline cage codec, pure Python: primitive/box/cylinder - the cage builders; validate - the measured-rule refusal naming a face, edge or vertex; emit - a cage as TSM text; parse - a read-back as (cage or None, census, reasons); compare - a read-back against what was emitted; canonical_hash - a cage's record identity |
-| `_view_common` | view_direction/look_direction/up_vector/is_ortho_face/apply_camera/apply_named_view/restore_camera/camera_restored/capture_png_b64 - camera math + capture; standoff_distance/STANDOFF_FALLBACK_CM - standoff; activate_workspace - activate, read back; DISPLAY_FOLDERS/all_display_components - clutter; keep_visible/all_bodies/same_body/isolate_for_fit/restore_message/focus_box - one-subject frame |
+| `_view_common` | view_direction/look_direction/up_vector/is_ortho_face/apply_camera/apply_named_view/restore_camera/camera_frame/camera_restored/capture_png_b64 - camera; view_extent/set_view_extent/scale_view/show_extent - zoom; standoff_distance/STANDOFF_FALLBACK_CM; activate_workspace; DISPLAY_FOLDERS/all_display_components; keep_visible/all_bodies/same_body/isolate_for_fit/restore_message/focus_box - frame |
 | `_write_guard` | _active_identity + one_open_document - document identity reads; document_key - store key; document_handle + resolve_document_handle - exact session addresses until close/reload; prune_closed_documents + on_key_evicted/on_key_renamed - store lifecycle hooks |
 <!-- END GENERATED CATALOG -->
 
@@ -309,9 +309,10 @@ Build rules for a read:
 
 ## Verify on a real document before calling it done
 
-After tests pass: `sys_reload_addin` (it auto-discovers new modules), wait for
-`127.0.0.1:37182/health`, then run the handler on a live document. The server handler is live at
-once, but the client may keep a stale schema until it reconnects; see CONTRIBUTING.md.
+After tests pass and you hold the Fusion lease: `sys_reload_addin` (it auto-discovers new modules),
+read `/health` at the server address in the repo's MCP config and require loaded_matches_source
+true, then run the handler on an owned scratch document. The client may keep a stale schema until
+it reconnects; see CONTRIBUTING.md.
 
 ## Destructive / outward actions
 

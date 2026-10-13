@@ -80,6 +80,25 @@ class TestPrompt:
         assert prompt.index("Build a widget") < prompt.index(proctor.SKILL_HEADER) < prompt.index("PLAN FIRST")
         assert "name: practice" not in prompt
 
+    def test_stock_prompt_never_resolves_optional_guidance(self, scenario, monkeypatch):
+        def refuse(name):
+            raise AssertionError(f"stock launch resolved skill {name}")
+        monkeypatch.setattr(proctor, "skill_body", refuse)
+        path, preamble = scenario
+        _, _, body = proctor.read_scenario(str(path))
+        assert proctor.build_prompt(body, "P", "F", preamble_path=str(preamble)) == (
+            "PREAMBLE RULES\n\nBuild a widget and save it into project P, folder F.\n")
+
+    def test_optional_design_practice_renders_the_full_document_at_runtime(self, scenario):
+        from mcpServer.guidance import loader, render
+        doc, _sha = loader.load()
+        path, preamble = scenario
+        _, _, body = proctor.read_scenario(str(path))
+        prompt = proctor.build_prompt(body, "P", "F", skill="parametric-cad-design",
+                                      preamble_path=str(preamble))
+        assert prompt.split(proctor.SKILL_HEADER + "\n\n", 1)[1] == render.body(doc)
+        assert proctor.skill_body("parametric-cad-design") != render.map_text(doc).strip()
+
     def test_a_chain_stage_receives_the_newest_prior_report_after_its_brief(self, scenario, tmp_path):
         path, preamble = scenario
         set_dir = tmp_path / "set"

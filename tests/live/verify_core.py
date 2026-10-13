@@ -426,6 +426,8 @@ def _cloud_tier_probe():
     act may reach a create on a maybe. None is kept for the hub read alone, which decides nothing
     about a path. Each answer prints the sentence an operator acts on, since the receipt row carries
     only the verdict."""
+    if cloud_config.RUN_BINDING is not None:
+        return cloud_config.ensure_run_destination(facade("call"))
     config, problem = cloud_config.load_config()
     if problem:
         print("cloud tier: " + problem)

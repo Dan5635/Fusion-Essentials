@@ -666,6 +666,10 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
 
     # Tool and preset assignment precede parameter writes so explicit overrides are final.
     op_name = safe(lambda: op.name) or (operation or "").strip()
+    had_error = read_flag(lambda: op.hasError) if wanted else None
+    if wanted and had_error is None:
+        return error(f"Operation '{op_name}' hasError did not read before the edit; no write was "
+                     "attempted. Re-read with cam_get(include=['operations']).")
     pre_landed = []
     pre_notes = []
     pre_records = {}
@@ -780,14 +784,22 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
             applied=_restored_clause(changed, resolved, priors, op)) + _LOCKED_REMEDY
                     + _applied_clause(pre_landed))
 
-    # Three ways a write is not a success: it did not evaluate, it did not move, it will not read
-    # back. Restore EVERY parameter set in this call, re-read each one, and name what each one did.
-    if eval_failures or no_takes or unreadable:
+    after_error = read_flag(lambda: op.hasError) if changed else had_error
+    new_error = had_error is False and after_error is True
+    unknown_error = bool(changed) and after_error is None
+    # Parameter reads alone do not certify an edit that newly errors the operation.
+    if eval_failures or no_takes or unreadable or new_error or unknown_error:
         # Read once every write has landed and before the restore: a mode write can disable a row.
         disabled = {n for n, _e, _why in eval_failures
                     if read_flag(lambda n=n: resolved[n].isEnabled) is False}
         restored, valued, restore_failed = _restore(changed, resolved, priors)
         parts = []
+        if new_error:
+            parts.append("the edit introduced an operation error (Operation.hasError changed "
+                         "from False to True)")
+        if unknown_error:
+            parts.append("Operation.hasError did not read after the edit, so the change is "
+                         "UNCONFIRMED")
         if eval_failures:
             detail = "; ".join(f"'{n}' = '{e}' ({why})" + (_DISABLED_CLAUSE if n in disabled else "")
                                for n, e, why in eval_failures)
@@ -818,6 +830,9 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
         else:
             rolled = (f"Rolled back all {len(changed)} parameter(s), each restored expression "
                       f"re-read: {_reread_rows(restored)}.")
+        if (new_error or unknown_error) and not valued:
+            rolled += (" Operation.hasError reads " + _flag_word(read_flag(lambda: op.hasError))
+                       + " after restore.")
         return error(f"Operation '{operation}': {'; '.join(parts)}. {rolled} {remedy}"
                      + _applied_clause(pre_landed))
 

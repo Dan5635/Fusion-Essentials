@@ -213,6 +213,22 @@ class TestPerViewFailureIsolation:
 
 
 class TestCameraRestore:
+    def test_a_dropped_extent_restore_is_reported_with_the_captured_image(self, rig, monkeypatch):
+        rig.vp._cam = Camera()
+        rig.vp._cam.setExtents(3.8, 3.2)
+        normal_set = Viewport.camera.fset
+
+        def drop_restore(self, value):
+            normal_set(self, value)
+            if value._sides == (3.8, 3.2):
+                self._cam._sides = (100, 100)  # Injected extent loss on restore only.
+
+        monkeypatch.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_restore))
+        result = cv.handler(views=["front"])
+        assert result["isError"] is False and len(_images(result)) == 1
+        assert "camera framing does not match" in _texts(result)[0]
+        assert rig.vp.camera.getExtents() == [True, 100, 100]
+
     def test_original_camera_is_reasserted_after_a_successful_run(self, rig):
         before = camera_state(rig.vp._original_camera)
         cv.handler(views=["front", "top"])

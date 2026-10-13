@@ -10,6 +10,79 @@ from conftest import load_tool_verify as _load_verify
 
 
 class TestToolVerifyProgram:
+    @pytest.mark.parametrize("capture", [0, 1, 2])
+    def test_partial_edit_native_baselines_are_saved_through_real_runner(self, monkeypatch, capture):
+        f = _load_verify()
+        monkeypatch.setitem(sys.modules, "tool_verify", f)
+        cam = sys.modules["verify_acts_cam"]
+        rows = [r for r in cam._PARTIAL_EDIT_ROWS if r[0] == "sys_execute_script" and r[3] is not None]
+        params = ({"multiAxisMachiningType":("'three_axis'", "three_axis"),
+                   "toolAxisMode":(cam._DR_DERIVED,"vertical"), "tiltTool":("false",False),
+                   "useShaftAndHolder":("tiltTool",False), "tiltToolMode":("derived","automatic")},
+                  {"roughingType":("'offset'","offset"), "stepover":("tool_diameter * 0.5",0.6)},
+                  {"multiAxisMachiningType":("'five_axis'","five_axis"),
+                   "toolAxisMode":(cam._DR_DERIVED,"vertical"),"tiltToolMode":("derived","automatic")})
+        payload = {"id":3,"operation":(cam._PE_OP,cam._MD_OP,cam._DR_OP)[capture],
+                   "has_error":capture == 1,"tool_sha256":"a"*64,
+                   "parameters":{n:{"expression":e,"value":v,"error":"","enabled":True,"editable":True}
+                                 for n,(e,v) in params[capture].items()},
+                   "value":"vertical","expression":cam._DR_DERIVED,"tilt":"automatic","error":""}
+        monkeypatch.setattr(f,"call",lambda tool,args:(False,payload))
+        key = ("partial_edit_before","partial_mode_before","derived_edit_before")[capture]
+        monkeypatch.setitem(cam._RECALL,key,None)
+        ctx = {}
+        result = f.run_steps([rows[capture]],ctx,sleep_s=0)
+        assert result[0][1] == "pass"
+        assert ctx[key] == cam._RECALL[key] == payload
+
+    def test_partial_edit_restore_requires_identity_flags_values_and_exact_other_expressions(self, monkeypatch):
+        import copy
+        _load_verify()
+        cam = sys.modules["verify_acts_cam"]
+        def row(expression, value):
+            return {"expression":expression,"value":value,"error":"","enabled":False,"editable":False}
+        before = {"id":3,"operation":cam._PE_OP,"tool_sha256":"a"*64,"has_error":False,
+                  "parameters":{
+                      "multiAxisMachiningType":row("'three_axis'","three_axis"),
+                      "toolAxisMode":row(cam._DR_DERIVED,"vertical"),
+                      "tiltTool":row("false",False),"useShaftAndHolder":row("tiltTool",False),
+                      "tiltToolMode":row("derived","automatic")}}
+        monkeypatch.setitem(cam._RECALL,"partial_edit_before",before)
+        after = copy.deepcopy(before)
+        after["parameters"]["toolAxisMode"]["expression"] = "'vertical'"
+        assert cam._partial_compound_restored(after)
+        for key,value in (("id",4),("tool_sha256","b"*64),("operation","Other"),("has_error",True)):
+            bad = copy.deepcopy(after); bad[key] = value
+            with pytest.raises(AssertionError):
+                cam._partial_compound_restored(bad)
+        for key,value in (("value",True),("expression","true"),("enabled",None),("error","invalid")):
+            bad = copy.deepcopy(after); bad["parameters"]["tiltTool"][key] = value
+            with pytest.raises(AssertionError):
+                cam._partial_compound_restored(bad)
+        bad = copy.deepcopy(after); del bad["parameters"]["toolAxisMode"]
+        with pytest.raises(AssertionError):
+            cam._partial_compound_restored(bad)
+
+    def test_partial_existing_error_control_requires_changed_stepover_and_exact_restore(self, monkeypatch):
+        import copy
+        _load_verify()
+        cam = sys.modules["verify_acts_cam"]
+        before = {"id":5,"operation":cam._MD_OP,"tool_sha256":"a"*64,"has_error":True,
+                  "parameters":{
+                      "roughingType":{"expression":"'offset'","value":"offset","error":"","enabled":True,"editable":True},
+                      "stepover":{"expression":"tool_diameter * 0.5","value":0.6,"error":"","enabled":True,"editable":True}}}
+        monkeypatch.setitem(cam._RECALL,"partial_mode_before",before)
+        after = copy.deepcopy(before)
+        after["parameters"]["stepover"].update(expression="2.4 mm",value=0.24)
+        assert cam._partial_existing_error_read(after)
+        assert cam._partial_existing_error_read(before,restored=True)
+        for key,value in (("value",0.6),("expression","tool_diameter * 0.5"),("error","bad")):
+            bad = copy.deepcopy(after); bad["parameters"]["stepover"][key] = value
+            with pytest.raises(AssertionError):
+                cam._partial_existing_error_read(bad)
+        with pytest.raises(AssertionError):
+            cam._partial_existing_error_read(after,restored=True)
+
     def test_nested_insertion_witness_requires_the_frame_limit(self):
         _load_verify()
         cloud = sys.modules["verify_acts_cloud"]
@@ -300,3 +373,98 @@ class TestToolVerifyLayout:
                         skewed.append(
                             f"{name}: {before[0]} moved its {axis} by {sorted(moves)}")
         assert not skewed, ("placement is not a pure translation:\n  " + "\n  ".join(skewed))
+
+
+def test_family_case_helpers_retain_the_owned_document_and_reject_another(monkeypatch):
+    _load_verify()
+    import verify_acts_sketch as sketch
+    rows, write, read, close = sketch._family_rows("case_doc")
+    monkeypatch.setitem(sketch._RECALL, "case_doc", "session:owned")
+    write("sketch_create", {"name": "OneCase", "plane": "xy"})
+    read("sketch_get", {"sketch_name": "OneCase"}, "ok")
+    close()
+    assert not {"doc_new", "doc_close", "doc_activate"} & {row[0] for row in rows}
+    args = next(row[1] for row in rows if row[0] == "sketch_create")
+    assert args({"case_doc": "session:owned"})["expect_document"] == "session:owned"
+    owned = {"name": "Owned", "document_handle": "session:owned", "has_data_file": False}
+    census = {"active": owned, "open_count": 1,
+              "open_documents": [dict(owned, is_active=True)]}
+    assert rows[-1][2](census)
+    wrong = dict(owned, document_handle="session:other")
+    with pytest.raises(AssertionError, match="owned family document unchanged"):
+        rows[-1][2](dict(census, active=wrong,
+                        open_documents=[dict(wrong, is_active=True)]))
+
+
+def test_fff_and_appearance_families_have_no_authored_document_lifecycle():
+    _load_verify()
+    import verify_acts_doc as doc
+    import verify_acts_hub as hub
+    import verify_acts_sketch as sketch
+    for rows in (hub._FFF_EXPORT, doc._SMALL_EDITS, sketch._paging_rows(),
+                 sketch._anchor_retention_rows(), sketch._pattern_preflight_rows()):
+        assert not {"doc_new", "doc_close", "doc_activate"} & {row[0] for row in rows}
+    rows = doc._appearance_library_rows()
+    targets = [row[1]({"ap_body": "Body1"})["target"]
+               for row in rows if row[0] == "model_inspect"]
+    assert "AppearanceLibraryCoupon:1:Body1" in targets
+    assert targets.count("EditTarget:1") == 2
+    assert targets.count("EditTarget:1:Body1") == 2
+
+
+def test_joined_mirror_witness_rejects_separate_bodies_with_the_same_total_mass(monkeypatch):
+    _load_verify()
+    import verify_acts_feature_edit as edits
+    key = "mirror_volume_guard"
+    monkeypatch.setitem(edits._RECALL, key, None)
+
+    def payload(volumes):
+        return {"units": "mm", "min_point": {"x": -12, "y": 0, "z": 0},
+                "max_point": {"x": 107, "y": 8, "z": 6},
+                "mass": {"accuracy_used": "very_high", "volume": sum(volumes),
+                         "center_of_mass": [8, 4, 3], "per_body_truncated": False,
+                         "per_body_count": len(volumes),
+                         "per_body": [{"body": f"Body{i}", "is_solid": True,
+                                       "lump_count": 1, "volume": volume}
+                                      for i, volume in enumerate(volumes)]}}
+
+    predicate = edits._shape_capture(key, "joined mirror", [105, 1152])
+    assert predicate(payload([105, 1152]))
+    with pytest.raises(AssertionError, match="independent body census"):
+        predicate(payload([105, 576, 576]))
+
+
+def test_thread_material_witness_rejects_unchanged_or_unread_material(monkeypatch):
+    _load_verify()
+    import verify_acts_model_details as details
+    key = "thread_material_witness"
+
+    def payload(volume, accuracy="very_high"):
+        return {"units": "mm", "min_point": {"x": 0, "y": 0, "z": 0},
+                "max_point": {"x": 10, "y": 10, "z": 25},
+                "mass": {"volume": volume, "center_of_mass": [5, 5, 12.5],
+                         "accuracy_used": accuracy}}
+
+    monkeypatch.setitem(details._RECALL, key, details._thread_body_facts(payload(1900)))
+    predicate = details._thread_material_cut(key)
+    assert predicate(payload(1700))
+    assert predicate(payload(1899.98))
+    for wrong in (payload(1900), payload(1899.99), payload(1899.999), payload(0),
+                  payload(1700, "low"), {}):
+        with pytest.raises(AssertionError, match="independently read material"):
+            predicate(wrong)
+    for baseline in (payload(1900, "low"), {}):
+        facts = details._thread_body_facts(baseline)
+        assert facts is None
+        monkeypatch.setitem(details._RECALL, key, facts)
+        with pytest.raises(AssertionError, match="independently read material"):
+            predicate(payload(1700))
+    for bank in ("thread_right_before", "thread_material_before", "thread_control_before"):
+        row = next(row for row in details._DETAILS if row[3] and row[3][0] == bank)
+        monkeypatch.setitem(details._RECALL, bank, None)
+        for baseline in (payload(1900, "low"), {}):
+            assert row[2](baseline) is False
+            assert row[3][1](baseline) is None
+            assert details._RECALL[bank] is None
+        assert row[2](payload(1900)) is True
+        assert row[3][1](payload(1900)) == details._thread_body_facts(payload(1900))

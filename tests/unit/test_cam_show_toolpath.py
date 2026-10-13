@@ -13,6 +13,7 @@ conftest), so the fake ops flow through unchanged.
 import json
 import math
 import types
+import pytest
 
 from conftest import (Camera, FakeApplication, FakeFusionDocument, FakeProducts, FakeSelections,
                       Viewport, _NamedCollection, load_tool, make_bbox, make_cam)
@@ -841,6 +842,82 @@ class TestFitWidensToStock:
     def _body(lo, hi):
         return types.SimpleNamespace(boundingBox=make_bbox(lo, hi))
 
+    @pytest.fixture
+    def dropped_frame(self, monkeypatch):
+        import adsk.core
+        import adsk.cam
+        from conftest import FakePoint
+
+        def install(stock, projection, drop):
+            model = self._body((0, 0, 0), (10, 6, 2))
+            setup = FakeSetup("S1", [FakeOp("Face1", shown=False)], is_active=True,
+                              models=[model], stock_solids=([self._body((-6, -6, -1), (16, 12, 3))]
+                                                          if stock else []))
+            cam = make_cam(setup)
+            kind = (adsk.core.CameraTypes.PerspectiveCameraType if projection == "perspective"
+                    else adsk.core.CameraTypes.OrthographicCameraType)
+            vp = Viewport(camera=Camera(eye=(10, 10, 10), perspective_angle=.4, camera_type=kind))
+            app = FakeApplication(active_document=FakeFusionDocument(products=FakeProducts(cam=cam)),
+                                  active_viewport=vp)
+            monkeypatch.setattr(st, "app", app)
+            monkeypatch.setattr(cc, "app", app)
+            monkeypatch.setattr(adsk.cam.CAM, "cast", lambda x: x if x is cam else None)
+            monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
+            normal_set = Viewport.camera.fset
+
+            def drop_frame(self, value):
+                old = self._cam._copy()
+                normal_set(self, value)
+                if not value.isFitView:
+                    if drop == "target":
+                        self._cam.target = old.target
+                    elif drop == "unreadable":
+                        self._cam.cameraType = None  # Injected unavailable projection read.
+                    elif projection == "perspective":
+                        self._cam.eye = old.eye
+                    else:
+                        self._cam._sides = old._sides  # Injected post-fit framing loss.
+
+            monkeypatch.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_frame))
+            return vp
+
+        return install
+
+    @pytest.mark.parametrize("stock,projection,drop", [
+        (False, "perspective", "framing"), (True, "perspective", "framing"),
+        (False, "orthographic", "framing"), (True, "orthographic", "framing"),
+        (False, "perspective", "target"), (True, "perspective", "target"),
+        (False, "perspective", "unreadable"), (True, "perspective", "unreadable")])
+    def test_a_dropped_frame_has_no_public_model_or_stock_claim(self, dropped_frame, stock, projection, drop):
+        vp = dropped_frame(stock, projection, drop)
+        out = _payload(st.handler(action="show", operation="Face1", fit=True))
+        assert out["fitted_to"] == "viewport"
+        assert "fit_box_cm" not in out and "camera_target_cm" not in out
+        assert "box framing is unverified" in out["note"]
+        if drop == "target":
+            assert (vp.camera.target.x, vp.camera.target.y, vp.camera.target.z) == (0, 0, 0)
+
+    def test_a_perspective_view_widens_by_moving_its_eye_back(self, monkeypatch):
+        import adsk.core
+        monkeypatch.setattr(adsk.core.Point3D, "create",
+                            staticmethod(lambda x, y, z: types.SimpleNamespace(x=x, y=y, z=z)))
+        model = self._body((0, 0, 0), (10, 6, 2))
+        stock = self._body((-6, -6, -1), (16, 12, 3))
+        setup = FakeSetup("S1", [FakeOp("Face1", shown=False)], is_active=True,
+                          models=[model], stock_solids=[stock])
+        app = _install([setup])
+        app.activeViewport.camera = Camera(
+            eye=(10.0, 10.0, 10.0), target=(0.0, 0.0, 0.0), perspective_angle=0.4,
+            camera_type=adsk.core.CameraTypes.PerspectiveCameraType)
+        out = _payload(st.handler(action="show", operation="Face1", fit=True))
+        assert out["fitted_to"] == "model+stock"
+        cam = st.app.activeViewport.camera
+        reach = math.dist((cam.eye.x, cam.eye.y, cam.eye.z),
+                          (cam.target.x, cam.target.y, cam.target.z))
+        widen = math.sqrt(22 ** 2 + 18 ** 2 + 4 ** 2) / math.sqrt(10 ** 2 + 6 ** 2 + 2 ** 2)
+        assert math.isclose(reach, math.sqrt(300.0) * widen)
+        assert (cam.target.x, cam.target.y, cam.target.z) == (5.0, 3.0, 1.0)
+
     def test_widens_the_frame_to_the_union_and_reports_it(self, monkeypatch):
         import adsk.core
         monkeypatch.setattr(adsk.core.Point3D, "create",
@@ -856,7 +933,7 @@ class TestFitWidensToStock:
         model_diag = math.sqrt(10 ** 2 + 6 ** 2 + 2 ** 2)
         union_diag = math.sqrt(22 ** 2 + 18 ** 2 + 4 ** 2)
         cam = st.app.activeViewport.camera
-        assert cam.viewExtents == 100.0 * (union_diag / model_diag)
+        assert cam.getExtents() == [True] + [100.0 * (union_diag / model_diag)] * 2
         assert (cam.target.x, cam.target.y, cam.target.z) == (5.0, 3.0, 1.0)
 
     def test_falls_back_to_viewport_when_neither_box_is_configured(self):
@@ -883,14 +960,14 @@ class TestFitWidensToStock:
         assert out["camera_target_cm"] == [40.655, 30.0, 1.25]
         cam = st.app.activeViewport.camera
         assert (cam.target.x, cam.target.y, cam.target.z) == (40.655, 30.0, 1.25)
-        assert cam.viewExtents == math.sqrt(81.31 ** 2 + 60 ** 2 + 2.5 ** 2)
+        diag = math.sqrt(81.31 ** 2 + 60 ** 2 + 2.5 ** 2)
+        assert cam.getExtents() == [True, diag, diag]
 
     def test_falls_back_to_viewport_when_the_camera_read_back_does_not_answer(self):
         # a camera whose eye/target never read leaves the frame unconfirmed, so 'model' is refused.
         class _EyelessCamera:
             isFitView = False
             isSmoothTransition = True
-            viewExtents = 100.0
 
             def _copy(self):
                 return self

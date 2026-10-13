@@ -2195,6 +2195,69 @@ class _DerivedChoiceParam(FakeCAMParameter):
             raise RuntimeError(_ENUM)
 
 
+class TestParameterOperationError:
+    """Clean parameter reads do not permit a new operation error."""
+
+    def _flag(self, monkeypatch, op, mode):
+        p = op.parameters.itemByName("tiltTool")
+        def getter(_op):
+            if mode == "before_unread" or (mode == "after_unread" and p.expression == "true"):
+                raise RuntimeError("hasError did not answer")
+            return mode == "prior_error" or p.expression == "true"
+        monkeypatch.setattr(type(op), "hasError", property(getter), raising=False)
+
+    def test_a_new_operation_error_refuses_and_restores_clean_parameters(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": FakeParam("tiltTool", "false")})
+        self._flag(monkeypatch, op, "new_error")
+        res = ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"})
+        assert res["isError"] is True
+        assert "Operation.hasError changed from False to True" in res["message"]
+        assert "Operation.hasError reads False after restore" in res["message"]
+        assert op.parameters.itemByName("tiltTool").expression == "false"
+        assert op.hasError is False
+
+    def test_an_existing_operation_error_does_not_block_a_parameter_edit(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": FakeParam("tiltTool", "false")})
+        self._flag(monkeypatch, op, "prior_error")
+        out = _payload(ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"}))
+        assert out["updated_count"] == 1 and op.hasError is True
+        assert op.parameters.itemByName("tiltTool").expression == "true"
+
+    def test_an_unread_prior_operation_flag_refuses_before_writing(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": FakeParam("tiltTool", "false")})
+        self._flag(monkeypatch, op, "before_unread")
+        res = ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"})
+        assert res["isError"] is True and "no write was attempted" in res["message"]
+        assert op.parameters.itemByName("tiltTool").expression == "false"
+
+    def test_an_unread_after_flag_is_unconfirmed_and_rolls_back(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": FakeParam("tiltTool", "false")})
+        self._flag(monkeypatch, op, "after_unread")
+        res = ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"})
+        assert res["isError"] is True and "UNCONFIRMED" in res["message"]
+        assert "Operation.hasError reads False after restore" in res["message"]
+        assert op.parameters.itemByName("tiltTool").expression == "false"
+
+    def test_a_failed_restore_does_not_claim_the_operation_is_error_free(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": _StuckAfterFirstWrite("tiltTool", "false")})
+        self._flag(monkeypatch, op, "new_error")
+        res = ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"})
+        assert res["isError"] is True and "NOT confirmed" in res["message"]
+        assert "Operation.hasError reads True after restore" in res["message"]
+        assert op.parameters.itemByName("tiltTool").expression == "true"
+
+    def test_parameter_rollback_preserves_and_discloses_an_applied_preset(self, monkeypatch):
+        op = _preset_op()
+        monkeypatch.setattr(op, "parameters", FakeParams({"tiltTool": FakeParam("tiltTool", "false")}))
+        _install_op(monkeypatch, op)
+        self._flag(monkeypatch, op, "new_error")
+        res = ce.handler(operation="Adaptive1", preset="Probe Alu", parameters={"tiltTool": "true"})
+        assert res["isError"] is True
+        assert "toolPreset already set to 'Probe Alu'" in res["message"]
+        assert op.toolPreset.name == "Probe Alu" and op.hasError is False
+        assert op.parameters.itemByName("tiltTool").expression == "false"
+
+
 class TestRestoreByValue:
     """A refused edit whose prior expression Fusion will not take back: the prior VALUE is written
     to the value object, and the reply says the value came back and the expression did not."""
@@ -2233,7 +2296,8 @@ class TestRestoreByValue:
         p, res = self._edit(monkeypatch, takes_restore=True)
         assert res["isError"] is True and p.value_writes == []
         assert ("Rolled back all 1 parameter(s), each restored expression re-read: 'toolAxisMode' "
-                f"reads {ce.short_ref(_DERIVED)!r}. (") in res["message"]
+                f"reads {ce.short_ref(_DERIVED)!r}.") in res["message"]
+        assert "Operation.hasError reads False after restore." in res["message"]
         assert p.expression == _DERIVED
 
     def test_an_unread_prior_value_is_never_written(self, monkeypatch):

@@ -19,7 +19,7 @@ Follow these ideas when you add a tool. They let an agent drive Fusion predictab
 and few blind spots.
 
 - **Tools are building blocks; skills compose them.** A tool is one verb (`model_extrude`,
-  `assembly_get`). A *skill* (`.claude/skills/`) is a markdown procedure that chains tools into a
+  `assembly_get`). A *skill* (`.agents/skills/`) is a markdown procedure that chains tools into a
   repeatable workflow. Reliability comes from each step being a tested tool with its own guards, not
   from a brittle macro. If a workflow needs a capability no tool provides, **add a tool**; don't
   hand-roll `sys_execute_script` inside a skill.
@@ -142,15 +142,50 @@ running on macOS are untested. Keep production code under `commands/mcpServer/` 
 dual-licensed (MIT/Apache headers). Read [tests/AGENTS.md](tests/AGENTS.md) before adding tests and
 the [tool-authoring guide](commands/mcpServer/tools/AGENTS.md) before adding tools.
 
-Claude Code 2.1.296 was measured reading `AGENTS.md` when no `CLAUDE.md` exists, and 2.1.197 was
-measured not reading it; other versions are untested. On a client that does not read it, make a
-local untracked `CLAUDE.md` whose one line imports the `AGENTS.md` beside it (`@AGENTS.md`);
-`.gitignore` keeps it out of a commit.
 
 Some tools stand on Fusion API members that Autodesk marks "not officially supported" and for which
 the API names no alternative. They are listed, with the tool that uses each and what it would lose,
 in [commands/mcpServer/UNSUPPORTED_API.md](commands/mcpServer/UNSUPPORTED_API.md). A new use of a
 member marked unsupported, preview or retired needs the owner's word.
+
+## Agent seats on a development machine
+
+A seat needs Fusion installed and signed in with the add-in loaded and development scripting
+allowed; the current server address from the repo's MCP config; Python, Git, pytest and NumPy;
+the chosen agent installed and signed in; the team channel file; and the operator-supplied
+cloud-input JSON described in [eval setup](tests/live/evals/README.md#running-one) when cloud tests
+are in scope. The evaluator also needs an
+admitted scratch project and each candidate's frozen task, checks and loaded-code identity.
+`plans/`, `outputs/` and `.cache/` are private to a machine and absent from a clone.
+
+## Installed Fusion bindings
+
+On Windows, complete installed builds live under
+`%LOCALAPPDATA%\Autodesk\webdeploy\{production,pre-production}\<hash>\`. The directory holds
+`Fusion360.exe` (its ProductVersion identifies the build) and
+`Api\Python\packages\adsk\{core,fusion,cam,drawing,sim,electron,volume}.py`. Fusion purges old
+builds; keep inventory snapshots under `outputs/api-inventory/<version>/` and compare with
+the committed `tests/api_surface.py` rather than expecting an older package to remain installed.
+
+The Windows per-user docstring stubs are under
+`%APPDATA%\Autodesk\Autodesk Fusion 360\API\Python\defs\adsk\`; they are the same API drop as the
+installed package on Windows, which is what the generators read. `Get-Process Fusion360` supplies
+the executable path and ProductVersion for comparison
+with `workspace_orient`'s `fusion_version`, when a Fusion lease admits that read. The add-in must
+be loaded in the running build. Autodesk's what's-new page lists shipped releases; inspect the
+inventory diff for pre-production changes.
+
+For installed member marks, `tests/api_inventory.py`'s `newest_package()` locates the package and
+`inventory(path)` records each class/member's preview, unsupported and retired flags from the
+fusion module's binding file in that package. A class mark applies to its members. Match new uses against
+[UNSUPPORTED_API.md](commands/mcpServer/UNSUPPORTED_API.md) and the owner's permissions.
+
+## Native probe safety
+
+Keep native scripts bounded and log each step before a call that can raise: a caught API error
+can still abort the whole script and discard its printed output. Do not read
+`Design.pmiSettings` or `DXFSketchExportOptions.units` in probes. A reviewer reports an unverified
+API claim or requests a discriminator; it does not relax this guard to finish a review.
 
 ## Add-in command convention
 
@@ -231,6 +266,10 @@ own tools on top of this project, work in this loop:
 
 No manual Stop/Run is needed. A manual Stop/Run in Fusion's Add-Ins dialog is only required if the
 add-in failed to start, so that no server is running to call `sys_reload_addin` against.
+
+The server address is in the repo's MCP config. A client started before that address changed
+keeps the old one until restarted; the test harness uses the current endpoint definition and
+configuration. Restart the client after changing its server address.
 
 An MCP **client** may cache the tool list, so a newly registered tool can be invisible to the client
 until it reconnects. Reconnect the server in your client (`/mcp` in Claude Code) to refresh, or drive

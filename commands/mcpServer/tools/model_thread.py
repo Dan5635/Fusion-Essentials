@@ -190,8 +190,8 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
     internal = bool(sides[0])
 
     thread_info, carried_by, terr = _threads.resolve_thread_info(
-        comp, designation, internal=internal, thread_type=thread_type,
-        thread_class=thread_class)
+        designation, internal=internal, thread_type=thread_type,
+        thread_class=thread_class, right_handed=not bool(left_handed))
     if terr:
         return error(terr)
 
@@ -220,7 +220,11 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
 
     try:
         tin.isModeled = bool(modeled)
-        tin.isRightHanded = not bool(left_handed)
+        if left_handed:
+            # RETIRED member, kept: a left-handed ThreadInfo still builds a right-handed thread,
+            # and this flag on the input is the one write that makes it left. A supported way is
+            # sought.
+            tin.isRightHanded = False
         if length_cm is not None:
             # isFullLength defaults to true, which leaves the partial-thread trio unused.
             tin.isFullLength = False
@@ -261,6 +265,13 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
                      f"thread, but the face(s) are "
                      f"{'bores' if internal else 'shafts'}. Remove it with design_delete_feature "
                      f"(feature '{safe(lambda: feature.name)}').")
+    # The hand is judged off the feature, whichever of the two writes above carried it.
+    got_right = safe(lambda: feature.isRightHanded)
+    if isinstance(got_right, bool) and got_right == bool(left_handed):
+        return error(f"The thread was created but reads back "
+                     f"{'right' if got_right else 'left'}-handed, not the requested "
+                     f"{'left' if left_handed else 'right'}-handed. Remove it with "
+                     f"design_delete_feature (feature '{safe(lambda: feature.name)}').")
 
     payload = {
         "threaded": True,

@@ -15,11 +15,11 @@ from . import _geom
 
 MAP_BLURB = (
     "view_direction/look_direction/up_vector/is_ortho_face/apply_camera/apply_named_view/"
-    "restore_camera/camera_restored/capture_png_b64 - camera math + capture; "
-    "standoff_distance/STANDOFF_FALLBACK_CM - standoff; activate_workspace - activate, read back; "
-    "DISPLAY_FOLDERS/all_display_components - clutter; "
-    "keep_visible/all_bodies/same_body/isolate_for_fit/restore_message/focus_box - one-subject "
-    "frame")
+    "restore_camera/camera_frame/camera_restored/capture_png_b64 - camera; "
+    "view_extent/set_view_extent/scale_view/show_extent - zoom; "
+    "standoff_distance/STANDOFF_FALLBACK_CM; activate_workspace; "
+    "DISPLAY_FOLDERS/all_display_components; "
+    "keep_visible/all_bodies/same_body/isolate_for_fit/restore_message/focus_box - frame")
 
 app = adsk.core.Application.get()
 
@@ -423,6 +423,60 @@ def standoff_distance(cam):
     return dist, None
 
 
+def _extents(cam):
+    """(width, height) in cm of the window an orthographic camera shows, or None: a perspective
+    camera has no extents and raises on the read."""
+    got = _common.safe(lambda: tuple(cam.getExtents()))
+    if not got or len(got) != 3 or got[0] is not True:
+        return None
+    sides = got[1:]
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in sides):
+        return None
+    return sides
+
+
+def view_extent(cam):
+    """The larger side, in cm, of the window an orthographic camera shows; None on a perspective
+    camera or when the extents do not read."""
+    sides = _extents(cam)
+    return None if sides is None else max(sides)
+
+
+def set_view_extent(cam, extent):
+    """Give an orthographic camera a window `extent` cm on both sides - the larger side is what
+    governs the view. False when the camera answered no; a perspective camera raises."""
+    return cam.setExtents(extent, extent) is True
+
+
+def show_extent(cam, extent):
+    """Make `cam` show a window `extent` cm across at its target: an orthographic window set, a
+    perspective eye put at the distance whose view angle spans it. False when neither applied."""
+    if view_extent(cam) is not None:
+        return set_view_extent(cam, extent)
+    angle = _common.safe(lambda: cam.perspectiveAngle)
+    reach = _common.safe(lambda: cam.eye.distanceTo(cam.target))
+    if not angle or not reach or reach <= 0 or not 0 < angle < math.pi:
+        return False
+    return scale_view(cam, extent / (2 * reach * math.tan(angle / 2)))
+
+
+def scale_view(cam, factor):
+    """Show `factor` times as much through `cam`: an orthographic window scaled, a perspective eye
+    moved along its line of sight. False when neither could be written."""
+    sides = _extents(cam)
+    if sides is not None:
+        return cam.setExtents(sides[0] * factor, sides[1] * factor) is True
+    kind = _common.safe(lambda: cam.cameraType)
+    eye, target = _common.safe(lambda: cam.eye), _common.safe(lambda: cam.target)
+    if kind is None or kind == adsk.core.CameraTypes.OrthographicCameraType             or eye is None or target is None:
+        return False
+    cam.eye = adsk.core.Point3D.create(target.x + (eye.x - target.x) * factor,
+                                       target.y + (eye.y - target.y) * factor,
+                                       target.z + (eye.z - target.z) * factor)
+    return True
+
+
 # A glide (isSmoothTransition True) blocks the assignment ~0.6 s while the viewport animates on
 # screen and reads back the LANDED camera (measured 2705.1.25), so a capture or a restore check
 # after it sees the final view. The screenshot tools glide so a watcher sees the shot happen.
@@ -449,19 +503,32 @@ def apply_camera(vp, cam, fit=False, smooth=False):
 _EYE_TARGET_TOLERANCE_CM = 1e-6
 
 
+def camera_frame(cam):
+    """Immutable pose, projection, angle and orthographic extent pair, or None when unreadable."""
+    kind = _common.safe(lambda: cam.cameraType)
+    values = _common.safe(lambda: [getattr(getattr(cam, field), axis)
+        for field in ("eye", "target", "upVector") for axis in ("x", "y", "z")]
+        + [cam.perspectiveAngle])
+    if kind is None or values is None:
+        return None
+    if kind == adsk.core.CameraTypes.OrthographicCameraType:
+        sides = _extents(cam)
+        if sides is None:
+            return None
+        values.extend(sides)
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in values):
+        return None
+    return kind, tuple(values)
+
+
 def camera_restored(read_back, saved, tol=_EYE_TARGET_TOLERANCE_CM):
-    """Whether a restored camera's eye AND target read within 'tol' cm of the saved camera's - the
-    read-back proof a restore actually landed, not just that the assignment ran."""
-    vals = _common.safe(lambda: (
-        read_back.eye.x, read_back.eye.y, read_back.eye.z,
-        saved.eye.x, saved.eye.y, saved.eye.z,
-        read_back.target.x, read_back.target.y, read_back.target.z,
-        saved.target.x, saved.target.y, saved.target.z))
-    if vals is None:
-        return False
-    rex, rey, rez, sex, sey, sez, rtx, rty, rtz, stx, sty, stz = vals
-    return (abs(rex - sex) <= tol and abs(rey - sey) <= tol and abs(rez - sez) <= tol
-            and abs(rtx - stx) <= tol and abs(rty - sty) <= tol and abs(rtz - stz) <= tol)
+    """Whether landed framing matches a saved camera or its immutable camera_frame within tolerance."""
+    got = camera_frame(read_back)
+    want = saved if isinstance(saved, tuple) else camera_frame(saved)
+    return (got is not None and want is not None and got[0] == want[0]
+            and len(got[1]) == len(want[1])
+            and all(abs(a - b) <= tol for a, b in zip(got[1], want[1])))
 
 
 def restore_camera(vp, saved, smooth=False):
@@ -479,7 +546,9 @@ def restore_camera(vp, saved, smooth=False):
         fresh = vp.camera
     fresh.perspectiveAngle = saved.perspectiveAngle
     if saved.cameraType == adsk.core.CameraTypes.OrthographicCameraType:
-        fresh.viewExtents = saved.viewExtents
+        sides = _extents(saved)
+        if sides is None or fresh.setExtents(*sides) is not True:
+            raise RuntimeError("the saved orthographic camera's extents could not be restored")
     fresh.eye = saved.eye
     fresh.target = saved.target
     fresh.upVector = saved.upVector
@@ -518,7 +587,8 @@ def apply_named_view(vp, name, fit=False, smooth=False):
     _, smooth_error = apply_camera(vp, cam, fit=False, smooth=smooth)
     if ortho_extents is not None and not fit:
         again = vp.camera
-        again.viewExtents = ortho_extents
+        if not set_view_extent(again, ortho_extents):
+            raise RuntimeError("the orthographic view's extents could not be set")
         _, again_error = apply_camera(vp, again, fit=False, smooth=smooth)
         smooth_error = smooth_error or again_error
     if fit:

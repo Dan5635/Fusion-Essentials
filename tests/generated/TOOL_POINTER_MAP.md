@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 770
+**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 771
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -117,7 +117,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `assembly_capture_position`
 - Latest captured position discarded - back to the last captured position that remains (or the joint-defined state when nothing else was ever captured).
-- has_pending = a moved-but-uncaptured position exists (a joint_drive pose sets it the same way a free move does; a design_add_instance placement and an assembly_constrain relationship do NOT). Use c...
+- has_pending = a moved-but-uncaptured position exists (a joint_drive pose sets it the same way a free move does; a shared design_add_instance placement and an assembly_constrain relationship do NOT)...
 - Current position captured into the timeline.
 - Uncaptured move thrown away - the assembly is back at its last captured position (or the joint-defined state when nothing was ever captured). Captured markers are untouched; use revert to drop the ...
 - Captured position removed from the timeline; later captured positions (if any) survive a recompute unchanged.
@@ -672,6 +672,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' parameters cannot be read before assignment; no write was attempted. Re-read it with cam_get(include=['parameters']).
 - ' has no parameter(s):
 - lists the rows Fusion SHOWS and counts the rest as hidden_count: a row behind a switch reads isEnabled false and is absent from that list, yet still lands when the switch rides the SAME call - so a...
+- ' hasError did not read before the edit; no write was attempted. Re-read with cam_get(include=['operations']).
 - ' parameters cannot be read after tool/preset assignment; no explicit parameter write was attempted.
 - ' lost parameter(s) after tool/preset assignment:
 - . No parameter write was attempted.
@@ -696,6 +697,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The write landed while a generation was in flight - re-read the state once it settles (cam_get_status) and relaunch if the toolpath is missing.
 - Operation '' parameters cannot be read before assignment; no write was attempted. Re-read it with cam_get(include=['parameters']).
 - Operation '' has no parameter(s): .  lists the rows Fusion SHOWS and counts the rest as hidden_count: a row behind a switch reads isEnabled false and is absent from that list, yet still lands when ...
+- Operation '' hasError did not read before the edit; no write was attempted. Re-read with cam_get(include=['operations']).
 
 ### `cam_edit_setup`
 - Setup edited. Existing toolpaths are now OUT OF DATE - regenerate with cam_generate. A WCS bound via 'wcs' is a LIVE reference to the selected geometry or Joint Origin (bound_entities), so the WCS ...
@@ -1155,6 +1157,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - activate() ran but setup '' still reads isActive=false - the viewport still shows another setup's models, not this operation's part.
 - activate() ran but isActive cannot be read on setup '', so the activation is UNCONFIRMED - the viewport may still show another setup's models rather than this operation's part.
 - The setup's model box read, but the camera could not be measured against it, so the frame stayed on the plain fit (fitted_to='viewport').
+- The read-back camera framing does not match the requested box; fitted_to='viewport' names the current view, and box framing is unverified.
 - Activated setup '' (the operation's own): the viewport renders only the ACTIVE setup's models, so the toolpath would otherwise sit beside another setup's part.
 - operation(s) did not read back isLightBulbOn=false during the hide - see hide_failures; their toolpaths may still be drawn.
 
@@ -4351,6 +4354,9 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The thread was created as an
 - thread, but the face(s) are
 - . Remove it with design_delete_feature (feature '
+- The thread was created but reads back
+- -handed, not the requested
+- -handed. Remove it with design_delete_feature (feature '
 - Thread input could not be built for '
 - Could not apply the thread settings:
 - A partial thread was requested, but the feature's own extent could not be read back, so there is no proof it took. Remove '
@@ -4370,6 +4376,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Could not read the outward normal of face(s)  (0-based), so whether they are bores or shafts is unknown. Re-run find_geometry for fresh handles and pass faces whose 'normal' it reports.
 - One Thread feature cannot mix internal and external faces: face(s)  (0-based) are bores and the rest are shafts. Thread each side in its own call.
 - The thread was created but carries designation '', not the requested ''. Remove it with design_delete_feature (feature '').
+- The thread was created but reads back -handed, not the requested -handed. Remove it with design_delete_feature (feature '').
 - A partial thread was requested, but the feature's own extent could not be read back, so there is no proof it took. Remove '' with design_delete_feature.
 - A partial thread was requested (length  ), but '' reads back as full length - the partial extent did not take. Remove it with design_delete_feature.
 - The thread was created but sits at the wrong end of the cylinder - '' was requested. Remove '' with design_delete_feature.
@@ -5315,9 +5322,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The text WAS created - remove it with sketch_delete_entity(sketch_name='
 - ' but the new text reports '
 - ', so the font did not take. The text WAS created - remove it with sketch_delete_entity(sketch_name='
+- 'angle_deg' must be a finite number in DEGREES; got
+- is offered for mode 'multi_line' only; got '
+- '. Rotate the path curve with sketch_move(sketch_name=..., entities=path, rotation_deg=..., center_x=..., center_y=...), then create path text without angle_deg.
 - ' text placement (it returned false), so no text was placed.
 - Could not create sketch text in '
-- The text WAS created; its style is unconfirmed - read it with sketch_get(include_entities=true).
+- The text WAS created - remove it with sketch_delete_entity(sketch_name=
 - 'character_spacing' must be a number - the percent change from the default spacing (0 = default, 50 = half again as wide).
 - create sketch text in '
 - Read it back with sketch_get(sketch_name=..., include_entities=true): the 'text:<i>' entity carries the string, height, font and sketch-space bounding box.
@@ -5332,6 +5342,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Asked for mode '' but the new text reports a '' definition (), so it is laid out the wrong way. The text WAS created - remove it with sketch_delete_entity(sketch_name='', target='text:'), then retry.
 - Setting the height of sketch text in '' cannot be confirmed - its heightParameter did not read back a number after the write, so whether the text resized is not known.
 - Setting the height of sketch text in '' landed the value but the text did not resize - heightParameter reads   where it read  before, while its boundingBox reads  x  , unchanged from the  x  it rea...
+- angle_deg= is offered for mode 'multi_line' only; got ''. Rotate the path curve with sketch_move(sketch_name=..., entities=path, rotation_deg=..., center_x=..., center_y=...), then create path text...
 - On a sketch built on a FACE, (x,y) are SKETCH-plane coordinates (not world) - place the text using the 'frame' from sketch_create (where sketch (0,0) sits and where +X/+Y point) so it lands on the ...
 - Asked for font '' but the new text reports '', so the font did not take. The text WAS created - remove it with sketch_delete_entity(sketch_name='', target='text:'), then retry.
 - Sketch text created (verified: sketchTexts  -> ). (x,y) are SKETCH-plane coordinates - on an on-face sketch use the 'frame' from sketch_create to keep the text on the face. Extrude/emboss the sketc...
@@ -5652,7 +5663,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - fit_to: nothing matched '
 - '. Use design_get(include=['tree']) for occurrences, find_geometry for a body.
 - The camera could NOT be put back where it was before this shot: . The viewport is left at the capture camera - view_set(orient) re-aims it.
-- The camera could NOT be put back where it was before this shot: the read-back eye/target do not match the saved camera. The viewport is left at the capture camera - view_set(orient) re-aims it.
+- The camera could NOT be put back where it was before this shot: the read-back camera framing does not match the saved camera. The viewport is left at the capture camera - view_set(orient) re-aims it.
 - Active component is '' - everything outside it renders dimmed/translucent in this image (activation scope, not a lighting issue). Activate the root to see all parts solid.
 - The camera could not be captured before this shot, so the viewport is LEFT at the capture view (no restore was possible) - view_set(orient) re-aims it.
 - standoff_fallback_cm=: the camera's eye-target distance did not read as a positive number, so the eye was placed  cm from the target along the view direction before the fit.
@@ -5660,7 +5671,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `view_screenshot_multi`
 - No active viewport (is a document open?).
 - No views were captured.
-- The camera could NOT be put back where it was before these shots: the read-back eye/target do not match the saved camera. The viewport is left at the last captured view - view_set(orient) re-aims it.
+- The camera could NOT be put back where it was before these shots: the read-back camera framing does not match the saved camera. The viewport is left at the last captured view - view_set(orient) re-...
 - The camera could NOT be put back where it was before these shots: . The viewport is left at the last captured view - view_set(orient) re-aims it.
 - standoff_fallback_cm= on : the camera's eye-target distance did not read as a positive number, so the eye was placed  cm from the target along each of those view directions before the fit.
 
@@ -5735,6 +5746,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'perspective_angle_deg' must be a number (got '
 - Could not read what the viewport currently shows, so the view could not be framed on '
 - ' and the camera was NOT moved. Re-run with fit=false to re-aim only.
+- The camera did not take the extents that frame '
+- ', so the view is NOT framed on it. Re-run with fit=false to re-aim only.
 - 'focus': nothing named '
 - ' to frame - no occurrence and no sketch carries that name.
 - Occurrence lookup said:
@@ -5791,6 +5804,7 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Projection reads '' after staging the projection, but the viewport frame could not be read before aiming at ''; the focus was not applied.
 - Could not read what the viewport currently shows, so the view could not be framed on '' and the camera was NOT moved. Re-run with fit=false to re-aim only.
 - Could not measure '' against the current view (a bounding box, the camera's axes, or its extents would not read), so the view is NOT framed on it. Re-run with fit=false to re-aim only.
+- The camera did not take the extents that frame '', so the view is NOT framed on it. Re-run with fit=false to re-aim only.
 - Camera re-aimed at ''; the focus has no measurable size, so size-based framing is not established. Call view_screenshot to capture.
 - Camera re-aimed at '' WITHOUT zooming to it - fit=false keeps the current eye-to-target distance. Pass fit=true to attempt framing when the focus has measurable size.
 - standoff_fallback_cm=: the camera's eye-target distance did not read as a positive number, so  cm stood in as the standoff for this orient.

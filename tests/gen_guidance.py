@@ -1,29 +1,10 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Generate the Claude skill package from the CANONICAL guidance JSON.
+"""Validate canonical guidance and render Markdown beside its JSON through the served renderer.
 
-``commands/mcpServer/guidance/parametric_cad_design.json`` is the one authored source of CAD
-design practice. A rule carries an ``id``, its ``section``, the ``scenarios`` it applies to, and
-``when`` / ``do`` / ``except`` / ``prove``; a recipe carries ordered ``steps`` and the ``bar`` that
-says what done looks like. This script validates that data against the LIVE tool registry and
-writes the package from it: ``SKILL.md`` is the MAP (the kernel whole, then where each playbook and
-recipe is fetched), and ``playbooks/<section>.md`` is one section's rules and recipes.
-
-Every file is rendered by the shipped package (``render``), the same functions the server serves
-its resources through, so the committed skill and the served guidance are one render.
-
-The structural limits are here, not in a lint: the kernel at five rules and 300 rendered words, one
-recipe at 260, a section at six recipes, the map at 900 words excluding frontmatter. The per-section
-rule cap is the exception - it is the shipped ``loader.MAX_SECTION_RULES``, imported rather than
-restated, because it is also the number ``sys_get_guidance`` truncates one section read at.
-Validation is authoring-time gating - it decides what may be committed, never what the server
-answers. Whether a rule's wording is honest is a review judgment; this checks shape, routing, size.
-
-Run from the repo root:
-
-    py -3 tests/gen_guidance.py          # writes .claude/skills/parametric-cad-design/
-    py -3 tests/gen_guidance.py --check  # exit 1 if the package is stale or the JSON is invalid
+``--skill-dir PATH`` exports a client skill map and section playbooks instead.
+``--check`` verifies the selected output's exact bytes without writing.
 """
 
 import argparse
@@ -39,10 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # puts commands/ on sys.path, which is what makes the shipped guidance package importable below.
 import gen_manifest  # noqa: E402
 
-# The shipped package renders the body and declares the section order - what holds everywhere, then
-# the build in the order it happens. A document declaring anything else is rejected below rather
-# than reordered, so the skill is a function of the file alone; importing the render (instead of
-# holding a second copy) is what keeps the skill and the served resource one text.
+# The shipped renderer declares the section order and renders every output.
 from mcpServer.guidance.loader import KERNEL, MAX_SECTION_RULES, SECTION_IDS, recipes  # noqa: E402
 from mcpServer.guidance.render import (SAFETY_INVARIANT, body, map_text,  # noqa: E402
                                        recipe_text, section_text)
@@ -53,9 +31,7 @@ from mcpServer.guidance.loader import STRATEGY_RECIPE_ID  # noqa: E402
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUIDANCE_PATH = os.path.join(REPO_ROOT, "commands", "mcpServer", "guidance",
                              "parametric_cad_design.json")
-SKILL_DIR = os.path.join(REPO_ROOT, ".claude", "skills", "parametric-cad-design")
-SKILL_PATH = os.path.join(SKILL_DIR, "SKILL.md")
-PLAYBOOK_DIR = os.path.join(SKILL_DIR, "playbooks")
+MARKDOWN_PATH = os.path.splitext(GUIDANCE_PATH)[0] + ".md"
 
 RULE_FIELDS = ("id", "section", "scenarios", "when", "do", "except", "prove")
 RECIPE_FIELDS = ("id", "section", "scenarios", "title", "use_when", "steps", "bar")
@@ -128,49 +104,50 @@ def render(doc):
     return frontmatter(doc) + "\n" + map_text(doc)
 
 
-def playbook_path(section_id):
-    """Where one section's playbook file lives in the committed package."""
-    return os.path.join(PLAYBOOK_DIR, section_id + ".md")
+def playbook_path(section_id, skill_dir):
+    """Where one section's playbook lives in an explicit skill export."""
+    return os.path.join(skill_dir, "playbooks", section_id + ".md")
 
 
-def package(doc):
-    """{path: text} for every file of the committed skill package - the map, then one playbook per
-    non-kernel section (the kernel is IN the map, so it has no file of its own)."""
-    files = {SKILL_PATH: render(doc)}
+def package(doc, skill_dir=None):
+    """Return the readable document, or the files of an explicit client skill export."""
+    if skill_dir is None:
+        return {MARKDOWN_PATH: body(doc)}
+    files = {os.path.join(skill_dir, "SKILL.md"): render(doc)}
     for section_id in SECTION_IDS:
         if section_id != KERNEL:
-            files[playbook_path(section_id)] = section_text(doc, section_id)
+            files[playbook_path(section_id, skill_dir)] = section_text(doc, section_id)
     return files
 
 
-def stale_paths(doc):
-    """Every package file whose committed bytes are not what the document renders, plus every file
-    under playbooks/ the document does not declare - a section that was renamed away leaves one."""
-    files = package(doc)
+def stale_paths(doc, skill_dir=None):
+    """Return missing or byte-stale outputs, plus undeclared exported playbooks."""
+    files = package(doc, skill_dir)
     stale = []
     for path, text in sorted(files.items()):
         existing = None
         if os.path.exists(path):
-            with open(path, encoding="utf-8") as fh:
+            with open(path, "rb") as fh:
                 existing = fh.read()
-        if existing != text:
+        if existing != text.encode("utf-8"):
             stale.append(path)
-    if os.path.isdir(PLAYBOOK_DIR):
-        for name in sorted(os.listdir(PLAYBOOK_DIR)):
-            path = os.path.join(PLAYBOOK_DIR, name)
+    playbooks = os.path.join(skill_dir, "playbooks") if skill_dir is not None else None
+    if playbooks is not None and os.path.isdir(playbooks):
+        for name in sorted(os.listdir(playbooks)):
+            path = os.path.join(playbooks, name)
             if os.path.isfile(path) and path not in files:
                 stale.append(path)
     return stale
 
 
-def write_package(doc):
+def write_package(doc, skill_dir=None):
     """Write every declared file, and return the undeclared playbook files left behind."""
-    files = package(doc)
-    os.makedirs(PLAYBOOK_DIR, exist_ok=True)
+    files = package(doc, skill_dir)
     for path, text in sorted(files.items()):
-        with open(path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-    return [p for p in stale_paths(doc) if p not in files]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(text.encode("utf-8"))
+    return [p for p in stale_paths(doc, skill_dir) if p not in files]
 
 
 # ── validation ────────────────────────────────────────────────────────────────
@@ -507,7 +484,8 @@ def validate(doc, tool_names):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true",
-                        help="Exit 1 if the skill package is stale or the JSON is invalid (no write).")
+                        help="Exit 1 if the selected output is stale or the JSON is invalid (no write).")
+    parser.add_argument("--skill-dir", help="Export SKILL.md and playbooks to this explicit folder.")
     args = parser.parse_args()
 
     doc = load()
@@ -518,22 +496,21 @@ def main():
         return 1
 
     if args.check:
-        stale = stale_paths(doc)
+        stale = stale_paths(doc, args.skill_dir)
         if stale:
-            print("Stale - run `py -3 tests/gen_guidance.py` and commit (delete any file it does "
-                  "not write):\n  " + "\n  ".join(os.path.relpath(p, REPO_ROOT) for p in stale),
+            print("Stale guidance output:\n  "
+                  + "\n  ".join(stale),
                   file=sys.stderr)
             return 1
-        print("The parametric-cad-design skill package is up to date.")
+        print("The selected guidance output is up to date.")
         return 0
 
-    undeclared = write_package(doc)
-    print(f"Wrote {SKILL_PATH} ({word_count(map_text(doc))} map words, kernel "
-          f"{word_count(section_text(doc, KERNEL))}) and "
-          f"{len(package(doc)) - 1} playbook(s).")
+    undeclared = write_package(doc, args.skill_dir)
+    print("Wrote guidance output:\n  "
+          + "\n  ".join(package(doc, args.skill_dir)))
     if undeclared:
         print("Undeclared playbook file(s) left in place - delete them:\n  "
-              + "\n  ".join(os.path.relpath(p, REPO_ROOT) for p in undeclared), file=sys.stderr)
+              + "\n  ".join(undeclared), file=sys.stderr)
         return 1
     return 0
 

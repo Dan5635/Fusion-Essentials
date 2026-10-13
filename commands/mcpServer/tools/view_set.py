@@ -624,7 +624,7 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
                          f"be framed on '{applied.get('focus')}' and the camera was NOT moved. Re-run "
                          "with fit=false to re-aim only.")
         ratio = _frame_ratio(cam, focus_bb, *frame)
-        extents = safe(lambda: cam.viewExtents)
+        extents = _view_common.view_extent(cam)
         if ratio == 0.0:
             applied["frame_ratio"] = None
             applied["no_measurable_size"] = True
@@ -633,8 +633,9 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
             return error(f"Could not measure '{applied.get('focus')}' against the current view (a "
                          "bounding box, the camera's axes, or its extents would not read), so the "
                          "view is NOT framed on it. Re-run with fit=false to re-aim only.")
-        if ratio is not None:
-            cam.viewExtents = extents * ratio
+        if ratio is not None and not _view_common.set_view_extent(cam, extents * ratio):
+            return error(f"The camera did not take the extents that frame '{applied.get('focus')}', "
+                         "so the view is NOT framed on it. Re-run with fit=false to re-aim only.")
     elif fit or (want_key and not projection_staged):
         cam.isFitView = True
 
@@ -699,8 +700,8 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
                      "'perspective_angle_deg' is what it reads back.")
 
     if ratio is not None:
-        want = safe(lambda: cam.viewExtents)
-        got = safe(lambda: vp.camera.viewExtents)
+        want = _view_common.view_extent(cam)
+        got = _view_common.view_extent(safe(lambda: vp.camera))
         if want is None or got is None or abs(got - want) > max(1e-6, abs(want) * 0.02):
             target_state = ("target reads the requested focus" if _same_point(
                 safe(lambda: vp.camera.target), target) else "target does not read the requested focus")
@@ -1043,7 +1044,7 @@ def _do_restore(design):
     try:
         read_back, smooth_error = _view_common.restore_camera(vp, snap["camera"])
         if not _view_common.camera_restored(read_back, snap["camera"]):
-            camera_error = "read-back eye/target do not match the saved camera"
+            camera_error = "read-back camera framing does not match the saved camera"
             failed.append("camera")
     except Exception as e:
         camera_error = str(e)
@@ -1152,9 +1153,7 @@ def _camera_row(cam):
         v = _point_values(p)
         return None if v is None else {"x": round(v[0], 6), "y": round(v[1], 6), "z": round(v[2], 6)}
     ct = safe(lambda: cam.cameraType)
-    ext = safe(lambda: cam.viewExtents)
-    if not isinstance(ext, (int, float)) or isinstance(ext, bool) or not math.isfinite(ext):
-        ext = None
+    ext = _view_common.view_extent(cam)
     return {
         "eye_cm": pt(safe(lambda: cam.eye)),
         "target_cm": pt(safe(lambda: cam.target)),

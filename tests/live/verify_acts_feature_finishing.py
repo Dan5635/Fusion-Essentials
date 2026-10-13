@@ -766,7 +766,7 @@ def _fillet_rows():
     return rows
 
 
-# No public creator builds a chamfer from createInput2 and an equal-distance edge set.
+# The fixture returns exact chamfer parameter names for the operand-edit story.
 _CHAMFER_FIXTURE = '''
 import json
 

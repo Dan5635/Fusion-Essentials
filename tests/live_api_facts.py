@@ -4,8 +4,8 @@
 from these values, so the mocks carry measured data, not hand-typed claims. Each value is
 owned by the measurement row of the same name in tests/live/VERIFIED_API_FACTS.md."""
 
-FUSION_VERSION = "2706.0.116"
-VERIFIED_ON = "2026-10-12"
+FUSION_VERSION = "2706.1.2"
+VERIFIED_ON = "2026-10-13"
 
 # '<adsk namespace>.<Class>' -> {member: int} - seeded onto the mock adsk modules.
 ENUMS = {
@@ -390,11 +390,6 @@ ENUMS = {
         "ChamferCornerType": 0,
         "MiterCornerType": 1,
         "BlendCornertype": 2,
-    },
-    "fusion.ChamferTypes": {
-        "EqualDistanceChamferType": 0,
-        "TwoDistancesChamferType": 1,
-        "DistanceAndAngleChamferType": 2,
     },
     "fusion.DesignIntentTypes": {
         "PartDesignIntentType": 0,
@@ -784,8 +779,6 @@ BEHAVIOR = {
     "alloperations_flattens_folder_children": True,
     "cam_bad_reference_error_text": 'Failed to evaluate expression.',
     "cam_locked_parameter_write_lands": True,
-    "camera_view_extents_follows_limiting_axis": True,
-    "camera_view_extents_is_linear": True,
     "collection_item_out_of_range_raises": True,
     "dxf_sketch_options_units_read_raises": True,
     "fillet_feature_has_edges": False,

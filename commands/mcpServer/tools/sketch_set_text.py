@@ -24,6 +24,7 @@ from . import _param_common
 # from a helper, never the reverse.
 from ._sketch_detail import font_read_back as _font_read_back, unquote_text as _unquote
 from . import _sketch_detail
+from . import _assert
 
 _MAX = 500
 
@@ -165,19 +166,10 @@ def _resolve_path_curve(sketch, ref):
 
 
 def _apply_formatting(ipt, angle_deg, flip_h, flip_v):
-    """Set angle/flips on the SketchTextInput, as (requested values, error); the input echoes an
-    assigned angle exactly, so set_verified's exact compare holds here."""
+    """Set input flips and retain the requested angle, as (requested values, error)."""
     requested = {}
     if angle_deg is not None:
-        try:
-            deg = float(angle_deg)
-        except Exception:
-            return requested, ("'angle_deg' must be a number - the text's rotation in DEGREES from "
-                               "the sketch x-axis.")
-        err = _common.set_verified(ipt, "angle", math.radians(deg), "angle_deg", "SketchTextInput")
-        if err:
-            return requested, err
-        requested["angle_deg"] = deg
+        requested["angle_deg"] = angle_deg
     for value, prop, label in ((flip_h, "isHorizontalFlip", "flip_h"),
                                (flip_v, "isVerticalFlip", "flip_v")):
         if value is None:
@@ -187,6 +179,45 @@ def _apply_formatting(ipt, angle_deg, flip_h, flip_v):
             return requested, err
         requested[label] = bool(value)
     return requested, ""
+
+
+def _text_rectangle(st):
+    """Four readable endpoint fingerprints from the landed text rectangle, or None."""
+    lines = safe(lambda: list(st.definition.rectangleLines))
+    if lines is None or len(lines) != 4:
+        return None
+    positions = [_assert.entity_position(line) for line in lines]
+    if any(p is None or any(mark is None or any(not math.isfinite(v) for v in mark)
+                           for mark in p[2:4]) for p in positions):
+        return None
+    return positions
+
+
+def _rotate_text(st, deg):
+    """Rotate a landed rectangle about its centre and verify every endpoint."""
+    before = _text_rectangle(st)
+    if before is None:
+        return "The text rectangle endpoints did not read before angle_deg rotation."
+    centre = [sum(mark[axis] for p in before for mark in p[2:4]) / 8.0
+              for axis in range(3)]
+    turn = math.remainder(deg, 360.0)
+    try:
+        matrix, err = _sketch_detail._transform(0.0, 0.0, turn, 1.0, *centre[:2], cz_cm=centre[2])
+        if err:
+            return err
+        # The default key point is the box centre; rotate takes radians, not degrees.
+        if turn and not st.definition.rotate(math.radians(turn)):
+            return f"Fusion refused angle_deg={deg}: text rectangle rotate returned false."
+    except Exception as exc:
+        return f"Could not rotate the text rectangle for angle_deg={deg}: {exc}."
+    after = _text_rectangle(st)
+    if after is None:
+        return f"The text rectangle endpoints did not read after angle_deg={deg}."
+    matched = safe(lambda: all(_sketch_detail.transform_points_match(a, b, matrix) is True
+                              for a, b in zip(before, after)))
+    if matched is not True:
+        return f"The text rectangle endpoints did not match angle_deg={deg} about its centre."
+    return ""
 
 
 def _align_key_of(value):
@@ -344,6 +375,16 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
         return error("'height' must be a number (text height in 'units').")
     if h <= 0:
         return error("'height' must be > 0.")
+    if angle_deg is not None:
+        deg = _common.finite_number(angle_deg, text=True)
+        if deg is None:
+            return error(f"'angle_deg' must be a finite number in DEGREES; got {angle_deg!r}.")
+        angle_deg = deg
+        if mode in _PATH_MODES and math.remainder(deg, 360.0):
+            return error(f"angle_deg={deg} is offered for mode 'multi_line' only; got '{mode}'. "
+                         "Rotate the path curve with sketch_move(sketch_name=..., entities=path, "
+                         "rotation_deg=..., center_x=..., center_y=...), then create path text "
+                         "without angle_deg.")
 
     merr = _refuse_wrong_mode_inputs(mode, path, above_path, align, character_spacing, x, y)
     if merr:
@@ -462,8 +503,14 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
         # The style goes on the LANDED text, the one place the setter was measured.
         landed_style, serr = _apply_style(st, style, f"'{sketch_name}' (text:{after - 1})")
         if serr:
-            return error(serr + " The text WAS created; its style is unconfirmed - read it "
-                         "with sketch_get(include_entities=true).")
+            return error(serr + " The text WAS created - remove it with sketch_delete_entity("
+                         f"sketch_name={sketch_name!r}, target='text:{after - 1}'), then retry.")
+
+    if mode == "multi_line" and angle_deg is not None:
+        rerr = _rotate_text(st, angle_deg)
+        if rerr:
+            return error(rerr + " The text WAS created - remove it with sketch_delete_entity("
+                         f"sketch_name={sketch_name!r}, target='text:{after - 1}'), then retry.")
 
     if mode == "multi_line":
         note = (f"Sketch text created (verified: sketchTexts {before} -> {after}). (x,y) are "
@@ -518,9 +565,14 @@ def _create_text(design, text, sketch_name, height, x, y, units, mode, path, abo
         out["style"] = landed_style
     if requested:
         out["requested"] = requested
-        note += (" " + ", ".join(f"{n}={v}" for n, v in requested.items()) + " are the REQUESTED "
-                 "values - they were not read back off the created text, so confirm them with "
-                 "view_screenshot.")
+        unconfirmed = {n: v for n, v in requested.items()
+                       if n != "angle_deg" or mode != "multi_line"}
+        if unconfirmed:
+            note += (" " + ", ".join(f"{n}={v}" for n, v in unconfirmed.items())
+                     + " are the REQUESTED values - they were not read back off the created text, "
+                     "so confirm them with view_screenshot.")
+        if mode == "multi_line" and angle_deg is not None:
+            note += f" angle_deg={angle_deg}: the rectangle endpoints matched the requested rotation."
     out["note"] = note
     return ok(out)
 

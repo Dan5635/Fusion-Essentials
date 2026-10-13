@@ -21,7 +21,7 @@ import sys
 import time
 
 from verify_core import (
-    EXPORT_DIR, MACHINE_NAME, NOTE_MAX, Parked, TEMPLATE_NAME, _RECALL, _box, _ctx_get, _dwell,
+    EXPORT_DIR, Independent, MACHINE_NAME, NOTE_MAX, Parked, TEMPLATE_NAME, _RECALL, _box, _ctx_get, _dwell,
     _activated, _document_closed, _extruded, _face_up_at, _fg, _fgn, _home_address, _home_document,
     _imported, _joint_origin_computed, _made_component, _new_document,
     _matched, _measured, _near, _needs, _num, _param_read, _param_set_to, _pocket_selected,
@@ -266,6 +266,80 @@ def _empty_pocket_settled(p, handle_key):
                      and (p.get("live_states") or {}).get("valid") == 1
                      and p.get("empty_toolpaths") == [_EMPTY_REMEDY_OP]
                      and "cam_generate(target=<op>, skip_valid=false)" in (p.get("empty_triage") or ""))
+
+
+def _face_fault_read(ctx, prepare=False):
+    """Read the two offsets, or seed a deliberate fault in the pinned owned operation."""
+    before = _ctx_get(ctx, "face_fault_before", "the known face baseline") if prepare else ctx.get("face_fault_before")
+    script = """import adsk.core, adsk.cam, hashlib, json
+def run(context):
+    app = adsk.core.Application.get()
+    guards = [m for n,m in __import__('sys').modules.items() if n.endswith('.tools._write_guard')]
+    assert len(guards) == 1
+    assert guards[0].resolve_document_handle(HANDLE) == app.activeDocument
+    assert app.activeDocument.isValid and app.activeDocument.dataFile is None
+    cam = adsk.cam.CAM.cast(app.activeDocument.products.itemByProductType('CAMProductType'))
+    assert cam is not None
+    setups = [s for s in cam.setups if s.name == SETUP_NAME]
+    assert len(setups) == 1
+    ops = [setups[0].allOperations.item(i) for i in range(setups[0].allOperations.count)]
+    ops = [op for op in ops if op.name == OP_NAME]
+    assert len(ops) == 1
+    op = ops[0]
+    assert EXPECTED_ID is None or op.operationId == EXPECTED_ID
+    tool = json.loads(op.tool.toJson())
+    assert isinstance(tool, dict) and tool
+    tool_hash = hashlib.sha256(json.dumps(tool,sort_keys=True).encode()).hexdigest()
+    assert EXPECTED_TOOL is None or tool_hash == EXPECTED_TOOL
+    p = op.parameters.itemByName('bottomHeight_offset')
+    assert p is not None
+    SEED
+    rows = {}
+    for i in range(op.parameters.count):
+        item = op.parameters.item(i)
+        if item.name in ('bottomHeight_offset', 'topHeight_offset'):
+            value = item.value.value
+            assert type(value) in (str, bool, int, float)
+            rows[item.name] = {'expression':item.expression,'value':value,'error':item.error,
+                              'enabled':item.isEnabled,'editable':item.isEditable}
+    print(json.dumps({'operation':op.name,'id':op.operationId,'has_error':op.hasError,
+        'suppressed':op.isSuppressed,'tool_sha256':tool_hash,
+        'parameters':rows}))
+"""
+    seed = ("assert op.hasError is False and abs(p.value.value) < 1e-9\n"
+            "    p.expression = '50 mm'\n"
+            "    assert p.expression == '50 mm' and abs(p.value.value-5.0) < 1e-9") if prepare else "pass"
+    script = script.replace("HANDLE", repr(_ctx_get(ctx, "face_fault_document", "the owned face document")))
+    script = script.replace("SETUP_NAME", repr(CAM_SETUP)).replace("OP_NAME", repr(_ctx_get(ctx, "face_op", "the face op")))
+    script = script.replace("EXPECTED_ID", repr(before["id"] if before else None))
+    script = script.replace("EXPECTED_TOOL", repr(before["tool_sha256"] if before else None)).replace("SEED", seed)
+    return {"script": script, "read_only": not prepare}
+
+
+def _face_fault_known(p, faulted=False):
+    """Whether both offset snapshots and the native operation identity are readable."""
+    return (_partial_snapshot_known(p, _RECALL.get("face_op"), ["bottomHeight_offset", "topHeight_offset"], allow_errors=faulted)
+            and type(p.get("suppressed")) is bool)
+
+
+def _face_fault_restored(p):
+    """Compare the same native operation and both offsets with their known baseline."""
+    before = _RECALL.get("face_fault_before") or {}
+    return _measured("face offsets, tool and operation state restored", p,
+                     _face_fault_known(p) and p == before)
+
+
+def _face_fault_seeded(p):
+    """Check the seeded offset fault against the prior cutter and neighbouring offset."""
+    before = _RECALL.get("face_fault_before") or {}
+    rows, old = p.get("parameters") or {}, before.get("parameters") or {}
+    bottom = rows.get("bottomHeight_offset") or {}
+    return _measured("deliberate face fault is present on the same operation", p,
+        _face_fault_known(p, faulted=True) and p.get("has_error") is True and p.get("suppressed") is False
+        and p.get("id") == before.get("id") and p.get("tool_sha256") == before.get("tool_sha256")
+        and all((rows.get("topHeight_offset") or {}).get(k) == (old.get("topHeight_offset") or {}).get(k)
+                for k in ("expression", "value", "enabled", "editable"))
+        and bottom.get("expression") == "50 mm" and _near(bottom.get("value"), 5.0, 1e-9))
 
 
 def _face_op_settled(handle_key, label, want):
@@ -3052,14 +3126,24 @@ _CAM_DELIVER = [
     ("cam_delete", {"entity": _SUPPRESSED_EMPTY_SETUP},
      lambda p: p.get("deleted") is True and p.get("entity_type") == "setup", None),
     ("cam_get", {"include": ["setups"]}, _setup_absent(_SUPPRESSED_EMPTY_SETUP), None),
-    # A FAULTED operation suppressed: the face op is driven into the generator's own fault (a
-    # bottom offset above its top), generated to it, then suppressed - and the readiness read and
-    # the census both count it SUPPRESSED, not errored, although the platform keeps hasError and
-    # the fault text under suppression. The restore puts the offset back and regenerates it clean
-    # before the teardown, so the later posts see the job whole.
+    # A native height fault exercises suppression while the public editor refuses and restores.
+    # Suppression excludes the fault from the error count; regeneration checks the restored offset.
+    ("doc_get", {},
+     lambda p: (p.get("active") or {}).get("has_data_file") is False
+               and isinstance((p.get("active") or {}).get("document_handle"), str),
+     ("face_fault_document", _recall("face_fault_document", lambda p: p["active"]["document_handle"]))),
+    ("sys_execute_script", _face_fault_read,
+     lambda p: _face_fault_known(p) and p.get("has_error") is False and p.get("suppressed") is False
+               and _near(p["parameters"]["bottomHeight_offset"]["value"], 0.0, 1e-9),
+     ("face_fault_before", _recall("face_fault_before", lambda p: p))),
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
                                       "parameters": {"bottomHeight_offset": "50 mm"}},
-     lambda p: p.get("updated_count") == 1, None),
+     _refused("Operation.hasError changed from False to True", "Rolled back all 1 parameter(s)"), None),
+    ("sys_execute_script", _face_fault_read,
+     Independent(_face_fault_restored, ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("sys_execute_script", lambda c: _face_fault_read(c, prepare=True), _face_fault_seeded, None),
+    ("sys_execute_script", _face_fault_read,
+     Independent(_face_fault_seeded, ["sys_execute_script"], "tool:sys_execute_script"), None),
     ("cam_generate", lambda c: {"target": _ctx_get(c, "face_op", "the face op"),
                                 "skip_valid": False},
      lambda p: p.get("launched") is True and bool(p.get("handle")),
@@ -3081,7 +3165,7 @@ _CAM_DELIVER = [
                                       "suppressed": False},
      lambda p: p["is_suppressed"] is False and p["was_suppressed"] is True, None),
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
-                                      "parameters": {"bottomHeight_offset": "0 mm"}},
+                                      "parameters": {"bottomHeight_offset": _ctx_get(c, "face_fault_before", "the face baseline")["parameters"]["bottomHeight_offset"]["expression"]}},
      lambda p: p.get("updated_count") == 1, None),
     ("cam_generate", lambda c: {"target": _ctx_get(c, "face_op", "the face op"),
                                 "skip_valid": False},
@@ -3090,6 +3174,8 @@ _CAM_DELIVER = [
     ("cam_get_status", lambda c: {"handle": _ctx_get(c, "restored_face", "the restored generation")},
      _face_op_settled("restored_face", "the restored face op generates clean",
                       {"errored": 0, "valid": 1}), None),
+    ("sys_execute_script", _face_fault_read,
+     Independent(_face_fault_restored, ["cam_edit_operation", "cam_generate"], "tool:sys_execute_script"), None),
     # TEARDOWN of the two assets this run leaves outside the document, each after the beats that use
     # it: the confirm_name guard while the asset exists, the delete on its own read-backs, then the
     # library read as witness. 10a's narrative with 10b's fallback leaves the run-stamped machine.
@@ -4465,30 +4551,111 @@ _DR_LIBRARY = "systemlibraryroot://Samples/Milling Tools (Metric)"
 _DR_DERIVED = "(multiAxisMachiningType == 'four_axis') ? 'tilt_to_rotary_axis' : 'vertical'"
 
 
-def _derived_row_read(_ctx):
-    """Read toolAxisMode, tiltToolMode and the operation's hasError natively."""
-    script = """import adsk.core, adsk.cam, json
+def _derived_row_read(_ctx, operation=_DR_OP, parameters=None):
+    """Read one owned partial-edit operation's parameters, identity and error flag."""
+    script = """import adsk.core, adsk.cam, hashlib, json
 
 def run(context):
     app = adsk.core.Application.get()
+    assert app.activeDocument.isValid and app.activeDocument.dataFile is None
     cam = adsk.cam.CAM.cast(app.activeDocument.products.itemByProductType('CAMProductType'))
-    ops = [s.allOperations.item(j) for s in cam.setups for j in range(s.allOperations.count)
-           if s.allOperations.item(j).name == NAME]
+    setups = [s for s in cam.setups if s.name == SETUP]
+    assert len(setups) == 1
+    ops = [setups[0].allOperations.item(j) for j in range(setups[0].allOperations.count)
+           if setups[0].allOperations.item(j).name == NAME]
     assert len(ops) == 1
-    mode = ops[0].parameters.itemByName('toolAxisMode')
-    tilt = ops[0].parameters.itemByName('tiltToolMode')
-    print(json.dumps({'value': mode.value.value, 'expression': mode.expression,
-                      'error': mode.error, 'has_error': ops[0].hasError,
-                      'tilt': tilt.value.value}))
+    op = ops[0]
+    rows = {}
+    for name in ROWS:
+        p = op.parameters.itemByName(name)
+        assert p is not None
+        rows[name] = {'expression':p.expression,'value':p.value.value,'error':p.error,
+                      'enabled':p.isEnabled,'editable':p.isEditable}
+    tool = json.loads(op.tool.toJson())
+    assert isinstance(tool,dict) and tool
+    result = {'operation':op.name,'id':op.operationId,'has_error':op.hasError,'parameters':rows,
+              'tool_sha256':hashlib.sha256(json.dumps(tool,sort_keys=True).encode()).hexdigest()}
+    if 'toolAxisMode' in rows:
+        result.update({key:rows['toolAxisMode'][key] for key in ('value','expression','error')})
+    if 'tiltToolMode' in rows:
+        result['tilt'] = rows['tiltToolMode']['value']
+    print(json.dumps(result))
 """
-    return {"script": script.replace("NAME", repr(_DR_OP)), "read_only": True}
+    names = parameters or ["multiAxisMachiningType", "toolAxisMode", "tiltToolMode"]
+    return {"script": script.replace("NAME", repr(operation)).replace("SETUP", repr(_PE_SETUP))
+            .replace("ROWS", repr(names)), "read_only": True}
+
+
+def _partial_snapshot_known(p, operation, names, allow_errors=False):
+    """Whether the independent operation snapshot has every required scalar and identity."""
+    rows = p.get("parameters") or {}
+    if (p.get("operation") != operation or type(p.get("id")) is not int or p["id"] < 0
+            or type(p.get("has_error")) is not bool or not isinstance(p.get("tool_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", p["tool_sha256"]) is None or set(rows) != set(names)):
+        return False
+    return all(isinstance(row.get("expression"), str) and isinstance(row.get("error"), str)
+               and (allow_errors or row["error"] == "")
+               and type(row.get("enabled")) is bool and type(row.get("editable")) is bool
+               and type(row.get("value")) in (str, bool, int, float)
+               and (type(row["value"]) is not float or math.isfinite(row["value"]))
+               for row in rows.values())
+
+
+def _partial_compound_restored(p):
+    """Verify the refused compound's identity, values and disclosed expression loss independently."""
+    before = _RECALL.get("partial_edit_before") or {}
+    rows, prior = p.get("parameters") or {}, before.get("parameters") or {}
+    names = _PE_ROWS + ["tiltToolMode"]
+    good = (_partial_snapshot_known(p, _PE_OP, names) and _partial_snapshot_known(before, _PE_OP, names)
+            and p.get("id") == before.get("id") and p.get("tool_sha256") == before.get("tool_sha256")
+            and p.get("operation") == _PE_OP and p.get("has_error") is False
+            and set(rows) == set(prior) == set(_PE_ROWS + ["tiltToolMode"]))
+    for name, row in prior.items():
+        after = rows.get(name) or {}
+        good = good and all(after.get(k) == row.get(k) for k in ("value", "error", "enabled", "editable"))
+        good = good and after.get("expression") == ("'vertical'" if name == "toolAxisMode" else row.get("expression"))
+    return _measured("compound refusal restored values and disclosed literal axis", p, good)
+
+
+def _partial_same_operation(p, key, value, expression, error):
+    """Verify a parameter edit against its independently retained operation and tool."""
+    before = _RECALL.get(key) or {}
+    names = ["multiAxisMachiningType", "toolAxisMode", "tiltToolMode"]
+    mode = (p.get("parameters") or {}).get("multiAxisMachiningType") or {}
+    return _measured("partial-edit independent operation state", p,
+                     _partial_snapshot_known(p, _DR_OP, names) and _partial_snapshot_known(before, _DR_OP, names)
+                     and p.get("id") == before.get("id") and p.get("operation") == before.get("operation")
+                     and p.get("tool_sha256") == before.get("tool_sha256")
+                     and p.get("has_error") is error and p.get("value") == value
+                     and p.get("expression") == expression and p.get("error") == ""
+                     and mode.get("expression") == "'five_axis'" and mode.get("value") == "five_axis")
+
+
+def _partial_existing_error_read(p, restored=False):
+    """Verify the nondefault edit of an already errored operation or its exact parameter restore."""
+    before = _RECALL.get("partial_mode_before") or {}
+    rows, prior = p.get("parameters") or {}, before.get("parameters") or {}
+    names = ["roughingType", "stepover"]
+    good = (_partial_snapshot_known(p, _MD_OP, names) and _partial_snapshot_known(before, _MD_OP, names)
+            and p["id"] == before["id"] and p["tool_sha256"] == before["tool_sha256"]
+            and p["has_error"] is before["has_error"] is True)
+    if restored:
+        good = good and rows == prior
+    else:
+        step = rows.get("stepover") or {}
+        good = good and rows.get("roughingType") == prior.get("roughingType")
+        good = good and step.get("expression") == "2.4 mm" and _near(step.get("value"), 0.24, 1e-9)
+    return _measured("edit and restore preserve the existing operation error", p, good)
 
 
 def _derived_row_reads(label, expression):
     """The native read: value vertical, the given expression, no error, tiltToolMode automatic."""
     def check(p):
         return _measured(label, p,
-                         p.get("value") == "vertical" and p.get("expression") == expression
+                         _partial_snapshot_known(p, _DR_OP, ["multiAxisMachiningType", "toolAxisMode", "tiltToolMode"])
+                         and (p["parameters"]["multiAxisMachiningType"]["expression"] == "'five_axis'")
+                         and (p["parameters"]["multiAxisMachiningType"]["value"] == "five_axis")
+                         and p.get("value") == "vertical" and p.get("expression") == expression
                          and p.get("error") == "" and p.get("has_error") is False
                          and p.get("tilt") == "automatic")
     return check
@@ -4503,29 +4670,54 @@ _PARTIAL_EDIT_ROWS = [
                                         "tool_scope": "document", "generate": False,
                                         "tool_index": _ctx_get(c, "sw_mill", "the flat mill's index")},
      _op_created(_PE_SETUP, "parallel"), None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _PE_OP, _PE_ROWS + ["tiltToolMode"]),
+     lambda p: _partial_snapshot_known(p, _PE_OP, _PE_ROWS + ["tiltToolMode"])
+               and p.get("has_error") is False and p.get("value") == "vertical"
+               and p.get("expression") == _DR_DERIVED and p.get("tilt") == "automatic"
+               and p["parameters"]["multiAxisMachiningType"]["value"] == "three_axis"
+               and p["parameters"]["tiltTool"]["value"] is False
+               and p["parameters"]["useShaftAndHolder"]["value"] is False,
+     ("partial_edit_before", _recall("partial_edit_before", lambda p: p))),
     ("cam_edit_operation", {"operation": _PE_OP, "parameters": {
         "multiAxisMachiningType": "'five_axis'", "toolAxisMode": "'lead_lean'",
         "tiltTool": "true", "useShaftAndHolder": "true"}},
-     _refused("Restored the expression of 3 of 4", "1 came back by VALUE only",
+     _refused("Operation.hasError changed from False to True", "Restored the expression of 3 of 4", "1 came back by VALUE only",
               "'toolAxisMode' reads value 'vertical'", "which was NOT restored",
               "Operation.hasError reads False"), None),
     # The derived expression is lost; its evaluated vertical value returned while the row was locked.
     ("cam_get", {"include": ["parameters"], "operation": _PE_OP, "parameter_names": _PE_ROWS},
      _expressions_read(_PE_OP, {"multiAxisMachiningType": "'three_axis'",
                                 "useShaftAndHolder": "tiltTool",
+                                "tiltTool": "false",
                                 "toolAxisMode": "'vertical'"}), None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _PE_OP, _PE_ROWS + ["tiltToolMode"]),
+     Independent(_partial_compound_restored, ["cam_edit_operation"], "tool:sys_execute_script"), None),
     ("cam_create_operation", lambda c: {"setup": _PE_SETUP, "strategy": "three_plus_two",
                                         "name": _MD_OP, "tool_scope": "document", "generate": False,
                                         "tool_index": _ctx_get(c, "sw_mill", "the flat mill's index")},
      _op_created(_PE_SETUP, "three_plus_two"), None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _MD_OP, ["roughingType", "stepover"]),
+     lambda p: _partial_snapshot_known(p, _MD_OP, ["roughingType", "stepover"])
+               and p.get("has_error") is True
+               and p["parameters"]["roughingType"]["expression"] == "'offset'"
+               and not _near(p["parameters"]["stepover"]["value"], 0.24, 1e-9),
+     ("partial_mode_before", _recall("partial_mode_before", lambda p: p))),
+    ("cam_edit_operation", {"operation": _MD_OP, "parameters": {"stepover": "2.4 mm"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "2.4 mm", None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _MD_OP, ["roughingType", "stepover"]),
+     Independent(_partial_existing_error_read, ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("cam_edit_operation", lambda c: {"operation": _MD_OP, "parameters": {"stepover":
+        _ctx_get(c, "partial_mode_before", "the operation's prior stepover")["parameters"]["stepover"]["expression"]}},
+     lambda p: p.get("edited") is True, None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _MD_OP, ["roughingType", "stepover"]),
+     Independent(lambda p: _partial_existing_error_read(p, restored=True), ["cam_edit_operation"], "tool:sys_execute_script"), None),
     ("cam_edit_operation", {"operation": _MD_OP,
                             "parameters": {"roughingType": "'adaptive'", "stepover": "1.5 mm"}},
      _refused("Maximum Stepover", "reads isEnabled false", "Rolled back all 2"), None),
     ("cam_get", {"include": ["parameters"], "operation": _MD_OP,
                  "parameter_names": ["roughingType"]},
      _expressions_read(_MD_OP, {"roughingType": "'offset'"}), None),
-    # The bundled 6mm Flat Endmill control: five_axis, then the refused lead_lean.
-    # Fusion refuses the derived default through .expression; the value comes back, as a literal.
+    # Lead/lean without tilt takes the write; the original conditional cannot be assigned as a choice.
     ("cam_create_operation", {"setup": _PE_SETUP, "strategy": "parallel", "name": _DR_OP,
                               "tool_library_url": _DR_LIBRARY, "tool_index": 22, "generate": False},
      lambda p: _op_created(_PE_SETUP, "parallel")(p)
@@ -4534,13 +4726,23 @@ _PARTIAL_EDIT_ROWS = [
                             "parameters": {"multiAxisMachiningType": "'five_axis'"}},
      lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'five_axis'", None),
     ("sys_execute_script", _derived_row_read,
-     _derived_row_reads("toolAxisMode holds its derived default before the edit", _DR_DERIVED), None),
+     _derived_row_reads("toolAxisMode holds its derived default before the edit", _DR_DERIVED),
+     ("derived_edit_before", _recall("derived_edit_before", lambda p: p))),
     ("cam_edit_operation", {"operation": _DR_OP, "parameters": {"toolAxisMode": "'lead_lean'"}},
-     _refused("1 came back by VALUE only", "'toolAxisMode' reads value 'vertical' and expression",
-              "CAMParameter.expression refused its prior expression", "Invalid enumeration value",
-              "which was NOT restored", "Operation.hasError reads False"), None),
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'lead_lean'", None),
     ("sys_execute_script", _derived_row_read,
-     _derived_row_reads("the value is back and the expression is the literal", "'vertical'"), None),
+     Independent(lambda p: _partial_same_operation(p, "derived_edit_before", "lead_lean", "'lead_lean'", False)
+                            and p.get("tilt") == "from_point", ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("cam_edit_operation", {"operation": _DR_OP, "parameters": {"toolAxisMode": _DR_DERIVED}},
+     _refused("Could not set 'toolAxisMode'", "Invalid enumeration value", "Already applied: none"), None),
+    ("sys_execute_script", _derived_row_read,
+     lambda p: _partial_same_operation(p, "derived_edit_before", "lead_lean", "'lead_lean'", False)
+                and p.get("tilt") == "from_point", None),
+    ("cam_edit_operation", {"operation": _DR_OP, "parameters": {"toolAxisMode": "'vertical'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'vertical'", None),
+    ("sys_execute_script", _derived_row_read,
+     Independent(lambda p: _partial_same_operation(p, "derived_edit_before", "vertical", "'vertical'", False)
+                            and p.get("tilt") == "automatic", ["cam_edit_operation"], "tool:sys_execute_script"), None),
     ("cam_create_operation", {"setup": _PE_SETUP, "strategy": "parallel", "name": "RestoreNames5x",
                               "tool_library_url": _DR_LIBRARY, "tool_index": 3, "generate": False},
      lambda p: _op_created(_PE_SETUP, "parallel")(p)

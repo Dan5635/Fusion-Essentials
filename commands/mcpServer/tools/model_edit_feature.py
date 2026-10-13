@@ -85,6 +85,10 @@ def _set_directions(feature, row, directions):
 
 def _restore_value(feature, row, value, before_state=None):
     """Restore the original property value at the feature's edit row."""
+    if row.get("setter") == "mirror_plane":
+        feature.mirrorPlane = value
+        feature.isCombine = before_state["is_combine"]
+        return
     if row.get("setter") == "rib_web_curves":
         feature.curves = list(value)
         return
@@ -161,6 +165,11 @@ def _restore_value(feature, row, value, before_state=None):
 
 def _apply_value(feature, row, resolved, mode, before_state=None):
     """Apply one row from the closed support table."""
+    if row.get("setter") == "mirror_plane":
+        # Assigning mirrorPlane resets isCombine; restore it after the plane, live-verified.
+        feature.mirrorPlane = resolved
+        feature.isCombine = before_state["is_combine"]
+        return
     if row.get("setter") == "rib_web_curves":
         curves = _edit.path_entities(resolved)
         if not curves:

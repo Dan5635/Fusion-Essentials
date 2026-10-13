@@ -18,7 +18,7 @@ import os
 import time
 import copy
 
-from cloud_config import FOLDER, HUB, PROJECT
+from cloud_config import ARTIFACT_STAMP, FOLDER, HUB, PROJECT
 from verify_acts_cam import (
     _launched_on, _op_created, _preset_applied, _template_applied, _template_path_state)
 from verify_acts_model_precision import _section_camera
@@ -32,7 +32,7 @@ from verify_core import (
     _made_component, _measured, _motion_linked, _new_document, _near, _num, _recall, _refused,
     _watch, facade)
 
-_STAMP = time.strftime("%Y%m%d-%H%M%S")
+_STAMP = ARTIFACT_STAMP or time.strftime("%Y%m%d-%H%M%S")
 
 # THE ARTIFACTS, all run-stamped so two overlapping runs never collide on one name and a run that
 # died leaves artifacts a later one can tell from its own.
@@ -2264,6 +2264,23 @@ def _drawing_text_read(path, clean=False):
     return check
 
 
+def _drawing_named_text_read(path):
+    """Judge named-page attribution against the independent exported PDF labels."""
+    def check(p):
+        name = _drawing_original_sheet()["name"]
+        pages, _text, _shown, count = _pdf_layer_strings(path, name, "FD_Dimensions")
+        if len(pages) == 1:
+            return _drawing_text_read(path)(p)
+        rows = p.get("sheets") or []
+        sheet = rows[0] if len(rows) == 1 else {}
+        return _measured("ambiguous PDF labels withhold page attribution and text", {"pages": pages, "reply": p},
+            pages == [1, 2] and count == p.get("sheet_count") == (p.get("pdf") or {}).get("page_count") == 2
+            and sheet.get("name") == name and sheet.get("pdf_page") is None and sheet.get("text") is None
+            and sheet.get("pdf_page_reason") == "2 pages are labelled with this sheet's name"
+            and (p.get("pdf") or {}).get("file") == path)
+    return check
+
+
 def _as_number(text):
     """The number a dimension's text spells, or None."""
     try:
@@ -3964,17 +3981,9 @@ _CLOUD_DRAWING = [
      _drawing_persistence_pdf(_DRAWING_NAMED_AFTER_PDF),
      ("drawing_persist_named_after_pdf", _recall("drawing_persist_named_after_pdf",
       _drawing_pdf_record))),
-    # DRAWING-PDF-COPIED-SHEET-LABEL-1: Fusion labels both PDF pages with the original sheet name.
+    # DRAWING-PDF-COPIED-SHEET-LABEL-1: actual PDF labels decide whether named attribution is safe.
     ("drawing_get", _drawing_text_args(_DRAWING_NAMED_AFTER_PDF),
-     lambda p: _measured("the drawing read refuses ambiguous PDF page attribution", p,
-         len(p.get("sheets") or []) == 1
-         and p["sheets"][0].get("name") == _drawing_original_sheet()["name"]
-         and p["sheets"][0].get("pdf_page") is None
-         and p["sheets"][0].get("text") is None
-         and p["sheets"][0].get("pdf_page_reason") == "2 pages are labelled with this sheet's name"
-         and (p.get("pdf") or {}).get("file") == _DRAWING_NAMED_AFTER_PDF
-         and _pdf_layer_strings(_DRAWING_NAMED_AFTER_PDF,
-             _drawing_original_sheet()["name"], "FD_Dimensions")[0] == [1, 2]), None),
+     _drawing_named_text_read(_DRAWING_NAMED_AFTER_PDF), None),
     ("drawing_edit_sheet", _drawing_delete_copy_args, _drawing_copy_delete_requested, None),
     ("drawing_get", {"include": ["views"]}, _drawing_original_settled, None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_BEFORE_PDF),

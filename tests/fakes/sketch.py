@@ -4,9 +4,57 @@
 """The sketch world: profiles, the per-kind curve collections, the sketch and its points."""
 
 import types
+import math
 
 from tests.fakes.geometry import FakePoint
 from tests.fakes.scaffold import _NamedCollection, fusion_fake
+
+
+@fusion_fake(scenario_double="Injected text rectangle rotation and read faults; not a measured API shape")
+class TextRectangleRotation:
+    """A numeric rectangle scenario with explicitly injected rotation faults."""
+    def __init__(self, corner=(1.0, 2.0), diagonal=(4.5, 2.7), injected=()):
+        self._injected = frozenset(injected)
+        known = {"rotate_false", "rotate_drop", "rotate_partial", "rotate_raises",
+                 "unread_before", "unread_after", "missing_line", "reversed_edge"}
+        if self._injected - known:
+            raise ValueError(f"Unknown injected text rotation faults: {self._injected - known}")
+        self._corners = [FakePoint(corner[0], corner[1], 0),
+                         FakePoint(diagonal[0], corner[1], 0),
+                         FakePoint(diagonal[0], diagonal[1], 0),
+                         FakePoint(corner[0], diagonal[1], 0)]
+        self._lines = [types.SimpleNamespace(
+            startSketchPoint=types.SimpleNamespace(geometry=self._corners[i]),
+            endSketchPoint=types.SimpleNamespace(geometry=self._corners[(i + 1) % 4]))
+            for i in range(4)]
+        self.calls = []
+
+    @property
+    def rectangleLines(self):
+        if "unread_before" in self._injected or (self.calls and "unread_after" in self._injected):
+            raise RuntimeError("Injected unreadable text rectangle")
+        lines = self._lines[:3] if "missing_line" in self._injected else self._lines
+        if "reversed_edge" in self._injected:
+            return [types.SimpleNamespace(startSketchPoint=lines[0].endSketchPoint,
+                                          endSketchPoint=lines[0].startSketchPoint)] + lines[1:]
+        return lines
+
+    def rotate(self, radians):
+        self.calls.append(radians)
+        if "rotate_raises" in self._injected:
+            raise RuntimeError("Injected rotation raise")
+        if "rotate_false" in self._injected:
+            return False
+        if "rotate_drop" in self._injected:
+            return True
+        cx = sum(p.x for p in self._corners) / 4
+        cy = sum(p.y for p in self._corners) / 4
+        c, s = math.cos(radians), math.sin(radians)
+        points = self._corners[:1] if "rotate_partial" in self._injected else self._corners
+        for p in points:
+            x, y = p.x - cx, p.y - cy
+            p.x, p.y = cx + c * x - s * y, cy + s * x + c * y
+        return True
 
 
 @fusion_fake(live_type="Profile", facts=("shape-dump-design-world",))

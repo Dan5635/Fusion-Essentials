@@ -18,6 +18,8 @@ import pytest
 
 from conftest import (FakeValueInput, MakeComp, MakeDesign, Sketch, SketchCurves,
                       _NamedCollection, install, load_tool)
+from tests.fakes.sketch import TextRectangleRotation
+from tests.fakes.geometry import FakeMatrix3D, FakeVector3D
 
 st = load_tool("sketch_set_text")
 
@@ -1179,12 +1181,52 @@ class TestModeInputRefusals:
 # ── angle + flips: set on the input, published as REQUESTED ─────────────────
 
 class TestFormatting:
-    def test_angle_is_converted_from_degrees_to_radians(self):
-        design, sk = _install_create()
-        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=45))
-        assert sk.sketchTexts.last_input.angle == pytest.approx(math.radians(45))
-        # the payload publishes the REQUESTED degrees, not a read-back of the created text
-        assert out["requested"]["angle_deg"] == 45.0
+    @pytest.fixture
+    def rotation(self, monkeypatch):
+        scenario = TextRectangleRotation()
+        original = _fake_definition
+        def definition(ipt, obj_type, blind):
+            result = original(ipt, obj_type, blind)
+            if ipt.mode == "multi_line":
+                scenario.objectType = result.objectType
+                scenario.horizontalAlignment = result.horizontalAlignment
+                scenario.characterSpacing = result.characterSpacing
+                return scenario
+            return result
+        monkeypatch.setattr(__import__(__name__, fromlist=["_"]), "_fake_definition", definition)
+        def matrix():
+            result = FakeMatrix3D()
+            result.getCell = lambda r, c: result.asArray()[4 * r + c]
+            return result
+        monkeypatch.setattr(st.adsk.core.Matrix3D, "create", matrix)
+        monkeypatch.setattr(st.adsk.core.Vector3D, "create", lambda *v: FakeVector3D(*v))
+        return scenario
+
+    def test_angle_rotates_landed_rectangle_about_centre(self, rotation):
+        _design, sk = _install_create()
+        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=30))
+        assert rotation.calls == [pytest.approx(math.radians(30))]
+        assert sk.sketchTexts.last_input.angle == 0.0
+        point = rotation.rectangleLines[0].startSketchPoint.geometry
+        assert (point.x, point.y) == pytest.approx((1.409455543377232, 1.171891108675446))
+        assert out["requested"]["angle_deg"] == 30.0
+
+    def test_rectangle_centre_uses_both_ends_when_one_edge_reverses(self, rotation):
+        rotation._injected = frozenset(["reversed_edge"])
+        _install_create()
+        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=30))
+        assert out["created"] is True and out["requested"]["angle_deg"] == 30.0
+        point = rotation.rectangleLines[0].endSketchPoint.geometry
+        assert (point.x, point.y) == pytest.approx((1.409455543377232, 1.171891108675446))
+
+    def test_retained_text_remedy_quotes_apostrophe_sketch_name(self, rotation):
+        rotation._injected = frozenset(["rotate_false"])
+        name = "Owner's Plate"
+        _design, sk = _install_create(sketch_name=name, texts=FakeSketchTexts(initial=3))
+        res = st.handler(text="A", create=True, sketch_name=name, angle_deg=30)
+        assert res["isError"] is True and "returned false" in res["message"]
+        assert f"sketch_delete_entity(sketch_name={name!r}, target='text:3')" in res["message"]
+        assert sk.sketchTexts.count == 4
 
     def test_flips_are_set_and_reported(self):
         design, sk = _install_create()
@@ -1200,33 +1242,73 @@ class TestFormatting:
         assert "requested" not in out
         assert sk.sketchTexts.last_input.angle == 0.0
 
-    def test_note_marks_the_requested_values_as_unverified(self):
+    def test_note_names_rotation_geometry_verification(self, rotation):
         design, sk = _install_create()
         out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=30))
-        assert "REQUESTED" in out["note"] and "were not read back off the created text" in out["note"]
+        assert "rectangle endpoints matched the requested rotation" in out["note"]
+        assert "confirm them with view_screenshot" not in out["note"]
 
-    def test_angle_that_does_not_take_is_an_error(self):
-        # a SWIG proxy accepts an assignment to a name it does not define; only the read-back
-        # catches it, and a create that silently ignored the rotation must not report success
-        class _Deaf(FakeTextInput):
-            @property
-            def angle(self):
-                return 0.0
-            @angle.setter
-            def angle(self, v):
-                pass
-        texts = FakeSketchTexts()
-        texts.createInput3 = lambda expression, height: setattr(
-            texts, "last_input", _Deaf(expression, height)) or texts.last_input
+    @pytest.mark.parametrize("fault,message,called", [
+        ("rotate_false", "returned false", True),
+        ("rotate_drop", "endpoints did not match", True),
+        ("rotate_partial", "endpoints did not match", True),
+        ("rotate_raises", "Injected rotation raise", True),
+        ("unread_before", "did not read before", False),
+        ("unread_after", "did not read after", True),
+        ("missing_line", "did not read before", False)])
+    def test_rotation_failure_names_retained_text(self, rotation, fault, message, called):
+        rotation._injected = frozenset([fault])
+        texts = FakeSketchTexts(initial=2)
         design, sk = _install_create(texts=texts)
-        res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg=45)
-        assert res["isError"] is True and "angle_deg" in res["message"]
-        assert sk.sketchTexts.count == 0
+        res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg=30)
+        assert res["isError"] is True and message in res["message"]
+        assert "The text WAS created" in res["message"]
+        assert "sketch_delete_entity(sketch_name='Plate', target='text:2')" in res["message"]
+        assert sk.sketchTexts.count == 3 and bool(rotation.calls) is called
 
-    def test_non_numeric_angle_is_refused(self):
-        _install_create()
-        res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg="sideways")
+    @pytest.mark.parametrize("angle", ["sideways", float("inf"), float("nan"), True])
+    def test_invalid_angle_is_refused_before_creating_input(self, angle):
+        _design, sk = _install_create()
+        res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg=angle)
         assert res["isError"] is True and "DEGREES" in res["message"]
+        assert sk.sketchTexts.last_input is None and sk.sketchTexts.add_calls == 0
+
+    @pytest.mark.parametrize("angle", [0, 360, -720])
+    def test_whole_turn_preserves_rectangle_without_rotation(self, rotation, angle):
+        _install_create()
+        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=angle))
+        assert out["created"] is True and out["requested"]["angle_deg"] == angle
+        assert rotation.calls == []
+
+    @pytest.mark.parametrize("mode", ["along_path", "fit_on_path"])
+    def test_nonzero_path_angle_refuses_before_creation(self, mode):
+        _design, sk = _install_create(lines=1)
+        res = st.handler(text="A", create=True, sketch_name="Plate", mode=mode,
+                         path="line:0", angle_deg=30)
+        assert res["isError"] is True and "offered for mode 'multi_line' only" in res["message"]
+        assert "sketch_move" in res["message"] and "Rotate the path curve" in res["message"]
+        assert sk.sketchTexts.last_input is None and sk.sketchTexts.add_calls == 0
+
+    @pytest.mark.parametrize("mode", ["along_path", "fit_on_path"])
+    def test_whole_turn_path_angle_uses_unchanged_placement(self, mode):
+        _design, sk = _install_create(lines=1)
+        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", mode=mode,
+                                  path="line:0", angle_deg=360))
+        assert out["created"] is True and out["requested"]["angle_deg"] == 360
+        assert sk.sketchTexts.last_input.angle == 0.0
+
+    def test_rotation_preserves_text_metadata(self, rotation):
+        _design, sk = _install_create()
+        out = _payload(st.handler(text="It's", create=True, sketch_name="Plate", angle_deg=30,
+                                  height=7, font_name="Arial", align="right",
+                                  character_spacing=12, flip_h=True, flip_v=True))
+        text = sk.sketchTexts._texts[-1]
+        assert text.textParameter.expression == st._quote("It's")
+        assert text.heightParameter.value == pytest.approx(0.7)
+        assert text.fontName == "Arial" and out["align"] == "right"
+        assert out["character_spacing"] == 12
+        assert sk.sketchTexts.last_input.isHorizontalFlip is True
+        assert sk.sketchTexts.last_input.isVerticalFlip is True
 
 
 # ── the definition read-back decides whether the right mode landed ──────────

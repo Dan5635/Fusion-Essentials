@@ -35,7 +35,7 @@ SCENARIOS = os.path.join(_HERE, "scenarios")
 RESULTS = os.path.join(_HERE, "results")
 PREAMBLE = os.path.join(_HERE, "preamble.md")
 CONFIG_DIR = os.path.join(_HERE, ".claude-eval")
-SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(_LIVE)), ".claude", "skills")
+SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(_LIVE)), ".agents", "skills")
 INDEX = os.path.join(RESULTS, "index.md")
 
 MCP_PREFIX = "mcp__fusion-essentials__"
@@ -92,7 +92,12 @@ def read_scenario(path):
 
 
 def skill_body(name):
-    """A skill's instructions - its SKILL.md below the frontmatter."""
+    """Render full design guidance on request, or read a neutral workflow skill's body."""
+    if name == "parametric-cad-design":
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_LIVE)), "commands"))
+        from mcpServer.guidance import loader, render
+        doc, _sha = loader.load()
+        return render.body(doc).strip()
     path = os.path.join(SKILLS_DIR, name, "SKILL.md")
     if not os.path.exists(path):
         sys.exit(f"--skill {name}: {path} does not exist")
@@ -560,7 +565,8 @@ def main():
     ap.add_argument("--set", dest="set_name", default=None,
                     help="the eval set sharing one cloud folder (default: the scenario id); a "
                          "chain names one set so each stage finds the last stage's document")
-    ap.add_argument("--skill", default=None, help="append this .claude/skills/<name> body")
+    ap.add_argument("--skill", default=None,
+                    help="append full parametric-cad-design guidance or a .agents/skills/<name> body")
     ap.add_argument("--tool-search", action="store_true",
                     help="let the CLI defer tool schemas (a few per turn instead of all of them)")
     ap.add_argument("--preamble", default=PREAMBLE,

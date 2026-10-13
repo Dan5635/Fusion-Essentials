@@ -5,6 +5,8 @@
 
 from difflib import SequenceMatcher
 
+import adsk.fusion
+
 from ._common import named_with_remainder, safe
 
 MAP_BLURB = ("resolve_thread_info - the ONE thread-table walk turning a bare designation "
@@ -75,15 +77,13 @@ def _nearest_per_type(candidates, designation, thread_type):
     return "; ".join(f"'{desig}' in '{ttype}'" for ttype, (_ratio, desig) in ranked[:5]) + more
 
 
-def resolve_thread_info(comp, designation, internal=True, thread_type="", thread_class=""):
-    """Build a ThreadInfo for a thread DESIGNATION like 'M5x0.8'. `thread_type` picks the standard
-    when several carry it, `thread_class` the fit within that standard.
+def resolve_thread_info(designation, internal=True, thread_type="", thread_class="",
+                        right_handed=True):
+    """Build a straight ThreadInfo for a thread DESIGNATION like 'M5x0.8'. `thread_type` picks the
+    standard when several carry it, `thread_class` the fit within it, `right_handed` the hand.
     Returns (threadInfo, types_carrying_it, None) or (None, types, error)."""
-    # An empty ThreadFeatures collection is falsy (count 0) but not None.
-    tf = safe(lambda: comp.features.threadFeatures)
-    if tf is None:
-        return None, [], "This component has no thread features collection."
-    tdq = safe(lambda: tf.threadDataQuery)
+    # The False is isTapered: the straight-thread library, as in ThreadInfo.create below.
+    tdq = safe(lambda: adsk.fusion.ThreadDataQuery.create(False))
     if tdq is None:
         return None, [], "Thread data query unavailable."
 
@@ -125,7 +125,8 @@ def resolve_thread_info(comp, designation, internal=True, thread_type="", thread
                                 f"in '{chosen}'. Classes that are: {', '.join(classes) or '(none)'}.")
     else:
         cls = classes[0] if classes else ""
-    ti = safe(lambda: tf.createThreadInfo(internal, chosen, designation, cls))
+    ti = safe(lambda: adsk.fusion.ThreadInfo.create(False, internal, chosen, designation, cls,
+                                                    bool(right_handed)))
     if ti is None:
-        return None, hits, f"createThreadInfo failed for '{designation}' in '{chosen}'."
+        return None, hits, f"ThreadInfo.create failed for '{designation}' in '{chosen}'."
     return ti, hits, None

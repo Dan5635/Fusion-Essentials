@@ -153,7 +153,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Claude Code: machine-local and session scaffolding never ship. The exemplar skill, the shared
+# Claude Code: machine-local and session scaffolding never ship. Workflow skills in .agents/skills/
+# and their .claude/skills/ copies, the shared
 # settings.json (a worked example of scoping agent tool-call approvals) and the role files under
 # .agents/roles/ (how the team of agents that built the server works) and the thin client files in
 # .claude/agents/ that point at them are deliberately tracked.

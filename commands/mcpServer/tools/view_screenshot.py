@@ -72,7 +72,7 @@ def _restore_camera(vp, saved_camera):
                 "viewport is left at the capture camera - view_set(orient) re-aims it.")
     if not _view_common.camera_restored(read_back, saved_camera):
         return ("The camera could NOT be put back where it was before this shot: the read-back "
-                "eye/target do not match the saved camera. The viewport is left at the capture "
+                "camera framing does not match the saved camera. The viewport is left at the capture "
                 "camera - view_set(orient) re-aims it.")
     if smooth_error:
         return f"isSmoothTransition could not be reset restoring the camera: {smooth_error}."
@@ -185,21 +185,25 @@ def handler(view: str = "current", width: int = _WIDTH_DEFAULT, height: int = _H
                         "the view direction before the fit.")
             elif want_fit_view:
                 vp.fit()
-            # zoom: scale the camera-to-target distance after fitting (>1 zooms OUT, <1 zooms IN).
+            # zoom: scale how much the view shows after fitting (>1 zooms OUT, <1 zooms IN).
             z = float(zoom or 1.0)
             if z and z != 1.0 and z > 0:
                 cam = vp.camera
                 try:
-                    cam.viewExtents = cam.viewExtents * z   # smaller extents = zoomed in
-                    _, zoom_smooth_error = _view_common.apply_camera(
+                    if not _view_common.scale_view(cam, z):
+                        raise RuntimeError("neither the camera's extents nor its eye took it")
+                    requested = _view_common.camera_frame(cam)
+                    landed, zoom_smooth_error = _view_common.apply_camera(
                         vp, cam, fit=False, smooth=_view_common.SCREENSHOT_GLIDE)
+                    if not _view_common.camera_restored(landed, requested):
+                        raise RuntimeError("the read-back camera framing does not match the requested zoom")
                     if zoom_smooth_error and not smooth_warning:
                         smooth_warning = f"isSmoothTransition could not be set: {zoom_smooth_error}."
                 except Exception as e:
                     # A dropped zoom is a request the image does not honour - say so rather than
                     # returning a fitted shot as if the zoom had applied.
-                    zoom_warning = (f"zoom={z} could NOT be applied ({e}) - the image is at the "
-                                    "fitted extents.")
+                    zoom_warning = (f"zoom={z} could NOT be applied ({e}) - the image shows the "
+                                    "camera framing that read back.")
         except Exception as e:
             # The orient failed AFTER the camera may already have moved and AFTER fit_to hid the
             # other occurrences, so this exit owes both restores: the camera goes back here or

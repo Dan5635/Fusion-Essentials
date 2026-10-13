@@ -30,8 +30,8 @@ to match current acts. It also requires a current reload record bound to the sam
 Family refreshes
 may retain matching earlier executions; the table's run provenance identifies them.
 
-Stamp: source 2ff1d0ca7bf9fb62cbead6674e3c25f5f1cc7ea9059be8b609207188d8b1c28d | Fusion 2706.0.116 | verified 2026-10-12
-Loaded: implementation 1c0788478b9b37664da67416a35d60711b93bfb8d978fe8668538c9e6dcaa73f | schema 871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42 | load 878dd6f5e9d145e0902f549826a6ae87 | session a9d30e4caceb4a218e7d512cbf710617
+Stamp: source f87bda72c2f36b0cdf4f5e400c9b384b21548fbbc63f0ab42be1e20fa2b9a8b1 | Fusion 2706.1.2 | verified 2026-10-13
+Loaded: implementation 584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca | schema 871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42 | load ea398a85e79441c7ae2189ad407b3f3b | session 76f763a988134fc2862886e13b6e897c
 
 3 covered / 0 called / 1 refusals-only / 3 skipped(reason) / 0 pending / 217 self-reported
 
@@ -114,29 +114,29 @@ families to their closure and loaded identity; omissions have no evidence stamp.
 
 | family | native run | family execution | scope |
 |---|---|---|---|
-| cloud | restamp1012a | 4cabe4d59fd24e6585cf5bdbfe153fab | not in scope: cloud_link_crash_review_authorization; not applicable (conditional): none; held: none |
-| details | restamp1012a | 9103aab39cfc483f940a805c71d8ffb3 | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| fff_export | restamp1012a | a3a7cbcf496d4ff68ee2c0bffb50cbfb | not in scope: none; not applicable (conditional): none; held: none |
-| finale | restamp1012a | 153fbe271f184af1af798d9df8c136b7 | not in scope: none; not applicable (conditional): none; held: none |
-| hub_cam | restamp1012a | 2b480543cd414a9c9828b72803b8798e | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| lookup | restamp1012a | cbe72f35d7c34baa8e1f84cc5524c93b | not in scope: none; not applicable (conditional): none; held: none |
-| mesh | restamp1012a | 2573a0480cc24f4f83dc516549e630cb | not in scope: none; not applicable (conditional): none; held: none |
-| motion | restamp1012a | 3db0b7e0eddd4ce8978b70bdc7e6d11e | not in scope: none; not applicable (conditional): none; held: none |
-| nesting | restamp1012a | 1e3c1139e4f145b88166804bd12afc74 | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| part_cam | restamp1012a | f3ea243a0c4b43c792c15a6d9fa9fd16 | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| render | restamp1012a | 7d915ef8508c42fdbb9b21d7705a9b65 | not in scope: none; not applicable (conditional): none; held: none |
-| resize | restamp1012a | b3ed321791e543dfa13543c88f1b8d84 | not in scope: none; not applicable (conditional): none; held: none |
-| sheet_coupon | restamp1012a | 346cb6e09d644ddf9a31e319c0d21278 | not in scope: none; not applicable (conditional): none; held: none |
-| sheet_flange | restamp1012a | 5abeb2d19fd14d23b0cca7c66d319e1b | not in scope: none; not applicable (conditional): none; held: none |
-| sheet_positions | restamp1012a | c5dfe5f0fd314004899c3cf7fe110d77 | not in scope: none; not applicable (conditional): none; held: none |
-| sheet_selected | restamp1012a | 02cd9fa76c7d4d94a822510823366b22 | not in scope: none; not applicable (conditional): none; held: none |
-| showcase | restamp1012a | b9d2000b0b7448f486fd01b8daabef56 | not in scope: none; not applicable (conditional): none; held: none |
-| sketch | restamp1012a | 5076190bf2e24488a9c5237882c14cb0 | not in scope: none; not applicable (conditional): none; held: none |
-| small_edits | restamp1012a | 5a8dcbb4a84142e4b2af644c86da6471 | not in scope: none; not applicable (conditional): none; held: none |
-| solids | restamp1012a | f2dc8bcf42ef41d3a53f530d159f6620 | not in scope: none; not applicable (conditional): machining_extension; held: none |
-| surfaces | restamp1012a | a09f0c309d204313ab5853500b954dda | not in scope: none; not applicable (conditional): none; held: none |
-| swarf_cam | restamp1012a | ccff539d527d405ab0677c165196881f | not in scope: none; not applicable (conditional): none; held: none |
-| vise | restamp1012a | c1b5378d9e6943e7a8eab664a9dd96eb | not in scope: none; not applicable (conditional): none; held: none |
+| cloud | wide1013c | f6ad1b5660b14b299a0172e16d5aa54b | not in scope: cloud_link_crash_review_authorization; not applicable (conditional): none; held: none |
+| details | wide1013c | 3086016109764a27aea3a5cc909963f6 | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| fff_export | wide1013c | 1dbf1fb0819b47078fabde79cf917be4 | not in scope: none; not applicable (conditional): none; held: none |
+| finale | wide1013c | 9a67b4277ab04282817fa6613ff2d5ab | not in scope: none; not applicable (conditional): none; held: none |
+| hub_cam | wide1013c | 028768219e214ad8b3e23ae5181e17ad | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| lookup | wide1013c | cd7d423c4eaf4484a1450bfb3c0d9bb9 | not in scope: none; not applicable (conditional): none; held: none |
+| mesh | wide1013c | 3bce39ded3124a85928aea9f6679679c | not in scope: none; not applicable (conditional): none; held: none |
+| motion | wide1013c | 8accf7ddb3854a39a524ddbcb9b9d2e4 | not in scope: none; not applicable (conditional): none; held: none |
+| nesting | wide1013c | adeff2bd9eb240b7bb0206bcd15201a5 | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| part_cam | wide1013c | 171eac5949b9422ba23afbad57ee5e1a | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| render | wide1013c | e416562858454134a50485f99f99372c | not in scope: none; not applicable (conditional): none; held: none |
+| resize | wide1013c | 0684f1ef89fe40dfbebdae604fb213ed | not in scope: none; not applicable (conditional): none; held: none |
+| sheet_coupon | wide1013c | ccef5bf34d0d4517aad21d832279e208 | not in scope: none; not applicable (conditional): none; held: none |
+| sheet_flange | wide1013c | a4905c2283ab4c6d8c47ce6cbec07905 | not in scope: none; not applicable (conditional): none; held: none |
+| sheet_positions | wide1013c | ecbf9630ec974a8c95fd3aba0ca0d3d0 | not in scope: none; not applicable (conditional): none; held: none |
+| sheet_selected | wide1013c | be308c541c474106ba75fd666dad2bc3 | not in scope: none; not applicable (conditional): none; held: none |
+| showcase | wide1013c | dd7e37d550534cb3a6ce8f11a353378f | not in scope: none; not applicable (conditional): none; held: none |
+| sketch | wide1013c | f4253515761f46c3897bc437e3f5566e | not in scope: none; not applicable (conditional): none; held: none |
+| small_edits | wide1013c | 22744e9882704bb697cf3acf6a0ce130 | not in scope: none; not applicable (conditional): none; held: none |
+| solids | wide1013c | 9ed54c0fd5904d6a8bf255729e4c369f | not in scope: none; not applicable (conditional): machining_extension; held: none |
+| surfaces | wide1013c | a3f0e3c5cba64d89823efa2d6962e57e | not in scope: none; not applicable (conditional): none; held: none |
+| swarf_cam | wide1013c | 2e0eb359289a4cd3ac705a0f7ef31322 | not in scope: none; not applicable (conditional): none; held: none |
+| vise | wide1013c | 7246cd48724b427890d061e82c12c1f0 | not in scope: none; not applicable (conditional): none; held: none |
 
 | tool | status | step (the demo's shot list) |
 |---|---|---|

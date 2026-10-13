@@ -41,6 +41,7 @@ from verify_core import (
 from verify_families import family_names, fixture_steps, ordered_acts
 from verify_acts_cam import MACHINING_EXTENSION, _MX_SETUP, _SW_SETUP, _SW_SETUP2
 import verify_receipts
+import cloud_config
 
 
 # tests/live also holds harnesses the sweep never imports - they measure API facts and drive the
@@ -335,6 +336,140 @@ def _document_now():
             "document_handle": handle, "feature_count": features, "state": state}
 
 
+_HOME_CONTENT_SCRIPT = """import adsk.core, adsk.fusion, json
+
+def run(context):
+    def count(collection):
+        value = collection.count
+        if type(value) is not int or value < 0:
+            raise ValueError("unreadable home collection count")
+        return value
+    app = adsk.core.Application.get()
+    doc = __HOME_TARGET__
+    if doc is None or not doc.isValid:
+        raise ValueError("home document unavailable")
+    data_file = doc.dataFile
+    identity = (doc.name, None if data_file is None else data_file.id)
+    if identity != __HOME_IDENTITY__:
+        raise ValueError("home document identity changed")
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType("DesignProductType"))
+    if design is None:
+        raise ValueError("home Design product unavailable")
+    components = design.allComponents
+    total = count(components)
+    if not 1 <= total <= 1000:
+        raise ValueError("home component census outside observer bound")
+    sketches = bodies = 0
+    for index in range(total):
+        component = components.item(index)
+        if component is None or not component.isValid:
+            raise ValueError("home component slot unreadable")
+        sketches += count(component.sketches)
+        bodies += count(component.bRepBodies)
+    print(json.dumps({"document_handle": __HOME_HANDLE__, "name": identity[0],
+        "document_id": identity[1], "feature_count": count(design.timeline),
+        "sketch_count": sketches, "body_count": bodies, "is_modified": doc.isModified}))
+"""
+
+
+def _home_now(home, allow_inactive=False):
+    """Bracket the home product read with exact document identities and indices."""
+    def current_known(record, row):
+        return (isinstance(record, dict) and isinstance(record.get("name"), str)
+                and bool(record["name"].strip()) and "document_id" in record
+                and type(record.get("is_modified")) is bool
+                and type(record.get("has_data_file")) is bool
+                and (isinstance(record["document_id"], str) and bool(record["document_id"].strip())
+                     if record["has_data_file"] else record["document_id"] is None)
+                and row.get("name") == record["name"]
+                and type(row.get("is_modified", False)) is bool
+                and row.get("is_modified", False) == record["is_modified"])
+
+    call = facade("call")
+    handle = home.get("document_handle")
+    if not _valid_session_handle(handle):
+        return None, "home has no exact session handle"
+    try:
+        bad, payload = call("doc_get", {"max_results": 1000})
+        if bad or not isinstance(payload, dict):
+            return None, "home document census unavailable"
+        census, active_handle, problem = _complete_open_documents(payload)
+        if problem:
+            return None, "home opening census: " + problem
+        indexed = {row["document_handle"]: row["open_index"] for row in census}
+        if (len(indexed) != len(census) or set(indexed.values()) != set(range(len(census)))
+                or handle not in indexed or (not allow_inactive and active_handle != handle)):
+            return None, "home handle/index census unreadable or mismatched"
+        active = payload.get("active")
+        current_row = next(row for row in census if row["document_handle"] == active_handle)
+        if not current_known(active, current_row):
+            return None, "current active identity/flag facts unavailable or inconsistent"
+        home_row = next(row for row in census if row["document_handle"] == handle)
+        inactive = active_handle != handle
+        if not inactive and home_row.get("is_modified", False) != active.get("is_modified"):
+            return None, "home census and active modified flags disagree"
+        if inactive and ("document_id" not in home or home.get("name") != home_row.get("name")):
+            return None, "inactive home baseline identity unavailable or mismatched"
+        source = dict(home_row, document_id=home["document_id"],
+                      is_modified=home_row.get("is_modified", False)) if inactive else active
+        identity = {key: (source or {}).get(key) for key in (
+            "document_handle", "name", "document_id", "is_modified")}
+        if (not isinstance(active, dict) or identity["document_handle"] != handle
+                or not isinstance(identity["name"], str) or not identity["name"]
+                or type(identity["is_modified"]) is not bool
+                or "document_id" not in source
+                or (not inactive and (type(active.get("has_data_file")) is not bool
+                    or (active["has_data_file"] and (not isinstance(identity["document_id"], str)
+                                                   or not identity["document_id"]))
+                    or (not active["has_data_file"] and identity["document_id"] is not None)))):
+            return None, "home opening identity or modified flag unreadable/mismatched"
+        script = _HOME_CONTENT_SCRIPT.replace("__HOME_IDENTITY__", repr((
+            identity["name"], identity["document_id"]))).replace("__HOME_HANDLE__", repr(handle)).replace(
+                "__HOME_TARGET__", "app.documents.item(%d)" % indexed[handle] if inactive
+                else "app.activeDocument")
+        bad, native = call("sys_execute_script", {
+            "script": script, "read_only": True, "expect_document": active_handle})
+        if bad or not isinstance(native, dict):
+            return None, "strict home observer unavailable or refused: " + str(native)[:180]
+        bad, payload = call("doc_get", {"max_results": 1000})
+        if bad or not isinstance(payload, dict):
+            return None, "home closing census unavailable"
+        closing_census, closing_active, problem = _complete_open_documents(payload)
+        if (problem or closing_active != active_handle
+                or {row["document_handle"]: row["open_index"] for row in closing_census or []} != indexed
+                or len(closing_census or []) != len(census)):
+            return None, "home observer handle/index bookends disagree"
+        closing_active_record = payload.get("active")
+        closing_current_row = next(row for row in closing_census
+                                   if row["document_handle"] == closing_active)
+        if not current_known(closing_active_record, closing_current_row):
+            return None, "current closing identity/flag facts unavailable or inconsistent"
+        closing_home = next(row for row in closing_census if row["document_handle"] == handle)
+        closing = (dict(closing_home, document_id=home.get("document_id")) if inactive
+                   else closing_active_record)
+        if "is_modified" not in closing and inactive:
+            closing = dict(closing, is_modified=False)
+        if (not isinstance(closing, dict)
+                or type(closing.get("is_modified")) is not bool
+                or not isinstance(closing_active_record, dict)
+                or any(closing_active_record.get(key) != active.get(key) for key in (
+                    "document_handle", "name", "document_id", "is_modified", "has_data_file"))
+                or any(key not in closing or closing[key] != value
+                       for key, value in identity.items())
+                or any(key not in native or native[key] != value
+                       for key, value in identity.items())
+                or type(native.get("is_modified")) is not bool):
+            return None, "home observer identities or modified flags disagree"
+        for key in ("feature_count", "sketch_count", "body_count"):
+            value = native.get(key)
+            if type(value) is not int or value < 0:
+                return None, "home observer count unreadable: " + key
+        return dict(identity, **{key: native[key] for key in (
+            "feature_count", "sketch_count", "body_count")}), None
+    except Exception as exc:
+        return None, "home observer transport raised: " + str(exc)
+
+
 def _identity_refusal(previous, current, allow_new_session=False):
     """Why a loaded identity no longer matches the run boundary, or None."""
     if current is None:
@@ -473,12 +608,14 @@ def _refresh_pin(document_pin):
     return None
 
 
-def _complete_open_documents():
+def _complete_open_documents(payload=None):
     """Return a complete doc_get census and active handle, or a refusal."""
-    try:
-        is_error, payload = facade("call")("doc_get", {"max_results": 1000})
-    except Exception as exc:
-        return None, None, "document census transport raised: " + str(exc)
+    is_error = False
+    if payload is None:
+        try:
+            is_error, payload = facade("call")("doc_get", {"max_results": 1000})
+        except Exception as exc:
+            return None, None, "document census transport raised: " + str(exc)
     if is_error or not isinstance(payload, dict):
         return None, None, "doc_get did not return a document census"
     rows = payload.get("open_documents")
@@ -1129,6 +1266,10 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     if receipt_selection is not None:
         selected = [name for name, _pre, _narr, _fb in ACTS
                     if families[name] in receipt_selection]
+    cloud_selected = any(ACT_NEEDS.get(name) == "cloud_tier"
+                         for name, _pre, _narr, _fallback in ACTS
+                         if selected is None or name in selected)
+    cloud_bound = cloud_config.start_invocation(run_id, resume) if cloud_selected else False
     # THE RESUME: the state a prior chunk of this run id saved. Both refusals are settled before the
     # first act runs - a chunk that cannot be joined to the ones before it must change nothing.
     # With --acts it is a DEVELOPMENT walk instead: the named acts run again against the saved
@@ -1195,6 +1336,10 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         if isinstance(row.get("annotations"), dict)
         and row["annotations"].get("readOnlyHint") is not True
         and "expect_document" in ((row.get("inputSchema") or {}).get("properties") or {}))
+
+    if family_mode and "sys_execute_script" not in all_tools:
+        print("run refused: strict home preservation requires the read-only native observer")
+        return 1
 
     # THE CAPABILITY TIER: every capability an act or a step declares, answered True/False/None by
     # its own probe. An unmet capability routes its acts and steps to the receipt's
@@ -1291,6 +1436,17 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     family_events = list(prior.get("family_events") or []) if family_mode else []
     family_open_handles = set(prior.get("family_open_handles") or []) if family_mode else set()
     family_start_census = None
+    family_home_before = prior.get("family_home_before")
+    if resume and family_mode and current_family is not None and (
+            not isinstance(family_home_before, dict)
+            or family_home_before.get("document_handle") != home_document.get("document_handle")
+            or type(family_home_before.get("is_modified")) is not bool
+            or not isinstance(family_home_before.get("name"), str) or not family_home_before["name"]
+            or "document_id" not in family_home_before
+            or any(type(family_home_before.get(key)) is not int or family_home_before[key] < 0
+                   for key in ("feature_count", "sketch_count", "body_count"))):
+        print("resume refused: original before-family home snapshot is absent")
+        return 1
     family_outcomes = {}
     blocked_acts = []
     blocked_steps = []
@@ -1302,6 +1458,11 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     document_pin["cloud_audited_probes"] = cloud_checks[:4]
     fusion_version = prior.get("fusion_version") or health.get("version", "?")
     anchor_document = prior.get("anchor_document")
+    if cloud_bound:
+        cloud_config.ensure_run_destination(facade("call"))
+        entitlements["cloud_tier"] = True
+        bound = cloud_config.destination_snapshot()
+        print("cloud destination: " + bound["folder"] + " (id " + bound["folder_id"] + ")")
     walked = 0
     program = [act[0] for act in ACTS]
     last_requested_act = (selected[-1] if selected is not None else program[-1])
@@ -1342,11 +1503,13 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             "story_document": story_document,
             "family_state_version": 1 if family_mode else None,
             "receipt_run_id": receipt_run_id, "family_executions": executions,
+            "cloud_destination": cloud_config.destination_snapshot(),
             "recorded_scope": recorded_scope,
             "initial_census": initial_census,
             "family": current_family, "family_events": family_events,
             "failed_families": [family for family, outcome in family_outcomes.items()
                                 if outcome == "failed"],
+            "family_home_before": family_home_before,
             "family_open_handles": sorted(family_open_handles),
             "owned_documents": list(document_pin.get("owned_documents") or []),
             "owned_lineages": list(document_pin.get("owned_lineages") or []),
@@ -1450,6 +1613,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
 
     def finish_family(family):
         """Discard all documents this family opened and restore the exact original handle."""
+        cleanup_attempted.add(family)
         cleanup_started = time.perf_counter()
         census, _active, problem = _complete_open_documents()
         if problem:
@@ -1489,6 +1653,18 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             family_events.append({"family": family, "phase": "cleanup-verification",
                                   "steps": [["doc_get", "blocked", final_problem or
                                              "owned document or home census did not restore"]]})
+            return False
+        home_after, home_problem = _home_now(home_document)
+        family_events.append({"family": family, "phase": "home-preservation",
+                              "before": family_home_before, "after": home_after,
+                              "problem": home_problem})
+        if home_problem or family_home_before is None or home_after != family_home_before:
+            family_outcomes[family] = "failed"
+            if home_problem and home_problem.startswith("home observer transport raised:"):
+                document_pin["transport_uncertain"] = True
+            family_events.append({"family": family, "phase": "cleanup-verification",
+                                  "steps": [["home-preservation", "FAIL", home_problem or
+                                             "home content or modified flag changed"]]})
             return False
         if receipt_mode or continue_families:
             end_census = {
@@ -1618,6 +1794,15 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                     stopped = True
                     break
                 family_open_handles = {row["document_handle"] for row in census}
+                family_home_before, home_problem = _home_now(home_document)
+                family_events.append({"family": family, "phase": "home-before",
+                                      "snapshot": family_home_before, "problem": home_problem})
+                if home_problem:
+                    family_outcomes[family] = "failed"
+                    if home_problem.startswith("home observer transport raised:"):
+                        document_pin["transport_uncertain"] = True
+                    stopped = True
+                    break
                 if continue_families:
                     try:
                         if source_hash() != pinned_source_hash:
@@ -1910,6 +2095,15 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     if (family_mode and stopped and current_family is not None
             and current_family not in cleanup_attempted and not document_pin.get("transport_uncertain")):
         finish_family(current_family)
+    if family_mode and keep_open and current_family is not None:
+        home_after, home_problem = _home_now(family_home_before or home_document, allow_inactive=True)
+        family_events.append({"family": current_family, "phase": "home-preservation-kept",
+                              "before": family_home_before, "after": home_after,
+                              "problem": home_problem, "cleanup": False})
+        if home_problem or family_home_before is None or home_after != family_home_before:
+            stopped = True
+            family_outcomes[current_family] = "failed"
+            print("home preservation UNVERIFIED: " + (home_problem or "home census changed"))
     if family_mode and anchor_document is not None and not document_pin.get("transport_uncertain"):
         if not fixture([("doc_close", {"name": anchor_document["document_handle"],
                          "save_changes": False}, "ok", None)], "lifecycle", "anchor-close"):

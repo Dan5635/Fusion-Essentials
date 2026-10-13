@@ -110,6 +110,8 @@ _FIT_WIDEN_UNMEASURABLE = ("The stock box could not be measured against the mode
                           "stayed on the plain fit (fitted_to='model').")
 _FIT_MODEL_UNMEASURABLE = ("The setup's model box read, but the camera could not be measured "
                           "against it, so the frame stayed on the plain fit (fitted_to='viewport').")
+_FIT_FRAME_UNVERIFIED = ("The read-back camera framing does not match the requested box; "
+                        "fitted_to='viewport' names the current view, and box framing is unverified.")
 
 
 def _box_center_diagonal(box):
@@ -133,8 +135,12 @@ def _frame_model_box(vp, box):
                                        eye.y + (center[1] - target.y),
                                        eye.z + (center[2] - target.z))
     cam.target = adsk.core.Point3D.create(*center)
-    cam.viewExtents = diag
+    if not _view_common.show_extent(cam, diag):
+        return "viewport", _FIT_MODEL_UNMEASURABLE, None, None
+    requested = _view_common.camera_frame(cam)
     read_back, widen_error = _view_common.apply_camera(vp, cam, fit=False)
+    if not _view_common.camera_restored(read_back, requested):
+        return "viewport", _FIT_FRAME_UNVERIFIED, None, widen_error
     landed = safe(lambda: (read_back.target.x, read_back.target.y, read_back.target.z))
     tol = _view_common._EYE_TARGET_TOLERANCE_CM
     if landed is None or any(abs(landed[i] - center[i]) > tol for i in range(3)):
@@ -164,16 +170,18 @@ def _fit_operation(setup):
     _, model_diag = _box_center_diagonal(model_box)
     cam = vp.camera
     eye, target = safe(lambda: cam.eye), safe(lambda: cam.target)
-    extents = safe(lambda: cam.viewExtents)
-    if (center is None or not diag or not model_diag
-            or eye is None or target is None or extents is None):
+    if center is None or not diag or not model_diag or eye is None or target is None:
         return "model", None, _FIT_WIDEN_UNMEASURABLE, smooth_error, None
     cam.eye = adsk.core.Point3D.create(eye.x + (center[0] - target.x),
                                        eye.y + (center[1] - target.y),
                                        eye.z + (center[2] - target.z))
     cam.target = adsk.core.Point3D.create(*center)
-    cam.viewExtents = extents * (diag / model_diag)
-    _, widen_error = _view_common.apply_camera(vp, cam, fit=False)
+    if not _view_common.scale_view(cam, diag / model_diag):
+        return "model", None, _FIT_WIDEN_UNMEASURABLE, smooth_error, None
+    requested = _view_common.camera_frame(cam)
+    read_back, widen_error = _view_common.apply_camera(vp, cam, fit=False)
+    if not _view_common.camera_restored(read_back, requested):
+        return "viewport", None, _FIT_FRAME_UNVERIFIED, (smooth_error or widen_error), None
     return "model+stock", box, None, (smooth_error or widen_error), None
 
 

@@ -134,7 +134,8 @@ and lists an approval mode for each tool.
 }
 ```
 
-Keep that file open in the editor: VS Code 
+Keep that file open in the editor: VS Code starts the server from there, and its tools appear once
+it is running.
 
 **Any other client.** Add a Streamable HTTP server with the same URL, then approve or enable it in
 the client if it asks.
@@ -272,7 +273,8 @@ The same tools serve three different jobs:
 
 Two runnable demonstrations show the tools driving real work end to end:
 
-- **A shipped procedure** (a Claude Code skill in `.claude/skills/`): `insert-into-template` sets
+- **A shipped procedure** (a workflow skill in [`.agents/skills/`](../../.agents/skills/), with
+  copies in `.claude/skills/` for Claude Code): `insert-into-template` sets
   up a CAM job for a part. It saves the CAD, defines a part-space origin, places the shop template,
   inserts and positions the part, and sizes stock from measurements. It is built entirely from
   these tools; fork it as the pattern for your own shop procedures.
@@ -280,6 +282,9 @@ Two runnable demonstrations show the tools driving real work end to end:
   foundations, joints and motion, detail features, external references, CAM templating) that a
   fresh agent, with nothing but these tools, runs on a live session. They check that the tool
   descriptions alone get an agent from a goal to a checked result.
+
+Read the [design guidance](guidance/parametric_cad_design.md); to export it as a client skill,
+run `py -3 tests/gen_guidance.py --skill-dir <output-folder>` from the repository root.
 
 ## What makes the tools trustworthy
 

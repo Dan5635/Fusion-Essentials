@@ -1657,12 +1657,38 @@ _SKETCHWORK = [
 ]
 
 
+def _family_document_active(key):
+    """Require the same owned, unsaved family document after a case's reads."""
+    def check(p):
+        active = p.get("active") or {}
+        return _measured("owned family document unchanged", active.get("document_handle"),
+                         _home_document(p)
+                         and active.get("document_handle") == _RECALL.get(key)
+                         and active.get("has_data_file") is False)
+    return check
+
+
+def _family_rows(key):
+    """Return guarded case rows in the runner's working document, and its exit read."""
+    rows = [("doc_get", {}, _home_document, (key, _recall(key, _home_address))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, key, "owned family document")}, check, save))
+    def read(tool, args, check, save=None):
+        rows.append((tool, lambda c, args=args: args(c) if callable(args) else dict(args),
+                     check, save))
+    def close():
+        rows.extend([("design_activate_component", {"occurrence": "root"}, "ok", None),
+                     ("doc_get", {}, _family_document_active(key), None)])
+    return rows, write, read, close
+
+
 def _paging_rows():
     """Page a large sketch and consume a late point in an owned document."""
     rows = [("design_activate_component", {"occurrence": "root"}, "ok", None),
-            ("doc_get", {}, _home_document, ("paging_home", _home_address)),
-            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "paging_home", "home")},
-             _new_document, ("paging_doc", lambda p: p["document_handle"]))]
+            ("doc_get", {}, _home_document,
+             ("paging_doc", _recall("paging_doc", _home_address)))]
 
     def write(name, args, check="ok", save=None):
         rows.append((name, lambda c, args=args: {
@@ -1801,13 +1827,7 @@ def _paging_rows():
                  and e.get("control_points") == [
                      {"x": 3600.0, "y": -300.0}, {"x": 3610.0, "y": -280.0},
                      {"x": 3620.0, "y": -300.0}] for e in p["entities"]))
-    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "paging_home", "home"),
-                                         "expect_document": _ctx_get(c, "paging_doc", "paging")},
-              _activated(), None),
-             ("doc_close", lambda c: {"name": _ctx_get(c, "paging_doc", "paging"),
-                                      "save_changes": False,
-                                      "expect_document": _ctx_get(c, "paging_home", "home")},
-              _document_closed, None)]
+    rows += [("doc_get", {}, _family_document_active("paging_doc"), None)]
     return rows
 
 
@@ -2088,9 +2108,9 @@ def _anchor_retained(p):
 
 def _anchor_retention_rows():
     """Exercise anchor preflight and failed-entry retention on fresh equivalent sketches."""
-    rows = [("doc_get", {}, _home_document, ("anchor_home", _home_address)),
-            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "anchor_home", "home")},
-             _new_document, ("anchor_doc", lambda p: p["document_handle"]))]
+    rows = [("doc_get", {}, _home_document,
+             ("anchor_doc", _recall("anchor_doc", _home_address))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
 
     def write(tool, args, check="ok"):
         rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
@@ -2110,7 +2130,7 @@ def _anchor_retention_rows():
         read_args = {"sketch_name": key, "include_entities": True, "max_results": 200, "units": "mm"}
         rows.append(("sketch_get", read_args, _anchor_state(key, "before"),
                      (key + "_ids", lambda _p, key=key: _RECALL[key + "_ids"])))
-        rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 200}, _anchor_history(key, True), None))
+        rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 2000}, _anchor_history(key, True), None))
 
         def arguments(c, key=key):
             line, control, circle = _ctx_get(c, key + "_ids", "current anchor ids")
@@ -2174,11 +2194,8 @@ def _anchor_retention_rows():
                                  else "SAME line midpoint" if key == "AnchorConSolver" else "LINE"))
         write(tool, arguments, verdict)
         rows.append(("sketch_get", read_args, _anchor_state(key, stage), None))
-        rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 200}, _anchor_history(key, False), None))
-    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "anchor_home", "home"),
-                                        "expect_document": _ctx_get(c, "anchor_doc", "anchor document")}, _activated(), None),
-             ("doc_close", lambda c: {"name": _ctx_get(c, "anchor_doc", "anchor document"), "save_changes": False,
-                                     "expect_document": _ctx_get(c, "anchor_home", "home")}, _document_closed, None)]
+        rows.append(("design_get", {"include": ["default", "timeline"], "max_results": 2000}, _anchor_history(key, False), None))
+    rows += [("doc_get", {}, _family_document_active("anchor_doc"), None)]
     return rows
 
 
@@ -2499,9 +2516,8 @@ _SKETCHWORK += _partial_witness_rows()
 
 def _pattern_preflight_rows():
     """Check midpoint preflight refusals and three solved circle instances with a separate sketch witness."""
-    rows = [("doc_get", {}, _home_document, ("pattern_home", _home_address)),
-            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "pattern_home", "home")},
-             _new_document, ("pattern_doc", lambda p: p["document_handle"])),
+    rows = [("doc_get", {}, _home_document,
+             ("pattern_doc", _recall("pattern_doc", _home_address))),
             ("design_activate_component", {"occurrence": "root"}, "ok", None)]
 
     def write(tool, args, check="ok"):
@@ -2516,7 +2532,7 @@ def _pattern_preflight_rows():
         write("sketch_add_geometry", {"sketch_name": name, "geometry": geometry})
     target = {"sketch_name": "PatternPreflight", "include_entities": True, "max_results": 200, "units": "mm"}
     witness = {"sketch_name": "PatternWitness", "include_entities": True, "max_results": 200, "units": "mm"}
-    history = {"include": ["default", "timeline"], "max_results": 200}
+    history = {"include": ["default", "timeline"], "max_results": 2000}
     rows += [("sketch_get", target, _anchor_state("PatternPreflight", "before"),
               ("pattern_ids", lambda _p: _RECALL["PatternPreflight_ids"])),
              ("sketch_get", witness, _anchor_state("PatternWitness", "before"), None),
@@ -2534,10 +2550,7 @@ def _pattern_preflight_rows():
         rows += [("sketch_get", target, _anchor_state("PatternPreflight", "unchanged" if reason else "pattern"), None),
                  ("sketch_get", witness, _anchor_state("PatternWitness", "unchanged"), None),
                  ("design_get", history, _anchor_history("PatternPreflight", False), None)]
-    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "pattern_home", "home"),
-                                        "expect_document": _ctx_get(c, "pattern_doc", "scratch")}, _activated(), None),
-             ("doc_close", lambda c: {"name": _ctx_get(c, "pattern_doc", "scratch"), "save_changes": False,
-                                     "expect_document": _ctx_get(c, "pattern_home", "home")}, _document_closed, None)]
+    rows += [("doc_get", {}, _family_document_active("pattern_doc"), None)]
     return rows
 
 
@@ -4888,3 +4901,91 @@ def _isoparametric_rows():
 
 
 _SKETCHWORK += _isoparametric_rows()
+
+
+def _angle_public_state(payload):
+    """Stable entity rows from one complete sketch_get read, excluding session handles."""
+    if payload.get("truncated") is not False:
+        return None
+    return {row["id"]: {key: value for key, value in row.items() if key != "handle"}
+            for row in payload.get("entities", [])}
+
+
+def _angle_public_geometry(deg, baseline_key):
+    """Check four rotated rectangle edges and the retained neighbouring text and curves."""
+    def check(payload):
+        from math import cos, sin, radians
+        baseline = _RECALL.get(baseline_key)
+        rows = _angle_public_state(payload)
+        if rows is None or baseline is None or any(rows.get(k) != v for k, v in baseline.items()):
+            return _measured("neighbouring text and curves unchanged", rows, False)
+        added = [v for k, v in rows.items() if k not in baseline]
+        lines = [r for r in added if r.get("type") == "line"]
+        texts = [r for r in added if r.get("type") == "text"]
+        theta = radians(deg)
+        corners = [(27.5 + cos(theta) * (x - 27.5) - sin(theta) * (y - 23.5),
+                    23.5 + sin(theta) * (x - 27.5) + cos(theta) * (y - 23.5))
+                   for x, y in ((10, 20), (45, 20), (45, 27), (10, 27))]
+        remaining = [[corners[i], corners[(i + 1) % 4]] for i in range(4)]
+        for line in lines:
+            ends = [(line.get(end, {}).get("x"), line.get(end, {}).get("y"))
+                    for end in ("start", "end")]
+            if not all(_num(v) for point in ends for v in point):
+                return _measured("rectangle endpoints readable", line, False)
+            hits = [i for i, edge in enumerate(remaining)
+                    if any(all(_near(a[axis], b[axis], 0.0001)
+                               for a, b in zip(ends, oriented) for axis in (0, 1))
+                           for oriented in (edge, edge[::-1]))]
+            if len(hits) != 1:
+                return _measured("rectangle edge matches intended rotation", line, False)
+            remaining.pop(hits[0])
+        return _measured("rectangle rotation and landed text read independently", added,
+                         not remaining and len(lines) == 4 and len(texts) == 1
+                         and texts[0].get("text") == "ANGLE"
+                         and _near(texts[0].get("height"), 7, 0.0001)
+                         and texts[0].get("font") == "Arial")
+    return check
+
+
+def _text_angle_rows():
+    """Rotation, whole turns and path-angle refusals on an owned scratch document."""
+    rows, write, read, close = _scratch_rows("text_angle_doc")
+    write("sketch_create", {"plane": "xy", "name": "AngleNeighbour"})
+    write("sketch_set_text", {"sketch_name": "AngleNeighbour", "create": True,
+                              "text": "NEIGHBOUR", "height": 5, "x": 100, "y": 100})
+    read("sketch_get", _xray("AngleNeighbour"),
+         lambda p: _angle_public_state(p) is not None,
+         ("angle_neighbour", _recall("angle_neighbour", _angle_public_state)))
+    for deg in (30, 0, 360):
+        name, key = f"AngleBox{deg}", f"angle_before_{deg}"
+        write("sketch_create", {"plane": "xy", "name": name})
+        write("sketch_set_text", {"sketch_name": name, "create": True,
+                                  "text": "KEEP", "height": 5, "x": 100, "y": 100})
+        read("sketch_get", _xray(name), lambda p: _angle_public_state(p) is not None,
+             (key, _recall(key, _angle_public_state)))
+        write("sketch_set_text", {"sketch_name": name, "create": True, "text": "ANGLE",
+                                  "height": 7, "x": 10, "y": 20, "font_name": "Arial",
+                                  "angle_deg": deg})
+        read("sketch_get", _xray(name), _angle_public_geometry(deg, key))
+        read("sketch_get", _xray("AngleNeighbour"),
+             lambda p: _measured("separate sketch unchanged", p.get("entities"),
+                                 _angle_public_state(p) == _RECALL.get("angle_neighbour")))
+    write("sketch_create", {"plane": "xy", "name": "AnglePath"})
+    write("sketch_add_geometry", {"sketch_name": "AnglePath", "geometry": [
+        {"kind": "line", "x1": 10, "y1": 20, "x2": 45, "y2": 20}]})
+    write("sketch_set_text", {"sketch_name": "AnglePath", "create": True, "text": "KEEP",
+                              "mode": "along_path", "path": "line:0", "height": 3})
+    read("sketch_get", _xray("AnglePath"), lambda p: _angle_public_state(p) is not None,
+         ("angle_path_before", _recall("angle_path_before", _angle_public_state)))
+    for mode in ("along_path", "fit_on_path"):
+        write("sketch_set_text", {"sketch_name": "AnglePath", "create": True, "text": "REFUSE",
+                                  "mode": mode, "path": "line:0", "angle_deg": 30},
+              _refused("offered for mode 'multi_line' only", "Rotate the path curve", "sketch_move"))
+        read("sketch_get", _xray("AnglePath"),
+             lambda p: _measured("path-angle refusal preserves text and path", p.get("entities"),
+                                 _angle_public_state(p) == _RECALL.get("angle_path_before")))
+    close()
+    return rows
+
+
+_SKETCHWORK += _text_angle_rows()

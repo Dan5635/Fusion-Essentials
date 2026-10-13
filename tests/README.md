@@ -28,6 +28,44 @@ repairs it. `py -3 tests/check_all.py --help` lists every stage.
 each command is the same. Those two platforms are untested (see
 [CONTRIBUTING.md](../CONTRIBUTING.md), "Contributor setup and verification").
 
+## Agent checkout operations
+
+Build in an isolated worktree, run Git and pytest from inside it, and give each search a path
+inside that tree. An unscoped shell search can walk the shared checkout and its nested worktrees.
+Keep `plans/` and handoffs under the main checkout's private directories; they are absent from a
+worktree. Scope scratch files to your assigned output directory.
+
+A file edit must preserve exact bytes outside the intended change, LF line endings, and no BOM.
+Use the runner's file-editing tool or a short exact-text replacement that asserts one match;
+never shell redirection, Set-Content, Out-File or sed -i into a repo file. Windows PowerShell 5.1
+can add UTF-8 BOMs and CRLF, which break the generators; a BOM breaks `gen_wiring.py` across
+the repository. Check the changed paths with
+`git ls-files --eol <paths>` and check for a BOM before reporting.
+
+The required lint-list commands are `py -3 -m pytest tests/lints -q` before the first edit and
+after the last. Run touched units with `py -3 -m pytest tests/unit/<touched> -q`; a reviewer also
+runs affected consumers when a shared helper or fake changes. The lead owns the full acceptance
+commands and regeneration; everyone may run `py -3 tests/gen_all.py --check`. Attribute baseline
+failures rather than silently regenerating another lane's documents.
+
+When running against a tree you do not own, set `PYTHONDONTWRITEBYTECODE=1` and pass
+`-p no:cacheprovider`, leaving no files behind. Full-suite and coverage runs collide across
+concurrent agents; targeted pytest is the development route.
+
+Mark a new private-tree file intent-to-add with `git add -N <path>` so it appears in the patch
+without staging content. Export with `git diff --binary --output=<file> HEAD`; use the equals
+sign, because the spaced form can leave an empty file. Keep earlier patch versions on disk and
+compute SHA256 from the posted bytes.
+
+An outputs-only sweep hunk may be applied in your private tree to check compilation, then removed
+with `git apply -R <sweep-hunk.patch>` before exporting your source patch. Report the temporary
+application and its reversal; do not use it to change a reserved shared act in the main checkout.
+
+A persistent fixture requires explicit admission, a name identifying it as a test leftover, and
+a handoff giving its name and location. A probe needing a saved cloud source creates exactly one
+file named `TestDetritus-<row>.<timestamp>` in the configured test project's sweep folder, reports
+its name and lineage, and does not delete, switch hubs or walk a project.
+
 ## Live sweep local inputs
 
 The family producers prepare only the state each owned document's acts consume. The map lists the

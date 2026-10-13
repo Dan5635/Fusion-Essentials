@@ -1,18 +1,17 @@
 # Working in Fusion-Essentials (MCP server)
 
-If this file was handed to you as your instructions, this file and the documents below are your instructions:
-read them in this order and follow them. If you were told to use it for a task, start a subagent
-and hand it this file, with the task, as its brief.
+If this file was handed to you as your instructions, follow it.
 
-- [commands/mcpServer/tools/AGENTS.md](commands/mcpServer/tools/AGENTS.md)
-- [tests/AGENTS.md](tests/AGENTS.md)
-- [CONTRIBUTING.md](CONTRIBUTING.md)
+- Before changing a file under `commands/mcpServer/tools/`, read
+  [commands/mcpServer/tools/AGENTS.md](commands/mcpServer/tools/AGENTS.md).
+- Before writing a test, read [tests/AGENTS.md](tests/AGENTS.md).
+- For the architecture, read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The rules every tool under `commands/mcpServer/` follows, whichever file it lives in.
 [CONTRIBUTING.md](CONTRIBUTING.md) explains the architecture and the ideas behind it.
 [commands/mcpServer/tools/AGENTS.md](commands/mcpServer/tools/AGENTS.md) is the recipe for adding a
-tool (the helper catalog, exemplars, the lints) and loads automatically when you work in that
-directory. [tests/AGENTS.md](tests/AGENTS.md) covers writing a test. The code is the source of truth;
+tool (the helper catalog, exemplars, the lints); read it before editing, even if your client supplies
+the root rules at start. [tests/AGENTS.md](tests/AGENTS.md) covers writing a test. The code is the source of truth;
 when in doubt, match the nearest existing tool.
 
 Existing unsupported API uses are listed in
@@ -90,7 +89,7 @@ the wrong instance. Wire one with `tool.add_input_property(*kind.as_property())`
 tool's local copy. An input with a fixed set of values is a `Choice`; a new raw `enum` schema is not
 accepted in review, and the raw enums in older tools are not exemplars. The full catalog of kinds
 and shared helpers is the generated map in
-[commands/mcpServer/tools/AGENTS.md](commands/mcpServer/tools/AGENTS.md), which loads when you author
+[commands/mcpServer/tools/AGENTS.md](commands/mcpServer/tools/AGENTS.md); read it before authoring
 a tool.
 
 <!-- BEGIN GENERATED FAMILIES (py -3 tests/gen_manifest.py) -->

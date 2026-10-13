@@ -1156,14 +1156,17 @@ def test_setup_preflight_scene_keeps_owned_source_witness_and_requests_in_full_f
 
 def test_midpoint_preflight_scene_keeps_original_source_and_read_order_in_full_family():
     rows = [row for _name, _pre, narrative, _fallback in verify_program.ACTS for row in narrative]
-    context = {"pattern_home": "home", "pattern_doc": "scratch", "pattern_ids": ["line:0", "circle:0"]}
-    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "pattern_home")
-    end = next(i for i in range(start, len(rows)) if rows[i][0] == "doc_close")
+    context = {"pattern_doc": "family", "pattern_ids": ["line:0", "circle:0"]}
+    start = next(i for i, row in enumerate(rows) if row[3] and row[3][0] == "pattern_doc")
     wanted = {"sketch_create", "sketch_add_geometry", "sketch_constrain", "sketch_get", "design_get"}
     def requests(selected):
         return [(tool, args(context) if callable(args) else args) for tool, args, _check, _save in selected if tool in wanted]
     authored = verify_acts_sketch._pattern_preflight_rows()
-    assert requests(rows[start:end]) == requests(authored)
+    assert requests(rows[start:start + len(authored)]) == requests(authored)
+    assert not {"doc_new", "doc_close", "doc_activate"} & {row[0] for row in authored}
+    writes = [args(context) for tool, args, _check, _save in authored
+              if tool in {"sketch_create", "sketch_add_geometry", "sketch_constrain"}]
+    assert writes and all(args["expect_document"] == "family" for args in writes)
     geometry = [args["geometry"] for tool, args in requests(authored) if tool == "sketch_add_geometry"]
     assert geometry[0] == [{"kind": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0},
                            {"kind": "circle", "cx": 40, "cy": 0, "radius": 5}]

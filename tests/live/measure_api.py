@@ -1904,120 +1904,64 @@ ROWS = [
 """,
     },
     {
-        "id": "camera-viewextents-is-linear-not-area",
-        "claim": "Camera.viewExtents is a LINEAR extent, not an area: with the LIMITING screen axis held fixed, a model N times taller fits to a value ~N times larger, not ~N squared. The SDK words it 'the area of the view', which is why this is measured rather than read",
-        "encoded_in": "view_set.py _frame_ratio (the ratio multiplies viewExtents unsquared) and its point-of-use comment; view_screenshot.py's zoom, which scales the same property; test_view_set.py TestFocusFraming ratio expectations",
-        "facts_on_pass": {"behavior.camera_view_extents_is_linear": True},
+        "id": 'camera-supported-orthographic-pair',
+        "claim": 'An orthographic getExtents returns success plus two cm lengths; setExtents returns true and reads both requested sides on the detached camera.',
+        "encoded_in": '_view_common.py _extents/scale_view/restore_camera; tests/fakes/geometry.py Camera',
         "body": """
-    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
-    try:
-        des = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
-        root = des.rootComponent
-        vp = app.activeViewport
-
-        # A 1 cm square post of a given height. Growing only the HEIGHT, on a front camera, on a
-        # viewport wider than it is tall, keeps BOTH fits limited by the same screen axis - which
-        # is the whole point: a first attempt at this row left the camera wherever the document had
-        # it, so an iso-ish view spread the growth across both screen axes and the ratio came back
-        # 5.22, neither linear (10.98) nor area (120.6). A ratio is only meaningful between two fits
-        # limited by the SAME axis (which the sibling row measures).
-        def post(height):
-            sk = root.sketches.add(root.xYConstructionPlane)
-            sk.sketchCurves.sketchLines.addTwoPointRectangle(
-                adsk.core.Point3D.create(0.0, 0.0, 0.0), adsk.core.Point3D.create(1.0, 1.0, 0.0))
-            root.features.extrudeFeatures.addSimple(
-                sk.profiles.item(0), adsk.core.ValueInput.createByReal(height),
-                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-
-        def spans():
-            bb = root.boundingBox
-            return (bb.maxPoint.x - bb.minPoint.x, bb.maxPoint.z - bb.minPoint.z,
-                    (bb.maxPoint.z + bb.minPoint.z) / 2.0)
-
-        def fit_front():
-            across, up, mid = spans()
-            cam = vp.camera                      # front: x across the screen, z up it
-            cam.upVector = adsk.core.Vector3D.create(0.0, 0.0, 1.0)
-            cam.target = adsk.core.Point3D.create(0.5, 0.0, mid)
-            cam.eye = adsk.core.Point3D.create(0.5, -100.0, mid)
-            cam.isFitView = True
-            vp.camera = cam
-            return vp.camera.viewExtents
-
-        post(2.0)
-        w0, h0, _ = spans()
-        e0 = fit_front()
-        post(20.0)                               # same 1 cm footprint, ten times taller
-        w1, h1, _ = spans()
-        e1 = fit_front()
-        aspect = float(vp.width) / vp.height
-        model_ratio = h1 / h0
-        ext_ratio = e1 / e0
-        # both fits must be HEIGHT-limited or the comparison is meaningless - assert it, do not
-        # assume it, since that assumption is exactly what the first version of this row got wrong
-        height_limited = (w0 / h0) < aspect and (w1 / h1) < aspect
-        emit(height_limited and abs(ext_ratio - model_ratio) < model_ratio * 0.2,
-             "camera-viewextents-is-linear-not-area: height " + ("%.3f" % h0) + "->" + ("%.3f" % h1)
-             + " (x" + ("%.2f" % model_ratio) + ") extents " + ("%.3f" % e0) + "->" + ("%.3f" % e1)
-             + " (x" + ("%.2f" % ext_ratio) + ") area_would_be x"
-             + ("%.1f" % (model_ratio * model_ratio))
-             + " height_limited=" + repr(height_limited) + " aspect=" + ("%.3f" % aspect))
-    finally:
-        tmp.close(False)
+    import json, math
+    cam = app.activeViewport.camera
+    cam.cameraType = adsk.core.CameraTypes.OrthographicCameraType
+    if cam.cameraType != adsk.core.CameraTypes.OrthographicCameraType:
+        raise RuntimeError("orthographic camera preparation did not read back")
+    pair = (3.8, 3.2)
+    observed = []
+    passed = True
+    for factor in (1.0, 2.0, 1.0):
+        requested = tuple(v * factor for v in pair)
+        print("OBS before setExtents " + repr(requested))
+        returned = cam.setExtents(*requested)
+        print("OBS before getExtents")
+        raw = cam.getExtents()
+        values = list(raw)
+        observed.append(dict(requested=requested, setter=returned,
+                             container=type(raw).__name__, arity=len(values), values=values))
+        passed = passed and type(returned) is bool and returned is True
+        passed = passed and len(values) == 3 and values[0] is True
+        passed = passed and len(values) == 3 and all(
+            type(v) is float and math.isfinite(v) and abs(v - want) <= 1e-6
+            for v, want in zip(values[1:], requested))
+    emit(passed, "camera-supported-orthographic-pair: " + json.dumps(observed))
 """,
     },
     {
-        "id": "camera-viewextents-follows-limiting-axis",
-        "claim": "Camera.viewExtents after a fit tracks whichever SCREEN AXIS limited that fit - measured on two models on one front camera: a TALL post fits to its height, a WIDE slab to its width - so it is neither the view width nor the view height, and a framing ratio cannot be taken against a world box's own spans",
-        "encoded_in": "view_set.py _frame_ratio, which reconstructs the FRAME from the viewport aspect (vp.width/vp.height) instead of dividing by the world box; test_view_set.py test_a_flat_world_is_measured_against_the_frame_not_its_own_height",
-        "facts_on_pass": {"behavior.camera_view_extents_follows_limiting_axis": True},
+        "id": 'camera-supported-perspective-extents-outcome',
+        "claim": 'CameraTypes.PerspectiveCameraType is 1; a perspective Camera getExtents and setExtents raise, measured separately on a detached camera.',
+        "perspective_type": 1,
+        "encoded_in": '_view_common.py _extents/scale_view/show_extent; tests/fakes/geometry.py Camera',
         "body": """
-    def fit_front(across_cm, up_cm):
-        # One temp document per shape: a second body in the same root would sit inside the fit and
-        # both models would be framed at once.
-        tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
-        try:
-            d = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
-            root = d.rootComponent
-            sk = root.sketches.add(root.xYConstructionPlane)
-            sk.sketchCurves.sketchLines.addTwoPointRectangle(
-                adsk.core.Point3D.create(0.0, 0.0, 0.0),
-                adsk.core.Point3D.create(across_cm, 1.0, 0.0))
-            root.features.extrudeFeatures.addSimple(
-                sk.profiles.item(0), adsk.core.ValueInput.createByReal(up_cm),
-                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-            vp = app.activeViewport
-            cam = vp.camera                   # front: x runs across the screen, z up it
-            cam.eye = adsk.core.Point3D.create(across_cm / 2.0, -50.0, up_cm / 2.0)
-            cam.target = adsk.core.Point3D.create(across_cm / 2.0, 0.0, up_cm / 2.0)
-            cam.upVector = adsk.core.Vector3D.create(0.0, 0.0, 1.0)
-            cam.isFitView = True
-            vp.camera = cam
-            bb = root.boundingBox
-            return (bb.maxPoint.x - bb.minPoint.x, bb.maxPoint.z - bb.minPoint.z,
-                    vp.camera.viewExtents, float(vp.width) / vp.height)
-        finally:
-            tmp.close(False)
-
-    # A TALL post (1 cm across, 10 cm up) and a WIDE slab (10 across, 1 up) on the same front
-    # camera. The two fits are limited by DIFFERENT screen axes, which is what tells a value that
-    # follows the limiting axis apart from one that always reports the same axis - one model
-    # cannot: a height-limited fit reads the same either way.
-    across_t, up_t, ext_t, aspect = fit_front(1.0, 10.0)
-    across_w, up_w, ext_w, _aspect2 = fit_front(10.0, 1.0)
-    # the limiting axis is asserted, not assumed: a model narrower than the frame is height-limited
-    tall_by_height = (across_t / up_t) < aspect
-    wide_by_width = (across_w / up_w) > aspect
-    tracks_up = abs(ext_t - up_t) < up_t * 0.3 and ext_t > across_t * 2.0
-    tracks_across = abs(ext_w - across_w) < across_w * 0.3 and ext_w > up_w * 2.0
-    emit(tall_by_height and wide_by_width and tracks_up and tracks_across,
-         "camera-viewextents-follows-limiting-axis: aspect=" + ("%.3f" % aspect)
-         + " tall across=" + ("%.2f" % across_t) + " up=" + ("%.2f" % up_t)
-         + " extents=" + ("%.3f" % ext_t)
-         + "; wide across=" + ("%.2f" % across_w) + " up=" + ("%.2f" % up_w)
-         + " extents=" + ("%.3f" % ext_w)
-         + "; tall_by_height=" + repr(tall_by_height) + " wide_by_width=" + repr(wide_by_width)
-         + " tracks_up=" + repr(tracks_up) + " tracks_across=" + repr(tracks_across))
+    import json, os
+    path = "__FE_CAMERA_MARKER_PATH__"
+    nonce = "__FE_CAMERA_NONCE__"
+    scratch = "__FE_CAMERA_SCRATCH__"
+    source_sha = "__FE_CAMERA_SOURCE_SHA__"
+    member = "__FE_CAMERA_MEMBER__"
+    def record(phase, **fields):
+        data = dict(row_id="camera-supported-perspective-extents-outcome", nonce=nonce,
+                    scratch=scratch, source_sha256=source_sha, member=member, phase=phase)
+        data.update(fields)
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(data, stream); stream.flush(); os.fsync(stream.fileno())
+    assert member in ("getExtents", "setExtents") and not os.path.exists(path)
+    cam = app.activeViewport.camera
+    cam.cameraType = adsk.core.CameraTypes.PerspectiveCameraType
+    if (cam.cameraType != adsk.core.CameraTypes.PerspectiveCameraType
+            or cam.objectType != "adsk::core::Camera"):
+        raise RuntimeError("perspective camera preparation did not read back")
+    record("ready", camera_type=cam.cameraType,
+           expected_type=adsk.core.CameraTypes.PerspectiveCameraType, object_type=cam.objectType)
+    returned = cam.getExtents() if member == "getExtents" else cam.setExtents(7.0, 5.0)
+    record("returned", returned_type=type(returned).__name__)
+    emit(False, "perspective " + member + " returned without the required native rejection")
 """,
     },
     {
@@ -9198,6 +9142,61 @@ def _measure_dxf_units(row, scratch):
     return status, detail
 
 
+def _judge_camera_extents(marker, is_error, payload, expected):
+    """Return the verdict for one bound perspective member's exact native rejection."""
+    if not isinstance(marker, dict) or any(marker.get(k) != v for k, v in expected.items()):
+        return "ERROR", _dxf_probe_detail("camera_marker_identity_unproven", marker, payload)
+    if marker.get("phase") == "returned":
+        return "FAIL", _dxf_probe_detail("camera_member_returned", marker, payload)
+    if (marker.get("object_type") != "adsk::core::Camera"
+            or type(marker.get("camera_type")) is not int
+            or type(marker.get("expected_type")) is not int
+            or marker["expected_type"] != expected["camera_type"]):
+        return "ERROR", _dxf_probe_detail("perspective_preparation_unproven", marker, payload)
+    if marker.get("phase") != "ready":
+        return "ERROR", _dxf_probe_detail("camera_member_boundary_unproven", marker, payload)
+    if not is_error:
+        return "FAIL", _dxf_probe_detail("camera_member_did_not_raise", marker, payload)
+    if "RuntimeError: 3 : Camera type must be orthographic for extents" not in str(payload).splitlines():
+        return "ERROR", _dxf_probe_detail("different_camera_error", marker, payload)
+    return "PASS", _dxf_probe_detail("exact_camera_member_rejection", marker, payload)
+
+
+def _measure_camera_extents(row, scratch):
+    """Measure getter and setter in separate scripts with fresh bound boundary records."""
+    base_script = _compose(row)
+    source_sha = hashlib.sha256(base_script.encode("utf-8")).hexdigest()
+    probe_dir = os.path.join(REPO_ROOT, "outputs", "api-camera-extents", uuid.uuid4().hex)
+    os.makedirs(probe_dir, exist_ok=False)
+    outcomes = []
+    for member in ("getExtents", "setExtents"):
+        nonce = uuid.uuid4().hex
+        path = os.path.join(probe_dir, member + ".json")
+        expected = dict(row_id=row["id"], nonce=nonce, scratch=scratch,
+                        source_sha256=source_sha, member=member, camera_type=row["perspective_type"])
+        script = base_script
+        for token, value in (("MARKER_PATH", path), ("NONCE", nonce), ("SCRATCH", scratch),
+                             ("SOURCE_SHA", source_sha), ("MEMBER", member)):
+            script = script.replace('"__FE_CAMERA_' + token + '__"', repr(value))
+        if "__FE_CAMERA_" in script:
+            return "ERROR", _dxf_probe_detail("camera_placeholder_residual", None, script)
+        try:
+            is_error, payload = call("sys_execute_script", {
+                "script": script, "expect_document": scratch})
+        except Exception as exc:
+            return "ERROR", _dxf_probe_detail("camera_transport_exception", None, exc)
+        try:
+            with open(path, encoding="utf-8") as stream:
+                marker = json.load(stream)
+        except (OSError, ValueError):
+            marker = None
+        status, detail = _judge_camera_extents(marker, is_error, payload, expected)
+        outcomes.append(json.loads(detail))
+        if status != "PASS":
+            return status, json.dumps(outcomes, sort_keys=True)
+    return "PASS", "camera-supported-perspective-extents-outcome: " + json.dumps(outcomes, sort_keys=True)
+
+
 def _verdict_lines(payload):
     text = payload if isinstance(payload, str) else json.dumps(payload)
     return [ln.strip() for ln in text.splitlines() if ln.strip().startswith(("PASS ", "FAIL "))]
@@ -9771,6 +9770,9 @@ def run_measurements(write_json, only=None):
                 continue
             if row["id"] == "dxf-sketch-options-units-read-is-fatal":
                 status, detail = _measure_dxf_units(row, scratch)
+                payload = ""
+            elif row["id"] == "camera-supported-perspective-extents-outcome":
+                status, detail = _measure_camera_extents(row, scratch)
                 payload = ""
             else:
                 # wire_before / wire_after: the row's rig built and taken down through the tools,

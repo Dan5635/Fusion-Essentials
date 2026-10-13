@@ -1,16 +1,16 @@
 # API explorer
 
-If this file was handed to you as your instructions, you are the API explorer: follow it. If you
-were told to use it for a task, start a subagent with this file as its brief and hand the task
-to that subagent.
+If this file was handed to you as your instructions, you are the API explorer: follow it.
 
 You audit the installed Fusion build against Fusion-Essentials and hand a dev agent a report that
 names every change that matters, each with the measurement that proves it. You do not fix
 anything. Read AGENTS.md (root) first; the rules below are the audit's own.
 
+"The lead" and "the channel" mean whoever briefed you and where they told you to post.
+
 ## What this server is, without reading its code
 
-The server is commands/mcpServer: a few hundred typed tools at most (the manifest has the count), `<domain>_<verb>[_<noun>]`, one
+The server is commands/mcpServer: typed tools (the manifest has the count), `<domain>_<verb>[_<noun>]`, one
 file each under commands/mcpServer/tools/, sharing typed input kinds (_inputs.py) and per-family
 helpers (_cam_common.py, _sheet_common.py, _design_common.py, _geom.py, _assert.py). Do not read
 the tool tree to learn it; the generated docs are the map, and a lint keeps them current:
@@ -32,19 +32,13 @@ the tool tree to learn it; the generated docs are the map, and a lint keeps them
   where; hold each use to what it says.
 Open a tool file only when a diff or step 8 names it.
 
-## Where the API lives on this machine
+## Finding the API
 
-- Installed builds: %LOCALAPPDATA%\Autodesk\webdeploy\{production,pre-production}\<hash>\ - a
-  complete build has Fusion360.exe (its ProductVersion is the build number) and
-  Api\Python\packages\adsk\{core,fusion,cam,drawing,sim,electron,volume}.py. Fusion purges old
-  builds, so the previous build's bindings are usually gone: the only baselines are the snapshots
-  under outputs/api-inventory/<version>/ and the committed tests/api_surface.py.
-- The per-user docstring stubs %APPDATA%\Autodesk\Autodesk Fusion 360\API\Python\defs\adsk\ are
-  the same drop as the package on Windows; the package is what the generators read.
-- The running build: workspace_orient's fusion_version, and Get-Process Fusion360 (Path,
-  ProductVersion). The add-in must be loaded in it for any live step.
-- Autodesk's API what's-new page lists only shipped releases; a pre-production build's changes
-  come from the diff, not the page.
+Fusion keeps only the installed builds, so the previous build's API survives only as saved
+inventory snapshots and the committed tests/api_surface.py; the running build is
+workspace_orient's fusion_version, the add-in must be loaded in it for any live step, and a
+pre-production build's changes come from the diff, not Autodesk's what's-new page.
+CONTRIBUTING.md, "Installed Fusion bindings", gives the machine-specific locations.
 
 ## The audit, in order
 
@@ -52,11 +46,8 @@ Open a tool file only when a diff or step 8 names it.
    VERIFIED_API_FACTS.md (facts stamp) and VERIFIED_TOOLS.md (receipt stamp).
 2. Snapshot and diff the full inventory: `py -3 tests/api_inventory.py snapshot <version>`, then
    `py -3 tests/api_inventory.py diff outputs/api-inventory/<previous> outputs/api-inventory/<version>`.
-   Keep every snapshot. If the local Preview watchlist at
-   `outputs/whole-backlog-closeout-20261005/AFTER-RELEASE-PLAN.md` is present, recheck each linked
-   official API page even when the binding diff is empty. The file is gitignored and may be absent
-   in a clone; still check official status for every candidate, including `VolumetricModel`:
-   `adsk.volume` lacked Preview annotations in 2706.0.116 while Autodesk marked that class Preview.
+   Keep every snapshot. Recheck a Preview watchlist if the brief names one, including each linked
+   official API page even when the binding diff is empty. Check official status for every candidate.
    Read `left_preview` and `members_left_preview` for classes, enums,
    methods and properties that may have become eligible; read their `became_preview` counterparts
    for new deferrals. Compare each candidate's current Autodesk API page with the previous saved
@@ -80,7 +71,8 @@ Open a tool file only when a diff or step 8 names it.
    red names a break.
 5. Behaviour: the full measure run `py -3 tests/live/measure_api.py --json`. It holds Fusion and
    needs the source frozen while it runs, so it is scheduled by whoever briefed you, under a lease;
-   in a team build ask for the window on the channel and post before and after. Report how long
+   in a team build ask for the window on the channel and post before and after. The measure run
+   writes into the lead's checkout under the lead's freeze, never the audit checkout. Report how long
    it actually took. Its results land in
    tests/live/results/contracts-<stamp>.json. Read each non-PASS row's detail and its last verdict
    in VERIFIED_API_FACTS.md: PASS-then-FAIL on the new build is a candidate change; a row that
@@ -141,5 +133,6 @@ replacement has to be measured.
   UNSUPPORTED_API.md exempts its family. Never launch tests/live/evals/proctor.py (it switches hubs
   by itself and can park Fusion behind a save dialog). Never dismiss a dialog; report it.
 - Fusion dialogs and crashes are platform issues: report them, build nothing around them.
+- A dialog during a probe means stop, hold the lease, and post its text with the open documents.
 - Do not trust a claim you did not measure on the installed build, including your own memory of an
   older build; the previous build's facts are what the audit is testing.

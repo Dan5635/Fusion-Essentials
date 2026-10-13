@@ -3,7 +3,7 @@
 The Fusion API is mocked; what we pin is the tool's OWN logic: the type dispatch (simple / counterbore /
 countersink) and which create*Input builder + value args each uses, placement by sketch points created
 on the target face, the extent choice (blind => setDistanceExtent, through => setAllExtent with the
-PositiveExtentDirection that is required, live-verified), optional tapping (createThreadInfo +
+PositiveExtentDirection that is required, live-verified), optional tapping (ThreadInfo.create +
 setToTappedHole), and the guards (unknown type, missing diameters, no face/points, bad extent).
 
 The HoleFeatureInput fake RECORDS the calls so we can assert the exact builder path.
@@ -305,8 +305,9 @@ class FakeHoleFeatures:
 
 
 class _ThreadInfo:
-    def __init__(self, internal, ttype, desig, cls):
+    def __init__(self, internal, ttype, desig, cls, right_handed=True):
         self.internal, self.ttype, self.desig, self.cls = internal, ttype, desig, cls
+        self.right_handed = right_handed
         # the live ThreadInfo's own member names, which the read-back path reads
         self.threadDesignation = desig
         self.threadType = ttype
@@ -336,15 +337,26 @@ class FakeThreadDataQuery:
         return ("6H",) if internal else ("6g",)
 
 
-class FakeThreadFeatures:
+class FakeThreadCatalog:
+    """What ThreadDataQuery.create and ThreadInfo.create answer from; neither has a measured shape."""
     def __init__(self):
-        self.threadDataQuery = FakeThreadDataQuery()
+        self.query = FakeThreadDataQuery()
         self.created = []
-    def __len__(self):
-        # a live ThreadFeatures collection is falsy while empty
-        return len(self.created)
-    def createThreadInfo(self, internal, ttype, desig, cls):
-        ti = _ThreadInfo(internal, ttype, desig, cls); self.created.append(ti); return ti
+    def data_query(self, tapered=False):
+        # Injected, not measured: the tapered library answers nothing here.
+        return None if tapered else self.query
+    def thread_info(self, tapered, internal, ttype, desig, cls, right_handed):
+        if tapered:
+            return None
+        ti = _ThreadInfo(internal, ttype, desig, cls, right_handed); self.created.append(ti); return ti
+
+
+@pytest.fixture(autouse=True)
+def thread_catalog(monkeypatch):
+    catalog = FakeThreadCatalog()
+    monkeypatch.setattr(mh.adsk.fusion.ThreadDataQuery, "create", catalog.data_query)
+    monkeypatch.setattr(mh.adsk.fusion.ThreadInfo, "create", catalog.thread_info)
+    return catalog
 
 
 # sketch / point machinery ----------------------------------------------------
@@ -425,11 +437,10 @@ class _Sketches(_NamedCollection):
 
 
 class _Features(FakeFeatures):
-    """comp.features plus the two collections a hole build reaches through."""
+    """comp.features plus the one collection a hole build reaches through."""
     def __init__(self, owner=None):
         super().__init__()
         self.holeFeatures = FakeHoleFeatures(parent=owner)
-        self.threadFeatures = FakeThreadFeatures()
 
 
 class _Comp(MakeComp):
@@ -1796,15 +1807,14 @@ class TestCounterboreCountersink:
 # ── tapped ───────────────────────────────────────────────────────────────────
 
 class TestTapped:
-    def test_tapped_builds_thread_info_and_taps(self):
+    def test_tapped_builds_thread_info_and_taps(self, thread_catalog):
         d = _install()
         out = _payload(mh.handler(hole_type="simple", diameter="5 mm", face="h",
                                   points=[[5, 3, 0]], extent="blind", depth="12 mm",
                                   tap="M5x0.8"))
-        tf = d.rootComponent.features.threadFeatures
-        assert len(tf.created) == 1
-        ti = tf.created[0]
-        assert ti.internal is True and ti.desig == "M5x0.8"
+        assert len(thread_catalog.created) == 1
+        ti = thread_catalog.created[0]
+        assert ti.internal is True and ti.desig == "M5x0.8" and ti.right_handed is True
         inp = d.rootComponent.features.holeFeatures.added[0]._inp
         assert inp.tap is ti and inp.holeTapType == 2
         assert out.get("tapped") == "M5x0.8"
@@ -1917,12 +1927,12 @@ class TestExplicitTapControls:
         assert len(hf.added) == 1 and hf.added[0].deleted is False
         assert result["details"]["thread_class"] == ("3B" if defect == "class_mismatch" else "2B")
 
-    def test_wrong_input_and_child_class_cannot_validate_each_other(self, tap_scene, monkeypatch):
-        threads = tap_scene.rootComponent.features.threadFeatures
-        original = threads.createThreadInfo
-        monkeypatch.setattr(threads, "createThreadInfo",
-                            lambda internal, standard, designation, cls:
-                            original(internal, standard, designation, "3B"))
+    def test_wrong_input_and_child_class_cannot_validate_each_other(self, tap_scene, monkeypatch,
+                                                                     thread_catalog):
+        monkeypatch.setattr(mh.adsk.fusion.ThreadInfo, "create",
+                            lambda tapered, internal, standard, designation, cls, right_handed:
+                            thread_catalog.thread_info(tapered, internal, standard, designation,
+                                                       "3B", right_handed))
         result = self.call(thread_class="2b")
         assert result["isError"] is True and "Hole1" in result["message"]
         assert "thread_class='2b'" in result["message"]
@@ -1942,9 +1952,9 @@ class TestExplicitTapControls:
 
 class TestTapSizesSimpleHole:
     @pytest.fixture
-    def scene(self, monkeypatch):
+    def scene(self, monkeypatch, thread_catalog):
         design = _install()
-        query = design.rootComponent.features.threadFeatures.threadDataQuery
+        query = thread_catalog.query
         monkeypatch.setattr(query, "allSizes", lambda standard: ("0.375",))
         monkeypatch.setattr(query, "allDesignations", lambda standard, size:
                             ("3/8-16 UNC",) if standard == "ANSI Unified Screw Threads" else ())

@@ -4,6 +4,7 @@
 """Bind whole-family executions to their static source closures and retained local evidence."""
 
 import ast
+import dis
 import hashlib
 import inspect
 import json
@@ -243,7 +244,7 @@ def import_closure(root, seeds, trees=None, links=None):
     return sorted(seen)
 
 
-def callable_sources(value, root, names, seen=None, trees=None):
+def callable_sources(value, root, names, seen=None, trees=None, selections=None):
     """Return source files and tool literals reachable through selected callable bindings."""
     seen = set() if seen is None else seen
     trees = {} if trees is None else trees
@@ -272,6 +273,8 @@ def callable_sources(value, root, names, seen=None, trees=None):
         if not path.is_relative_to(Path(root)):
             raise ValueError("predicate/callback source is outside candidate: " + str(path))
         files.add(path.relative_to(Path(root)).as_posix())
+        if selections is not None:
+            _select_callable(value, root, selections, trees)
         if value.__name__ == "facade" and path.name == "verify_core.py":
             # The facade's complete source providers are roots; its runtime namespace is not a tool import.
             return files, tools
@@ -340,50 +343,277 @@ def callable_sources(value, root, names, seen=None, trees=None):
     else:
         children = []
     for child in children:
-        child_files, child_tools = callable_sources(child, root, names, seen, trees)
+        child_files, child_tools = callable_sources(child, root, names, seen, trees, selections)
         files.update(child_files)
         tools.update(child_tools)
     return files, tools
 
 
+_ENGINE = ("tests/live/tool_verify.py", "tests/live/verify_core.py",
+           "tests/live/verify_runner.py", "tests/live/verify_receipts.py",
+           "tests/live/verify_families.py", "tests/live/verify_program.py",
+           "tests/live/verify_layout.py", "tests/live/cloud_config.py")
+
+
+def _module_bindings(node):
+    """Collect writes in a module statement without entering nested lexical scopes."""
+    names, pending = set(), [node]
+    while pending:
+        child = pending.pop()
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(child.name)
+            pending.extend(child.decorator_list + child.args.defaults
+                           + [value for value in child.args.kw_defaults if value is not None])
+            continue
+        if isinstance(child, ast.ClassDef):
+            names.add(child.name)
+            pending.extend(child.decorator_list + child.bases + child.keywords)
+            continue
+        if isinstance(child, ast.Lambda):
+            pending.extend(child.args.defaults
+                           + [value for value in child.args.kw_defaults if value is not None])
+            continue
+        if isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            # Iteration targets are local to the comprehension; walrus targets are not.
+            pending.extend([child.key, child.value] if isinstance(child, ast.DictComp) else [child.elt])
+            for generator in child.generators:
+                pending.extend([generator.iter] + generator.ifs)
+            continue
+        if isinstance(child, ast.Name) and isinstance(child.ctx, (ast.Store, ast.Del)):
+            names.add(child.id)
+        if isinstance(child, (ast.Import, ast.ImportFrom)):
+            names.update(alias.asname or alias.name.split(".")[0] for alias in child.names)
+        if isinstance(child, ast.ExceptHandler) and child.name:
+            names.add(child.name)
+        if isinstance(child, (ast.MatchAs, ast.MatchStar)) and child.name:
+            names.add(child.name)
+        if isinstance(child, ast.MatchMapping) and child.rest:
+            names.add(child.rest)
+        targets = (child.targets if isinstance(child, ast.Assign) else
+                   [child.target] if isinstance(child, (ast.AugAssign, ast.AnnAssign)) else [])
+        names.update(item.id for target in targets for item in ast.walk(target)
+                     if isinstance(item, ast.Name))
+        if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                and isinstance(child.func.value, ast.Name)):
+            names.add(child.func.value.id)
+        pending.extend(ast.iter_child_nodes(child))
+    return names
+
+
+def _source_nodes(root, path, symbols):
+    """Select complete declarations and top-level mutations of named bindings."""
+    tree = ast.parse((Path(root) / path).read_bytes())
+    if "@engine" in symbols:
+        engine, stories = [], []
+        tools = {symbol.removeprefix("@story:") for symbol in symbols if symbol.startswith("@story:")}
+        for node in tree.body:
+            if (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                    and target.id == "STORY" for target in node.targets)):
+                if not isinstance(node.value, ast.Dict):
+                    raise ValueError("story ledger needs a static tool-keyed dictionary")
+                for key, value in zip(node.value.keys, node.value.values):
+                    if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                        raise ValueError("story ledger has an unbound key")
+                    if key.value in tools:
+                        stories.append((key.value, ast.dump(value, include_attributes=False)))
+            else:
+                engine.append(ast.dump(node, include_attributes=False))
+        return digest({"engine": engine, "stories": sorted(stories)})
+    definitions = {index: _module_bindings(node) for index, node in enumerate(tree.body)}
+    bound, chosen = set(symbols), set()
+    while True:
+        added = {index for index, names in definitions.items() if names & bound} - chosen
+        if not added:
+            break
+        chosen.update(added)
+        for index in added:
+            codes = [compile(ast.Module(body=[tree.body[index]], type_ignores=[]), path, "exec")]
+            while codes:
+                code = codes.pop()
+                bound.update(instruction.argval for instruction in dis.get_instructions(code)
+                             if instruction.opname in ("LOAD_NAME", "LOAD_GLOBAL"))
+                codes.extend(child for child in code.co_consts if isinstance(child, types.CodeType))
+    if not chosen:
+        raise ValueError("no source declarations for " + path + ": " + str(sorted(symbols)))
+    return digest([ast.dump(tree.body[index], include_attributes=False) for index in sorted(chosen)])
+
+
+def _select_callable(value, root, selections, trees):
+    """Bind a callback's enclosing declaration and its module-level dependencies."""
+    path = Path(os.path.abspath(value.__code__.co_filename)).relative_to(Path(root)).as_posix()
+    if path in _ENGINE:
+        return
+    key = ("selection", path)
+    if key not in trees:
+        trees[key] = ast.parse((Path(root) / path).read_bytes())
+    tree = trees[key]
+    symbols = selections.setdefault(path, set())
+    for node in tree.body:
+        if node.lineno <= value.__code__.co_firstlineno <= getattr(node, "end_lineno", node.lineno):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                symbols.add(node.name)
+            else:
+                symbols.update(child.id for child in ast.walk(node)
+                               if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store))
+    codes = [value.__code__]
+    while codes:
+        code = codes.pop()
+        symbols.update(name for name in code.co_names if name in value.__globals__)
+        codes.extend(child for child in code.co_consts if isinstance(child, types.CodeType))
+    if not symbols:
+        raise ValueError("unbound callback declaration: " + value.__qualname__)
+
+
+def _row_sources(root, values, members, selections):
+    """Find original row declarations before layout creates transformed row tuples."""
+    program = sys.modules.get("verify_program")
+    raw = getattr(program, "_ACT_PROGRAM", ()) if program else ()
+    if program and Path(program.__file__).resolve().is_relative_to(Path(root).resolve()):
+        names = {member[0] for member in members}
+        values = list(values) + [act[1:] for act in raw if act[0] in names]
+    row_ids = set()
+    def visit(value):
+        if isinstance(value, (tuple, list)):
+            if len(value) == 4 and isinstance(value[0], str):
+                row_ids.add(id(value))
+            else:
+                for child in value:
+                    visit(child)
+    for value in values:
+        visit(value)
+    for module in tuple(sys.modules.values()):
+        path = getattr(module, "__file__", None)
+        if not path or not Path(os.path.abspath(path)).is_relative_to(Path(root)):
+            continue
+        rel = Path(os.path.abspath(path)).relative_to(Path(root)).as_posix()
+        if not rel.startswith("tests/live/verify_acts_"):
+            continue
+        for name, binding in tuple(vars(module).items()):
+            if isinstance(binding, (list, tuple)) and any(id(row) in row_ids for row in binding):
+                selections.setdefault(rel, set()).add(name)
+
+
+def _program_value(value, root, substitutions, active=None):
+    """Serialize authored row values without evaluating callbacks or retaining run state."""
+    active = set() if active is None else active
+    if isinstance(value, str):
+        for text, symbol in substitutions:
+            value = value.replace(text, "<" + symbol + ">")
+        return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if id(value) in active:
+        return {"cycle": type(value).__name__}
+    active.add(id(value))
+    try:
+        if isinstance(value, dict):
+            return {str(key): _program_value(child, root, substitutions, active)
+                    for key, child in sorted(value.items(), key=lambda item: str(item[0]))}
+        if isinstance(value, (tuple, list)):
+            return [_program_value(child, root, substitutions, active) for child in value]
+        if isinstance(value, (set, frozenset)):
+            return sorted((_program_value(child, root, substitutions, active) for child in value),
+                          key=lambda item: json.dumps(item, sort_keys=True))
+        if inspect.isfunction(value):
+            path = Path(os.path.abspath(value.__code__.co_filename))
+            name = path.relative_to(root).as_posix() if path.is_relative_to(root) else value.__module__
+            return {"callable": name + ":" + value.__qualname__,
+                    "defaults": _program_value(value.__defaults__, root, substitutions, active),
+                    "closure": [_program_value(cell.cell_contents, root, substitutions, active)
+                                for cell in value.__closure__ or ()]}
+        if isinstance(value, type):
+            return {"class": value.__module__ + ":" + value.__qualname__}
+        if isinstance(value, (Path, os.PathLike)):
+            return _program_value(os.fspath(value), root, substitutions, active)
+        if hasattr(value, "__dict__") and type(value).__module__.startswith("verify"):
+            return {"type": type(value).__module__ + ":" + type(value).__qualname__,
+                    "state": _program_value(vars(value), root, substitutions, active)}
+        raise ValueError("unbound row value: " + type(value).__name__)
+    finally:
+        active.remove(id(value))
+
+
+def _runtime_substitutions(root):
+    """Symbolically bind process-specific artifact paths and names, not geometry arguments."""
+    fields = {"verify_core": ("EXPORT_DIR", "SVG_PATH", "SVG96_PATH", "MARKER_PNG",
+                              "MACHINE_NAME", "TEMPLATE_NAME", "REPO_ROOT", "SRC_ROOT"),
+              "verify_acts_cloud": ("_STAMP", "RUN_FOLDER", "MOVED_FOLDER", "SOURCE_DOC",
+                                    "COPY_DOC", "HOST_DOC", "RUN_PATH", "MOVED_PATH", "FOLDER"),
+              "verify_acts_hub": ("_ROT_MACHINE", "_SLICE_3MF", "_PB_INCLUDED_3MF", "_PB_OMITTED_3MF"),
+              "verify_acts_doc": ("_VIEW_FOCUS_RUN",),
+              "verify_acts_sheet": ("_STAMP",),
+              "verify_acts_render": ("_PNG_PATH", "_JPEG_PATH", "_TIFF_PATH", "_NAMED_PATH",
+                                     "_TRANSPARENT_PATH", "_REFUSED_PATH", "_CANVAS_PATH")}
+    values = [(str(Path(root)), "candidate_root")]
+    for module_name, names in fields.items():
+        module = sys.modules.get(module_name)
+        if not module or not Path(module.__file__).resolve().is_relative_to(Path(root).resolve()):
+            continue
+        for name in names:
+            value = getattr(module, name, None)
+            if isinstance(value, (str, Path)) and str(value):
+                values.append((str(value), module_name + "." + name))
+    return sorted(set(values), key=lambda item: (-len(item[0]), item[1]))
+
+
+def _closure_hash(files, census, program=None):
+    bound = {"files": files, "census": census}
+    if program is not None:
+        bound["program"] = program
+    return digest(bound)
+
+
 def family_closures(root, acts, owners, fixtures, providers=()):
-    """Hash selected tools, reachable producers and conservative complete facade providers."""
-    root = Path(root)
+    """Bind engine bytes, selected row declarations/checks and reachable tool imports."""
+    root = Path(root).resolve()
     census = tool_census(root)
-    harness = [p.relative_to(root).as_posix() for p in (root / "tests/live").glob("verify*.py")]
-    common = harness + ["tests/live/tool_verify.py", "commands/mcpServer/entry.py",
-                        "Fusion-Essentials.py", "lib/loaded_attestation.py",
-                        "commands/mcpServer/guidance/parametric_cad_design.json"]
+    engine = [name for name in _ENGINE if (root / name).is_file()]
+    server = ["commands/mcpServer/entry.py", "Fusion-Essentials.py", "lib/loaded_attestation.py",
+              "commands/mcpServer/guidance/parametric_cad_design.json"]
     result = {}
     trees, file_hashes, callback_trees, links = {}, {}, {}, {}
     provider_files, provider_tools, provider_seen = set(), set(), set()
+    provider_selections = {}
     for value in providers:
-        files, tools = callable_sources(value, root, set(census), provider_seen, callback_trees)
+        files, tools = callable_sources(value, root, set(census), provider_seen,
+                                        callback_trees, provider_selections)
         provider_files.update(files)
         provider_tools.update(tools)
+    substitutions = _runtime_substitutions(root)
     for family in sorted(set(owners.values())):
         members = [act for act in acts if owners[act[0]] == family]
-        seeds = set(common) | provider_files
         tools = (set(COMMON_TOOLS) & set(census)) | provider_tools
         values = [fixtures(family, raw=True)]
         for name, pre, narrative, fallback in members:
             values += [pre, narrative, fallback]
             for entitled in (True, False):
                 values.append(fixtures(family, before_act=name, entitled=entitled, raw=True))
+        selections = {path: set(names) for path, names in provider_selections.items()}
         visited = set(provider_seen)
+        callback_files = set(provider_files)
         for value in values:
-            files, used = callable_sources(value, root, set(census), visited, callback_trees)
-            seeds.update(files)
+            files, used = callable_sources(value, root, set(census), visited,
+                                           callback_trees, selections)
+            callback_files.update(files)
             tools.update(used)
-        seeds.update("commands/mcpServer/tools/" + name + ".py" for name in tools)
-        paths = import_closure(root, seeds, trees, links)
-        for path in paths:
+        _row_sources(root, values, members, selections)
+        seeds = set(server) | {"commands/mcpServer/tools/" + name + ".py" for name in tools}
+        paths = set(import_closure(root, seeds, trees, links)) | set(engine)
+        paths.update(path for path in callback_files if path not in selections)
+        if "tests/live/verify_program.py" in paths:
+            paths.remove("tests/live/verify_program.py")
+            selections["tests/live/verify_program.py"] = {"@engine"} | {"@story:" + name for name in tools}
+        entries = {}
+        for path in sorted(paths):
             if path not in file_hashes:
                 file_hashes[path] = hashlib.sha256((root / path).read_bytes().replace(
                     b"\r\n", b"\n")).hexdigest()
-        entries = {path: file_hashes[path] for path in paths}
-        result[family] = {"hash": digest({"files": entries, "census": census}),
-                          "files": entries, "tools": sorted(tools),
+            entries[path] = file_hashes[path]
+        projected = {path: sorted(names) for path, names in selections.items() if path not in paths}
+        entries.update({path: _source_nodes(root, path, names) for path, names in projected.items()})
+        program = digest(_program_value(values, root, substitutions))
+        result[family] = {"hash": _closure_hash(entries, census, program), "files": entries,
+                          "selections": projected, "program": program, "tools": sorted(tools),
                           "acts": [act[0] for act in members]}
     return result
 
@@ -405,12 +635,17 @@ def rehash_closures(root, closures):
     root = Path(root)
     census, hashes, result = tool_census(root), {}, {}
     for name, closure in closures.items():
+        files = {}
         for path in closure["files"]:
-            if path not in hashes:
-                hashes[path] = hashlib.sha256((root / path).read_bytes().replace(
-                    b"\r\n", b"\n")).hexdigest()
-        files = {path: hashes[path] for path in closure["files"]}
-        result[name] = dict(closure, files=files, hash=digest({"files": files, "census": census}))
+            symbols = closure.get("selections", {}).get(path)
+            key = (path, tuple(symbols or ()))
+            if key not in hashes:
+                hashes[key] = (_source_nodes(root, path, symbols) if symbols else
+                               hashlib.sha256((root / path).read_bytes().replace(
+                                   b"\r\n", b"\n")).hexdigest())
+            files[path] = hashes[key]
+        result[name] = dict(closure, files=files,
+                            hash=_closure_hash(files, census, closure.get("program")))
     return result
 
 

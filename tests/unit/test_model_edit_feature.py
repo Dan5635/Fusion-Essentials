@@ -52,6 +52,7 @@ def test_curved_path_descriptor_reads_both_callers_and_distinguishes_complements
 
 from _datum_fakes import datum_scene
 import test_doc_insert_derive as derive_fakes
+from tests.fakes.design import MirrorPlaneResetScene
 from conftest import (BRepBody, BRepEdge, BRepFace, FakeFeature, FakeTimeline, FakeTimelineObject,
                       FakePoint, MakeComp, MakeDesign, Profile, Sketch, error_message,
                       FakeVector3D, install, load_tool, make_bbox, payload,
@@ -281,6 +282,115 @@ def test_axis_edit_uses_real_typed_resolver_reads_back_and_restores_marker(scene
         "shape": {"measure": 1}}]
     assert feature.axis is new_axis
     assert result["marker_restored"] is True
+    assert timeline.markerPosition == timeline.count
+
+
+@pytest.fixture
+def mirror_scene(scene, monkeypatch):
+    revolve, timeline, _new_axis, _old_axis, design, body = scene
+    planes = [BRepFace(SimpleNamespace(surfaceType=adsk.core.SurfaceTypes.PlaneSurfaceType),
+        area=1, centroid=FakePoint(x, 0, 0), point_on_face=FakePoint(x, 0, 0),
+        normal=FakeVector3D(1, 0, 0), param_reversed=False, body=body,
+        entity_token=token) for x, token in ((0, "plane-before"), (.3, "plane-after"))]
+    old_plane, new_plane = planes
+    feature = MirrorPlaneResetScene(name="Mirror1", bodies=[body], parent_component=revolve.parentComponent,
+        timeline_object=revolve.timelineObject, entity_token="mirror-feature-token",
+        mirror={"plane": old_plane, "combine": True})
+    feature.objectType = "adsk::fusion::MirrorFeature"
+    feature.isParametric = feature.isValid = True
+    feature.baseFeature = None
+    feature.inputEntities = [body]
+    feature.timelineObject.name = "Mirror1"
+    feature.timelineObject.entity = feature
+    install(mod, design)
+    monkeypatch.setattr(mod._REFERENCES, "resolve_for",
+                        lambda *_args: (new_plane, None))
+    monkeypatch.setattr(mod._common, "native_identity",
+                        lambda entity: (entity.entityToken, "urn:fixture"))
+    monkeypatch.setattr(mod._edit, "reference_descriptor", lambda entity, role: {
+        "handle": entity.entityToken, "kind": role, "name": entity.entityToken,
+        "owner": {"component": "Part"}, "geometry": {"id": entity.entityToken}})
+
+    def geometry(_design):
+        changed = feature.mirrorPlane is new_plane
+        joined = feature._mirror["combine"]
+        shapes = ({"joined": {"volume": .864 if changed else 1.152,
+                              "xmin": -.6 if changed else -1.2}}
+                  if joined else {"seed": {"volume": .576, "xmin": 0},
+                                  "mirror": {"volume": .576, "xmin": -.6 if changed else -1.2}})
+        return {"bodies": {(name, "urn:fixture"): {
+            "body": name, "component": "Part", "shape": shape}
+            for name, shape in shapes.items()}, "occurrences": {}}
+
+    monkeypatch.setattr(mod._edit, "feature_geometry_snapshot", geometry)
+    monkeypatch.setattr(mod._edit, "health", lambda *_args: {
+        "errors": ([{"name": "Mirror1"}] if feature._mirror.get("unhealthy")
+                   and feature.mirrorPlane is new_plane else []), "warnings": []})
+    return feature, timeline, old_plane, new_plane
+
+
+@pytest.mark.parametrize("combine", [True, False])
+def test_mirror_plane_reset_preserves_the_prior_combine_setting(mirror_scene, combine):
+    feature, timeline, _old_plane, new_plane = mirror_scene
+    feature._mirror["combine"] = combine
+    out = payload(mod.handler(feature="Part/Mirror1@1", action="plane", references=["new-plane"]))
+    assert feature.mirrorPlane is new_plane and feature.isCombine is combine
+    assert feature._mirror["plane_writes"] == [new_plane]
+    assert feature._mirror["combine_writes"] == [combine]
+    assert out["definition_before"]["is_combine"] is combine
+    assert out["definition_after"]["is_combine"] is combine
+    assert out["definition_matches"] is True and out["geometry_changed"] is True
+    shapes = [row["shape"] for row in out["geometry_after"]["bodies"]]
+    assert shapes == ([{"volume": .864, "xmin": -.6}] if combine else
+                      [{"volume": .576, "xmin": 0}, {"volume": .576, "xmin": -.6}])
+    assert timeline.markerPosition == timeline.count
+
+
+def test_failed_mirror_edit_restores_plane_and_combine_with_geometry(mirror_scene):
+    feature, timeline, old_plane, new_plane = mirror_scene
+    feature._mirror["unhealthy"] = True
+    result = mod.handler(feature="Part/Mirror1@1", action="plane", references=["new-plane"])
+    assert result["isError"] is True and "health errors" in result["message"]
+    details = result["details"]
+    assert feature.mirrorPlane is old_plane and feature.isCombine is True
+    assert feature._mirror["plane_writes"] == [new_plane, old_plane]
+    assert feature._mirror["combine_writes"] == [True, True]
+    assert details["definition_restored"] == details["definition_before"]
+    assert details["geometry_restored"] == details["geometry_before"]
+    assert details["edited"] is False and details["restore_gaps"] == []
+    assert timeline.markerPosition == timeline.count
+
+
+def test_unread_mirror_combine_refuses_before_plane_assignment(mirror_scene):
+    feature, timeline, old_plane, _new_plane = mirror_scene
+    feature._mirror["readable"] = False
+    result = mod.handler(feature="Part/Mirror1@1", action="plane", references=["new-plane"])
+    assert result["isError"] is True and "is_combine" in result["message"]
+    assert "unread combine flag" in result["message"]
+    assert feature.mirrorPlane is old_plane
+    assert feature._mirror["plane_writes"] == feature._mirror["combine_writes"] == []
+    assert timeline.markerPosition == timeline.count
+
+
+@pytest.mark.parametrize("dropped", [(1,), (1, 2)])
+def test_dropped_mirror_combine_write_fails_and_reports_restore_gaps(mirror_scene, dropped):
+    feature, timeline, old_plane, _new_plane = mirror_scene
+    feature._mirror["drop_writes"] = dropped
+    result = mod.handler(feature="Part/Mirror1@1", action="plane", references=["new-plane"])
+    assert result["isError"] is True and "retained field" in result["message"]
+    details = result["details"]
+    assert details["definition_matches"] is False
+    assert details["definition_after"]["is_combine"] is False
+    assert len(details["geometry_after"]["bodies"]) == 2
+    assert feature.mirrorPlane is old_plane
+    if dropped == (1,):
+        assert feature.isCombine is True and details["edited"] is False
+        assert details["restore_gaps"] == []
+        assert details["geometry_restored"] == details["geometry_before"]
+    else:
+        assert feature.isCombine is False and details["edited"] is None
+        assert "the definition re-read differs from before the edit" in details["restore_gaps"]
+        assert details["geometry_restored"] != details["geometry_before"]
     assert timeline.markerPosition == timeline.count
 
 
@@ -1744,7 +1854,7 @@ def test_mirror_body_descriptor_uses_parent_component_and_refuses_missing_owner(
     monkeypatch.setattr(mod._inputs, "make_handle", lambda entity, *_args: entity.entityToken)
     monkeypatch.setattr(mod._edit, "_reference_geometry", lambda _entity, role: {"role": role})
     feature = SimpleNamespace(objectType="adsk::fusion::MirrorFeature", mirrorPlane=plane,
-                              inputEntities=[body])
+                              inputEntities=[body], isCombine=False)
 
     assert mod._inputs.entity_component(body) is owner
     state, definition, unavailable = mod._edit.feature_edit_state(feature)

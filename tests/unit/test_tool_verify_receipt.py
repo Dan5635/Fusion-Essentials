@@ -2182,7 +2182,7 @@ class TestReloadBeat:
         assert [row["session_id"] for row in registry_health] == [
             "fixture-session", "fixture-session-2"]
 
-    def test_an_unconfirmed_beat_blocks_the_receipt(self, monkeypatch):
+    def test_an_unconfirmed_beat_blocks_the_receipt(self, monkeypatch, capsys):
         # A run cannot publish when its deliberate reload did not establish a new session.
         ledger = {}
 
@@ -2194,6 +2194,8 @@ class TestReloadBeat:
         monkeypatch.setattr(tool_verify, "call",
                             lambda tool, args: ((False, {"n": 1}) if tool == "a_get"
                                                 else wire(tool, args)))
+        monkeypatch.setattr(tool_verify, "_post", lambda *a, **kw: (
+            {"result": {"serverInfo": {"name": tool_verify.SERVER_NAME}}}, "session-before"))
         monkeypatch.setattr(tool_verify, "_server_answers", _health(True))   # never goes down
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
         monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
@@ -2209,6 +2211,8 @@ class TestReloadBeat:
 
         assert tool_verify.run(write_json=False) == 1
         assert ledger == {}
+        assert "reload did not establish a new load and session identity" in capsys.readouterr().out
+        assert any(tool == "sys_reload_addin" for tool, _args in wire.state["seen"])
 
 
 _SWITCH_GROUP = "GTF_Test_MCP"
@@ -2643,15 +2647,31 @@ class _DocumentWire:
             self.doc_reads += 1
             active = dict(self.documents[self.active], document_handle=self.active,
                           is_saved=bool(self.documents[self.active].get("document_id")),
-                          is_modified=False)
+                          has_data_file=bool(self.documents[self.active].get("document_id")),
+                          is_modified=self.documents[self.active].get("is_modified", False))
             rows = [{"name": value["name"], "document_handle": handle,
-                     "open_index": index, "is_active": handle == self.active}
+                     "open_index": index, "is_active": handle == self.active,
+                     "is_modified": value.get("is_modified", False)}
                     for index, (handle, value) in enumerate(self.documents.items())]
             payload = {"active": active, "open_documents": rows,
                        "open_count": len(rows), "truncated": False}
             if self.drift_after_doc_get == self.doc_reads:
                 self.active = "session:intruder"
             return False, payload
+        if tool == "sys_execute_script" and args.get("read_only") and "home Design product" in args.get("script", ""):
+            index_reads = [node for node in ast.walk(ast.parse(args["script"]))
+                           if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                           and node.func.attr == "item" and isinstance(node.func.value, ast.Attribute)
+                           and node.func.value.attr == "documents"]
+            handle = (list(self.documents)[index_reads[0].args[0].value]
+                      if index_reads else self.active)
+            value = self.documents[handle]
+            return False, {"document_handle": handle, "name": value["name"],
+                           "document_id": value["document_id"],
+                           "is_modified": value.get("is_modified", False),
+                           "feature_count": value.get("feature_count", 3),
+                           "sketch_count": value.get("sketch_count", 2),
+                           "body_count": value.get("body_count", 1)}
         if tool == "design_get":
             return False, {"feature_count": 3}
         if tool == "doc_new":
@@ -2659,7 +2679,8 @@ class _DocumentWire:
             handle = "session:new%d" % self.created
             self.documents[handle] = {"name": "Untitled", "document_id": None}
             self.active = handle
-            payload = {"created": True, "document_handle": handle}
+            payload = {"created": True, "document_handle": handle, "is_active": True,
+                       "document_name": "Untitled", "is_saved": False}
             if self.invalid_handle_tool == tool:
                 payload.pop("document_handle")
             return False, payload
@@ -3300,7 +3321,7 @@ class TestOwnedFamilies:
     @staticmethod
     def _run(monkeypatch, tmp_path, wire, acts, acts_spec=None, hash_values=None,
              resume=False, run_id=None, fixture=None, keep_open=False, continue_families=False,
-             health=None):
+             health=None, native_available=True):
         wrote = []
         hashes = iter(hash_values or ["0" * 64] * 20)
         monkeypatch.setattr(tool_verify, "call", wire)
@@ -3310,8 +3331,9 @@ class TestOwnedFamilies:
         monkeypatch.setattr(verify_runner, "fixture_steps", fixture or (lambda *a, **k: []))
         monkeypatch.setattr(tool_verify, "health_gate", health or _attested_health)
         monkeypatch.setattr(tool_verify, "registered_tools", _registered(
-            ["model_write", "doc_new", "doc_close", "view_switch_workspace"],
-            {"model_write", "doc_new", "doc_close"}))
+            ["model_write", "doc_new", "doc_close", "view_switch_workspace"]
+            + (["sys_execute_script"] if native_available else []),
+            {"model_write", "doc_new", "doc_close", "sys_execute_script"}))
         monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: next(hashes))
         monkeypatch.setattr(tool_verify, "write_verified", lambda *a, **k:
                             wrote.append(True) or "VERIFIED_TOOLS.md")
@@ -3328,6 +3350,264 @@ class TestOwnedFamilies:
                                continue_families=continue_families)
         evidence = sorted((tmp_path / "outputs" / "tool-sweep").glob("families-*.json"))
         return code, wrote, json.loads(evidence[-1].read_text()) if evidence else None
+
+
+    @pytest.mark.parametrize("mode", ["full", "selected"])
+    @pytest.mark.parametrize("field,value", [
+        ("feature_count", 4), ("sketch_count", 3), ("body_count", 2), ("is_modified", True)])
+    def test_home_content_or_flag_change_stops_before_the_next_family(
+            self, monkeypatch, tmp_path, mode, field, value):
+        wire = _DocumentWire()
+        def call(tool, args):
+            result = wire(tool, args)
+            if tool == "model_write":
+                wire.documents["session:home"][field] = value
+            return result
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], []),
+                ("ACT 4 - MESH", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, call, acts,
+            acts_spec="ACT 3,ACT 4" if mode == "selected" else None)
+        assert code == 1 and not wrote and evidence["stopped"] is True
+        assert evidence["family_outcomes"]["surfaces"] == "failed"
+        assert wire.created == 1 and wire.active == "session:home"
+        assert len([t for t, _a in wire.seen if t == "model_write"]) == 1
+        checks = [e for e in evidence["family_events"] if e["phase"] == "home-preservation"]
+        assert len(checks) == 1 and checks[0]["after"][field] == value
+        assert checks[0]["before"][field] != value
+        assert not [e for e in evidence["family_events"] if e["phase"] == "after-census"]
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+
+    @pytest.mark.parametrize("selected", [False, True])
+    def test_two_families_preserve_a_nondefault_home_baseline(self, monkeypatch, tmp_path, selected):
+        wire = _DocumentWire()
+        wire.documents["session:home"].update(feature_count=19, sketch_count=0,
+                                            body_count=0, is_modified=True)
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], []),
+                ("ACT 4 - MESH", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+            acts_spec="ACT 3,ACT 4" if selected else None)
+        assert code == 0 and evidence["receipt_written"] is (not selected)
+        assert wrote == ([] if selected else [True])
+        checks = [e for e in evidence["family_events"] if e["phase"] == "home-preservation"]
+        assert len(checks) == 2 and wire.created == 2 and wire.active == "session:home"
+        assert all(e["before"] == e["after"] and e["after"]["is_modified"] is True
+                   and e["after"]["feature_count"] == 19 and e["after"]["sketch_count"] == 0
+                   and e["after"]["body_count"] == 0 for e in checks)
+        native = [a for t, a in wire.seen if t == "sys_execute_script"]
+        assert len(native) == 4 and all(a["read_only"] is True
+                                      and a["expect_document"] == "session:home" for a in native)
+
+
+    @pytest.mark.parametrize("stage", ["both", "closing"])
+    @pytest.mark.parametrize("field", ["name", "document_id", "is_modified", "has_data_file",
+                                      "lineage-pair", "row-name", "row-modified"])
+    def test_inactive_current_bookends_require_known_facts(self, monkeypatch, stage, field):
+        wire = _DocumentWire()
+        wire.active = "session:intruder"
+        reads = 0
+        def call(tool, args):
+            nonlocal reads
+            bad, payload = wire(tool, args)
+            if tool == "doc_get":
+                reads += 1
+                if stage == "both" or reads == 2:
+                    if field in {"name", "document_id"}:
+                        payload["active"].pop(field)
+                    elif field in {"is_modified", "has_data_file"}:
+                        payload["active"][field] = None
+                    elif field == "lineage-pair":
+                        payload["active"]["document_id"] = None
+                    else:
+                        row = next(r for r in payload["open_documents"] if r["is_active"])
+                        row["name" if field == "row-name" else "is_modified"] = None
+            return bad, payload
+        monkeypatch.setattr(tool_verify, "call", call)
+        snapshot, problem = verify_runner._home_now({"document_handle": "session:home",
+            "name": "Home", "document_id": "urn:home"}, allow_inactive=True)
+        assert snapshot is None and "current" in problem
+        assert wire.active == "session:intruder" and wire.created == 0
+        assert len([t for t, _a in wire.seen if t == "sys_execute_script"]) == (stage == "closing")
+        assert not [t for t, _a in wire.seen if t in {"doc_new", "doc_activate", "doc_close"}]
+
+    def test_native_off_refuses_before_any_family_write(self, monkeypatch, tmp_path, capsys):
+        wire = _DocumentWire()
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                        acts_spec="ACT 3", native_available=False)
+        assert code == 1 and not wrote and evidence is None
+        assert wire.created == 0 and not [t for t, _a in wire.seen
+                                          if t in {"model_write", "sys_execute_script", "doc_new"}]
+        assert "strict home preservation requires" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("fault", ["native-refusal", "native-handle", "native-name",
+        "native-urn", "native-flag", "closing-handle", "closing-flag", "closing-flag-type",
+        "opening-flag", "opening-flag-missing", "opening-row-flag", "opening-lineage", "closing-index",
+        "feature_count", "sketch_count", "body_count",
+        "negative-count", "boolean-count", "missing-count", "transport"])
+    def test_home_snapshot_refuses_unreadable_or_mixed_identity(self, monkeypatch, fault):
+        wire = _DocumentWire()
+        reads = 0
+        def call(tool, args):
+            nonlocal reads
+            if tool == "sys_execute_script" and fault == "transport":
+                raise TimeoutError("observer outcome unknown")
+            bad, payload = wire(tool, args)
+            if tool == "doc_get":
+                reads += 1
+                active = payload["active"]
+                if reads == 1 and fault == "opening-flag":
+                    active["is_modified"] = None
+                if reads == 1 and fault == "opening-flag-missing":
+                    active.pop("is_modified")
+                if reads == 1 and fault == "opening-row-flag":
+                    payload["open_documents"][0]["is_modified"] = True
+                if reads == 2 and fault == "closing-index":
+                    payload["open_documents"][0]["open_index"] = 1
+                    payload["open_documents"][1]["open_index"] = 0
+                if reads == 1 and fault == "opening-lineage":
+                    active["document_id"] = None
+                if reads == 2 and fault == "closing-handle":
+                    active["document_handle"] = "session:intruder"
+                if reads == 2 and fault == "closing-flag":
+                    active["is_modified"] = True
+                if reads == 2 and fault == "closing-flag-type":
+                    active["is_modified"] = 0
+            if tool == "sys_execute_script":
+                if fault == "native-refusal":
+                    return True, "read-only unavailable; no mutable fallback"
+                if fault.startswith("native-"):
+                    key = {"native-handle": "document_handle", "native-name": "name",
+                           "native-urn": "document_id", "native-flag": "is_modified"}[fault]
+                    payload[key] = "other" if key != "is_modified" else True
+                if fault in {"feature_count", "sketch_count", "body_count"}:
+                    payload[fault] = None
+                if fault == "negative-count":
+                    payload["body_count"] = -1
+                if fault == "boolean-count":
+                    payload["sketch_count"] = False
+                if fault == "missing-count":
+                    payload.pop("body_count")
+            return bad, payload
+        monkeypatch.setattr(tool_verify, "call", call)
+        snapshot, problem = verify_runner._home_now({"document_handle": "session:home"})
+        assert snapshot is None and problem and any(word in problem for word in ("home", "observer", "current"))
+        assert all(t in {"doc_get", "sys_execute_script"} for t, _a in wire.seen)
+        assert wire.active == "session:home" and wire.created == 0
+
+    def test_truncated_sketch_adapter_damage_cannot_receive_a_pass_label(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        def call(tool, args):
+            result = wire(tool, args)
+            if tool == "model_write":
+                wire.documents[wire.active].update(feature_count=18, sketch_count=17,
+                                                   is_modified=True)
+            return result
+        acts = [("ACT 1b - SKETCH TOOLS", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, call, acts, acts_spec="ACT 1b")
+        assert code == 1 and not wrote and evidence["family_outcomes"] == {"sketch": "failed"}
+        assert wire.created == 0 and wire.active == "session:home"
+        writes = [a for t, a in wire.seen if t == "model_write"]
+        assert writes == [{"expect_document": "session:home"}]
+        check = next(e for e in evidence["family_events"] if e["phase"] == "home-preservation")
+        assert check["after"]["sketch_count"] == 17 and check["before"]["sketch_count"] == 2
+
+    def test_resume_keeps_the_original_family_home_baseline(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], []),
+                ("ACT 3 - SURFACES SECOND", None, [("model_write", {"interrupt": True}, "ok", None)], [])]
+        def interrupted(tool, args):
+            if tool == "model_write" and args.get("interrupt"):
+                raise SystemExit("injected process interruption")
+            return wire(tool, args)
+        with pytest.raises(SystemExit, match="injected process interruption"):
+            self._run(monkeypatch, tmp_path, interrupted, acts, run_id="home-resume")
+        prior = verify_runner.load_run_state("home-resume")
+        assert prior["family_home_before"]["feature_count"] == 3
+        wire.documents["session:home"]["feature_count"] = 18
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+                                        run_id="home-resume", resume=True)
+        assert code == 1 and not wrote and wire.created == 1
+        check = next(e for e in evidence["family_events"] if e["phase"] == "home-preservation")
+        assert check["before"]["feature_count"] == 3 and check["after"]["feature_count"] == 18
+        assert evidence["family_outcomes"] == {"surfaces": "failed"}
+
+
+    @pytest.mark.parametrize("fault", [None, "inactive", "body-collection", "sketch-collection", "timeline",
+                                      "component-slot", "component-cap", "component-boundary", "identity", "non-design"])
+    def test_exact_native_observer_reads_own_product_or_refuses(
+            self, monkeypatch, capsys, fault):
+        import adsk.core
+        from conftest import make_design
+        from tests.fakes.data_docs import FakeFusionDocument, FakeProducts
+        from tests.fakes.scaffold import _NamedCollection
+        design = make_design(timeline=_NamedCollection([None] * 7))
+        root = design.rootComponent
+        root.isValid = True
+        root.bRepBodies = _NamedCollection([None])
+        root.sketches = _NamedCollection([None] * 5)
+        doc = FakeFusionDocument(name="Home", design=design, is_modified=False,
+                                 products=FakeProducts(design=design))
+        app = adsk.core.Application.get()
+        monkeypatch.setattr(app, "activeDocument", doc)
+        foreign = make_design(timeline=_NamedCollection([None] * 99))
+        foreign.rootComponent.isValid = True
+        monkeypatch.setattr(app, "activeProduct", foreign)
+        if fault == "inactive":
+            current = FakeFusionDocument(name="Family", is_modified=True)
+            monkeypatch.setattr(app, "activeDocument", current)
+            monkeypatch.setattr(app, "documents", _NamedCollection([doc, current]))
+        if fault == "body-collection":
+            root.bRepBodies._raises = "injected body count failure"
+        if fault == "sketch-collection":
+            root.sketches._raises = "injected sketch count failure"
+        if fault == "timeline":
+            design.timeline._raises = "injected timeline failure"
+        if fault == "component-slot":
+            design._all_components = [None]
+        if fault == "component-cap":
+            design._all_components = [root] * 1001
+        if fault == "component-boundary":
+            design._all_components = [root] * 1000
+        if fault == "identity":
+            doc.name = "Another document"
+        if fault == "non-design":
+            doc.products = FakeProducts()
+        script = verify_runner._HOME_CONTENT_SCRIPT.replace("__HOME_IDENTITY__", repr(("Home", None))).replace(
+            "__HOME_HANDLE__", repr("session:home")).replace("__HOME_TARGET__",
+                "app.documents.item(0)" if fault == "inactive" else "app.activeDocument")
+        namespace = {}
+        exec(compile(script, "home-observer", "exec"), namespace)
+        if fault not in (None, "inactive", "component-boundary"):
+            with pytest.raises((ValueError, RuntimeError), match="home|injected"):
+                namespace["run"](None)
+            assert capsys.readouterr().out == ""
+        else:
+            namespace["run"](None)
+            result = json.loads(capsys.readouterr().out)
+            assert result == {"name": "Home", "document_id": None, "document_handle": "session:home",
+                              "feature_count": 7, "sketch_count": 5000 if fault == "component-boundary" else 5,
+                              "body_count": 1000 if fault == "component-boundary" else 1, "is_modified": False}
+        assert app.activeDocument == (current if fault == "inactive" else doc) and doc.isModified is False
+
+    def test_canonical_opening_in_subset_writes_only_the_owned_document(self, monkeypatch, tmp_path):
+        wire = _DocumentWire()
+        targets = []
+        def call(tool, args):
+            result = wire(tool, args)
+            if tool == "model_write":
+                targets.append((wire.active, args["expect_document"]))
+                wire.documents[wire.active].update(feature_count=18, sketch_count=17, is_modified=True)
+            return result
+        opening = verify_acts_doc._OVERTURE[0]
+        acts = [("ACT 0 - OVERTURE", None, [opening], None),
+                ("ACT 1b - SKETCH TOOLS", None, [("model_write", {}, "ok", None)], [])]
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, call, acts, acts_spec="ACT 1b")
+        assert code == 0 and not wrote and targets == [("session:new1", "session:new1")]
+        assert wire.created == 1 and wire.active == "session:home"
+        checks = [e for e in evidence["family_events"] if e["phase"] == "home-preservation"]
+        assert len(checks) == 1 and checks[0]["before"] == checks[0]["after"]
+        assert set(wire.documents) == {"session:home", "session:intruder"}
+        assert [a["name"] for t, a in wire.seen if t == "doc_close"] == ["session:new1"]
 
     @pytest.mark.parametrize("discovery", [False, True])
     def test_family_failure_blocks_dependents_and_discovers_later_failures(
@@ -3395,7 +3675,7 @@ class TestOwnedFamilies:
             if tool == "doc_close" and fault == "cleanup-transport":
                 wire.seen.append((tool, dict(args)))
                 raise TimeoutError("cleanup outcome unknown")
-            if tool in {"model_write", "render_edit", "sys_execute_script"}:
+            if tool in {"model_write", "render_edit", "sys_execute_script"} and not args.get("read_only"):
                 damaged = True
                 if fault == "transport":
                     wire.seen.append((tool, dict(args)))
@@ -3481,7 +3761,7 @@ class TestOwnedFamilies:
         monkeypatch.setattr(cloud, "_CLOUD_CAM_PERSISTENCE", [terminal, cleanup])
 
         def call(tool, args):
-            if tool == "sys_execute_script":
+            if tool == "sys_execute_script" and not args.get("read_only"):
                 return False, {"restored": True}
             if tool == "cam_get_status":
                 return False, {"completed": True}
@@ -3683,14 +3963,28 @@ class TestOwnedFamilies:
         assert wire.active == "session:home"
         assert set(wire.documents) == {"session:home", "session:intruder"}
 
-    def test_keep_open_retains_only_selected_family_document(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("fault", [None, "unknown", "changed"])
+    def test_keep_open_checks_home_without_cleanup_or_activation(self, monkeypatch, tmp_path, fault):
         wire = _DocumentWire()
+        def call(tool, args):
+            result = wire(tool, args)
+            if tool == "model_write" and fault:
+                wire.documents["session:home"]["body_count"] = None if fault == "unknown" else 2
+            return result
         acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], [])]
-        code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
+        code, wrote, evidence = self._run(monkeypatch, tmp_path, call, acts,
                                            acts_spec="ACT 3", keep_open=True)
-        assert code == 0 and not wrote and evidence["receipt_written"] is False
-        assert wire.active == "session:new1"
+        assert code == (1 if fault else 0) and not wrote and evidence["receipt_written"] is False
+        assert wire.active == "session:new1" and wire.created == 1
         assert set(wire.documents) == {"session:home", "session:intruder", "session:new1"}
+        assert not [t for t, _a in wire.seen if t in {"doc_activate", "doc_close"}]
+        check = next(e for e in evidence["family_events"] if e["phase"] == "home-preservation-kept")
+        assert check["cleanup"] is False
+        if not fault:
+            assert check["before"] == check["after"]
+        native = [a for t, a in wire.seen if t == "sys_execute_script"]
+        assert native[-1]["expect_document"] == "session:new1"
+        assert "app.documents.item(0)" in native[-1]["script"]
 
     def test_unrelated_new_tab_survives_family_cleanup(self, monkeypatch, tmp_path):
         wire = _DocumentWire(background_after_write=True)
@@ -3929,3 +4223,59 @@ def test_instance_geometry_witness_reads_nested_mass_and_keeps_world_bounds():
     payload['min_point']['x'] += 70
     with pytest.raises(AssertionError, match='own-body world box and volume'):
         check(payload)
+
+
+class TestChamferGeometryWitness:
+    def test_miter_mass_read_refuses_the_ordinary_geometry_and_no_removal(self, monkeypatch):
+        import verify_acts_model_details as details
+        def body(volume):
+            return dict(kind='body', units='mm', lump_count=1,
+                        min_point=dict(x=0, y=0, z=0), max_point=dict(x=40, y=30, z=20),
+                        mass=dict(volume=volume, area=5145.5972401, accuracy_used='very_high',
+                                  center_of_mass=[20, 15, 10]))
+        monkeypatch.setitem(details._RECALL, 'cg_test_before', details._chamfer_body_state(body(24000)))
+        check = details._chamfer_body_read(23955.75, 5145.5972401, 'cg_test_before')
+        assert check(body(23955.75))
+        for volume in (23955.666667, 24000):
+            with pytest.raises(AssertionError, match='independent chamfer body geometry'):
+                check(body(volume))
+        monkeypatch.setitem(details._RECALL, 'cg_test_before', None)
+        with pytest.raises(AssertionError, match='independent chamfer body geometry'):
+            check(body(23955.75))
+
+    def test_census_refuses_wrong_faces_at_the_same_total_and_incomplete_listing(self):
+        import verify_acts_model_details as details
+        rows = [dict(kind='planar_face', handle=str(i)) for i in range(9)]
+        rows += [dict(kind='line_edge', handle=str(i)) for i in range(9, 30)]
+        payload = dict(units='mm', kind_filter='faces+edges', match_count=30, returned=30,
+                       matches=rows)
+        check = details._chamfer_face_census(9, 21)
+        assert check(payload)
+        rows[9]['kind'] = 'planar_face'
+        with pytest.raises(AssertionError, match='independent chamfer face census'):
+            check(payload)
+        rows[9]['kind'] = 'line_edge'
+        payload['returned'] = 29
+        with pytest.raises(AssertionError, match='independent chamfer face census'):
+            check(payload)
+
+    def test_story_pins_three_seeds_and_one_rim_seed_with_independent_reads(self):
+        import verify_acts_model_details as details
+        rows = details._chamfer_geometry_rows()
+        ctx = {save[0]: 'offline:' + save[0] for _, _, _, save in rows if save}
+        cuts = [(i, args(ctx)) for i, (tool, args, _, _) in enumerate(rows)
+                if tool == 'model_chamfer']
+        assert len(rows) == 58 and [i for i, _ in cuts] == [11, 23, 38, 51]
+        assert [len(args['edges']) for _, args in cuts] == [3, 3, 1, 1]
+        assert [args['tangent_chain'] for _, args in cuts] == [False, False, False, True]
+        assert [args.get('corner_type') for _, args in cuts[:2]] == ['chamfer', 'miter']
+        assert cuts[-1][1]['distance'] == 2 and cuts[-1][1]['angle_deg'] == 30
+        for i, _ in cuts:
+            assert [row[0] for row in rows[i + 1:i + 3]] == ['model_inspect', 'find_geometry']
+        seed = rows[8][2]
+        assert seed(dict(units='mm', matches=[dict(kind='line_edge', handle='seed',
+                                                 position=[20, 0, 20])]))
+        with pytest.raises(AssertionError, match='measured midpoint'):
+            seed(dict(units='mm', matches=[dict(kind='line_edge', handle='seed', position=[20, 0, 0])]))
+        assert [row[0] for row in rows[-2:]] == ['doc_activate', 'doc_close']
+        assert rows[-1][1](ctx)['save_changes'] is False

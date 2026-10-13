@@ -109,7 +109,10 @@ def closures(candidate):
 
 def change(root, path):
     file = root / path
-    file.write_bytes(file.read_bytes() + b"CHANGED = 1\n")
+    if path == "tests/live/verify_predicate.py":
+        file.write_bytes(file.read_bytes().replace(b"== 1", b"== 2"))
+    else:
+        file.write_bytes(file.read_bytes() + b"CHANGED = 1\n")
 
 
 @pytest.mark.parametrize("path, affected", [
@@ -117,7 +120,7 @@ def change(root, path):
     ("commands/mcpServer/tools/unrelated_tool.py", set()),
     ("commands/mcpServer/tools/_shared.py", {"alpha", "beta"}),
     ("commands/mcpServer/tools/_producer.py", {"alpha"}),
-    ("tests/live/verify_predicate.py", {"alpha", "beta"}),
+    ("tests/live/verify_predicate.py", {"alpha"}),
     ("tests/live/verify_families.py", {"alpha", "beta"}),
     ("commands/mcpServer/server/core.py", {"alpha", "beta"}),
     ("lib/loaded_attestation.py", {"alpha", "beta"}),
@@ -128,6 +131,98 @@ def test_source_attribution_invalidates_only_actual_consumers(candidate, path, a
     change(candidate[0], path)
     after = closures(candidate)
     assert {name for name in before if before[name]["hash"] != after[name]["hash"]} == affected
+
+
+def test_row_argument_changes_do_not_stale_another_family(candidate):
+    before = closures(candidate)
+    candidate[1][0][2][0][1]["length"] = 27
+    after = closures(candidate)
+    assert {name for name in before if before[name]["hash"] != after[name]["hash"]} == {"alpha"}
+
+
+def test_unreachable_check_declarations_do_not_invalidate_a_family(candidate):
+    before = closures(candidate)
+    path = candidate[0] / "tests/live/verify_predicate.py"
+    path.write_bytes(path.read_bytes() + b"def unused(p):\n    return p['value'] == 9\n")
+    assert closures(candidate) == before
+    assert receipts.rehash_closures(candidate[0], before) == before
+
+
+def test_selected_check_global_dependency_is_rehashed(candidate):
+    path = candidate[0] / "tests/live/verify_predicate.py"
+    path.write_bytes(b"LIMIT = 1\ndef predicate(p):\n    return p['value'] == LIMIT\n")
+    namespace = {}
+    exec(compile(path.read_bytes(), str(path), "exec"), namespace)
+    candidate[1][0][2][0] = ("alpha_tool", {}, namespace["predicate"], None)
+    before = closures(candidate)
+    path.write_bytes(path.read_bytes().replace(b"LIMIT = 1", b"LIMIT = 2"))
+    after = receipts.rehash_closures(candidate[0], before)
+    assert {name for name in before if before[name]["hash"] != after[name]["hash"]} == {"alpha"}
+
+
+@pytest.mark.parametrize("assignment", [
+    "if True:\n    LIMIT = 1\n",
+    "for LIMIT in (1,):\n    pass\n",
+    "while LIMIT == 0:\n    LIMIT = 1\n",
+    "try:\n    LIMIT = 1\nexcept ValueError:\n    pass\n",
+    "match 1:\n    case LIMIT:\n        pass\n",
+])
+def test_compound_module_binding_changes_stale_only_its_consumer(candidate, assignment):
+    path = candidate[0] / "tests/live/verify_predicate.py"
+    source = ("LIMIT = 1\n" if assignment.startswith("if ") else "LIMIT = 0\n") + assignment + "def predicate(p):\n    return p['value'] == LIMIT\n"
+    path.write_bytes(source.encode())
+    namespace = {}
+    exec(compile(source, str(path), "exec"), namespace)
+    assert namespace["predicate"]({"value": 1}) is True
+    candidate[1][0][2][0] = ("alpha_tool", {}, namespace["predicate"], None)
+    before = closures(candidate)
+    changed = source.replace("LIMIT = 1", "LIMIT = 2").replace("(1,)", "(2,)").replace("match 1:", "match 2:")
+    path.write_bytes(changed.encode())
+    namespace = {}
+    exec(compile(changed, str(path), "exec"), namespace)
+    assert namespace["predicate"]({"value": 1}) is False
+    after = receipts.rehash_closures(candidate[0], before)
+    assert {name for name in before if before[name]["hash"] != after[name]["hash"]} == {"alpha"}
+    candidate[1][0][2][0] = ("alpha_tool", {}, namespace["predicate"], None)
+    assert closures(candidate) == after
+
+
+@pytest.mark.parametrize("declaration", [
+    "def unused():\n        LIMIT = 9\n        return LIMIT\n",
+    "class Unused:\n        LIMIT = 9\n",
+])
+def test_compound_nested_lexical_locals_do_not_bind_a_module_dependency(candidate, declaration):
+    path = candidate[0] / "tests/live/verify_predicate.py"
+    source = "LIMIT = 1\nif True:\n    " + declaration + "def predicate(p):\n    return p['value'] == LIMIT\n"
+    path.write_bytes(source.encode())
+    namespace = {}
+    exec(compile(source, str(path), "exec"), namespace)
+    candidate[1][0][2][0] = ("alpha_tool", {}, namespace["predicate"], None)
+    before = closures(candidate)
+    path.write_bytes(source.replace("LIMIT = 9", "LIMIT = 8").encode())
+    assert receipts.rehash_closures(candidate[0], before) == before
+    assert closures(candidate) == before
+
+
+def test_tool_story_wording_only_invalidates_its_consuming_family(candidate):
+    path = candidate[0] / "tests/live/verify_program.py"
+    path.write_bytes(b"ENGINE = 1\nSTORY = {'alpha_tool': 'alpha read', 'beta_tool': 'beta read'}\n")
+    before = closures(candidate)
+    path.write_bytes(path.read_bytes().replace(b"alpha read", b"alpha changed"))
+    after = receipts.rehash_closures(candidate[0], before)
+    assert {name for name in before if before[name]["hash"] != after[name]["hash"]} == {"alpha"}
+
+
+def test_local_argument_names_cannot_pull_an_unused_row_declaration(candidate):
+    path = candidate[0] / "tests/live/verify_predicate.py"
+    path.write_bytes(b"UNUSED = [lambda key: key == 2]\n"
+                     b"def predicate(p):\n    key = p['value']\n    return key == 1\n")
+    namespace = {}
+    exec(compile(path.read_bytes(), str(path), "exec"), namespace)
+    candidate[1][0][2][0] = ("alpha_tool", {}, namespace["predicate"], None)
+    before = closures(candidate)
+    path.write_bytes(path.read_bytes().replace(b"key == 2", b"key == 3"))
+    assert receipts.rehash_closures(candidate[0], before) == before
 
 
 def test_new_registration_requires_all_families_to_bootstrap(candidate):

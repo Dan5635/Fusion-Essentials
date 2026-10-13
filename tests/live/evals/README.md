@@ -25,6 +25,33 @@ It needs:
 
 `py -3` is the Windows launcher; use `python3` elsewhere.
 
+## Evaluator launch options
+
+The evaluator's evidence and isolation requirements are in
+[evaluator.md](../../../.agents/roles/evaluator.md). A fresh-process command-line launch has used
+`codex exec --ephemeral --json --ignore-user-config --skip-git-repo-check --sandbox read-only
+-C <new empty directory> -c mcp_servers.fusion-essentials.url="<server url>"`, with the task on
+stdin. The command alone does not establish blindness: the launcher must also withhold shell,
+other plugins/agents and repository access, expose the full Fusion tool list, and record the
+actual startup configuration. Record the default model actually resolved when the runner exposes
+it; otherwise a launch without a model override leaves that default unattested.
+
+The proctor stages a document, launches a Claude Code executor with only the Fusion tools, and
+saves the result into the scratch project. Its fixed preamble is retained in the run's prompt
+bytes. A launcher given a role-file pointer starts a separate seat with that file as its brief;
+the seat, not this helper instruction, owns the candidate's cold check.
+
+The `blind-evaluator` subagent is an alternative for an intentionally narrower evaluation. Its
+restricted tool list withholds scripting, reload and preference tools, so it does not qualify as
+a candidate's full-list cold check. Start it with the entire
+[blind-evaluator.md](../../../.agents/roles/blind-evaluator.md) text followed by the task, since it
+cannot read a file pointer. A separately labelled assisted attempt never replaces its original
+unassisted result.
+
+The seat needs a running signed-in Fusion with the add-in loaded, the current server URL, an
+installed signed-in runner, the channel file, the operator's `tests/live/cloud_config.local.json`,
+an admitted scratch project, and the frozen task, checks and loaded-code identity from the lead.
+
 The proctor makes the configured hub active, finds the project (creating it and saying so when it is
 missing), and makes one cloud folder per eval set, `Eval-<date>-<set>` under your folder, where
 every document a run saves or starts from lives. `--set NAME` lets a chain share one folder: S2a

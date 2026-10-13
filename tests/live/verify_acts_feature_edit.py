@@ -61,7 +61,7 @@ def _component_created(key):
     return check
 
 
-def _definition_before(key, action, feature_type, preserved, component_key):
+def _definition_before(key, action, feature_type, preserved, component_key, combine=None):
     """Require the public rolled definition and the requested typed edit offer."""
     def check(p):
         d = p.get("definition") or {}
@@ -94,6 +94,8 @@ def _definition_before(key, action, feature_type, preserved, component_key):
                      and d.get("elements") == 6
                      and isinstance(d.get("direction_one_vector"), list)
                      and isinstance(d.get("direction_two_vector"), list))
+        if combine is not None:
+            valid = valid and d.get("is_combine") is combine
         if valid:
             _RECALL[key] = d
         return _measured("public definition at feature marker has usable typed offer and retained controls",
@@ -266,10 +268,16 @@ def _shape_state(p):
             "center": center, "bodies": rows}
 
 
-def _shape_capture(key, label):
+def _shape_capture(key, label, body_volumes=None):
     """Capture a complete independent component geometry census."""
     def check(p):
         state = _shape_state(p)
+        if state is not None and body_volumes is not None:
+            actual = sorted(row[3] for row in state["bodies"])
+            if (len(actual) != len(body_volumes)
+                    or any(row[2] != 1 for row in state["bodies"])
+                    or not all(_near(a, b, 0.01) for a, b in zip(actual, sorted(body_volumes)))):
+                state = None
         if state is not None:
             _RECALL[key] = state
         return _measured(label + " independent body census", state or p, state is not None)
@@ -282,7 +290,7 @@ def _body_rows_same(before, after):
         a[:3] == b[:3] and _near(a[3], b[3], 1e-5) for a, b in zip(before, after)))
 
 
-def _shape_changed(key, label, expected=None):
+def _shape_changed(key, label, expected=None, body_volumes=None):
     """Require an independent component envelope or volume change with all body rows readable."""
     def check(p):
         before, after = _RECALL.get(key), _shape_state(p)
@@ -298,6 +306,11 @@ def _shape_changed(key, label, expected=None):
                        and _vector_near(after["center"], expected.get("center"), 1e-4)
                        and all(_near(x, y, 1e-4) for x, y in zip(after["min"] + after["max"],
                                                                   wanted_bounds)))
+        if body_volumes is not None:
+            actual = sorted(row[3] for row in after["bodies"]) if after else []
+            changed = (changed and len(actual) == len(body_volumes)
+                       and after is not None and all(row[2] == 1 for row in after["bodies"])
+                       and all(_near(a, b, 0.01) for a, b in zip(actual, sorted(body_volumes))))
         premise = " new native premise" if expected is not None else ""
         return _measured(premise + label + " independent geometry changed", after or p, changed)
     return check
@@ -334,10 +347,16 @@ def _body_geometry(p, name):
             "center": center}
 
 
-def _body_capture(key):
+def _body_capture(key, expected=None):
     """Capture a complete named body inspection."""
     def check(p):
         state = _body_geometry(p, _RECALL.get(key))
+        if state is not None and expected is not None:
+            if (not _near(state["volume"], expected.get("volume"), 1e-5)
+                    or not _vector_near(state["center"], expected.get("center"), 1e-4)
+                    or not _vector_near(state["min"], expected.get("bounds", [])[:3], 1e-4)
+                    or not _vector_near(state["max"], expected.get("bounds", [])[3:], 1e-4)):
+                state = None
         if state is not None:
             _RECALL[key + "_state"] = state
         return _measured("named body geometry baseline", state or p, state is not None)
@@ -507,7 +526,8 @@ def _draft_face_identity_check(p):
 def _transition(rows, case, feature_key, action, field, mode=None, candidate_key=None,
                 expected_value=None, restore_mode=None, refresh_original=False,
                 expected_shape=None, body_target_key=None, expected_body=None,
-                candidate_body=False, draft_native_identity=False, role=None):
+                candidate_body=False, draft_native_identity=False, role=None,
+                baseline_volumes=None, changed_volumes=None, combine=None, baseline_body=None):
     """Run one public feature edit, independent effect read, and exact public restoration."""
     before_key = case + "_" + action + "_before"
     shape_key = case + "_" + action + "_shape"
@@ -554,11 +574,11 @@ def _transition(rows, case, feature_key, action, field, mode=None, candidate_key
              ("design_get", lambda c: {"include": ["definition"], "units": "mm",
                  "feature": _ctx_get(c, feature_key, "feature")},
              _definition_before(before_key, action, case.split("_")[0], [field],
-                                case + "_component"), None),
+                                case + "_component", combine), None),
              ("design_edit_timeline", _roll_end(), _roll_landed("end"), None),
              ("model_inspect", lambda c: {"target": _ctx_get(c, case + "_component", "owned component"),
                  "include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True},
-              _shape_capture(shape_key, case + " baseline"), None),
+              _shape_capture(shape_key, case + " baseline", baseline_volumes), None),
              ("model_inspect", lambda c: {"target": _ctx_get(c, case + "_control", "control body"),
                  "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
               _control_capture(control_key), None),
@@ -574,7 +594,7 @@ def _transition(rows, case, feature_key, action, field, mode=None, candidate_key
              ("design_edit_timeline", _roll_end(), _roll_landed("end"), None),
              ("model_inspect", lambda c: {"target": _ctx_get(c, case + "_component", "owned component"),
                  "include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True},
-              Independent(_shape_changed(shape_key, case + " changed", expected_shape),
+              Independent(_shape_changed(shape_key, case + " changed", expected_shape, changed_volumes),
                           ("model_edit_feature",), "tool:model_inspect"), None),
              ("model_inspect", lambda c: {"target": _ctx_get(c, case + "_control", "control body"),
                  "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
@@ -596,7 +616,7 @@ def _transition(rows, case, feature_key, action, field, mode=None, candidate_key
         body_index = offset + 5 + baseline_extra
         rows[body_index:body_index] = [("model_inspect", lambda c, body_target_key=body_target_key: {
             "target": _ctx_get(c, body_target_key, "target body"), "include": ["default", "mass"],
-            "units": "mm", "accuracy": "very_high"}, _body_capture(body_target_key), None)]
+            "units": "mm", "accuracy": "very_high"}, _body_capture(body_target_key, baseline_body), None)]
         baseline_extra += 1
         changed_index = offset + 11 + baseline_extra
         rows[changed_index:changed_index] = [("model_inspect", lambda c, body_target_key=body_target_key: {
@@ -833,7 +853,7 @@ def feature_edit_rows():
     _transition(rows, case, case + "_feature", "axis", "axis", candidate_key=case + "_candidate")
     _cleanup_transition(rows, case)
 
-    # Mirror plane: the seed body is offset from both planes; a disjoint control remains fixed.
+    # The unjoined mirror preserves False while its disjoint control stays fixed.
     case = "MirrorFeature"
     _start(rows, case)
     _box(rows, "FEMirrorSeed", 20, 0, 30, 10, 10, case + "_seed")
@@ -845,7 +865,30 @@ def feature_edit_rows():
     rows.append(("model_mirror", lambda c, case=case: {"bodies": [_ctx_get(c, case + "_seed", "mirror seed")],
         "plane": "yz"}, lambda p: bool(p.get("feature")) and p.get("bodies_added", 0) > 0,
         (case + "_feature", _save_feature(case + "_feature"))))
-    _transition(rows, case, case + "_feature", "plane", "mirror_plane", candidate_key=case + "_candidate")
+    _transition(rows, case, case + "_feature", "plane", "mirror_plane",
+                candidate_key=case + "_candidate", combine=False)
+    _cleanup_transition(rows, case)
+
+    # The joined mirror overlaps its seed after retargeting; its disjoint control stays fixed.
+    case = "MirrorFeature"
+    _start(rows, case)
+    _box(rows, "FEMirrorSeed", 0, 0, 12, 8, 6, case + "_seed")
+    _box(rows, "FEControl", 100, 0, 107, 5, 3, case + "_control")
+    rows.append(("model_construction", {"kind": "plane", "mode": "offset", "plane": "yz",
+        "offset": 3, "units": "mm", "name": "FEMirrorX3"}, "ok", None))
+    _candidate(rows, case + "_candidate", "construction_plane", "FEMirrorX3",
+               {"position": [3, 0, 0], "normal": [1, 0, 0]})
+    rows.append(("model_mirror", lambda c, case=case: {"bodies": [_ctx_get(c, case + "_seed", "mirror seed")],
+        "plane": "yz", "join": True},
+        lambda p: bool(p.get("feature")) and p.get("mirrored") is True and p.get("joined") is True,
+        (case + "_feature", _save_feature(case + "_feature"))))
+    _transition(rows, case, case + "_feature", "plane", "mirror_plane",
+                candidate_key=case + "_candidate", body_target_key=case + "_seed",
+                expected_body={"volume": 864, "center": [3, 4, 3],
+                               "bounds": [-6, 0, 0, 12, 8, 6]},
+                baseline_body={"volume": 1152, "center": [0, 4, 3],
+                               "bounds": [-12, 0, 0, 12, 8, 6]},
+                baseline_volumes=[105, 1152], changed_volumes=[105, 864], combine=True)
     _cleanup_transition(rows, case)
 
     # CircularPattern axis: an off-axis seed distinguishes z and x pattern placements.

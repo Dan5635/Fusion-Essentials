@@ -11,11 +11,28 @@ from verify_acts_cam import (
 from verify_core import _face_up_at
 from verify_core import _jointed
 from verify_core import _captured
+from verify_acts_sketch import _body_facts, _unchanged
 from verify_layout import (
     _px, _py)
 
 
 _SHOT_PATH = EXPORT_DIR + "/w4_shot"
+
+
+def _thread_body_facts(p):
+    """Return complete thread-body measurements only at the reported very-high accuracy."""
+    return (_body_facts(p) if (p.get("mass") or {}).get("accuracy_used") == "very_high"
+            else None)
+
+
+def _thread_material_cut(key):
+    """Require an independently inspected threaded body to lose material from its banked baseline."""
+    def check(p):
+        before, after = _RECALL.get(key), _thread_body_facts(p)
+        return _measured("modeled thread removes independently read material", after,
+                         before is not None and after is not None
+                         and 0 < after["volume"] < before["volume"] - .01)
+    return check
 
 
 
@@ -779,7 +796,25 @@ _DETAILS = [
     # a modeled designation far too big for the post grows the body instead of cutting it
     ("model_thread", lambda c: {"faces": [_ctx_get(c, "post_wall", "post wall")],
                                 "designation": "M30x3.5", "modeled": True}, "refused", None),
-    # a modeled thread that FITS must cut real material - the rung-4 gate's own regression net
+    ("model_create_component", {"name": "ThreadPostRight", "activate": True}, _made_component, None),
+    ("sketch_create", {"plane": "xy", "name": "ThreadRightS"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 550, "cy": 10, "radius": 5}],
+                             "sketch_name": "ThreadRightS"}, "ok", None),
+    ("model_extrude", {"sketch_name": "ThreadRightS", "profile_index": 0, "distance": 25}, _extruded, None),
+    ("find_geometry", {"target": "ThreadPostRight", "kind": "cylinder_face", "max_results": 1}, "ok",
+     _fg("right_post_wall")),
+    ("model_inspect", {"target": "ThreadPostRight", "include": ["default", "mass"],
+                       "accuracy": "very_high", "units": "mm"},
+     lambda p: _thread_body_facts(p) is not None,
+     ("thread_right_before", _recall("thread_right_before", _thread_body_facts))),
+    ("model_thread", lambda c: {"faces": [_ctx_get(c, "right_post_wall", "right post wall")],
+                                "designation": "M10x1.5", "modeled": True},
+     lambda p: p.get("modeled") is True and p.get("right_handed") is True, None),
+    ("model_inspect", {"target": "ThreadPostRight", "include": ["default", "mass"],
+                       "accuracy": "very_high", "units": "mm"},
+     _thread_material_cut("thread_right_before"), None),
+    # a modeled thread that FITS must cut real material - the rung-4 gate's own regression net.
+    # Left-handed, so the hand the tool wrote is read back off the feature.
     ("model_create_component", {"name": "ThreadPost2", "activate": True}, _made_component, None),
     ("sketch_create", {"plane": "xy", "name": "ThreadS2"}, "ok", None),
     ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 570, "cy": 10, "radius": 5}],
@@ -787,9 +822,24 @@ _DETAILS = [
     ("model_extrude", {"sketch_name": "ThreadS2", "profile_index": 0, "distance": 25}, _extruded, None),
     ("find_geometry", {"target": "ThreadPost2", "kind": "cylinder_face", "max_results": 1}, "ok",
      _fg("post2_wall")),
+    ("model_inspect", {"target": "ThreadPost:1", "include": ["default", "mass"],
+                       "accuracy": "very_high", "units": "mm"},
+     lambda p: _thread_body_facts(p) is not None,
+     ("thread_control_before", _recall("thread_control_before", _thread_body_facts))),
+    ("model_inspect", {"target": "ThreadPost2", "include": ["default", "mass"],
+                       "accuracy": "very_high", "units": "mm"},
+     lambda p: _thread_body_facts(p) is not None,
+     ("thread_material_before", _recall("thread_material_before", _thread_body_facts))),
     ("model_thread", lambda c: {"faces": [_ctx_get(c, "post2_wall", "second post wall")],
-                                "designation": "M10x1.5", "modeled": True},
-     lambda p: p.get("modeled") is True and p.get("volume_delta_cm3", 0) < 0, None),
+                                "designation": "M10x1.5", "modeled": True, "left_handed": True},
+     lambda p: p.get("modeled") is True and p.get("right_handed") is False
+     and p.get("volume_delta_cm3", 0) < 0, None),
+    ("model_inspect", {"target": "ThreadPost2", "include": ["default", "mass"],
+                       "accuracy": "very_high", "units": "mm"},
+     _thread_material_cut("thread_material_before"), None),
+    ("model_inspect", {"target": "ThreadPost:1", "include": ["default", "mass"],
+                       "accuracy": "very_high", "units": "mm"},
+     _unchanged("thread_control_before", _thread_body_facts, 1e-5), None),
     # the INTERNAL side of the same tool, on a real bore: 'internal' is derived from the face's own
     # out-of-material normal (never echoed), and the ThreadInfo it built is checked against the face
     # at add() - so an 'internal' that disagreed with the geometry would have raised. Then a PARTIAL
@@ -1969,3 +2019,115 @@ _DETAILS += _DATUM_EDITS
 from verify_acts_plastic import rib_web_retarget_rows, rib_web_rows
 
 _DETAILS += rib_web_rows() + rib_web_retarget_rows()
+
+
+def _chamfer_body_state(p):
+    """One body's independently read box, mass and area, or None when incomplete."""
+    from verify_acts_sketch import _body_facts
+    state = _body_facts(p)
+    mass = p.get("mass") or {}
+    if (state is None or p.get("kind") != "body" or p.get("lump_count") != 1
+            or mass.get("accuracy_used") != "very_high" or not _num(mass.get("area"))):
+        return None
+    return {**state, "area": mass["area"]}
+
+
+def _chamfer_body_read(volume, area, before=None):
+    """Require measured mass and area, and material removal from a separately banked read."""
+    def check(p):
+        state, baseline = _chamfer_body_state(p), _RECALL.get(before)
+        return _measured("independent chamfer body geometry", {"now": state, "before": baseline},
+                         state is not None and _near(state["volume"], volume, .01)
+                         and _near(state["area"], area, .01)
+                         and (before is None or (baseline is not None
+                              and 0 < state["volume"] < baseline["volume"]
+                              and state["min"] == baseline["min"]
+                              and state["max"] == baseline["max"])))
+    return check
+
+
+def _chamfer_face_census(faces, edges):
+    """Require a complete public face-and-edge listing with the measured topology."""
+    def check(p):
+        rows = p.get("matches") or []
+        actual = sum(str(r.get("kind", "")).endswith("_face") for r in rows)
+        return _measured("independent chamfer face census", {
+            "faces": actual, "match_count": p.get("match_count"), "returned": p.get("returned")},
+            p.get("units") == "mm" and p.get("kind_filter") == "faces+edges"
+            and p.get("match_count") == p.get("returned") == len(rows) == faces + edges
+            and actual == faces and all(r.get("handle") for r in rows))
+    return check
+
+
+def _chamfer_geometry_rows():
+    """Three-edge corners, an unchained rim and an angle chain, with independent body reads."""
+    from verify_acts_sketch import _boxed, _keep, _scratch_rows, _solid, _unchanged
+    rows, write, read, close = _scratch_rows("chamfer_geometry_doc")
+
+    def census(key, faces, edges):
+        read("find_geometry", lambda c: {"target": _ctx_get(c, key, "chamfer body"),
+                                         "max_results": 100, "units": "mm"},
+             _chamfer_face_census(faces, edges))
+
+    def pick(key, suffix, point):
+        def at_seed(p):
+            matches = p.get("matches") or []
+            row = matches[0] if len(matches) == 1 else {}
+            pos = row.get("position")
+            return _measured("chamfer seed at the measured midpoint", row,
+                             p.get("units") == "mm" and row.get("kind") == "line_edge"
+                             and bool(row.get("handle")) and isinstance(pos, list) and len(pos) == 3
+                             and all(_near(a, b, .001) for a, b in zip(pos, point)))
+        read("find_geometry", lambda c: {"target": _ctx_get(c, key, "chamfer body"),
+                                         "kind": "line_edge", "nearest_to": point,
+                                         "max_results": 1, "units": "mm"},
+             at_seed, _fg(key + suffix))
+
+    # The corner controls share dimensions and seeds; only the requested corner treatment differs.
+    for key, x, corner, volume, area, faces in (
+            ("cg_ordinary", 0, "chamfer", 23955.666667, 5145.4026053, 10),
+            ("cg_miter", 60, "miter", 23955.75, 5145.5972401, 9)):
+        _boxed(write, key + "S", [x, 0, x + 40, 30], 20, key)
+        _keep(read, "model_inspect", _solid(key), key + "_before", _chamfer_body_state)
+        census(key, 6, 12)
+        for suffix, point in (("_x", [x + 20, 0, 20]), ("_y", [x, 15, 20]),
+                              ("_z", [x, 0, 10])):
+            pick(key, suffix, point)
+        write("model_chamfer", lambda c, key=key, corner=corner: {
+            "edges": [_ctx_get(c, key + suffix, "corner seed") for suffix in ("_x", "_y", "_z")],
+            "distance": 1, "tangent_chain": False, "corner_type": corner}, _cut_exactly("chamfer", 3))
+        read("model_inspect", _solid(key), _chamfer_body_read(volume, area, key + "_before"))
+        census(key, faces, 21)
+        if key == "cg_ordinary":
+            _keep(read, "model_inspect", _solid(key), "cg_control", _chamfer_body_state)
+    read("model_inspect", _solid("cg_ordinary"),
+         _unchanged("cg_control", _chamfer_body_state, 1e-6))
+    census("cg_ordinary", 10, 21)
+
+    for key, x, angle, volume, area, faces, edges in (
+            ("cg_unchained", 120, None, 23912.32005, 5101.6500435, 11, 27),
+            ("cg_angle", 180, 30, 23778.470949, 5007.0766497, 18, 36)):
+        _boxed(write, key + "S", [x, 0, x + 40, 30], 20, key)
+        for i, point in enumerate(([x, 0, 10], [x + 40, 0, 10],
+                                   [x + 40, 30, 10], [x, 30, 10])):
+            pick(key, "_v" + str(i), point)
+        write("model_fillet", lambda c, key=key: {
+            "edges": [_ctx_get(c, key + "_v" + str(i), "upright seed") for i in range(4)],
+            "radius": 2, "tangent_chain": False}, _cut_exactly("fillet", 4))
+        _keep(read, "model_inspect", _solid(key), key + "_before", _chamfer_body_state)
+        pick(key, "_rim", [x + 20, 0, 20])
+        write("model_chamfer", lambda c, key=key, angle=angle: {
+            "edges": [_ctx_get(c, key + "_rim", "front top rim seed")],
+            "distance": 1 if angle is None else 2, "tangent_chain": angle is not None,
+            **({"angle_deg": angle} if angle is not None else {})},
+            _cut_exactly("chamfer", 1) if angle is None else _cut_a_chain("chamfer", 1))
+        read("model_inspect", _solid(key), _chamfer_body_read(volume, area, key + "_before"))
+        census(key, faces, edges)
+    read("model_inspect", _solid("cg_ordinary"),
+         _unchanged("cg_control", _chamfer_body_state, 1e-6))
+    census("cg_ordinary", 10, 21)
+    close()
+    return rows
+
+
+_DETAILS += _chamfer_geometry_rows()

@@ -407,15 +407,16 @@ def camera_state(cam):
     """The field values one camera carries - what a restore is judged on, since a viewport read
     hands back a copy."""
     return (cam.eye, cam.target, cam.upVector, cam.cameraType, cam.isFitView,
-            cam.perspectiveAngle, cam.viewExtents)
+            cam.perspectiveAngle, cam._sides)
 
 @fusion_fake(live_type="Camera",
-             facts=("shape-dump-design-world", "camera-viewextents-is-linear-not-area"))
+             facts=("shape-dump-design-world", "camera-supported-orthographic-pair",
+                    "camera-supported-perspective-extents-outcome"))
 class Camera:
-    """A viewport camera: the eye/target/up an orient rewrites, the projection and perspective
-    angle an orient read-back gates on, and the LINEAR viewExtents a zoom scales. `eye`, `target`
-    and `up` take a FakePoint or an (x, y, z) tuple."""
-    def __init__(self, eye=(10.0, 10.0, 10.0), target=(0.0, 0.0, 0.0), up=None,
+    """Supported camera pair/refusal stand-in; stored pairs do not model viewport spans.
+    view_extents seeds both sides; pose arguments accept FakePoint or (x,y,z).
+    The default up vector is an injected unit-vector fixture."""
+    def __init__(self, eye=(10.0, 10.0, 10.0), target=(0.0, 0.0, 0.0), up=(0.0, 0.0, 1.0),
                  camera_type=None, is_fit_view=False, perspective_angle=0.0,
                  view_extents=100.0, is_smooth_transition=True):
         self.eye = FakePoint(*eye) if isinstance(eye, tuple) else eye
@@ -425,8 +426,21 @@ class Camera:
                            if camera_type is None else camera_type)
         self.isFitView = is_fit_view
         self.perspectiveAngle = perspective_angle
-        self.viewExtents = view_extents
+        self._sides = (float(view_extents), float(view_extents))
         self.isSmoothTransition = is_smooth_transition
+
+    def _orthographic(self):
+        if self.cameraType != _api_facts.ENUMS["core.CameraTypes"]["OrthographicCameraType"]:
+            raise RuntimeError("3 : Camera type must be orthographic for extents")
+
+    def getExtents(self):
+        self._orthographic()
+        return [True, self._sides[0], self._sides[1]]
+
+    def setExtents(self, width, height):
+        self._orthographic()
+        self._sides = (float(width), float(height))
+        return True
 
     def _copy(self):
         """A detached duplicate carrying the same field values - what a viewport read hands back

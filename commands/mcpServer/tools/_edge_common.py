@@ -40,6 +40,10 @@ _FACES = _inputs.GeometryHandleList("faces", require="face", required=False,
 _CORNER_TYPES = {"chamfer": "ChamferCornerType", "miter": "MiterCornerType",
                  "blend": "BlendCornertype"}
 
+# The isFlipped a two-distance or distance-and-angle chamfer edge set is built with; the wire has
+# no input that swaps the two sides.
+_CHAMFER_FLIPPED = False
+
 # edge_filter caveat (shared by both tools): convex/concave classify each edge by its LOCAL dihedral
 # only, so on a plate with holes every hole rim matches exactly like the outer perimeter - the filter
 # cannot mean "outer edges only". The 'edges' handle list is the precise path when the set matters.
@@ -621,13 +625,10 @@ def _read_measured_edge_sets(design, feature, expected):
     return rows, None
 
 
-def _tangent_chain_read(kind, feature):
+def _tangent_chain_read(feature):
     """The tangent-chain flag READ BACK off the created feature, or None when it did not read."""
-    # The object that answers it differs by kind, and the other one is a CONSTANT: a ChamferFeature
-    # answers True/False while its own edge set reads False either way, and a FilletFeature answers
-    # True either way while its edge set answers True/False.
-    if kind == "chamfer":
-        return _common.read_flag(lambda: feature.isTangentChain)
+    # The first edge set answers it for a fillet and for a chamfer alike; the feature's own flag
+    # reads true either way on both.
     return _common.read_flag(lambda: feature.edgeSets.item(0).isTangentChain)
 
 
@@ -660,7 +661,7 @@ def _distance_mismatch(got_cm, want_cm, k):
 
 def _chamfer_readback(feature, size_cm, k, angle, corner_key, as_expression=False):
     """(verified payload fields, unverified field names, error) read off the CREATED chamfer. A
-    declined corner type leaves no trace anywhere else, and a distance-and-angle definition carries
+    declined corner type leaves no trace anywhere else, and a distance-and-angle edge set carries
     .distance in CM and .angle in RADIANS, which the comparisons below convert to."""
     fields, unverified = {}, []
     if corner_key:
@@ -680,8 +681,8 @@ def _chamfer_readback(feature, size_cm, k, angle, corner_key, as_expression=Fals
         if as_expression:
             # An expression is compared against the cm the units engine evaluated it to, so a
             # feature that took some other number is never reported as the expression asked for.
-            td = safe(lambda: feature.chamferTypeDefinition)
-            got = safe(lambda: td.distance.value) if td is not None else None
+            edge_set = safe(lambda: feature.edgeSets.item(0))
+            got = safe(lambda: edge_set.distance.value) if edge_set is not None else None
             derr = _distance_mismatch(got, size_cm, k)
             if derr:
                 return fields, unverified, derr
@@ -691,11 +692,11 @@ def _chamfer_readback(feature, size_cm, k, angle, corner_key, as_expression=Fals
                 unverified.append("distance")
         return fields, unverified, ""
 
-    # chamferType names WHICH definition got built: a distance-and-angle chamfer that silently fell
-    # back to an equal-distance one would still read back a plausible distance and no angle at all.
-    types = safe(lambda: adsk.fusion.ChamferTypes)
-    want_type = safe(lambda: types.DistanceAndAngleChamferType) if types is not None else None
-    got_type = safe(lambda: feature.chamferType)
+    # The edge set's own type names WHICH definition got built: a distance-and-angle chamfer that
+    # silently fell back to an equal-distance one would still read back a plausible distance.
+    edge_set = safe(lambda: feature.edgeSets.item(0))
+    want_type = safe(lambda: adsk.fusion.DistanceAndAngleChamferEdgeSet.classType())
+    got_type = safe(lambda: edge_set.objectType) if edge_set is not None else None
     if want_type is None or got_type is None:
         unverified.append("chamfer_type")
     elif got_type != want_type:
@@ -703,9 +704,8 @@ def _chamfer_readback(feature, size_cm, k, angle, corner_key, as_expression=Fals
             f"The chamfer was created but Fusion reports its definition as chamfer type {got_type}, "
             f"not the distance-and-angle type ({want_type}) that was requested.")
 
-    td = safe(lambda: feature.chamferTypeDefinition)
-    got_angle = safe(lambda: td.angle.value) if td is not None else None
-    got_dist = safe(lambda: td.distance.value) if td is not None else None
+    got_angle = safe(lambda: edge_set.angle.value) if edge_set is not None else None
+    got_dist = safe(lambda: edge_set.distance.value) if edge_set is not None else None
     if isinstance(got_angle, float):
         deg = math.degrees(got_angle)
         if abs(deg - angle) > 1e-6:
@@ -885,24 +885,27 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
                     return error(set_err)
             feature = comp.features.filletFeatures.add(fi)
         else:
-            ci = comp.features.chamferFeatures.createInput(edges, tangent_chain)
+            ci = comp.features.chamferFeatures.createInput2()
+            chamfer_sets = ci.chamferEdgeSets
             d2 = float(distance_two or 0.0)
             if angle is not None:
                 # A ValueInput built from a REAL carries RADIANS for an angle, so the wire's
                 # degrees are converted here; 'distance' is the leg along the first face and the
                 # angle turns the bevel off it.
                 ang = adsk.core.ValueInput.createByReal(math.radians(angle))
-                if not ci.setToDistanceAndAngle(val, ang):
+                if not chamfer_sets.addDistanceAndAngleChamferEdgeSet(
+                        edges, val, ang, _CHAMFER_FLIPPED, tangent_chain):
                     return error(f"Fusion refused a distance-and-angle chamfer of {size_text} "
                                  f"at {angle} deg, so nothing was chamfered.")
             elif d2 > 0:
                 # two-distance (asymmetric) chamfer
                 val2 = adsk.core.ValueInput.createByReal(d2 * k)
-                if not ci.setToTwoDistances(val, val2):
+                if not chamfer_sets.addTwoDistancesChamferEdgeSet(
+                        edges, val, val2, _CHAMFER_FLIPPED, tangent_chain):
                     return error(f"Fusion refused a two-distance chamfer ({size_text} / "
                                  f"{d2} {units}), so nothing was chamfered.")
             else:
-                if not ci.setToEqualDistance(val):
+                if not chamfer_sets.addEqualDistanceChamferEdgeSet(edges, val, tangent_chain):
                     return error(f"Fusion refused an equal-distance chamfer of {size_text}"
                                  ", so nothing was chamfered.")
             if corner_key:
@@ -985,7 +988,7 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
     # The tangent-chain flag the FEATURE reports. A variable-radius set is built with chaining off
     # whatever was requested, so its reading is published and never compared against the request.
     chain_requested = not measured_route and (kind == "chamfer" or vtype in ("constant", "chord_length"))
-    got_chain = _tangent_chain_read(kind, feature) if not measured_route else None
+    got_chain = _tangent_chain_read(feature) if not measured_route else None
     if chain_requested and got_chain is not None and got_chain != bool(tangent_chain):
         return error(
             f"The {kind} was created but its tangent-chain setting reads back {got_chain}, not the "

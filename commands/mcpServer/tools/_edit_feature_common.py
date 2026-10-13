@@ -121,8 +121,9 @@ FEATURE_EDIT_SUPPORT = {
                              "field": "is_symmetric"}}},
     "adsk::fusion::MirrorFeature": {
         "plane": {"member": "mirrorPlane", "reference": "plane", "cardinality": "one",
-                  "reader": "reference", "field": "mirror_plane"},
+                  "reader": "reference", "field": "mirror_plane", "setter": "mirror_plane"},
         "_preserve": {
+            "is_combine": {"member": "isCombine", "reader": "flag", "field": "is_combine"},
             "input_entities": {"member": "inputEntities", "reader": "references",
                                "field": "input_entities"}}},
     "adsk::fusion::CircularPatternFeature": {
