@@ -5,21 +5,15 @@ and the FAIL-CLOSED behaviour when the reference read will not answer (an empty 
 not evidence the file is unreferenced).
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
 
 from conftest import (FakeApplication, FakeData, FakeDataFile, FakeDocuments, FakeFusionDocument,
-                      load_tool)
+                      load_tool, payload as _payload)
 
 dm = load_tool("data_delete_file")
 dc = load_tool("_data_common")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 def _ref(name, urn):

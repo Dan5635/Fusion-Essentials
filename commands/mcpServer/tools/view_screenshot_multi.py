@@ -13,7 +13,7 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
-from ._common import error
+from ._common import ok, error
 from . import _view_common
 
 app = adsk.core.Application.get()
@@ -151,7 +151,7 @@ def handler(views=None, width: int = _WIDTH_DEFAULT, height: int = _HEIGHT_DEFAU
         summary += (f" Dropped {len(dropped)} view(s) over the {_MAX_VIEWS}-view cap: "
                     f"{', '.join(dropped)} - request them in a second call.")
     content.insert(0, {"type": "text", "text": summary})
-    return {"content": content, "isError": False}
+    return ok(content=content)
 
 
 TOOL_DESCRIPTION = (

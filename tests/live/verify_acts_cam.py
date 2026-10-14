@@ -19,6 +19,7 @@ import math
 import re
 import sys
 import time
+from machine_config import RETAINED_LIBRARY_NAME
 
 from verify_core import (
     EXPORT_DIR, Independent, MACHINE_NAME, NOTE_MAX, Parked, TEMPLATE_NAME, _RECALL, _box, _ctx_get, _dwell,
@@ -1575,6 +1576,7 @@ def _chain_resolved(p):
 def _chain_transformed_rows():
     """Flat handles and one chain_group on a rotated, translated component resolve the same four
     native world segments, in a scratch document closed again."""
+    from verify_core import ScriptEffects, scope_unit
     rows = [("doc_get", {}, _home_document, ("chain_home", _home_address)),
             ("doc_new", lambda c: {"expect_document": _ctx_get(c, "chain_home", "CAM story")},
              _new_document, ("chain_doc", lambda p: p["document_handle"]))]
@@ -1582,7 +1584,8 @@ def _chain_transformed_rows():
         rows.append((tool, lambda c: {**(args(c) if callable(args) else args),
                                       "expect_document": _ctx_get(c, "chain_doc", "chain scratch")},
                      check, save))
-    write("sys_execute_script", {"script": _CHAIN_BUILD, "read_only": False})
+    write("sys_execute_script", {"script": _CHAIN_BUILD, "read_only": False},
+          ScriptEffects(_CHAIN_BUILD, []))
     write("view_switch_workspace", {"workspace": "manufacture"})
     write("cam_edit_tools", {"action": "add", "scope": "document",
                              "add_tools": [{"from_type": "flat end mill", "diameter": "6 mm"}]},
@@ -1598,7 +1601,8 @@ def _chain_transformed_rows():
                  lambda p: _measured("the transformed block's four top edges",
                                      _chain_top_handles(p), len(_chain_top_handles(p)) == 4),
                  ("chain_tops", _chain_top_handles)))
-    rows.append(("sys_execute_script", {"script": _CHAIN_READ, "read_only": True}, "ok",
+    rows.append(("sys_execute_script", {"script": _CHAIN_READ, "read_only": True},
+                 ScriptEffects(_CHAIN_READ, []),
                  ("chain_before", _recall("chain_before", lambda p: p))))
     write("cam_select_geometry", lambda c: {"operation": "CR_Flat", "selection": "chain",
                                             "handles": _ctx_get(c, "chain_tops", "top edges"),
@@ -1607,14 +1611,14 @@ def _chain_transformed_rows():
                                             "chain_groups": [_ctx_get(c, "chain_tops", "top edges")],
                                             "generate": False}, _flat_chain_applied(1))
     rows.append(("sys_execute_script", {"script": _CHAIN_READ, "read_only": True},
-                 _chain_resolved, None))
+                 ScriptEffects(_CHAIN_READ, [], _chain_resolved), None))
     write("view_switch_workspace", {"workspace": "design"})
     rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "chain_home", "CAM story"),
                "expect_document": _ctx_get(c, "chain_doc", "chain scratch")}, _activated(), None),
              ("doc_close", lambda c: {"name": _ctx_get(c, "chain_doc", "chain scratch"),
                "save_changes": False,
                "expect_document": _ctx_get(c, "chain_home", "CAM story")}, _document_closed, None)]
-    return rows
+    return scope_unit(rows, ("native_script", "library_writes"))
 
 
 _CAM_STORY = _setup_preflight_rows() + _chain_transformed_rows() + [
@@ -6030,9 +6034,20 @@ def run(context):
 
 
 
+_SEED_PARAMETER_READ = """def seed_parameters(tool):
+    rows = {}
+    for name in ('tool_number', 'tool_diameterOffset', 'tool_lengthOffset'):
+        parameter = tool.parameters.itemByName(name)
+        assert parameter is not None, name
+        rows[name] = {'expression': parameter.expression, 'value': parameter.value.value}
+    return rows
+
+"""
+
+
 def _seed_library_before(_ctx):
-    """Read one shipped seed and reserve a unique local name before the single public import."""
-    script = """import adsk.core, adsk.cam, json, uuid
+    """Read the shipped seed and a complete direct-root census before create or reuse."""
+    script = """import adsk.core, adsk.cam, json
 
 def run(context):
     app = adsk.core.Application.get()
@@ -6049,19 +6064,33 @@ def run(context):
     local = libs.urlByLocation(adsk.cam.LibraryLocations.LocalLibraryLocation)
     assets = list(libs.childAssetURLs(local))
     assert len(assets) <= 256
-    name = 'CodexSweepSeed-' + uuid.uuid4().hex[:12]
-    assert all(u.leafName != name and u.leafName != name + '.json' for u in assets)
+    name = OWNED_NAME
+    urls = [u.toString() for u in assets]
+    names = [u.leafName for u in assets]
+    assert all(isinstance(v, str) and v.strip() for v in urls + names)
+    assert len(set(urls)) == len(urls) and all('%' not in v for v in names)
+    named = [u for u in assets if name.lower() in {
+        u.leafName.strip().lower(), u.leafName.strip().lower().rpartition('.')[0]}]
+    assert len(named) <= 1
+    existing = libs.toolLibraryAtURL(named[0]) if named else None
+    assert not named or (existing is not None and type(existing.count) is int and existing.count == 1)
+    assert named or len(assets) < 256
     empty = adsk.cam.ToolLibrary.createEmpty()
     assert empty is not None and empty.count == 0
     print(json.dumps({'owned_name': name, 'source_url': source_url,
         'source_seed': json.loads(source.item(0).toJson()),
-        'local_urls': [u.toString() for u in assets], 'local_root': local.toString(),
+        'source_parameters': seed_parameters(source.item(0)),
+        'local_urls': urls, 'local_names': names, 'local_root': local.toString(),
+        'owned_url': named[0].toString() if named else None,
+        'owned_seed': json.loads(existing.item(0).toJson()) if named else None,
+        'owned_parameters': seed_parameters(existing.item(0)) if named else None,
         'empty_is_none': empty is None, 'empty_bool': bool(empty), 'empty_count': empty.count}))
 """
-    return {"script": script, "read_only": True}
+    script = script.replace("def run(context):", _SEED_PARAMETER_READ + "def run(context):")
+    return {"script": script.replace("OWNED_NAME", repr(RETAINED_LIBRARY_NAME)), "read_only": True}
 
 
-def _seed_library_after(_ctx):
+def _seed_library_after(_ctx, count=1):
     """Read the exact returned URL independently and census the retained owned asset."""
     before = _RECALL["seed_library_before"]
     reply = _RECALL["seed_library_reply"]
@@ -6071,30 +6100,34 @@ def run(context):
     libs = adsk.cam.CAMManager.get().libraryManager.toolLibraries
     url = RETURNED_URL
     stored = libs.toolLibraryAtURL(adsk.core.URL.create(url))
-    assert stored is not None and stored.count == 1
+    assert stored is not None and type(stored.count) is int and stored.count == EXPECTED_COUNT
     source = libs.toolLibraryAtURL(adsk.core.URL.create(SOURCE_URL))
     assert source is not None and source.count > 0
     local = libs.urlByLocation(adsk.cam.LibraryLocations.LocalLibraryLocation)
     assets = list(libs.childAssetURLs(local))
-    assert len(assets) <= 257
+    assert len(assets) <= 256
     before = BEFORE_URLS
     added = [{'url': u.toString(), 'name': u.leafName} for u in assets if u.toString() not in before]
     print(json.dumps({'url': url, 'count': stored.count, 'is_none': stored is None,
-        'stored_seed': json.loads(stored.item(0).toJson()),
+        'stored_seed': json.loads(stored.item(0).toJson()) if stored.count else None,
+        'stored_parameters': seed_parameters(stored.item(0)) if stored.count else None,
         'source_seed': json.loads(source.item(0).toJson()),
+        'source_parameters': seed_parameters(source.item(0)),
         'local_urls': [u.toString() for u in assets], 'added': added,
         'retained_url': url, 'cleanup_attempted': False}))
 """
-    script = (script.replace("RETURNED_URL", repr(reply["url"]))
+    script = (script.replace("EXPECTED_COUNT", repr(count)).replace("RETURNED_URL", repr(reply["url"]))
               .replace("SOURCE_URL", repr(before["source_url"]))
               .replace("BEFORE_URLS", repr(before["local_urls"])))
+    script = script.replace("def run(context):", _SEED_PARAMETER_READ + "def run(context):")
     return {"script": script, "read_only": True}
 
 
 def _seed_library_equal(source, stored):
     """Compare complete seed JSON allowing only numeric serialization roundoff."""
     if type(source) in (int, float) and type(stored) in (int, float):
-        return abs(source - stored) <= max(1e-12, 1e-12 * max(abs(source), abs(stored)))
+        return (math.isfinite(source) and math.isfinite(stored)
+                and abs(source - stored) <= max(1e-12, 1e-12 * max(abs(source), abs(stored))))
     if type(source) is not type(stored):
         return False
     if isinstance(source, dict):
@@ -6104,18 +6137,171 @@ def _seed_library_equal(source, stored):
     return source == stored
 
 
-def _seed_library_stored(p):
-    """Require one stored seed, unchanged source and exactly one new owned local asset."""
+def _seed_library_parameters(seed, parameters):
+    """Require readable numeric tool numbering and both measured direct-reference offsets."""
+    if not isinstance(seed, dict) or not isinstance(parameters, dict):
+        return False
+    post = seed.get("post-process")
+    guid = seed.get("guid")
+    names = ("tool_number", "tool_diameterOffset", "tool_lengthOffset")
+    if (not isinstance(post, dict) or not isinstance(guid, str) or not guid.strip()
+            or set(parameters) != set(names)):
+        return False
+    number = post.get("number")
+    if type(number) not in (int, float) or not math.isfinite(number):
+        return False
+    for name, field in zip(names, ("number", "diameter-offset", "length-offset")):
+        row = parameters[name]
+        if not isinstance(row, dict) or set(row) != {"expression", "value"}:
+            return False
+        expression, value = row["expression"], row["value"]
+        if (not isinstance(expression, str) or not expression.strip()
+                or type(value) not in (int, float) or not math.isfinite(value)
+                or not _seed_library_equal(value, post.get(field)) or value != number):
+            return False
+        if name == "tool_number":
+            try:
+                if float(expression) != value:
+                    return False
+            except ValueError:
+                return False
+        elif expression.strip() != "tool_number":
+            return False
+    return True
+
+
+def _seed_library_add_signature(source, stored, parameters):
+    """Check the full copied JSON, declared numbering and a separately validated new identity."""
+    if not _seed_library_parameters(stored, parameters) or not isinstance(source, dict):
+        return False
+    source_guid, stored_guid = source.get("guid"), stored["guid"]
+    if (not isinstance(source_guid, str) or not source_guid.strip()
+            or stored_guid.strip().casefold() == source_guid.strip().casefold()
+            or not isinstance(source.get("post-process"), dict)):
+        return False
+    expected = dict(source, guid=stored_guid)
+    expected["post-process"] = dict(source["post-process"], number=1,
+                                   **{"diameter-offset": 1, "length-offset": 1})
+    return _seed_library_equal(expected, stored)
+
+
+def _seed_library_added(p):
+    """Require the one empty-target addition with its deliberate free-number assignment."""
+    assigned = p.get("assigned_tool_numbers")
+    return (type(p.get("added")) is int and p["added"] == 1
+            and type(p.get("tool_count")) is int and p["tool_count"] == 1
+            and isinstance(assigned, list) and len(assigned) == 1
+            and type(assigned[0]) is int and assigned[0] == 1
+            and p.get("verified_in_memory_only") is False)
+
+
+def _seed_library_stored(p, after_add=False):
+    """Require exact stored content, unchanged source and only the selected asset addition."""
     before, reply = _RECALL["seed_library_before"], _RECALL["seed_library_reply"]
-    added = p.get("added") or []
+    added = p.get("added")
+    created = reply["created_this_run"]
+    urls = p.get("local_urls")
+    expected_urls = set(before["local_urls"]) | ({reply["url"]} if created else set())
+    source_parameters = p.get("source_parameters")
+    stored_parameters = p.get("stored_parameters")
+    if after_add:
+        content_matches = (_seed_library_added(_RECALL.get("seed_library_add_reply", {}))
+                           and _seed_library_add_signature(before["source_seed"],
+                                                           p.get("stored_seed"), stored_parameters))
+    else:
+        expected = before["source_seed"] if created else before["owned_seed"]
+        content_matches = (_seed_library_equal(expected, p.get("stored_seed"))
+                           and _seed_library_parameters(p.get("stored_seed"), stored_parameters)
+                           and (created or _seed_library_equal(before["owned_parameters"], stored_parameters)))
     return _measured("seeded library exact URL and complete stored content", p,
-        p.get("count") == reply.get("tool_count") == 1 and p.get("is_none") is False
+        type(p.get("count")) is int and p["count"] == reply.get("tool_count") == 1 and p.get("is_none") is False
         and p.get("url") == reply.get("url") == p.get("retained_url")
         and _seed_library_equal(before["source_seed"], p.get("source_seed"))
-        and _seed_library_equal(before["source_seed"], p.get("stored_seed"))
-        and len(added) == 1 and added[0].get("name") in (before["owned_name"], before["owned_name"] + ".json")
-        and set(p.get("local_urls") or []) == set(before["local_urls"]) | {added[0]["url"]}
+        and _seed_library_parameters(p.get("source_seed"), source_parameters)
+        and _seed_library_equal(before["source_parameters"], source_parameters) and content_matches
+        and isinstance(urls, list) and all(isinstance(url, str) and url for url in urls)
+        and len(urls) == len(set(urls)) and set(urls) == expected_urls
+        and isinstance(added, list)
+        and (len(added) == 1 and isinstance(added[0], dict) and added[0].get("url") == reply["url"]
+             and isinstance(added[0].get("name"), str)
+             and added[0]["name"].strip().lower() in (before["owned_name"].lower(), before["owned_name"].lower() + ".json")
+             if created else added == [] and before["owned_url"] == reply["url"])
         and p.get("cleanup_attempted") is False)
+
+
+def _seed_library_ready(p):
+    """Refuse unknown, ambiguous or mismatched retained input before selecting any mutation."""
+    urls, names = p.get("local_urls"), p.get("local_names")
+    existing = p.get("owned_url")
+    valid = (p.get("owned_name") == RETAINED_LIBRARY_NAME and isinstance(urls, list)
+             and isinstance(names, list) and len(urls) == len(names) <= 256
+             and all(isinstance(value, str) and value.strip() for value in urls + names)
+             and len(set(urls)) == len(urls) and all('%' not in name for name in names)
+             and "owned_url" in p and _seed_library_parameters(p.get("source_seed"), p.get("source_parameters"))
+             and isinstance(p.get("source_url"), str) and bool(p["source_url"].strip())
+             and p.get("empty_is_none") is False and p.get("empty_bool") is False
+             and type(p.get("empty_count")) is int and p["empty_count"] == 0)
+    if valid:
+        candidates = [url for url, name in zip(urls, names) if RETAINED_LIBRARY_NAME.lower()
+                      in {name.strip().lower(), name.strip().lower().rpartition('.')[0]}]
+        valid = (isinstance(existing, str) and existing in urls and candidates == [existing]
+                 and (_seed_library_equal(p["source_seed"], p.get("owned_seed"))
+                      or _seed_library_add_signature(p["source_seed"], p.get("owned_seed"), p.get("owned_parameters")))
+                 and _seed_library_parameters(p.get("owned_seed"), p.get("owned_parameters"))
+                 if existing is not None else not candidates and len(urls) < 256
+                 and p.get("owned_seed") is None and p.get("owned_parameters") is None)
+    return _measured("fixed retained library input", p, valid)
+
+
+def _seed_library_select_args(_ctx, reuse_only=False):
+    """Select the acquired exact URL or create the one admitted fixed-name namespace."""
+    before = _RECALL["seed_library_before"]
+    if not _seed_library_ready(before):
+        raise ValueError("fixed retained library input is incomplete or mismatched")
+    if before["owned_url"] is not None:
+        return {"action": "list", "scope": "local", "library": before["owned_url"]}
+    if reuse_only:
+        raise ValueError("retained library disappeared before the second invocation; no create fallback")
+    return {"action": "create_library", "scope": "local", "library": RETAINED_LIBRARY_NAME,
+            "add_tools": [{"library_url": before["source_url"], "index": 0}]}
+
+
+def _seed_library_selected(p):
+    """Validate real create/list fields without fabricating a created-library reply on reuse."""
+    before = _RECALL["seed_library_before"]
+    if type(p.get("tool_count")) is not int or p["tool_count"] != 1:
+        return False
+    if before["owned_url"] is not None:
+        return (isinstance(p.get("tools"), list) and len(p["tools"]) == 1
+                and isinstance(p["tools"][0], dict) and type(p["tools"][0].get("index")) is int
+                and p["tools"][0]["index"] == 0)
+    return (p.get("created_library") == RETAINED_LIBRARY_NAME and p.get("scope") == "local"
+            and isinstance(p.get("url"), str) and bool(p["url"].strip()))
+
+
+def _seed_library_selection(p):
+    """Retain the actual public reply and the separately acquired selected identity."""
+    if not _seed_library_selected(p):
+        raise ValueError("retained library create/list reply is incomplete")
+    existing = _RECALL["seed_library_before"]["owned_url"]
+    return {"raw_reply": p, "url": existing if existing is not None else p["url"],
+            "tool_count": p["tool_count"], "created_this_run": existing is None}
+
+
+def _seed_library_empty(p):
+    """Require a stored empty asset at the same URL without collateral additions or removals."""
+    before, reply = _RECALL["seed_library_before"], _RECALL["seed_library_reply"]
+    expected = set(before["local_urls"]) | ({reply["url"]} if reply["created_this_run"] else set())
+    return _measured("stored empty retained library", p,
+        type(p.get("count")) is int and p["count"] == 0 and p.get("is_none") is False
+        and p.get("url") == reply["url"] == p.get("retained_url") and p.get("stored_seed") is None
+        and p.get("stored_parameters") is None
+        and _seed_library_equal(before["source_seed"], p.get("source_seed"))
+        and _seed_library_parameters(p.get("source_seed"), p.get("source_parameters"))
+        and _seed_library_equal(before["source_parameters"], p.get("source_parameters"))
+        and isinstance(p.get("local_urls"), list) and all(isinstance(url, str) and url for url in p["local_urls"])
+        and len(p["local_urls"]) == len(set(p["local_urls"]))
+        and set(p["local_urls"]) == expected and p.get("cleanup_attempted") is False)
 
 
 def _seeded_library_list(count):
@@ -6125,35 +6311,35 @@ def _seeded_library_list(count):
             lambda p: p.get("tool_count") == count, None)
 
 
-# Every run leaves its CodexSweepSeed-<hex> library in the Local library (no delete path); the rows
-# after the stored read empty it and re-add the seed, so it ends holding one tool. The refused
-# create under the fixed name FWSeedGuardRefused persists nothing (_seed_library_stored's census).
+# The retained test namespace ends with one seed. A second invocation must acquire and reuse it.
 _SEEDED_LIBRARY_ROWS = [
     ("sys_execute_script", _seed_library_before,
-     lambda p: p.get("empty_is_none") is False and p.get("empty_bool") is False
-     and p.get("empty_count") == 0 and bool(p.get("source_seed")) and bool(p.get("owned_name")),
+     _seed_library_ready,
      ("seed_library_before", _recall("seed_library_before", lambda p: p))),
     ("cam_edit_tools", {"action": "create_library", "scope": "local",
                         "library": "FWSeedGuardRefused", "add_tools": [{"from_type": "flat end mill"}]},
      _refused("takes exactly 'library_url'", "action='add' only", "Nothing was created"), None),
-    ("cam_edit_tools", lambda c: {"action": "create_library", "scope": "local",
-      "library": _RECALL["seed_library_before"]["owned_name"],
-      "add_tools": [{"library_url": _RECALL["seed_library_before"]["source_url"], "index": 0}]},
-     lambda p: p.get("created_library") == _RECALL["seed_library_before"]["owned_name"]
-     and p.get("scope") == "local" and p.get("tool_count") == 1 and bool(p.get("url")),
-     ("seed_library_reply", _recall("seed_library_reply", lambda p: p))),
+    ("cam_edit_tools", _seed_library_select_args, _seed_library_selected,
+     ("seed_library_reply", _recall("seed_library_reply", _seed_library_selection))),
     _seeded_library_list(1),
     ("sys_execute_script", _seed_library_after, _seed_library_stored, None),
     ("cam_edit_tools", lambda c: {"action": "remove", "scope": "local",
       "library": _RECALL["seed_library_reply"]["url"], "remove_indices": [0]},
      lambda p: p.get("removed") == 1 and p.get("tool_count") == 0, None),
     _seeded_library_list(0),
+    ("sys_execute_script", lambda c: _seed_library_after(c, count=0), _seed_library_empty, None),
     ("cam_edit_tools", lambda c: {"action": "add", "scope": "local",
       "library": _RECALL["seed_library_reply"]["url"],
       "add_tools": [{"library_url": _RECALL["seed_library_before"]["source_url"], "index": 0}]},
-     lambda p: p.get("added") == 1 and p.get("tool_count") == 1
-     and p.get("verified_in_memory_only") is False, None),
+     _seed_library_added,
+     ("seed_library_add_reply", _recall("seed_library_add_reply", lambda p: p))),
     _seeded_library_list(1),
+    ("sys_execute_script", _seed_library_after, lambda p: _seed_library_stored(p, after_add=True), None),
+    ("sys_execute_script", _seed_library_before, _seed_library_ready,
+     ("seed_library_before", _recall("seed_library_before", lambda p: p))),
+    ("cam_edit_tools", lambda c: _seed_library_select_args(c, reuse_only=True), _seed_library_selected,
+     ("seed_library_reply", _recall("seed_library_reply", _seed_library_selection))),
+    ("sys_execute_script", _seed_library_after, _seed_library_stored, None),
 ]
 
 

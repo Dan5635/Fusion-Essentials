@@ -58,9 +58,9 @@ def _loose_nested_members(rg):
 def handler(occurrences: str = "", include_children: bool = False) -> dict:
     """Lock two or more occurrences together as one rigid unit; include_children also takes in
     their children. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     coll, resolved, errors = _resolve_many(design, occurrences)
     if errors:
         return error("; ".join(errors))

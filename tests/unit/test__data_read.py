@@ -10,7 +10,6 @@ single-file record behind data_get(file=...), whose projection, date conversion 
 are pinned at the bottom of this file.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -51,10 +50,7 @@ def cloud(monkeypatch):
     return _use
 
 
-def _payload(result):
-    """Unwrap a non-error result envelope into its parsed JSON payload."""
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _sample_project():

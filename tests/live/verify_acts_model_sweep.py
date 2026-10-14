@@ -6,6 +6,8 @@
 import math
 import re
 
+from verify_core import scope_unit
+
 from verify_core import (
     _RECALL, _Refusal, _ctx_get, _datum_plane, _document_closed, _extruded, _fg, _home_address, _home_document, _lofted, _made_component, _matched, _measured, _near, _num, _new_document, _prof, _recall, _refused, _revolved, _swept, _watch)
 
@@ -995,6 +997,8 @@ def run(context):
 
 def _sweep_scope_edit_rows():
     """Exercise measured guided-rail, New-to-Cut, and Cut participant edits with public reads."""
+    from verify_core import ScriptEffects, scope_unit
+
     rows = []
 
     def session(tag, title):
@@ -1093,28 +1097,30 @@ def _sweep_scope_edit_rows():
     tag = "scope_r7"
     session(tag, "R7 guided scratch")
     write(tag, "sys_execute_script", {"script": _SWEEP_GUIDE_FIXTURE, "read_only": False},
-          lambda p: _measured("measured R7 one-curve guided fixture", p,
-                              p.get("feature") == "R7Sweep" and p.get("body") == "R7SweepBody"
-                              and p.get("control") == "R7Control"
-                              and p.get("original_count") == p.get("replacement_count") == 1
-                              and p.get("marker") == p.get("count")))
+          ScriptEffects(_SWEEP_GUIDE_FIXTURE, [],
+              lambda p: _measured("measured R7 one-curve guided fixture", p,
+                                  p.get("feature") == "R7Sweep" and p.get("body") == "R7SweepBody"
+                                  and p.get("control") == "R7Control"
+                                  and p.get("original_count") == p.get("replacement_count") == 1
+                                  and p.get("marker") == p.get("count"))))
     read_mass(tag, {"R7SweepBody": 240, "R7Control": 1000}, "before")
     definition_read(tag, "R7Sweep", "R7Sweep", "new")
     write(tag, "sys_execute_script", {"script": _SWEEP_GUIDE_CENSUS, "read_only": False},
-          _sweep_scope_guide_census("R7RailOriginal"))
+          ScriptEffects(_SWEEP_GUIDE_CENSUS, [], _sweep_scope_guide_census("R7RailOriginal")))
     write(tag, "model_edit_sweep", {"feature": "R7Sweep", "action": "guide_path",
           "path": "sketch:R7RailReplacement"}, _sweep_scope_edit("guide_path", "replace", "R7Sweep"))
     read_mass(tag, {"R7SweepBody": 560, "R7Control": 1000}, "replacement")
     definition_read(tag, "R7Sweep", "R7Sweep", "new", previous=True)
     write(tag, "sys_execute_script", {"script": _SWEEP_GUIDE_CENSUS, "read_only": False},
-          _sweep_scope_guide_census("R7RailReplacement"))
+          ScriptEffects(_SWEEP_GUIDE_CENSUS, [], _sweep_scope_guide_census("R7RailReplacement")))
     write(tag, "model_edit_sweep", {"feature": "R7Sweep", "action": "guide_path",
           "path": "sketch:R7RailOriginal"}, _sweep_scope_edit("guide_path", "restore", "R7Sweep"))
     read_mass(tag, {"R7SweepBody": 240, "R7Control": 1000}, "restore")
     definition_read(tag, "R7Sweep", "R7Sweep", "new", previous=True)
     write(tag, "sys_execute_script", {"script": _SWEEP_GUIDE_CENSUS, "read_only": False},
-          _sweep_scope_guide_census("R7RailOriginal"))
+          ScriptEffects(_SWEEP_GUIDE_CENSUS, [], _sweep_scope_guide_census("R7RailOriginal")))
     finish(tag, "R7 guided scratch")
+    rows[:] = scope_unit(rows, ["native_script"])
 
     tag = "scope_r8"
     session(tag, "R8 operation scratch")
@@ -1665,7 +1671,8 @@ def _loft_edit_rows():
                                       "save_changes": False,
                                       "expect_document": _ctx_get(c, "le_story", "story")},
               _document_closed, None)]
-    return rows
+    return scope_unit(rows, ["native_script", "cloud_tier", "library_writes",
+                             "preference_writes", "addin_reload"])
 
 
 _LOFT_EDITOR = _loft_edit_rows()
@@ -1900,7 +1907,8 @@ def _d_loft_rows():
          _document_closed, None),
         ("doc_get", {}, _d_loft_home_same("d_loft_home_census"), None),
     ])
-    return rows
+    return scope_unit(rows, ["native_script", "cloud_tier", "library_writes",
+                             "preference_writes", "addin_reload"])
 
 
 def _d_loft_capture_before(key):
@@ -3081,6 +3089,7 @@ def _guided_sweep_body(stage):
 
 def _guided_sweep_rows():
     """Exercise a guided Sweep's mode refusal with independent native and typed state reads."""
+    from verify_core import ScriptEffects, scope_unit
     rows = [
         ("doc_get", {}, _home_document, ("guided_story", _home_address)),
         ("doc_new", lambda c: {"expect_document": _ctx_get(c, "guided_story", "story")},
@@ -3101,14 +3110,15 @@ def _guided_sweep_rows():
     write("sketch_add_geometry", {"sketch_name": "GuidedRail", "units": "mm",
                                   "geometry": [{"kind": "line", "x1": 0, "y1": 1, "x2": 10, "y2": 1}]})
     write("sys_execute_script", {"script": _GUIDED_SWEEP_CREATE, "read_only": False},
-          lambda p: _measured("guided sweep fixture created", p, p.get("name") == "GuidedSweep"
-                              and p.get("health") == 0))
+          ScriptEffects(_GUIDED_SWEEP_CREATE, [],
+              lambda p: _measured("guided sweep fixture created", p, p.get("name") == "GuidedSweep"
+                                  and p.get("health") == 0)))
     write("sketch_create", {"name": "LaterProfile", "plane": "yz"})
     write("sketch_add_geometry", {"sketch_name": "LaterProfile", "units": "mm",
                                   "geometry": [{"kind": "circle", "cx": 0, "cy": 0, "radius": 0.5}]})
     rows.extend([
         ("sys_execute_script", {"script": _GUIDED_SWEEP_NATIVE, "read_only": False},
-         _guided_sweep_native_read("before"), None),
+         ScriptEffects(_GUIDED_SWEEP_NATIVE, [], _guided_sweep_native_read("before")), None),
         ("design_get", {"include": ["default", "tree", "timeline"], "tree_bodies": True,
                          "max_results": 100}, _guided_sweep_design("before"), None),
         ("model_inspect", {"target": "Body1", "include": ["default", "mass"],
@@ -3121,7 +3131,7 @@ def _guided_sweep_rows():
                    "Nothing was edited"))
     rows.extend([
         ("sys_execute_script", {"script": _GUIDED_SWEEP_NATIVE, "read_only": False},
-         _guided_sweep_native_read("after"), None),
+         ScriptEffects(_GUIDED_SWEEP_NATIVE, [], _guided_sweep_native_read("after")), None),
         ("design_get", {"include": ["default", "tree", "timeline"], "tree_bodies": True,
                          "max_results": 100}, _guided_sweep_design("after"), None),
         ("model_inspect", {"target": "Body1", "include": ["default", "mass"],
@@ -3135,7 +3145,7 @@ def _guided_sweep_rows():
                                   "expect_document": _ctx_get(c, "guided_story", "story")},
          _document_closed, None),
     ])
-    return rows
+    return scope_unit(rows, ["native_script"])
 
 
 _LATER_OPERAND += _guided_sweep_rows()

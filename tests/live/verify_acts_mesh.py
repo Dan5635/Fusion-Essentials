@@ -15,7 +15,7 @@ from pathlib import Path
 import struct
 
 from verify_core import (
-    EXPORT_DIR, _RECALL, _activated, _arranged, _base_feature_open, _box, _captured, _ctx_get,
+    EXPORT_DIR, Independent, _RECALL, _activated, _arranged, _base_feature_open, _box, _captured, _ctx_get,
     _datum_plane, _document_closed, _document_read, _drilled, _dwell, _extent_measured, _extruded,
     _fg, _fgn, _holder_computed, _home_address, _home_document, _made_component, _matched, _measured, _mesh_round_trip,
     _near, _needs, _new_document, _num, _packed, _prof, _rebuilt, _recall, _refused, _repair_no_op,
@@ -4037,3 +4037,112 @@ def _reference_image_rows():
 
 
 _MESH += _reference_image_rows()
+
+
+def _a8_snapshot(p):
+    state = _base_feature_state(p)
+    timeline = p.get("timeline") or {}
+    marker = timeline.get("marker_position")
+    count = state["timeline_count"]
+    _measured("readable timeline marker within the complete timeline", timeline,
+              type(count) is int and type(marker) is int and 0 <= marker <= count)
+    state["marker_position"] = marker
+    state["owners"] = [[row.get("index"), row.get("name"), row.get("component"), row.get("type")]
+                       for row in timeline.get("timeline") or []]
+    return state
+
+
+def _a8_duplicate_baseline(p):
+    _base_feature_parametric(p)
+    state = _a8_snapshot(p)
+    wanted = _RECALL["a8_duplicate_name"]
+    matches = [row for row in state["owners"] if row[1] == wanted and row[3] == "BaseFeature"]
+    return _measured("two finished same-name base features in distinct components", state,
+                          len(matches) == 2 and len({row[2] for row in matches}) == 2
+                          and all(row[2] for row in matches))
+
+
+def _a8_unchanged(p):
+    _base_feature_parametric(p)
+    state = _a8_snapshot(p)
+    return _measured("duplicate features and timeline unchanged after refused finish", state,
+                          state == _RECALL["a8_duplicate_before"])
+
+
+def _a8_finish_captured(p):
+    name = _RECALL["a8_captured_name"]
+    return _measured("retained captured handle closes once by its adopted name", p,
+                          p.get("editing") is False and p.get("named_finished") == name
+                          and p.get("closed_scopes") == [{"name": name, "finished": True}])
+
+
+def _a8_captured_baseline(p):
+    _base_feature_parametric(p)
+    state = _a8_snapshot(p)
+    return _measured("captured baseline marker at the timeline end", state,
+                     state["marker_position"] == state["timeline_count"])
+
+
+def _a8_captured_added(p):
+    _base_feature_added("a8_captured_before", "a8_captured_name")(p)
+    before = _RECALL["a8_captured_before"]
+    after = _a8_snapshot(p)
+    appended = after["owners"][len(before["owners"]):]
+    return _measured("captured timeline appends one indexed row and advances its marker", after,
+                     after["owners"][:len(before["owners"])] == before["owners"]
+                     and len(appended) == 1 and appended[0][0] == before["timeline_count"]
+                     and before["marker_position"] == before["timeline_count"]
+                     and after["marker_position"] == after["timeline_count"])
+
+
+def _a8_duplicate_rows():
+    get = _ctx_get
+    recall = _recall
+    return [
+        ("doc_get", {}, _home_document, ("bf_story_doc", recall("bf_story_doc", _home_address))),
+        ("doc_new", lambda c: {"expect_document": get(c, "bf_story_doc", "family document")},
+         _new_document, ("a8_duplicate_doc", recall("a8_duplicate_doc", lambda p: p["document_handle"]))),
+        ("model_create_component", {"name": "A8Left", "activate": True}, _made_component, None),
+        ("model_base_feature", {"action": "start", "base_feature": "A8Shared"}, _base_feature_open,
+         ("a8_duplicate_name", recall("a8_duplicate_name", lambda p: p["base_feature"]))),
+        ("model_base_feature", lambda c: {"action": "finish", "base_feature": get(c, "a8_duplicate_name", "adopted name")},
+         lambda p: p.get("editing") is False and len(p.get("closed_scopes") or []) == 1, None),
+        ("model_create_component", {"name": "A8Right", "activate": True}, _made_component, None),
+        ("model_base_feature", lambda c: {"action": "start", "base_feature": get(c, "a8_duplicate_name", "shared name")},
+         _base_feature_same_name("a8_duplicate_name"), None),
+        ("model_base_feature", lambda c: {"action": "finish", "base_feature": get(c, "a8_duplicate_name", "second captured scope")},
+         lambda p: p.get("editing") is False and len(p.get("closed_scopes") or []) == 1, None),
+        ("design_get", {"include": ["mode", "timeline"], "max_results": 200}, _a8_duplicate_baseline,
+         ("a8_duplicate_before", recall("a8_duplicate_before", _a8_snapshot))),
+        ("doc_new", lambda c: {"expect_document": get(c, "a8_duplicate_doc", "duplicate document")},
+         _new_document, ("a8_captured_doc", recall("a8_captured_doc", lambda p: p["document_handle"]))),
+        ("design_get", {"include": ["mode", "timeline"], "max_results": 200}, _a8_captured_baseline,
+         ("a8_captured_before", recall("a8_captured_before", _a8_snapshot))),
+        ("model_base_feature", {"action": "start", "base_feature": "A8Captured"}, _base_feature_open,
+         ("a8_captured_name", recall("a8_captured_name", lambda p: p["base_feature"]))),
+        ("design_get", {"include": ["mode"]}, _base_feature_direct, None),
+        ("doc_activate", lambda c: {"name": get(c, "a8_duplicate_doc", "duplicate document"),
+                                    "expect_document": get(c, "a8_captured_doc", "captured document")}, _activated(), None),
+        ("model_base_feature", lambda c: {"action": "finish", "base_feature": get(c, "a8_duplicate_name", "ambiguous name"),
+                                          "expect_document": get(c, "a8_duplicate_doc", "duplicate document")},
+         _refused("ambiguous", "2 matches", "No finishEdit was called", "Rename"), None),
+        ("design_get", {"include": ["mode", "timeline"], "max_results": 200},
+         Independent(_a8_unchanged, ["model_base_feature"], "tool:design_get"), None),
+        ("doc_activate", lambda c: {"name": get(c, "a8_captured_doc", "captured document"),
+                                    "expect_document": get(c, "a8_duplicate_doc", "duplicate document")}, _activated(), None),
+        ("design_get", {"include": ["mode"]},
+         Independent(_base_feature_direct, ["model_base_feature"], "tool:design_get"), None),
+        ("model_base_feature", lambda c: {"action": "finish", "base_feature": get(c, "a8_captured_name", "retained name"),
+                                          "expect_document": get(c, "a8_captured_doc", "captured document")}, _a8_finish_captured, None),
+        ("design_get", {"include": ["mode", "timeline"], "max_results": 200},
+         Independent(_a8_captured_added, ["model_base_feature"], "tool:design_get"), None),
+        ("doc_activate", lambda c: {"name": get(c, "bf_story_doc", "family document"),
+                                    "expect_document": get(c, "a8_captured_doc", "captured document")}, _activated(), None),
+        ("doc_close", lambda c: {"name": get(c, "a8_captured_doc", "captured scratch"), "save_changes": False,
+                                 "expect_document": get(c, "bf_story_doc", "family document")}, _document_closed, None),
+        ("doc_close", lambda c: {"name": get(c, "a8_duplicate_doc", "duplicate scratch"), "save_changes": False,
+                                 "expect_document": get(c, "bf_story_doc", "family document")}, _document_closed, None),
+    ]
+
+
+_MESH += _a8_duplicate_rows()

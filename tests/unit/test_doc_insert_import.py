@@ -3,6 +3,7 @@ ImportManager API forces (DXF/SVG never go to a new document; f3z has no import 
 guard, per-format targeting (component / sketch / new document), and the landing read-back that
 turns an import which created nothing into an error.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -116,9 +117,8 @@ def wire(monkeypatch):
     def _wire(design=None, ui=None, **manager_kwargs):
         design = make_design() if design is None else design
         manager, calls = _fake_manager(**manager_kwargs)
+        _install_design(mod, design)
         monkeypatch.setattr(mod, "app", FakeApplication(import_manager=manager, user_interface=ui))
-        monkeypatch.setattr(mod._common, "design", lambda: design)
-        monkeypatch.setattr(mod._inputs._common, "design", lambda: design)
         return design, manager, calls
     return _wire
 
@@ -229,7 +229,9 @@ class TestGuards:
 
     def test_no_active_design_points_at_the_new_document_path(self, monkeypatch, wire, cad):
         wire()
-        monkeypatch.setattr(mod._common, "design", lambda: None)
+        app = mod.app
+        _install_design(mod, None)
+        monkeypatch.setattr(mod, "app", app)
         msg = error_message(mod.handler(file_path=cad("part.step")))
         assert "No active design" in msg and "new_document" in msg
 

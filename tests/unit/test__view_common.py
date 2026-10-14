@@ -4,6 +4,7 @@ view even though they consume opposite sign conventions (view_screenshot's look_
 negation of view_set's view_direction); this pins that relationship so the two can't silently
 desync.
 """
+from conftest import install as _install_design
 
 import math
 from types import SimpleNamespace
@@ -184,27 +185,26 @@ class TestViewportHandsBackACopy:
         assert vp.camera.getExtents() == [True, 999.0, 999.0]
 
 
-class _NoSmoothCamera:
+class _NoSmoothCamera(Camera):
     """A camera whose isSmoothTransition SETTER raises - the platform declining that flag."""
 
     def __init__(self):
-        c = Camera()
-        self.eye, self.target, self.upVector = c.eye, c.target, c.upVector
-        self.cameraType, self.isFitView = c.cameraType, c.isFitView
-        self.perspectiveAngle, self._sides = c.perspectiveAngle, c._sides
+        self._initializing = True
+        try:
+            super().__init__()
+        finally:
+            self._initializing = False
 
     @property
     def isSmoothTransition(self):
-        return True
+        return getattr(self, "_smooth_transition", True)
 
     @isSmoothTransition.setter
     def isSmoothTransition(self, value):
+        if getattr(self, "_initializing", False):
+            self._smooth_transition = value
+            return
         raise RuntimeError("isSmoothTransition unavailable")
-
-    def _copy(self):
-        dup = type(self).__new__(type(self))
-        dup.__dict__.update(self.__dict__)
-        return dup
 
 
 class TestApplyCamera:
@@ -863,7 +863,7 @@ class TestIsolateForFit:
     refusal naming the other one's parameter."""
 
     def test_no_active_design_names_the_callers_own_input(self, monkeypatch):
-        monkeypatch.setattr(vc._common, "design", lambda: None)
+        _install_design(vc, None)
         ref = SimpleNamespace(name="focus")
         restore, target, err = vc.isolate_for_fit("Part:1", ref)
         assert restore is None and target is None
@@ -891,7 +891,7 @@ class TestIsolateForFit:
         comp = Comp()
         occ = make_occurrence(path="Part:1", component=comp)
         design = SimpleNamespace(rootComponent=MakeComp(occurrences=[occ]), allComponents=[comp])
-        monkeypatch.setattr(vc._common, "design", lambda: design)
+        _install_design(vc, design)
         monkeypatch.setattr(vc._common, "all_occurrences", lambda d: [occ])
         ref = SimpleNamespace(name="fit_to", resolve=lambda raw: ((occ, "occurrence"), None))
         restore, target, err = vc.isolate_for_fit("Part:1", ref)

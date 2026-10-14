@@ -5,8 +5,6 @@
 include=[...]. The handler is a thin router over _slice_*() helpers, one per slice. Operation
 validity is only trustworthy once the Manufacture workspace has been entered."""
 
-import json
-
 import adsk.core
 import adsk.cam
 
@@ -15,6 +13,7 @@ from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import (CM_TO_UNIT, iter_collection, measured, named_with_remainder, ok, error,
                       read_flag, safe, terse)
+from ._common import normalize_include as _normalize_include, unwrap as _unwrap
 from ._cam_common import (STRATEGY_PAIR_NOTE, choice_expressions, clamp_rows, expression_error,
                           get_cam, find_setup, resolve_cam_node, resolve_operation, strategy_pair)
 from . import _cam_common as _cc
@@ -47,16 +46,6 @@ _OP_NOISE = {"is_generating": False, "is_suppressed": False, "is_optional": Fals
 
 
 # ── slice helpers - each calls a read core in _cam_read, then shapes and bounds its payload ───────
-
-def _unwrap(result):
-    """(payload, None) on ok; (None, error_result) on error (so a slice's own guard can surface)."""
-    if result.get("isError"):
-        return None, result
-    try:
-        return json.loads(result["content"][0]["text"]), None
-    except Exception:
-        return None, result
-
 
 def _slice_setups(cam, setup, units):
     """The setups orientation default: machine + model/fixture/stock + per-setup operation_count (the
@@ -966,14 +955,6 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
         # router's pointers rather than replaced by them.
         out["note"] = " ".join(([out["note"]] if out.get("note") else []) + lines)
     return ok(out)
-
-
-def _normalize_include(include):
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
 
 
 TOOL_DESCRIPTION = (

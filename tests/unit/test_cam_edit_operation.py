@@ -9,7 +9,6 @@ Verified against the live adsk.cam API (op.parameters.itemByName(name).expressio
 live Fusion here — fakes mimic CAMParameters.
 """
 
-import json
 import types
 import pytest
 
@@ -275,9 +274,7 @@ def _install_two_setups(monkeypatch, first_ops, second_ops):
     return cam
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestEditOperation:

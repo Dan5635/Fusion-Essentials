@@ -109,9 +109,9 @@ def handler(name: str = "", x: float = 0.0, y: float = 0.0, z: float = 0.0,
     k = scale(units)
     if k is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # parent: resolve the occurrence to nest INSIDE (its component receives the new child). Omitted =
     # root. OccurrenceRef refuses an ambiguous name instead of grabbing the wrong instance.

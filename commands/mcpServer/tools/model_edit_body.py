@@ -317,9 +317,9 @@ def _merge_pair_error(faces):
 
 def _merge_faces(faces):
     """Merge an adjacent planar pair and verify face count and material preservation."""
-    design = _common.design()
-    if design is None:
-        return error("No active design. Open a design document first.")
+    design, design_refusal = _common.require_design(none_only=True)
+    if design_refusal is not None:
+        return design_refusal
     if _inputs.current_design_type(design) != "direct":
         return error("Face merge requires a direct design; the current design history is unchanged. "
                      "Use a separate direct-design copy. Parametric BaseFeature copying is not supported.")
@@ -387,9 +387,9 @@ def handler(action: str = "", body: str = "", destination: str = "", faces=None)
         return error("action='create_component' does not use 'destination'; omit it.")
     if chosen != "create_component" and destination in (None, ""):
         return error(f"action='{chosen}' requires explicit 'destination' (occurrence or root).")
-    design = _common.design()
-    if design is None:
-        return error("No active design. Open a design document first.")
+    design, design_refusal = _common.require_design(none_only=True)
+    if design_refusal is not None:
+        return design_refusal
     selected, err = _BODY.resolve(body)
     if err:
         return error(err)

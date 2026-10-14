@@ -518,9 +518,7 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
         bb = _geom.union_box(boxes)
         focus_bb = bb
         o = types.SimpleNamespace(name=", ".join(labels), boundingBox=bb)
-        target = adsk.core.Point3D.create((bb.minPoint.x + bb.maxPoint.x) / 2,
-                                          (bb.minPoint.y + bb.maxPoint.y) / 2,
-                                          (bb.minPoint.z + bb.maxPoint.z) / 2)
+        target = adsk.core.Point3D.create(*_common.box_center(bb))
         applied["focus"] = safe(lambda: o.name)
         applied["extents"] = "solids" if all(k == "solids" for k in kinds) else "all_geometry"
         if sketch_frames:
@@ -1217,9 +1215,9 @@ def handler(action: str = "", target=None, orientation: str = "", focus: str = "
     if action != "orient" and (projection or perspective_angle_deg is not None):
         return error("'projection'/'perspective_angle_deg' apply to action='orient', not "
                      f"action='{action}'.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open a document with design geometry first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     trace = _trace(action, target, orientation, focus, style, view_name, projection,
                    perspective_angle_deg, categories, visible)
     try:

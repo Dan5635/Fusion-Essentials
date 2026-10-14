@@ -1,6 +1,5 @@
 """Unit tests for model_loft.py - ordered sections of every kind, guides, ends and cut evidence."""
 
-import json
 import re
 import types
 
@@ -97,9 +96,7 @@ def _install(features, bodies_by_name=None, handle_map=None):
     return install(so, make_design(comp=comp, tokens=handle_map))
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestLoft:

@@ -18,9 +18,7 @@ dc = load_tool("_data_common")
 dcopy = load_tool("doc_copy")   # the same-name rule holds for both writers
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def FakeFile(name, fid="urn:adsk.file:src"):

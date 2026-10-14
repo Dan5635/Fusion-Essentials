@@ -8,7 +8,6 @@ DrawingDocument.isUpToDate is deliberately not consulted (live it reports True e
 is stale). No live Fusion.
 """
 
-import json
 import types
 
 import pytest
@@ -75,9 +74,7 @@ def settle(monkeypatch):
     return clock, pumps
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestHappyPath:

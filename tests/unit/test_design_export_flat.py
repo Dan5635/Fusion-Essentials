@@ -1,3 +1,4 @@
+from conftest import install as _install_design
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import pytest
@@ -18,7 +19,7 @@ def exporter(monkeypatch):
     monkeypatch.setattr(mod._common, "_native_of", lambda x: x)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: True)
     monkeypatch.setattr(mod._common, "native_identity", lambda x: id(x) if x else None)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._export, "snapshot", lambda p: None)
     monkeypatch.setattr(mod._export, "verify_written", lambda p, before: (None, "no fresh file"))
     return mod, design, flat, opts

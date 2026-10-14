@@ -6,7 +6,6 @@ save's read-back: a template that does not load back from the url importTemplate
 a saved template.
 """
 
-import json
 from types import SimpleNamespace
 
 from conftest import FakeOperation, FakeSetup, _NamedCollection, load_tool, make_cam
@@ -70,9 +69,7 @@ class TestAsCamTemplate:
 
 # ── save_operations_as_template_handler: input validation + missing-op detection ────────────────────
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _setup(name, op_names):

@@ -8,7 +8,6 @@ wait POLLS because the write can finish after the call returns.
 No live Fusion.
 """
 
-import json
 
 import pytest
 
@@ -62,9 +61,7 @@ def _ignores_every_assignment(em):
     em._seeded = dict(_OPTION_DEFAULTS)
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 kernel = load_tool("_assert")

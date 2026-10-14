@@ -244,6 +244,7 @@ class TestCapturePosition:
         return ja.handler(action="capture")
 
     def test_a_snap_back_of_exactly_the_tolerance_is_not_a_revert(self, capture):
+        assert acom._MOVE_TOL_CM == 0.005
         res = self._capture_after_shift(capture, acom._MOVE_TOL_CM)
         assert payload(res)["captured"] is True
 

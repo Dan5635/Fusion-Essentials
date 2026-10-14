@@ -37,9 +37,9 @@ def _moved_sentence(before, after):
 def handler(target: str = "", confirm_history_loss: bool = False) -> dict:
     """Convert the active design between parametric and direct - idempotent, and refusing the
     timeline-destroying direction without confirm_history_loss=true. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     tgt = (target or "").strip().lower()
     if tgt not in _TARGETS:

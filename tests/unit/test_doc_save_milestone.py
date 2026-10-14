@@ -7,7 +7,6 @@ milestone MARK lags the version, so it is reported pending with the observed rea
 milestone that landed, never as one that did not.
 """
 
-import json
 
 from conftest import (FakeApplication, FakeData, FakeDataFile, FakeFusionDocument, error_message,
                       load_tool)
@@ -15,9 +14,7 @@ from conftest import (FakeApplication, FakeData, FakeDataFile, FakeFusionDocumen
 dsm = load_tool("doc_save_milestone")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class _Milestone:

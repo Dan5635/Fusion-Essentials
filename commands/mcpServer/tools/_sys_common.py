@@ -43,14 +43,10 @@ def _component_of(entity):
 
 def _xyz(pt):
     """{x, y, z} rounded to 6dp, or None when the point is absent or any component will not read."""
-    if pt is None:
+    coords = _geom._coords(pt)
+    if coords is None:
         return None
-    x = safe(lambda: pt.x)
-    y = safe(lambda: pt.y)
-    z = safe(lambda: pt.z)
-    if not all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in (x, y, z)):
-        return None
-    return {"x": round(x, 6), "y": round(y, 6), "z": round(z, 6)}
+    return {"x": round(coords[0], 6), "y": round(coords[1], 6), "z": round(coords[2], 6)}
 
 
 def _face_direction(face):

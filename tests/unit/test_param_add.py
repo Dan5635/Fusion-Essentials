@@ -4,6 +4,7 @@ add rolls back a parameter that introduces a NEW timeline error, and publishes t
 as the parameter reads it rather than as it was asked for. The fakes below model a tiny timeline
 (items with healthState) and a userParameters collection that supports add/itemByName/deleteMe.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -43,7 +44,7 @@ def _design(user_params, timeline, all_params=()):
 
 
 def _stub_design(monkeypatch, design):
-    monkeypatch.setattr(params._common, "design", lambda: design)
+    _install_design(params, design)
     # the add path uses adsk.core.ValueInput.createByString; the string it carries is what the new
     # parameter's expression reads back as.
     monkeypatch.setattr(adsk.core.ValueInput, "createByString",

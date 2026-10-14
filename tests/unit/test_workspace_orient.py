@@ -10,7 +10,11 @@ thresholds. Plus the guards (no document; a non-Design document).
 No live Fusion — fakes model exactly the read surface the handler touches.
 """
 
-import json
+import live_api_facts as _api_facts
+
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+
 import types
 
 import pytest
@@ -106,26 +110,16 @@ UNAVAILABLE = ("3 : The occurrence's referenced component is unavailable (broken
                "external reference).")
 
 
-class BrokenOcc:
-    """An occurrence whose referenced component will not load. Only `name` reads; component,
-    fullPathName and childOccurrences all RAISE, isReferencedComponent reads FALSE (a live xref
-    reads True) and isValid reads True - so occ.component raising is the only signal."""
-    def __init__(self, name="45740"):
-        self.name = name
-        self.isReferencedComponent = False
-        self.isValid = True
-
-    @property
-    def component(self):
-        raise RuntimeError(UNAVAILABLE)
-
-    @property
-    def fullPathName(self):
-        raise RuntimeError("2 : InternalValidationError : path.valid()")
-
-    @property
-    def childOccurrences(self):
-        raise RuntimeError("2 : InternalValidationError : path.valid()")
+def BrokenOcc(name="45740"):
+    """Build the shared occurrence fake with the measured broken-reference reads."""
+    path_error = "2 : InternalValidationError : path.valid()"
+    return make_occurrence(
+        path=name,
+        referenced=False,
+        valid=True,
+        raises_on={"component": UNAVAILABLE,
+                   "fullPathName": path_error,
+                   "childOccurrences": path_error})
 
 
 def FakeOcc(name, comp=None, children=0, bodies=1, grounded=False, xref=False,
@@ -143,7 +137,7 @@ def FakeOcc(name, comp=None, children=0, bodies=1, grounded=False, xref=False,
 
 class FakeJoint(_SharedJoint):
     """The shared joint narrowed to the name and health an orientation rollup reads."""
-    def __init__(self, name, health=0):
+    def __init__(self, name, health=_HEALTHY):
         super().__init__(name=name, health=health)
 
 
@@ -161,7 +155,7 @@ class FakeTimelineHealthOnly:
     The absence is an object that genuinely lacks the attribute, never a member deleted off the
     shared adsk mock - that deletion does not reliably undo itself (tests/AGENTS.md), and an ABSENT
     attribute is exactly what has to stay distinguishable from a state that read fine."""
-    def __init__(self, name, tl_health=0):
+    def __init__(self, name, tl_health=_HEALTHY):
         self.name = name
         self.timelineObject = FakeTL(tl_health)
 
@@ -251,21 +245,17 @@ class _FoldersSetup(_SharedSetup):
     the same operations with the folders dropped)."""
 
 
-class FakeOp:
+class FakeOp(FakeOperation):
     """A CAM Operation as the orientation read buckets it: the lifecycle state plus the toolpath
     pair that tells a generated-but-EMPTY op (valid, no toolpath) from one that never generated."""
 
     def __init__(self, has_toolpath, name="Op", toolpath_valid=True, suppressed=False, state=None,
                  errored=False):
-        self.name = name
-        self.hasToolpath = has_toolpath
-        self.isToolpathValid = toolpath_valid
-        self.isSuppressed = suppressed
-        self.operationState = (adsk.cam.OperationStates.IsValidOperationState
-                               if state is None else state)
-        self.hasError = errored
-        self.hasWarning = False
-        self.isGenerating = False
+        super().__init__(name=name, has_toolpath=has_toolpath, valid=toolpath_valid,
+                         suppressed=suppressed,
+                         operation_state=(adsk.cam.OperationStates.IsValidOperationState
+                                          if state is None else state),
+                         has_error=errored)
 
 
 def FakeCAM(setups, machining_times=None):
@@ -333,9 +323,7 @@ def _install(active_product=None, doc=None, cam=None, design_for_cast=None,
     adsk.cam.CAM.cast = lambda x: ccast if (ccast is not None and x is ccast) else None
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ──────────────────────────────────────────────────────────────────────────────────────
@@ -1534,14 +1522,14 @@ class TestRelationHealthInFirstCall:
     def test_failed_constraint_drops_the_first_call_health(self):
         # Measured: a failed assembly constraint left this read healthy while only a deeper
         # include=['relations'] slice named it - the orientation read folds relation health in.
-        des = self._design_with_constraint(health=2)
+        des = self._design_with_constraint(health=_ERROR)
         _install(active_product=des, doc=_doc(design=des))
         h = _payload(wo.handler())["health"]
         assert h["is_healthy"] is False
         assert h["broken_relations"] == ["Constraint 1"]
 
     def test_healthy_constraint_leaves_the_rollup_alone(self):
-        des = self._design_with_constraint(health=0)
+        des = self._design_with_constraint(health=_HEALTHY)
         _install(active_product=des, doc=_doc(design=des))
         h = _payload(wo.handler())["health"]
         assert h["is_healthy"] is True and h["broken_relations"] == []
@@ -1550,7 +1538,7 @@ class TestRelationHealthInFirstCall:
         # is_healthy counts broken_relations, so the verdict sentence and the pointers must too:
         # otherwise the one fault in the design reads "No compute errors ..." beside is_healthy
         # false, with nothing naming the tool that repairs it.
-        des = self._design_with_constraint(health=2)
+        des = self._design_with_constraint(health=_ERROR)
         _install(active_product=des, doc=_doc(design=des))
         out = _payload(wo.handler())
         assert out["health"]["is_healthy"] is False
@@ -1560,7 +1548,7 @@ class TestRelationHealthInFirstCall:
         assert out["pointers"]["fix_relations"].startswith("assembly_get(")
 
     def test_a_healthy_design_keeps_the_clean_verdict_and_no_relation_pointer(self):
-        des = self._design_with_constraint(health=0)
+        des = self._design_with_constraint(health=_HEALTHY)
         _install(active_product=des, doc=_doc(design=des))
         out = _payload(wo.handler())
         assert "No compute errors" in out["note"]
@@ -1592,14 +1580,14 @@ class TestHealthReadOffTheTimelineItem:
 
     def test_as_built_joint_errored_on_its_timeline_item_is_named(self):
         # the other failing state (2 = ERROR); both sides of the warning/error pair must count.
-        des = self._design(as_built=[FakeTimelineHealthOnly("ArmSpin", tl_health=2)])
+        des = self._design(as_built=[FakeTimelineHealthOnly("ArmSpin", tl_health=_ERROR)])
         _install(active_product=des, doc=_doc(design=des))
         assert _payload(wo.handler())["health"]["broken_joints"] == ["ArmSpin"]
 
     def test_as_built_joint_healthy_on_its_timeline_item_is_not_named_or_unknown(self):
         # healthState 0 = HEALTHY: the boundary just below the failing pair. Counted healthy, so
         # neither broken nor withheld.
-        des = self._design(as_built=[FakeTimelineHealthOnly("ArmSpin", tl_health=0)])
+        des = self._design(as_built=[FakeTimelineHealthOnly("ArmSpin", tl_health=_HEALTHY)])
         _install(active_product=des, doc=_doc(design=des))
         h = _payload(wo.handler())["health"]
         assert h["broken_joints"] == [] and h["is_healthy"] is True
@@ -1635,7 +1623,7 @@ class TestHealthReadOffTheTimelineItem:
         assert h["broken_joints"] == ["PistonSlide"] and "joints_health_unknown" not in h
 
     def test_rigid_group_broken_on_its_timeline_item_is_named(self):
-        des = self._design(relations=[FakeTimelineHealthOnly("Rigid Group 1", tl_health=2)])
+        des = self._design(relations=[FakeTimelineHealthOnly("Rigid Group 1", tl_health=_ERROR)])
         _install(active_product=des, doc=_doc(design=des))
         out = _payload(wo.handler())
         assert out["health"]["broken_relations"] == ["Rigid Group 1"]
@@ -1643,7 +1631,7 @@ class TestHealthReadOffTheTimelineItem:
         assert "Rigid Group 1" in out["pointers"]["fix_relations"]
 
     def test_healthy_rigid_group_is_neither_broken_nor_unknown(self):
-        des = self._design(relations=[FakeTimelineHealthOnly("Rigid Group 1", tl_health=0)])
+        des = self._design(relations=[FakeTimelineHealthOnly("Rigid Group 1", tl_health=_HEALTHY)])
         _install(active_product=des, doc=_doc(design=des))
         h = _payload(wo.handler())["health"]
         assert h["broken_relations"] == [] and h["is_healthy"] is True

@@ -213,9 +213,9 @@ def _foreign_effect(rows):
 
 def handler(surface=None, trim_tool=None, keep=None) -> dict:
     """Trim a surface against a tool that intersects it - remove the unwanted cell(s)."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     surf, serr = _SURFACE.resolve(surface)     # validates isSolid == false, redirecting error otherwise

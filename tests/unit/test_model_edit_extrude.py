@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from tests.fakes.design import _injected_roll
 import adsk.core
 import adsk.fusion
 
@@ -1433,3 +1434,17 @@ def test_collection_with_unverified_members_or_links_refuses_before_mutation(sce
     assert result["details"]["mutation_attempted"] is False
     assert scene.feature.setter_args is None
     assert scene.timeline.markerPosition == 3
+
+
+@pytest.mark.parametrize("mode", ["false", "truthy", "noop", "raise"])
+def test_extrude_replay_roll_keeps_its_exception_and_scope(scene, monkeypatch, mode):
+    feature, timeline = scene.feature, scene.timeline
+    before = list(feature.participantBodies)
+    monkeypatch.setattr(feature.timelineObject, "rollTo", _injected_roll(timeline, 2, mode))
+    why = ("injected roll failure" if mode == "raise" else
+           "The feature could not be rolled back for participant replay.")
+    with pytest.raises(RuntimeError) as caught:
+        mod._replay_scope(feature, timeline, 2, [scene.body])
+    assert str(caught.value) == why
+    assert feature.participantBodies == before
+    assert timeline.markerPosition == (3 if mode in ("noop", "raise") else 2)

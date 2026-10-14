@@ -7,7 +7,6 @@ instant promote returns) and a tip that never moves is reported pending with wha
 guards (no cloud DataFile, unknown version, no selector, already-latest no-op).
 """
 
-import json
 import time
 
 import pytest
@@ -18,9 +17,7 @@ from conftest import (FakeApplication, FakeData, FakeDataFile, FakeFusionDocumen
 drv = load_tool("doc_restore_version")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _ver(num, promote_ok=True, promote_raises=None):

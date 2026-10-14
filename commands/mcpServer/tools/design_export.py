@@ -262,9 +262,9 @@ def _export_dxf(dxf_sketch, dxf_face, file_path,
     if not path.lower().endswith(".dxf"):
         path = path + ".dxf"
 
-    design = _common.design()
-    if not design:
-        return error("No active design to export. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     sketch_name = (dxf_sketch or "").strip()
     has_face = bool((dxf_face or "").strip()) if isinstance(dxf_face, str) else bool(dxf_face)
@@ -546,9 +546,9 @@ def handler(format: str = "step", file_path: str = "", target: str = "",
         return error("Provide 'file_path' - the local output path (a file, or a DIRECTORY when "
     "split_by_component=true). The format extension is appended if missing.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design to export. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     em = design.exportManager
 

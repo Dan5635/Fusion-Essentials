@@ -27,9 +27,7 @@ mch = load_tool("model_compute_holder")
 holder = load_tool("_holder")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── _holder.build_holder_data: the cm→mm conversion + JSON shape (pure) ─────────────────────────

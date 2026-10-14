@@ -12,6 +12,7 @@ reports built-ins), and the snapshot -> mutate -> restore round-trip that puts
 bulbs/isolation/style back. Fakes expose the real attributes the tool sets so we
 can assert on them.
 """
+from conftest import install as _install_design
 
 import json
 import types
@@ -381,9 +382,7 @@ def _isolated_snapshot_state():
     _clear_snapshot_state()
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────
@@ -2200,7 +2199,7 @@ class TestRequestTracer:
 
     def test_handler_stamps_the_echo(self, monkeypatch):
         # end-to-end: a successful view_set call carries request_echo reflecting its action
-        monkeypatch.setattr(iv._common, "design", lambda: object())
+        _install_design(iv, object())
         monkeypatch.setattr(iv, "_do_list_views", lambda design: iv.ok({"action": "list_views"}))
         out = json.loads(iv.handler(action="list_views")["content"][0]["text"])
         assert out["request_echo"]["received"]["action"] == "list_views"

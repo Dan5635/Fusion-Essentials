@@ -4,6 +4,7 @@ Pins the handler's job: surface the active document's URN/save-state, list the o
 razor (a healthy doc collapses to {name, is_active}; an unsaved/modified one keeps its flag), and the
 no-active-doc guard. The adsk Document fakes capture the read so a regression to a wrong attribute fails.
 """
+from conftest import install as _install_design
 
 import json
 import time
@@ -22,9 +23,7 @@ da = load_tool("doc_activate")
 dcl = load_tool("doc_close")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _DataFile(urn="urn:lineage:abc", vnum=3, latest=3):
@@ -661,7 +660,11 @@ def _Root(occs, name="Root", derive_feats=None):
 
 
 def _use_design(monkeypatch, root):
-    monkeypatch.setattr(dg, "design", lambda: MakeDesign(comp=root))
+    app = dg.app
+    common_app = dg._common.app
+    _install_design(dg, MakeDesign(comp=root))
+    monkeypatch.setattr(dg, "app", app)
+    monkeypatch.setattr(dg._common, "app", common_app)
 
 
 class TestXrefTree:
@@ -817,7 +820,7 @@ class TestXrefTreeWalkGuards:
     an unwalked branch never reads as an examined-and-clean one."""
 
     def test_no_active_design_is_unavailable_not_an_empty_walk(self, monkeypatch):
-        monkeypatch.setattr(dg, "design", lambda: None)
+        _install_design(dg, None)
         out = dg._slice_xref_tree()
         assert out["available"] is False
         assert "needs a design document" in out["note"]
@@ -826,7 +829,7 @@ class TestXrefTreeWalkGuards:
     def test_a_design_with_no_root_component_is_unavailable(self, monkeypatch):
         rootless = MakeDesign()
         rootless.rootComponent = None      # the walk has nothing to start from
-        monkeypatch.setattr(dg, "design", lambda: rootless)
+        _install_design(dg, rootless)
         out = dg._slice_xref_tree()
         assert out["available"] is False
         assert "no root component" in out["note"]

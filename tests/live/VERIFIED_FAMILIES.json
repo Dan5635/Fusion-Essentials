@@ -53,12 +53,12 @@
     ],
     "fusion_version": "2706.1.2",
     "raw": {
-      "file": "family-evidence-e4c8e61ba319fbceb0339ba8a97d6d8c1e94d16d37b25c7377b0a23a1a74f3d0.json",
-      "sha256": "e4c8e61ba319fbceb0339ba8a97d6d8c1e94d16d37b25c7377b0a23a1a74f3d0"
+      "file": "family-evidence-5fea3d0cc80a7337eedb04aa4a35ca864b632804cadeba182d684101c0818cd1.json",
+      "sha256": "5fea3d0cc80a7337eedb04aa4a35ca864b632804cadeba182d684101c0818cd1"
     },
-    "run_id": "wide1013c"
+    "run_id": "nearfull1013a"
   },
-  "bootstrap_run_id": "wide1013c",
+  "bootstrap_run_id": "nearfull1013a",
   "families": {
     "cloud": {
       "act_modes": [
@@ -72,7 +72,7 @@
         ],
         [
           "ACT 11b2 - CLOUD: LINK GUARD REVIEW",
-          "skipped(cloud_link_crash_review_authorization not entitled (deferred and unverified; separate owner-approved crash review and code change required))"
+          "skipped(not-in-scope: cloud_link_crash_review_authorization needs asked=None measured=False)"
         ],
         [
           "ACT 11c - CLOUD: THE DRAWING",
@@ -107,10 +107,10 @@
       ],
       "acts_hash": "2729a343032f2ed9677500eb6cf6d8d147c2b6e11f71287dc644fe70baecf3d4",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "ee1fc73aa20823f7a6915f720c16eda8b6b1374e545a307a8958af4baca949ca",
+      "closure_hash": "b2a2c0198095dbc66b049992a3d88c86aece212088f62a1728ea5c79c1e9f6aa",
       "evidence": {
         "buckets": {
           "called": [
@@ -197,20 +197,30 @@
         }
       },
       "family": "cloud",
-      "family_run_id": "f6ad1b5660b14b299a0172e16d5aa54b",
+      "family_run_id": "f9caaea92b62488fa8c155b4eb34e4e0",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [
         {
           "act": "ACT 11b2 - CLOUD: LINK GUARD REVIEW",
           "capability": "cloud_link_crash_review_authorization",
+          "conditions": [
+            {
+              "asked": null,
+              "capability": "cloud_link_crash_review_authorization",
+              "measured": false,
+              "polarity": "needs",
+              "reason": "quarantined capability is outside admitted scope",
+              "state": "not-in-scope"
+            }
+          ],
           "kind": "act",
           "reason": "quarantined capability is outside admitted scope",
           "state": "not-in-scope",
@@ -232,17 +242,28 @@
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-5ad3adfc1428adea0b95950d8251444d290a61caf3fac6e36b101377e8cf6da0.json",
-        "sha256": "5ad3adfc1428adea0b95950d8251444d290a61caf3fac6e36b101377e8cf6da0"
+        "file": "family-evidence-eba786bde2b8a9d79937aa77f12377fb15a67f9f38ff8000698dd61efb71e5ae.json",
+        "sha256": "eba786bde2b8a9d79937aa77f12377fb15a67f9f38ff8000698dd61efb71e5ae"
       },
       "row_count": 1001,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": [
@@ -296,10 +317,10 @@
       ],
       "acts_hash": "2ce9cb9f35363cc8ab870b7d7b0cb3428ae315f44a4b7f814e5651b86fdaf4d1",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "6f679e2ef8ca693bb23ac9c0068cdaf59f3eba8b16a6481dd3edd914318bfb78",
+      "closure_hash": "ea4f5c9ef0ecb96c38d965846dd0e815aa00be3d52b0c1d16756e6add4f1f7d8",
       "evidence": {
         "buckets": {
           "called": [
@@ -398,24 +419,32 @@
         }
       },
       "family": "details",
-      "family_run_id": "3086016109764a27aea3a5cc909963f6",
+      "family_run_id": "4b60f548646b4177b842af6f030c5601",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [
         {
           "act": "ACT 5 - DETAILS",
           "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
           "kind": "step",
-          "observed_verdict": true,
-          "polarity": "unless",
-          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "reason": "conditional control requires measured absence",
           "state": "not-applicable",
           "tools": [
             "cam_find_holes"
@@ -423,31 +452,42 @@
         }
       ],
       "producer_run_ids": [
-        "da35b73b0a034dfd93f53c31e5bc6fe7"
+        "1e9e6e6a770644218f0559e310282d65"
       ],
       "producers": [
         {
-          "closure_hash": "6f679e2ef8ca693bb23ac9c0068cdaf59f3eba8b16a6481dd3edd914318bfb78",
-          "family_run_id": "3086016109764a27aea3a5cc909963f6",
+          "closure_hash": "ea4f5c9ef0ecb96c38d965846dd0e815aa00be3d52b0c1d16756e6add4f1f7d8",
+          "family_run_id": "4b60f548646b4177b842af6f030c5601",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 74,
           "rows_hash": "829694266d28606f0230aaf1e99206df089c32b074ea3130d1bc8de850c7abf2",
-          "run_id": "da35b73b0a034dfd93f53c31e5bc6fe7"
+          "run_id": "1e9e6e6a770644218f0559e310282d65"
         }
       ],
       "raw": {
-        "file": "family-evidence-344c28ed1788a0a1974fdf31a07cd44fbf6a95a39f0f1d5ce76285ed2340766c.json",
-        "sha256": "344c28ed1788a0a1974fdf31a07cd44fbf6a95a39f0f1d5ce76285ed2340766c"
+        "file": "family-evidence-c70ecdaf1d881da54cb4dc117992f527ab53c42de0f2218a07350ec848c8e8c5.json",
+        "sha256": "c70ecdaf1d881da54cb4dc117992f527ab53c42de0f2218a07350ec848c8e8c5"
       },
       "row_count": 3338,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": [
@@ -573,10 +613,10 @@
       ],
       "acts_hash": "fd0d2a4c8d80b11203e240a938d3fb0b454c57ab55ddff7c344b19e441663977",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "bfb2def83101a09ad6020be9c74ea75aa7484a6d3c42134ab750137fc17b895b",
+      "closure_hash": "4f416463600479344c456efc84906f4c986d37b50fc8adc6becf1bff610850e1",
       "evidence": {
         "buckets": {
           "called": [
@@ -611,31 +651,42 @@
         }
       },
       "family": "fff_export",
-      "family_run_id": "1dbf1fb0819b47078fabde79cf917be4",
+      "family_run_id": "6357a5121b0c4711a7489a26a5403579",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-ba83a8fdbee27a1b6b82aad065d73122e082559257c9edac855bc342bf578eac.json",
-        "sha256": "ba83a8fdbee27a1b6b82aad065d73122e082559257c9edac855bc342bf578eac"
+        "file": "family-evidence-eebf51680861066e9561860571543edd9be7546820aeebfa2b8d65baa603bbb9.json",
+        "sha256": "eebf51680861066e9561860571543edd9be7546820aeebfa2b8d65baa603bbb9"
       },
       "row_count": 28,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -652,10 +703,10 @@
       ],
       "acts_hash": "b1a690b3085bd1693bd31bb122cf29906a78879338aa3a8d783a94e8d60f4562",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "513156cb927f4c1d6a521a521a0b55bba6d90ac84d573d928d7ee00eceb05707",
+      "closure_hash": "9d024debe3bb706b5256195236a465033d48432cc0424f5bc555e7a9dbfcd6ec",
       "evidence": {
         "buckets": {
           "called": [
@@ -679,43 +730,54 @@
         }
       },
       "family": "finale",
-      "family_run_id": "9a67b4277ab04282817fa6613ff2d5ab",
+      "family_run_id": "b205b2bdbfe5471f9dfb825f1bb675b7",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [
-        "ee08cf97926d4c268f5b5510f91c0c31"
+        "bc67e4e3c2534c57926f0d41f9a73086"
       ],
       "producers": [
         {
-          "closure_hash": "513156cb927f4c1d6a521a521a0b55bba6d90ac84d573d928d7ee00eceb05707",
-          "family_run_id": "9a67b4277ab04282817fa6613ff2d5ab",
+          "closure_hash": "9d024debe3bb706b5256195236a465033d48432cc0424f5bc555e7a9dbfcd6ec",
+          "family_run_id": "b205b2bdbfe5471f9dfb825f1bb675b7",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 2,
           "rows_hash": "135710d54dbf27d35b38a59af8cdb24812b022c198baac0cb83a30f2268d1dbd",
-          "run_id": "ee08cf97926d4c268f5b5510f91c0c31"
+          "run_id": "bc67e4e3c2534c57926f0d41f9a73086"
         }
       ],
       "raw": {
-        "file": "family-evidence-c262a3cbaaaadbf3dbebddd810f07a3b7ead236868e26d1ea49d3b3d15373447.json",
-        "sha256": "c262a3cbaaaadbf3dbebddd810f07a3b7ead236868e26d1ea49d3b3d15373447"
+        "file": "family-evidence-91c6b94d2571e3818e5e565189839b90e7b78f0ed81135f508128b863ce268a0.json",
+        "sha256": "91c6b94d2571e3818e5e565189839b90e7b78f0ed81135f508128b863ce268a0"
       },
       "row_count": 10,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -817,10 +879,10 @@
       ],
       "acts_hash": "505cd3149a18f7b6bdccf80c86b23216daa6023b8c73037422ac72e7090312a4",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "633fcdf4743bf06d672957994bb95c17b312847baa6e8e0a1b078101cc56236b",
+      "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
       "evidence": {
         "buckets": {
           "called": [
@@ -882,24 +944,32 @@
         }
       },
       "family": "hub_cam",
-      "family_run_id": "028768219e214ad8b3e23ae5181e17ad",
+      "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [
         {
           "act": "ACT 10c7 - CAM: THE MILLING CENSUS",
           "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
           "kind": "step",
-          "observed_verdict": true,
-          "polarity": "unless",
-          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "reason": "conditional control requires measured absence",
           "state": "not-applicable",
           "tools": [
             "cam_create_operation"
@@ -908,10 +978,18 @@
         {
           "act": "ACT 10c8 - CAM: THE MILLING CENSUS READ",
           "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
           "kind": "step",
-          "observed_verdict": true,
-          "polarity": "unless",
-          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "reason": "conditional control requires measured absence",
           "state": "not-applicable",
           "tools": [
             "cam_get"
@@ -919,61 +997,72 @@
         }
       ],
       "producer_run_ids": [
-        "9e69c068634143448f0bb9a39f72e0e7",
-        "40e40e9aea7844d789f84fe3b5ff120b",
-        "20e6e5d163cb4bdc901320da479cb9d0",
-        "f414b4c3972744e9bffd5e0c53f48886"
+        "0fc3e7d8845b42c49f079e64c3c3e278",
+        "5feab5cde41c4c65a77766e723092a8d",
+        "8aa3776a2769467b98355c962494437f",
+        "a2b6248f023344eebabbb85b38cc8602"
       ],
       "producers": [
         {
-          "closure_hash": "633fcdf4743bf06d672957994bb95c17b312847baa6e8e0a1b078101cc56236b",
-          "family_run_id": "028768219e214ad8b3e23ae5181e17ad",
+          "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+          "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 3,
           "rows_hash": "e01b4c6e1d00ad0437394fabe2203af8feb9f3d9cd9f1cb07be060aa12520d19",
-          "run_id": "9e69c068634143448f0bb9a39f72e0e7"
+          "run_id": "0fc3e7d8845b42c49f079e64c3c3e278"
         },
         {
-          "closure_hash": "633fcdf4743bf06d672957994bb95c17b312847baa6e8e0a1b078101cc56236b",
-          "family_run_id": "028768219e214ad8b3e23ae5181e17ad",
+          "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+          "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
           "fusion_version": "2706.1.2",
           "phase": "before ACT 10c4 - CAM: THE HUB JOB",
           "row_count": 1,
           "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
-          "run_id": "40e40e9aea7844d789f84fe3b5ff120b"
+          "run_id": "5feab5cde41c4c65a77766e723092a8d"
         },
         {
-          "closure_hash": "633fcdf4743bf06d672957994bb95c17b312847baa6e8e0a1b078101cc56236b",
-          "family_run_id": "028768219e214ad8b3e23ae5181e17ad",
+          "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+          "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
           "fusion_version": "2706.1.2",
           "phase": "before ACT 10c4b - CAM: THE TURNED PART",
           "row_count": 1,
           "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
-          "run_id": "20e6e5d163cb4bdc901320da479cb9d0"
+          "run_id": "8aa3776a2769467b98355c962494437f"
         },
         {
-          "closure_hash": "633fcdf4743bf06d672957994bb95c17b312847baa6e8e0a1b078101cc56236b",
-          "family_run_id": "028768219e214ad8b3e23ae5181e17ad",
+          "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+          "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
           "fusion_version": "2706.1.2",
           "phase": "before ACT 10c15 - CAM: THE ADDITIVE BUILD",
           "row_count": 95,
           "rows_hash": "299d79060cd7ed565c018fd875da13b84d76328e17886d60e01a8bc55ee69be2",
-          "run_id": "f414b4c3972744e9bffd5e0c53f48886"
+          "run_id": "a2b6248f023344eebabbb85b38cc8602"
         }
       ],
       "raw": {
-        "file": "family-evidence-fc99f87a524cd6216b04b499babae95d70f3be966137f7b90083cb715cdb6004.json",
-        "sha256": "fc99f87a524cd6216b04b499babae95d70f3be966137f7b90083cb715cdb6004"
+        "file": "family-evidence-b66bb756129c9bdf729f788644ed7ba4776a254c5b4030e68d2faf51d1305a82.json",
+        "sha256": "b66bb756129c9bdf729f788644ed7ba4776a254c5b4030e68d2faf51d1305a82"
       },
       "row_count": 590,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -990,10 +1079,10 @@
       ],
       "acts_hash": "7483473e6685571c4c1c2b013972d96dabc23ab585f313d307b08c2b02e09491",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "9528ffadb84fc1b88544d91521e8597029a8f6de241b7dca8ad9f97ec15a4ae3",
+      "closure_hash": "c6c45f5d3ba6581250d923f64c5131714f2de763976fa8d3505b1512681e9442",
       "evidence": {
         "buckets": {
           "called": [
@@ -1024,43 +1113,54 @@
         }
       },
       "family": "lookup",
-      "family_run_id": "cd7d423c4eaf4484a1450bfb3c0d9bb9",
+      "family_run_id": "14173d41d60c4dc28b9f9809a56e00b0",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [
-        "bbd328ac33cf4672bcd68e4d81e858b7"
+        "4b4f9c9ed402475aaa573b3694fd8941"
       ],
       "producers": [
         {
-          "closure_hash": "9528ffadb84fc1b88544d91521e8597029a8f6de241b7dca8ad9f97ec15a4ae3",
-          "family_run_id": "cd7d423c4eaf4484a1450bfb3c0d9bb9",
+          "closure_hash": "c6c45f5d3ba6581250d923f64c5131714f2de763976fa8d3505b1512681e9442",
+          "family_run_id": "14173d41d60c4dc28b9f9809a56e00b0",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 4,
           "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
-          "run_id": "bbd328ac33cf4672bcd68e4d81e858b7"
+          "run_id": "4b4f9c9ed402475aaa573b3694fd8941"
         }
       ],
       "raw": {
-        "file": "family-evidence-e0e9ccc2183eba2415503510e9fcdb59c7838b53e3775ea87aaa736c97988c3c.json",
-        "sha256": "e0e9ccc2183eba2415503510e9fcdb59c7838b53e3775ea87aaa736c97988c3c"
+        "file": "family-evidence-8d9cc3fcc8ba19eedfbc73e50c54b8581434369a19b3f028f77e555c77887c84.json",
+        "sha256": "8d9cc3fcc8ba19eedfbc73e50c54b8581434369a19b3f028f77e555c77887c84"
       },
-      "row_count": 23,
-      "run_id": "wide1013c",
+      "row_count": 28,
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -1077,10 +1177,10 @@
       ],
       "acts_hash": "1d5f65c07ad27e8944a33978b1a7b8904db90186f76b0fde0f21f5d6ab48ab77",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "4b405071971e7f569d7fd88ec548e9d5729063b98437195af50c6f56d5f5721a",
+      "closure_hash": "9a13a7c2df4a43d17868bbe9fc47dcd35411a979c2b2b205ca765baeb26b9e5a",
       "evidence": {
         "buckets": {
           "called": [
@@ -1090,7 +1190,9 @@
             "view_screenshot",
             "view_switch_workspace"
           ],
-          "covered": [],
+          "covered": [
+            "model_base_feature"
+          ],
           "refusals-only": [],
           "self-reported": [
             "assembly_capture_position",
@@ -1137,40 +1239,79 @@
         },
         "counts": {
           "called": 5,
-          "covered": 0,
+          "covered": 1,
           "refusals-only": 0,
           "self-reported": 40
         }
       },
       "family": "mesh",
-      "family_run_id": "3bce39ded3124a85928aea9f6679679c",
+      "family_run_id": "6afcfccf52f548c4b3ade602663127ed",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-4f948907ed7d7e05d4a33b6d23ab6e5f369915e029f131a2a42b14c8e28fda48.json",
-        "sha256": "4f948907ed7d7e05d4a33b6d23ab6e5f369915e029f131a2a42b14c8e28fda48"
+        "file": "family-evidence-072fd0b5129f4dfc75de318d0fde0c38f37d45415d20efcb45e87ce00f3ac24f.json",
+        "sha256": "072fd0b5129f4dfc75de318d0fde0c38f37d45415d20efcb45e87ce00f3ac24f"
       },
-      "row_count": 374,
-      "run_id": "wide1013c",
+      "row_count": 399,
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
-      "witnesses": []
+      "witnesses": [
+        {
+          "reader_is_read": true,
+          "row_index": 388,
+          "targets": [
+            "model_base_feature"
+          ],
+          "tool": "design_get",
+          "witness": "tool:design_get"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 390,
+          "targets": [
+            "model_base_feature"
+          ],
+          "tool": "design_get",
+          "witness": "tool:design_get"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 392,
+          "targets": [
+            "model_base_feature"
+          ],
+          "tool": "design_get",
+          "witness": "tool:design_get"
+        }
+      ]
     },
     "motion": {
       "act_modes": [
@@ -1184,10 +1325,10 @@
       ],
       "acts_hash": "3e82942108d2b7f93e4022b07527557463d21b6fe0006fe24404ca445ad6390d",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "393cd7dfbdd9982f36250d3ee9041bf29c7f97c933d60d3bccd862fcf624b5cf",
+      "closure_hash": "8c85fb171d236121568495730ef243cb487c31e916183af4b8833e6ce0629731",
       "evidence": {
         "buckets": {
           "called": [
@@ -1255,31 +1396,42 @@
         }
       },
       "family": "motion",
-      "family_run_id": "8accf7ddb3854a39a524ddbcb9b9d2e4",
+      "family_run_id": "fd3f6705428140ab865da8db3807547e",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-f339745a0f04bd321ea1fc62a5915f9f92abf5c6642249dfee1eacd958724fab.json",
-        "sha256": "f339745a0f04bd321ea1fc62a5915f9f92abf5c6642249dfee1eacd958724fab"
+        "file": "family-evidence-43df1049c73892976f4bb0d74b71469d1350a1e89f7532986468803f6c18c810.json",
+        "sha256": "43df1049c73892976f4bb0d74b71469d1350a1e89f7532986468803f6c18c810"
       },
       "row_count": 1005,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -1296,10 +1448,10 @@
       ],
       "acts_hash": "0edc120cdf62352554c6fdc1b2830ab0eaec26ca086094b46663fb79bcf440b9",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "ebc65a99f9c63b89f5c4d9c0cee4c155c0f108073741bda1ca8b70304f45b122",
+      "closure_hash": "8fd684c3a62ac0bf11ee6acab9773d77fdb79638b6b4884aa05612f36fcde766",
       "evidence": {
         "buckets": {
           "called": [
@@ -1334,24 +1486,32 @@
         }
       },
       "family": "nesting",
-      "family_run_id": "adeff2bd9eb240b7bb0206bcd15201a5",
+      "family_run_id": "23bbdcc2284149f398b6bbe919748092",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [
         {
           "act": "ACT 6b - NESTING",
           "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
           "kind": "step",
-          "observed_verdict": true,
-          "polarity": "unless",
-          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "reason": "conditional control requires measured absence",
           "state": "not-applicable",
           "tools": [
             "model_arrange"
@@ -1361,17 +1521,28 @@
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-ae63e74123b74071186aa8c3ad1d1d08cde87ebd63de5111e87f507773980bc1.json",
-        "sha256": "ae63e74123b74071186aa8c3ad1d1d08cde87ebd63de5111e87f507773980bc1"
+        "file": "family-evidence-4794431b44f39542bb602e637abe252be9706c9fcb435480a0d249da215be64b.json",
+        "sha256": "4794431b44f39542bb602e637abe252be9706c9fcb435480a0d249da215be64b"
       },
       "row_count": 45,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -1418,10 +1589,10 @@
       ],
       "acts_hash": "6a505c3eee398a258b0e8f3f45b137f22f7b099314c6a8a7bec721c3965d0cee",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "0a2e9b4dd36bf8bf7a13b308356c0c9ab7c14dfc62f5e2c150fe0143dee712f5",
+      "closure_hash": "e90317ae240301924b9b28b4c0d0d1ca58b13296513a4dcc7a76c162b53daeb2",
       "evidence": {
         "buckets": {
           "called": [
@@ -1496,24 +1667,32 @@
         }
       },
       "family": "part_cam",
-      "family_run_id": "171eac5949b9422ba23afbad57ee5e1a",
+      "family_run_id": "926ba4442a0545de9d9b319fad3c2097",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [
         {
           "act": "ACT 10a - CAM: JOB + GENERATE",
           "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
           "kind": "fixture",
-          "observed_verdict": true,
-          "polarity": "unless",
-          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "reason": "conditional control requires measured absence",
           "state": "not-applicable",
           "tools": [
             "cam_find_holes"
@@ -1521,41 +1700,52 @@
         }
       ],
       "producer_run_ids": [
-        "193aa08a081148a78b47cb8554d26a32",
-        "39b3eba0199f4438875e05728c4d5ebb"
+        "938966e4a5884624b8ae3bee0ad2fd65",
+        "46dca404717e4bf299108b02ee6d05ee"
       ],
       "producers": [
         {
-          "closure_hash": "0a2e9b4dd36bf8bf7a13b308356c0c9ab7c14dfc62f5e2c150fe0143dee712f5",
-          "family_run_id": "171eac5949b9422ba23afbad57ee5e1a",
+          "closure_hash": "e90317ae240301924b9b28b4c0d0d1ca58b13296513a4dcc7a76c162b53daeb2",
+          "family_run_id": "926ba4442a0545de9d9b319fad3c2097",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 104,
           "rows_hash": "ad51edfe6ccf5501e469a80b7106f44a1813330b41e0803b487c799b7b9dd61f",
-          "run_id": "193aa08a081148a78b47cb8554d26a32"
+          "run_id": "938966e4a5884624b8ae3bee0ad2fd65"
         },
         {
-          "closure_hash": "0a2e9b4dd36bf8bf7a13b308356c0c9ab7c14dfc62f5e2c150fe0143dee712f5",
-          "family_run_id": "171eac5949b9422ba23afbad57ee5e1a",
+          "closure_hash": "e90317ae240301924b9b28b4c0d0d1ca58b13296513a4dcc7a76c162b53daeb2",
+          "family_run_id": "926ba4442a0545de9d9b319fad3c2097",
           "fusion_version": "2706.1.2",
           "phase": "before ACT 10e - CAM: MULTI-SETUP POST",
           "row_count": 108,
           "rows_hash": "dc629f079651d7b024a545ee65f0533e377bddd53eb2e62d385971622ebe9146",
-          "run_id": "39b3eba0199f4438875e05728c4d5ebb"
+          "run_id": "46dca404717e4bf299108b02ee6d05ee"
         }
       ],
       "raw": {
-        "file": "family-evidence-f312b693c1f9ec10e62fc32ab6c8269805b431780074bc0654621089cb5f01b6.json",
-        "sha256": "f312b693c1f9ec10e62fc32ab6c8269805b431780074bc0654621089cb5f01b6"
+        "file": "family-evidence-4edcb870a22e8d572117adfc1587a2ef688cf1dad93c485b8886e7f0f5882a73.json",
+        "sha256": "4edcb870a22e8d572117adfc1587a2ef688cf1dad93c485b8886e7f0f5882a73"
       },
       "row_count": 856,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -1597,10 +1787,10 @@
       ],
       "acts_hash": "4c7b9e6cd088efeaf03fde0ee6823bf9e3e4fab2d8dd3d4899a8e6796dc7c576",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "16af50173d745acfb6899bec7dead17ad12df8484db62999130580e6849d7108",
+      "closure_hash": "360d81509df5a96cfe28f534467e1d4117ebf12e3568b5cc61b8e1d1ab9f69e9",
       "evidence": {
         "buckets": {
           "called": [
@@ -1631,43 +1821,54 @@
         }
       },
       "family": "render",
-      "family_run_id": "e416562858454134a50485f99f99372c",
+      "family_run_id": "267456c3f7fc4d29a315e6b27ecfc1bc",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [
-        "829de944b52046448cc8868cfefa96cd"
+        "dbac56e052c2474bb44de68afe2ef5a2"
       ],
       "producers": [
         {
-          "closure_hash": "16af50173d745acfb6899bec7dead17ad12df8484db62999130580e6849d7108",
-          "family_run_id": "e416562858454134a50485f99f99372c",
+          "closure_hash": "360d81509df5a96cfe28f534467e1d4117ebf12e3568b5cc61b8e1d1ab9f69e9",
+          "family_run_id": "267456c3f7fc4d29a315e6b27ecfc1bc",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 4,
           "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
-          "run_id": "829de944b52046448cc8868cfefa96cd"
+          "run_id": "dbac56e052c2474bb44de68afe2ef5a2"
         }
       ],
       "raw": {
-        "file": "family-evidence-d5ef3b256ce6e79e9f51193f69546deacddba4d425c0d071543d986604124d58.json",
-        "sha256": "d5ef3b256ce6e79e9f51193f69546deacddba4d425c0d071543d986604124d58"
+        "file": "family-evidence-a0e52680e524ab8e4e05525b63d8050d23b11187b87e406e138a006493c80d78.json",
+        "sha256": "a0e52680e524ab8e4e05525b63d8050d23b11187b87e406e138a006493c80d78"
       },
       "row_count": 96,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -1684,10 +1885,10 @@
       ],
       "acts_hash": "fa2682462d01b9f6970ab6167881c5d3d34d58b7b6647264bbb8bba168bb4590",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "044c42fe75f5777dd65247dadfa9d094c5a9b581f0499277782a90693ae067bd",
+      "closure_hash": "7c1cc71639ec066f61eff7aa1876495af95f19343d2025829c19f961b43aa196",
       "evidence": {
         "buckets": {
           "called": [
@@ -1742,43 +1943,54 @@
         }
       },
       "family": "resize",
-      "family_run_id": "0684f1ef89fe40dfbebdae604fb213ed",
+      "family_run_id": "385e36aaf45e4dd6b24654f7930b2987",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [
-        "e5d45f288a0b41e4b075f62f002ffdc2"
+        "65ae33b4a13545bd83417214ea9ecb0b"
       ],
       "producers": [
         {
-          "closure_hash": "044c42fe75f5777dd65247dadfa9d094c5a9b581f0499277782a90693ae067bd",
-          "family_run_id": "0684f1ef89fe40dfbebdae604fb213ed",
+          "closure_hash": "7c1cc71639ec066f61eff7aa1876495af95f19343d2025829c19f961b43aa196",
+          "family_run_id": "385e36aaf45e4dd6b24654f7930b2987",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 71,
           "rows_hash": "ded6ed4d6ba8c07c3af9dbd12fbafa5414bd39d09554e840ebe71ff09cfa92c7",
-          "run_id": "e5d45f288a0b41e4b075f62f002ffdc2"
+          "run_id": "65ae33b4a13545bd83417214ea9ecb0b"
         }
       ],
       "raw": {
-        "file": "family-evidence-abd6d94997e58a15205eb37a125eacf44c0cd3acca6c8912302a0432fb430689.json",
-        "sha256": "abd6d94997e58a15205eb37a125eacf44c0cd3acca6c8912302a0432fb430689"
+        "file": "family-evidence-e720734e22bfa8837a1b482364aac714c156650f18783d8bb804d4ac3ecf58c4.json",
+        "sha256": "e720734e22bfa8837a1b482364aac714c156650f18783d8bb804d4ac3ecf58c4"
       },
       "row_count": 226,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -1820,10 +2032,10 @@
       ],
       "acts_hash": "227bd099b5142075e0493bece3334f72f3732603d555fc5ca48f3ceeec4faa9f",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "91d075b918194934d5ad2210704791b083b8aa20dc7495de2926e378b8e367e9",
+      "closure_hash": "7278f79f337d5c197f00a9a26aabed93368bdfa6be08b1470f96c360f8cb8ac1",
       "evidence": {
         "buckets": {
           "called": [
@@ -1895,31 +2107,42 @@
         }
       },
       "family": "sheet_coupon",
-      "family_run_id": "ccef5bf34d0d4517aad21d832279e208",
+      "family_run_id": "a7fc42e247194445996120a7e4a8ad82",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-1eefef0cb6d81decb5a9a7dfe72f0f4859fdd29e63846ff0733f0c26a02c6c7f.json",
-        "sha256": "1eefef0cb6d81decb5a9a7dfe72f0f4859fdd29e63846ff0733f0c26a02c6c7f"
+        "file": "family-evidence-ea429e94d458e76020f2bffae9f1aeb3c447c0b8d706c0f1d4644b30cf3d48d0.json",
+        "sha256": "ea429e94d458e76020f2bffae9f1aeb3c447c0b8d706c0f1d4644b30cf3d48d0"
       },
       "row_count": 224,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -1936,10 +2159,10 @@
       ],
       "acts_hash": "555befef6644d0f9e6d6071ba43417c73f57479277af96e36307dbda92bbc088",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "2d6504ef35602372fdea3b310c08688b67596961825ae85821c940d951bb539e",
+      "closure_hash": "95102ebdd5c80063ef1aaf03dd0b08fd0fe41ab47ef4116a0bf4d4ad4b23750e",
       "evidence": {
         "buckets": {
           "called": [
@@ -1990,31 +2213,42 @@
         }
       },
       "family": "sheet_flange",
-      "family_run_id": "a4905c2283ab4c6d8c47ce6cbec07905",
+      "family_run_id": "5df2549700544d7aa4918f687296b178",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-2b391cb7213f7ff6ced28d1949919ee41be7769cf62c658678a2a630c33b18b1.json",
-        "sha256": "2b391cb7213f7ff6ced28d1949919ee41be7769cf62c658678a2a630c33b18b1"
+        "file": "family-evidence-24f04aa088864fd4d2e1aeec461df1ba47df8e1655e514dccf89a98ba4904a29.json",
+        "sha256": "24f04aa088864fd4d2e1aeec461df1ba47df8e1655e514dccf89a98ba4904a29"
       },
       "row_count": 423,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -2031,10 +2265,10 @@
       ],
       "acts_hash": "a531e30034585f68ddb6fea98bed08a1225b4c3430910b3ad932221f5521243f",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "84c60483ff8e5c95b64fbed3e4b000655aa5051b8ed6f26a8760c514cd46f6cb",
+      "closure_hash": "5f5ef696119bf599abb4c8449ce0612934fe65cded65d8ff5aa71edc1aa4de0e",
       "evidence": {
         "buckets": {
           "called": [
@@ -2075,31 +2309,42 @@
         }
       },
       "family": "sheet_positions",
-      "family_run_id": "ecbf9630ec974a8c95fd3aba0ca0d3d0",
+      "family_run_id": "4471a5b0b2694c55b7967988bc4e5f9a",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-07bf661631bb0a5e83d104904e83c6d8b60720d8b480941fabd333abe98dbdcc.json",
-        "sha256": "07bf661631bb0a5e83d104904e83c6d8b60720d8b480941fabd333abe98dbdcc"
+        "file": "family-evidence-dd2b0c54f18846dda9fbf82ba5fe072560f42708322de748edf9911f97027274.json",
+        "sha256": "dd2b0c54f18846dda9fbf82ba5fe072560f42708322de748edf9911f97027274"
       },
       "row_count": 132,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -2116,10 +2361,10 @@
       ],
       "acts_hash": "d4b575460bdca8b239e01e261cc849e86d9936e6d35a231fbbad3c60b1dccca7",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "363ef3cf21e70cb357475abb1a6ad6d915a5c1e9b8ad63d54f8c63422bd6756e",
+      "closure_hash": "f38d594f7835f36d5a9940c9ded79d830c62bf7cfc2b5c17ac8ad38d8756b2c9",
       "evidence": {
         "buckets": {
           "called": [
@@ -2164,31 +2409,42 @@
         }
       },
       "family": "sheet_selected",
-      "family_run_id": "be308c541c474106ba75fd666dad2bc3",
+      "family_run_id": "cce9405ad08349bd8b5213b2207034fb",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-82927c48d64ab1ce084edf39bb167e068e7136d2f8173cb16648f55dd08cbe38.json",
-        "sha256": "82927c48d64ab1ce084edf39bb167e068e7136d2f8173cb16648f55dd08cbe38"
+        "file": "family-evidence-b2cd587109342d8a1c37fb57fe811049476a48f9665d9b87b1f94f89768d1bb6.json",
+        "sha256": "b2cd587109342d8a1c37fb57fe811049476a48f9665d9b87b1f94f89768d1bb6"
       },
       "row_count": 241,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -2205,10 +2461,10 @@
       ],
       "acts_hash": "e030e582feb410b8632256bb424679a6b800c39103b4a6c5e428f3f73fe0d0cb",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "fce03222b4b766ebb29439f9bb43d735456a7abc8be544659444312d151973dc",
+      "closure_hash": "7d2635f32f5b2ed01e07e87fe7f5dc0784474232c98761388e9f33ada2ea8ee7",
       "evidence": {
         "buckets": {
           "called": [
@@ -2280,43 +2536,54 @@
         }
       },
       "family": "showcase",
-      "family_run_id": "dd7e37d550534cb3a6ce8f11a353378f",
+      "family_run_id": "6e679ec0b9784c18a8e8d57956343681",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [
-        "59005c22faa74bbb92f51b3bdef3552b"
+        "2be19faa36084f789c351810ec088a39"
       ],
       "producers": [
         {
-          "closure_hash": "fce03222b4b766ebb29439f9bb43d735456a7abc8be544659444312d151973dc",
-          "family_run_id": "dd7e37d550534cb3a6ce8f11a353378f",
+          "closure_hash": "7d2635f32f5b2ed01e07e87fe7f5dc0784474232c98761388e9f33ada2ea8ee7",
+          "family_run_id": "6e679ec0b9784c18a8e8d57956343681",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 197,
           "rows_hash": "75531d880d52978a04fe20a6f4a6318f47f46a4a94ffc863624d186a290560db",
-          "run_id": "59005c22faa74bbb92f51b3bdef3552b"
+          "run_id": "2be19faa36084f789c351810ec088a39"
         }
       ],
       "raw": {
-        "file": "family-evidence-1500062201d8afc6451d65d4d48d0567dce6ee0e8dc2ecc2abeb032696d946f5.json",
-        "sha256": "1500062201d8afc6451d65d4d48d0567dce6ee0e8dc2ecc2abeb032696d946f5"
+        "file": "family-evidence-f9d321041807c60b83d911335403cdebe2aae387fc0aeb75a9dd67d632dd8757.json",
+        "sha256": "f9d321041807c60b83d911335403cdebe2aae387fc0aeb75a9dd67d632dd8757"
       },
       "row_count": 341,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -2343,10 +2610,10 @@
       ],
       "acts_hash": "0ba81069df81f573b84c36f01ee76492129681d800a25652109391747e0b3e15",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "3817e6fd86cb58243bbaa8ac8a20134d75567b19ffb78636158ac553c41abf1c",
+      "closure_hash": "ca599f2b7fa834bf023bda7804ac0d17b009eca5bd90afd3adcde7b72dd222f5",
       "evidence": {
         "buckets": {
           "called": [
@@ -2421,31 +2688,42 @@
         }
       },
       "family": "sketch",
-      "family_run_id": "f4253515761f46c3897bc437e3f5566e",
+      "family_run_id": "bf43b7dc67a94c15871cee600c7c02cc",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-7cef366207cbc152c1525d40912b005965748d590f2cf693f821127654d288ca.json",
-        "sha256": "7cef366207cbc152c1525d40912b005965748d590f2cf693f821127654d288ca"
+        "file": "family-evidence-baf5ff5071025ab0868f3ef8a6d914dbee777be27f591c654f2794876a73dce9.json",
+        "sha256": "baf5ff5071025ab0868f3ef8a6d914dbee777be27f591c654f2794876a73dce9"
       },
       "row_count": 1826,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -2462,10 +2740,10 @@
       ],
       "acts_hash": "e06417db4f7164a2315c13a57a88283781dafa5dc6dae3aa31bbd6416fe3c828",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "375fe99da0d1b2c5495ffed5595900b635695d57f8487b0650c6cf5879e9c978",
+      "closure_hash": "7d7c55b603036b3268366761fa4db14395a20ab2a786853e56575ae1de5e1de1",
       "evidence": {
         "buckets": {
           "called": [
@@ -2503,43 +2781,54 @@
         }
       },
       "family": "small_edits",
-      "family_run_id": "22744e9882704bb697cf3acf6a0ce130",
+      "family_run_id": "39c598721f344b1fbae110f35bd72533",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [
-        "a72737fa1aa64d038fa3ad0341cf2d8f"
+        "b8485fdd5070487cb24366961b249511"
       ],
       "producers": [
         {
-          "closure_hash": "375fe99da0d1b2c5495ffed5595900b635695d57f8487b0650c6cf5879e9c978",
-          "family_run_id": "22744e9882704bb697cf3acf6a0ce130",
+          "closure_hash": "7d7c55b603036b3268366761fa4db14395a20ab2a786853e56575ae1de5e1de1",
+          "family_run_id": "39c598721f344b1fbae110f35bd72533",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 4,
           "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
-          "run_id": "a72737fa1aa64d038fa3ad0341cf2d8f"
+          "run_id": "b8485fdd5070487cb24366961b249511"
         }
       ],
       "raw": {
-        "file": "family-evidence-64726697324d9cd147eb9534ba714c1117da7837b355d6dd8ced26a077a6325b.json",
-        "sha256": "64726697324d9cd147eb9534ba714c1117da7837b355d6dd8ced26a077a6325b"
+        "file": "family-evidence-24b0befa2ae1ecbf9c8c1836b192bc2d3ba3ed1c04707b1902621e6c7044fe90.json",
+        "sha256": "24b0befa2ae1ecbf9c8c1836b192bc2d3ba3ed1c04707b1902621e6c7044fe90"
       },
       "row_count": 70,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -2556,10 +2845,10 @@
       ],
       "acts_hash": "803f3f3ea52399d0201652dde73e4012834109630c711f3c29142fab6baf831e",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "ca6da14a86c0e118295275a46b93fd69d403e652e62a8a1590af7a14557f0ddc",
+      "closure_hash": "35bd9401a052fb813da0bce66c7ee53ce723250f494a3b89df5bb1e185775cb0",
       "evidence": {
         "buckets": {
           "called": [
@@ -2643,24 +2932,32 @@
         }
       },
       "family": "solids",
-      "family_run_id": "9ed54c0fd5904d6a8bf255729e4c369f",
+      "family_run_id": "6c2275c842b14bcf8eeeef492ca51abc",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [
         {
           "act": "ACT 2 - SOLIDS",
           "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
           "kind": "step",
-          "observed_verdict": true,
-          "polarity": "unless",
-          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "reason": "conditional control requires measured absence",
           "state": "not-applicable",
           "tools": [
             "pmi_create"
@@ -2669,10 +2966,18 @@
         {
           "act": "ACT 2 - SOLIDS",
           "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
           "kind": "step",
-          "observed_verdict": true,
-          "polarity": "unless",
-          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "reason": "conditional control requires measured absence",
           "state": "not-applicable",
           "tools": [
             "pmi_create"
@@ -2681,10 +2986,18 @@
         {
           "act": "ACT 2 - SOLIDS",
           "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
           "kind": "step",
-          "observed_verdict": true,
-          "polarity": "unless",
-          "reason": "machining_extension entitled - this row runs only where it is absent",
+          "reason": "conditional control requires measured absence",
           "state": "not-applicable",
           "tools": [
             "pmi_create"
@@ -2692,31 +3005,42 @@
         }
       ],
       "producer_run_ids": [
-        "23cb74db07f04aed9c0e19c9cac57bc5"
+        "7f514e8eedf24f3083bd05ad85dce8ce"
       ],
       "producers": [
         {
-          "closure_hash": "ca6da14a86c0e118295275a46b93fd69d403e652e62a8a1590af7a14557f0ddc",
-          "family_run_id": "9ed54c0fd5904d6a8bf255729e4c369f",
+          "closure_hash": "35bd9401a052fb813da0bce66c7ee53ce723250f494a3b89df5bb1e185775cb0",
+          "family_run_id": "6c2275c842b14bcf8eeeef492ca51abc",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 39,
           "rows_hash": "8ca30e5cd38605eeed15710abdeb367294629f0522ad0e4e418c5409afb3345f",
-          "run_id": "23cb74db07f04aed9c0e19c9cac57bc5"
+          "run_id": "7f514e8eedf24f3083bd05ad85dce8ce"
         }
       ],
       "raw": {
-        "file": "family-evidence-16d31e2d7c8c4cc130bf677ff2a004e8c72e828c6fb035b4b1d68ab33843b5ee.json",
-        "sha256": "16d31e2d7c8c4cc130bf677ff2a004e8c72e828c6fb035b4b1d68ab33843b5ee"
+        "file": "family-evidence-14cefada6a03808099bb167dacef5d40463a555d153252c31699f75cda4a7453.json",
+        "sha256": "14cefada6a03808099bb167dacef5d40463a555d153252c31699f75cda4a7453"
       },
       "row_count": 2439,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": [
@@ -2743,10 +3067,10 @@
       ],
       "acts_hash": "9c097678938dee44bd0427f54ebdef59846ab1030fcc129a6a98aef7434fb25c",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "edb4bd577119e3f81f41fb1eec61ff63b6791273d689a08f90fca35abd93f09e",
+      "closure_hash": "f21445239f984ca1f1ef336a3d9aaae71792cbddd666dae220bb763077832ac8",
       "evidence": {
         "buckets": {
           "called": [
@@ -2814,31 +3138,42 @@
         }
       },
       "family": "surfaces",
-      "family_run_id": "a3f0e3c5cba64d89823efa2d6962e57e",
+      "family_run_id": "08777f60fd0f4e989552d83755c7022b",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [],
       "producers": [],
       "raw": {
-        "file": "family-evidence-b70ef8cc281a735915dedf5ba755998c937e53d48f82dc9f3d6eaf030d97669b.json",
-        "sha256": "b70ef8cc281a735915dedf5ba755998c937e53d48f82dc9f3d6eaf030d97669b"
+        "file": "family-evidence-14dbb3aa7855b13d55697c143ed3bd4a8a5e33c6a1bd298ca8c65c22f28352a1.json",
+        "sha256": "14dbb3aa7855b13d55697c143ed3bd4a8a5e33c6a1bd298ca8c65c22f28352a1"
       },
       "row_count": 557,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -2870,10 +3205,10 @@
       ],
       "acts_hash": "70d424a921a00b23dd029106b74b1fe85d3a9175abe72f7e117c5659f42cc05b",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "a87ea940e9c7b5a8ab953fd0a7ea7d87172318965a6b731869f3cfc94e6ae870",
+      "closure_hash": "18edf5ea84e7e189a192a2318554697f7fd7371a3be717f86a0e1701a4b42450",
       "evidence": {
         "buckets": {
           "called": [
@@ -2917,53 +3252,64 @@
         }
       },
       "family": "swarf_cam",
-      "family_run_id": "2e0eb359289a4cd3ac705a0f7ef31322",
+      "family_run_id": "c500c886b9614f7c8acf2fd695634208",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [
-        "56a54dce3f434da090e9566b9d0fbbeb",
-        "0d80ead323d84212a02b1279f8449169"
+        "32f8e83337c346aaa0bc4af35adbcac0",
+        "b59f984ea768482ab46022f10877cba7"
       ],
       "producers": [
         {
-          "closure_hash": "a87ea940e9c7b5a8ab953fd0a7ea7d87172318965a6b731869f3cfc94e6ae870",
-          "family_run_id": "2e0eb359289a4cd3ac705a0f7ef31322",
+          "closure_hash": "18edf5ea84e7e189a192a2318554697f7fd7371a3be717f86a0e1701a4b42450",
+          "family_run_id": "c500c886b9614f7c8acf2fd695634208",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 3,
           "rows_hash": "e01b4c6e1d00ad0437394fabe2203af8feb9f3d9cd9f1cb07be060aa12520d19",
-          "run_id": "56a54dce3f434da090e9566b9d0fbbeb"
+          "run_id": "32f8e83337c346aaa0bc4af35adbcac0"
         },
         {
-          "closure_hash": "a87ea940e9c7b5a8ab953fd0a7ea7d87172318965a6b731869f3cfc94e6ae870",
-          "family_run_id": "2e0eb359289a4cd3ac705a0f7ef31322",
+          "closure_hash": "18edf5ea84e7e189a192a2318554697f7fd7371a3be717f86a0e1701a4b42450",
+          "family_run_id": "c500c886b9614f7c8acf2fd695634208",
           "fusion_version": "2706.1.2",
           "phase": "before ACT 10b2 - CAM: COMPONENT SCOPE",
           "row_count": 1,
           "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
-          "run_id": "0d80ead323d84212a02b1279f8449169"
+          "run_id": "b59f984ea768482ab46022f10877cba7"
         }
       ],
       "raw": {
-        "file": "family-evidence-bcf2f40ab5390ca76e4b3ddc5069a61634444a73e3924306b312912eb174c49f.json",
-        "sha256": "bcf2f40ab5390ca76e4b3ddc5069a61634444a73e3924306b312912eb174c49f"
+        "file": "family-evidence-ec9253230f801b69c66a75164ca44a024a9a8115fcb3989dbeaa898b58e31832.json",
+        "sha256": "ec9253230f801b69c66a75164ca44a024a9a8115fcb3989dbeaa898b58e31832"
       },
       "row_count": 131,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
@@ -2980,10 +3326,10 @@
       ],
       "acts_hash": "82ed5efb5c03223830fb8ee88624ae8b146cd4d1dcfc920f389225f04727b664",
       "census": {
-        "end": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45",
-        "start": "f0d94f628ae5066ffb49402e8dc4b4c778bdd10ece8b63d605a5342717367a45"
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
       },
-      "closure_hash": "b3155c569c7f157e7b6ac12ce69318d0f3c090b7dd857c7d9b41680ae5c81b35",
+      "closure_hash": "7fc306393b44533bba0427dbafae974d5f570f9d8a668b14d5fd8207ccf68c70",
       "evidence": {
         "buckets": {
           "called": [
@@ -3036,49 +3382,60 @@
         }
       },
       "family": "vise",
-      "family_run_id": "7246cd48724b427890d061e82c12c1f0",
+      "family_run_id": "ead4d056720b43b7927e36ae158368ed",
       "fusion_version": "2706.1.2",
       "identity": {
         "complete": true,
-        "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-        "load_id": "1ce35d48a2f849d887de53dbb66313f5",
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
         "loaded_matches_source": true,
         "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
-        "session_id": "6c2faba39e814fada8a70bd7eb8fbb80"
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
       },
       "omitted": [],
       "producer_run_ids": [
-        "236a9816968f40d8a4463dcbb26a28c5"
+        "2e7e4ede1ded475d9916c0abbfb2c388"
       ],
       "producers": [
         {
-          "closure_hash": "b3155c569c7f157e7b6ac12ce69318d0f3c090b7dd857c7d9b41680ae5c81b35",
-          "family_run_id": "7246cd48724b427890d061e82c12c1f0",
+          "closure_hash": "7fc306393b44533bba0427dbafae974d5f570f9d8a668b14d5fd8207ccf68c70",
+          "family_run_id": "ead4d056720b43b7927e36ae158368ed",
           "fusion_version": "2706.1.2",
           "phase": "setup",
           "row_count": 66,
           "rows_hash": "2ed853303c49aa298917bf6e11c1575d221edd47124ad1dbf672dbf2c69c225d",
-          "run_id": "236a9816968f40d8a4463dcbb26a28c5"
+          "run_id": "2e7e4ede1ded475d9916c0abbfb2c388"
         }
       ],
       "raw": {
-        "file": "family-evidence-088c98aa806f9ac64662e8b96f6bf63a376f06c1d29ec30c35c9c44f99d94b59.json",
-        "sha256": "088c98aa806f9ac64662e8b96f6bf63a376f06c1d29ec30c35c9c44f99d94b59"
+        "file": "family-evidence-b961fd0e68ef1e126c169eb53d5c4f9374fcb4feb88ed31988c868c6fb1f262c.json",
+        "sha256": "b961fd0e68ef1e126c169eb53d5c4f9374fcb4feb88ed31988c868c6fb1f262c"
       },
       "row_count": 130,
-      "run_id": "wide1013c",
+      "run_id": "nearfull1013a",
       "scope": {
-        "cloud_config_hash": "6f2c8202233d08490f400f5a11d8b3b2482d4acb11966d7b6858956369c75976",
-        "cloud_tier": "requested",
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
         "quarantined": [
           "cloud_link_crash_review_authorization"
-        ]
+        ],
+        "version": 2
       },
       "state": "executed",
       "witnesses": []
     }
   },
-  "format": 1,
+  "format": 2,
   "lifecycle": {
     "after": {
       "bootstrap_exclusions": [
@@ -3087,16 +3444,16 @@
       ],
       "complete": true,
       "executed_module_count": 297,
-      "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-      "load_id": "ea398a85e79441c7ae2189ad407b3f3b",
+      "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+      "load_id": "b478e2ddc8c14471b1722887c63fc5ff",
       "loaded_matches_source": true,
       "problems": [],
       "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
       "scope": "commands/mcpServer import closure",
-      "session_id": "76f763a988134fc2862886e13b6e897c"
+      "session_id": "299afe8eb16c4a5687ac91dd02ef1d3a"
     },
     "after_fusion_version": "2706.1.2",
-    "after_mcp_session": "76f763a988134fc2862886e13b6e897c.6bbf183eea744131856cb3a98356b277.09916f953b6e4c0d2c41984b2a1a0587d8f9113edc1d6fa5b646cbb85a8c77b2",
+    "after_mcp_session": "299afe8eb16c4a5687ac91dd02ef1d3a.b3058525813e40f5af08dca9b9b38793.c38041d9402434677f015316a8a91daa6983b18c5ffe4289e97503dee99e40d3",
     "after_tool_census": [
       "appearance_set",
       "assembly_capture_position",
@@ -3330,15 +3687,15 @@
       ],
       "complete": true,
       "executed_module_count": 297,
-      "implementation_fingerprint": "584ebb463a989318e84bdb09c5b8dd0bb5354294c526d1a0903e5dd3e5b2a4ca",
-      "load_id": "90320cbb090e42548dbb6d21dbd4a2fa",
+      "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+      "load_id": "3dcec496164a4494aea7c2599dab7475",
       "loaded_matches_source": true,
       "problems": [],
       "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
       "scope": "commands/mcpServer import closure",
-      "session_id": "f8e8e73483144f80922e3ecfa319c348"
+      "session_id": "43d1358b74a740f294a9d912fcb04b74"
     },
-    "before_mcp_session": "f8e8e73483144f80922e3ecfa319c348.87520705a3714331b0605e976f17457c.50eb66592ab70931534e0a86eda669767dfcd7709780cdc6433129ec1cb9ad44",
+    "before_mcp_session": "43d1358b74a740f294a9d912fcb04b74.75321d1b9b7842e48066545ad4bcd35b.9b2f04a63503b7dcac3484f122d43e596981ec4abcf2fd202176a682b7a95507",
     "before_tool_census": [
       "appearance_set",
       "assembly_capture_position",
@@ -3584,18 +3941,18 @@
     "cleanup_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:14bf0612bddd4ca8ae7047e468f0fcdf",
+      "handle": "session:669925cf76a643e08ef4d43e854d4d0a",
       "name": "Untitled",
       "open_count": 2,
       "rows": [
         {
-          "document_handle": "session:ae1d6095b42f468dbb0352eabd000a54",
+          "document_handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
           "is_saved": false,
           "name": "Untitled",
           "open_index": 0
         },
         {
-          "document_handle": "session:14bf0612bddd4ca8ae7047e468f0fcdf",
+          "document_handle": "session:669925cf76a643e08ef4d43e854d4d0a",
           "is_active": true,
           "is_modified": true,
           "is_saved": false,
@@ -3604,25 +3961,26 @@
         }
       ]
     },
-    "fresh_transport_document_handle": "session:14bf0612bddd4ca8ae7047e468f0fcdf",
+    "fresh_transport_document_handle": "session:669925cf76a643e08ef4d43e854d4d0a",
     "fusion_version": "2706.1.2",
-    "nonce_name": "ReloadNonce9d632b2a",
+    "nonce_name": "ReloadNonceac2e685a",
     "nonce_value_mm": 17,
+    "omitted": {},
     "post_reload_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:14bf0612bddd4ca8ae7047e468f0fcdf",
+      "handle": "session:669925cf76a643e08ef4d43e854d4d0a",
       "name": "Untitled",
       "open_count": 2,
       "rows": [
         {
-          "document_handle": "session:ae1d6095b42f468dbb0352eabd000a54",
+          "document_handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
           "is_saved": false,
           "name": "Untitled",
           "open_index": 0
         },
         {
-          "document_handle": "session:14bf0612bddd4ca8ae7047e468f0fcdf",
+          "document_handle": "session:669925cf76a643e08ef4d43e854d4d0a",
           "is_active": true,
           "is_modified": true,
           "is_saved": false,
@@ -3634,12 +3992,12 @@
     "pre_reload_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:ff52490c09894249b433c8e8f294f22b",
+      "handle": "session:0a390df344ef4baa91a346e7ba66bf3b",
       "name": "Untitled",
       "open_count": 1,
       "rows": [
         {
-          "document_handle": "session:ff52490c09894249b433c8e8f294f22b",
+          "document_handle": "session:0a390df344ef4baa91a346e7ba66bf3b",
           "is_active": true,
           "is_saved": false,
           "name": "Untitled",
@@ -3648,18 +4006,18 @@
       ]
     },
     "raw": {
-      "file": "family-evidence-7fffe4a5b7b1ce7500c67d32d7c725f08a5fcd8944e88365a87041f79e238820.json",
-      "sha256": "7fffe4a5b7b1ce7500c67d32d7c725f08a5fcd8944e88365a87041f79e238820"
+      "file": "family-evidence-0cd597d3922cb06507453f6008cd9da548824e1f340ba89f64fb4ff1f937b8e6.json",
+      "sha256": "0cd597d3922cb06507453f6008cd9da548824e1f340ba89f64fb4ff1f937b8e6"
     },
     "restored_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:ae1d6095b42f468dbb0352eabd000a54",
+      "handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
       "name": "Untitled",
       "open_count": 1,
       "rows": [
         {
-          "document_handle": "session:ae1d6095b42f468dbb0352eabd000a54",
+          "document_handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
           "is_active": true,
           "is_saved": false,
           "name": "Untitled",
@@ -3667,16 +4025,34 @@
         }
       ]
     },
-    "run_id": "wide1013c",
+    "run_id": "nearfull1013a",
+    "scope": {
+      "asked": {
+        "addin_reload": true,
+        "cloud_tier": true,
+        "library_writes": true,
+        "machining_extension": true,
+        "native_script": true,
+        "preference_writes": true
+      },
+      "checkout": "c:\\source\\fusion-essentials",
+      "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+      "machine": "reference",
+      "os": "Windows",
+      "quarantined": [
+        "cloud_link_crash_review_authorization"
+      ],
+      "version": 2
+    },
     "scratch_cleanup_census": {
       "complete": true,
       "document_id": null,
-      "handle": "session:ae1d6095b42f468dbb0352eabd000a54",
+      "handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
       "name": "Untitled",
       "open_count": 1,
       "rows": [
         {
-          "document_handle": "session:ae1d6095b42f468dbb0352eabd000a54",
+          "document_handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
           "is_active": true,
           "is_saved": false,
           "name": "Untitled",
@@ -3684,8 +4060,9 @@
         }
       ]
     },
-    "scratch_handle_before_reload": "session:9d632b2a9c914f2e83a0bd1133fd9dc4",
-    "source_hash": "f87bda72c2f36b0cdf4f5e400c9b384b21548fbbc63f0ab42be1e20fa2b9a8b1"
+    "scratch_handle_before_reload": "session:ac2e685af7a04c628a8ca30e78e4c9dc",
+    "source_hash": "4b003070f7bde43bd4793aed95bbc58fafd6c359f4abd882f5b512ca2ccc77b2",
+    "state": "executed"
   },
   "lifecycle_history": [],
   "not_in_scope": {},

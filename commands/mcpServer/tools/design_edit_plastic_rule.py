@@ -56,9 +56,9 @@ def _record(design, target, factor, index, scope="design"):
 def handler(action: str = "", rule=None, name: str = "", minimum_thickness=None,
             maximum_thickness=None, minimum_draft_deg: float = None, units: str = "mm") -> dict:
     """Return verified rule edits or an explicit partial-effect refusal."""
-    design = _common.design()
-    if design is None:
-        return _common.error("No active design. Create or open a design first.")
+    design, design_refusal = _common.require_design(none_only=True)
+    if design_refusal is not None:
+        return design_refusal
     values, refusal = _inputs.resolve_inputs([_ACTION, _RULE, _inputs.UNITS],
                                             {"action": action, "rule": rule, "units": units})
     if refusal:

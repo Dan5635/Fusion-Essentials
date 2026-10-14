@@ -350,9 +350,9 @@ def handler(format: str = "3mf", file_path: str = "", target: str = "",
         return error("Provide 'file_path' - the local output path (a file, or a DIRECTORY when "
     "split_by_component=true). The format extension is appended if missing.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design to export. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # ---- per-component split: one mesh file per top-level occurrence into directory 'path' ----
     if split_by_component:

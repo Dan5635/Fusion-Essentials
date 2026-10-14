@@ -593,9 +593,9 @@ def handler(constraints=None, sketch_name: str = "", component: str = "",
     entries, eerr = _sketch_batch.entries_or_error(constraints, "constraints", _ENTRY_FIELDS)
     if eerr:
         return error(eerr)
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     wanted = (sketch_name or "").strip()
     sketch, refusal = _sketch_detail.scoped_sketch(design, wanted, component)
     if refusal:

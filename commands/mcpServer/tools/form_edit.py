@@ -178,9 +178,9 @@ def handler(body: str = "", action: str = "", entities=None, translation=None, c
     handles, delta, rerr = _request(what, entities, translation, creased, k)
     if rerr:
         return error(rerr)
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     good, mode_err = _PARAMETRIC_GUARD.check(design)
     if not good:
         return mode_err

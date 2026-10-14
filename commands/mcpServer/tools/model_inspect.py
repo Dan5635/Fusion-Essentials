@@ -16,6 +16,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe
+from ._common import normalize_include as _normalize_include, unwrap as _unwrap
 from . import _common
 from . import _geom
 from . import _inputs
@@ -449,30 +450,12 @@ def _physical_properties(design, entity, desc, units, accuracy, per_body):
 
 # ── router ───────────────────────────────────────────────────────────────────
 
-def _unwrap(result):
-    """(payload, None) on ok; (None, error_result) on error."""
-    if result.get("isError"):
-        return None, result
-    try:
-        return json.loads(result["content"][0]["text"]), None
-    except Exception:
-        return None, result
-
-
 def _entity_desc(ent, kind):
     """A short human label for the resolved target."""
     if kind == "design":
         return "whole design"
     nm = safe(lambda: ent.fullPathName) or safe(lambda: ent.name)
     return f"{kind} '{nm}'" if nm else kind
-
-
-def _normalize_include(include):
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
 
 
 def _assignment_bodies(entity, kind):
@@ -672,9 +655,9 @@ def _assignment_slice(entity, kind, include):
 def handler(target: str = "", include=None, units: str = "mm", accuracy: str = "medium",
             per_body: bool = False, frame: str = "") -> dict:
     """Measure a target at the right detail level (rich read)."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # Resolve + classify the target ONCE (TargetRef is the single resolver). The cores below measure
     # the RESOLVED ENTITY - no second, divergent lookup, so kind and measurement always agree.

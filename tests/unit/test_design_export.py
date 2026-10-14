@@ -5,8 +5,8 @@ name / component name / whole design), path defaulting + extension handling, the
 and per-format option knobs (STL binary/units, DXF construction/points/projected/units), and that the
 right ExportManager.create*Options call is used per format. No live Fusion - fakes mimic ExportManager.
 """
+from conftest import install as _install_design
 
-import json
 
 import pytest
 
@@ -46,9 +46,7 @@ def _install(monkeypatch, bodies=None, comp_name="Root", occurrences=(), compone
     return design, em, comp
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── format dispatch ──────────────────────────────────────────────────────────
@@ -1546,6 +1544,6 @@ class TestResolveTargetExtra:
 
     def test_no_active_design_errors(self, tmp_path, monkeypatch):
         # design() returns None -> the no-design error, not a crash
-        monkeypatch.setattr(dx._common, "design", lambda: None)
+        _install_design(dx, None)
         res = dx.handler(format="step", file_path=str(tmp_path / "p.step"))
         assert res["isError"] is True and "no active design" in res["message"].lower()

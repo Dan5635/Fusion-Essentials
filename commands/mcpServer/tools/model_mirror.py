@@ -104,9 +104,9 @@ def _host_names(hosts):
 
 def handler(bodies=None, features=None, plane: str = "yz", join: bool = False) -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     has_bodies = bodies not in (None, "", [])

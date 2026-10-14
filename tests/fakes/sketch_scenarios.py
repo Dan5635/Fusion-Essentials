@@ -9,8 +9,10 @@ those designs to ONE tool module, which is all the three files differ in.
 import json
 from types import SimpleNamespace
 
-from conftest import (FakeSketchPoint, MakeComp, Profile, Sketch, SketchCurves, _NamedCollection,
-                      install, make_design)
+from conftest import install
+from tests.fakes.design import MakeComp, MakeDesign
+from tests.fakes.scaffold import _NamedCollection, fusion_fake
+from tests.fakes.sketch import FakeSketchPoint, Profile, Sketch, SketchCurves
 
 
 class _Curve:
@@ -40,7 +42,8 @@ class _Spline(_Curve):
             self.degree = degree
 
 
-class _SketchPoint(FakeSketchPoint):
+@fusion_fake(scenario_double="draw-scenario sketch point, a local owner of recorded geometry")
+class _DrawSketchPoint(FakeSketchPoint):
     """A SketchPoint the sketch owns - the 'point:<index>' address space sketchPoints indexes."""
 
 
@@ -177,7 +180,8 @@ class _GeomConstraints:
         return len(self.added) + len(self.axis)
 
 
-class FakeSketch(Sketch):
+@fusion_fake(scenario_double="draw-scenario recording sketch used by sketch creation tests")
+class DrawSketchScenario(Sketch):
     """The shared Sketch fake with a recording draw surface: the per-kind curve collections a
     factory call lands in, and the slot constructors that live on the Sketch itself. Each per-kind
     collection is reachable both here and through sketchCurves - one object, two paths."""
@@ -253,7 +257,8 @@ class FakeSketch(Sketch):
         return self._land_linear_slot(args)
 
 
-class FakeSketches(_NamedCollection):
+@fusion_fake(scenario_double="draw-scenario sketch collection recording its added plane")
+class DrawSketchesScenario(_NamedCollection):
     """A component's sketches: the shared collection protocol plus the add() that records the plane
     entity it was handed."""
     def __init__(self, sk_):
@@ -282,6 +287,7 @@ def _origin_datums():
     return tuple(_datum(n) for n in ("XY", "XZ", "YZ"))
 
 
+@fusion_fake(factory_for="MakeComp")
 def _draw_component(name, sketch, planes):
     # entityToken, because _common.same_component compares on it and answers None without one -
     # and the assembly-context lift REFUSES an owner it cannot tell from the root rather than
@@ -292,6 +298,7 @@ def _draw_component(name, sketch, planes):
     return comp
 
 
+@fusion_fake(factory_for="MakeDesign")
 def _draw_design(sketch, planes=(), subs=(), active=None):
     """The design the sketch tools build into: each component's sketches collection, the origin
     construction planes PlaneRef's xy/xz/yz alias reads off the ACTIVE one, and - for the design-wide
@@ -308,7 +315,7 @@ def _draw_design(sketch, planes=(), subs=(), active=None):
             cp.component = sub
         comps.append(sub)
         occs += [SimpleNamespace(fullPathName=p, name=p, component=sub) for p in paths]
-    design = make_design(comp=root, all_components=comps)
+    design = MakeDesign(comp=root, all_components=comps)
     design.activeComponent = design.allComponents.itemByName(active) or root
     root.allOccurrences = occs
     root.allOccurrencesByComponent = lambda c: _NamedCollection(
@@ -316,6 +323,7 @@ def _draw_design(sketch, planes=(), subs=(), active=None):
     return design
 
 
+@fusion_fake(factory_for="MakeComp")
 def _scoped_design(pairs):
     """Two (or more) components, each holding its OWN sketch collection.
 
@@ -327,7 +335,7 @@ def _scoped_design(pairs):
         comp = MakeComp(name=name, sketches=list(sketches), origin_planes=_origin_datums())
         comp.constructionPlanes = _NamedCollection([])
         comps.append(comp)
-    return make_design(comp=comps[0], all_components=comps)
+    return MakeDesign(comp=comps[0], all_components=comps)
 
 
 def draw_installer(mod):
@@ -369,3 +377,8 @@ def _payload(res):
     if "failed" in data:
         assert res["message"] == data["note"]
     return data
+
+
+_SketchPoint = _DrawSketchPoint
+FakeSketch = DrawSketchScenario
+FakeSketches = DrawSketchesScenario

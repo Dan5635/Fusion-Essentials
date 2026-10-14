@@ -9,7 +9,6 @@ resolved inside a component is scanned through its occurrence PROXY, so the posi
 world and not component-local.
 """
 
-import json
 import math
 import os
 import sys
@@ -220,9 +219,7 @@ def _install(occs, root_bodies=(), all_occs=None, meshes=(), active=None):
     return design
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 @pytest.mark.parametrize("units, factor", [("in", 1 / 2.54), ("mm", 10)])

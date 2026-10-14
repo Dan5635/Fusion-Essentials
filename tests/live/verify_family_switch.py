@@ -119,9 +119,10 @@ def _switched_off(original, group_id, start):
     if not isinstance(settings, dict):
         return None, f"the Settings file has no '{group_id}' group with settings"
     port, _why = ENDPOINT.configured_port(settings.get(ENDPOINT.PORT_SETTING))
-    if port != ENDPOINT.DEFAULT_PORT:
+    from verify_core import PORT
+    if port != PORT:
         return None, (f"the Settings file's {ENDPOINT.PORT_SETTING} reads {port!r}, not the "
-                      f"{ENDPOINT.DEFAULT_PORT} this run is connected on")
+                      f"{PORT} this run is connected on")
     for family in SWITCHED:
         row = settings.get("family_enabled_" + family)
         if not isinstance(row, dict) or row.get("default") is not True:
@@ -228,6 +229,11 @@ def family_switch_smoke(rows, expected_attestation, before_tool_census, valued=N
                         settings=None, up_polls=_UP_POLLS, settle_reads=_SETTLE_READS):
     """Switch SWITCHED off in the Settings file, read their absence, restore the file and the
     tools; the identity the restored add-in attests, or None with a row saying what stopped it."""
+    from verify_core import require_machine
+    import machine_config
+    config = require_machine()
+    machine_config.require_call(config, "sys_set_preferences", {})
+    machine_config.require_call(config, "sys_reload_addin", {})
     start = sorted(before_tool_census or [])
     gone = [name for name in start if _family(name) in SWITCHED]
     kept = [name for name in start if name not in gone]

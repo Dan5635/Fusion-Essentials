@@ -7,6 +7,7 @@ true return which imported nothing, the size read back off the SKETCH (importSVG
 width/height and viewBox, so the request predicts nothing about the result), and the sketch
 resolution contract.
 """
+from conftest import install as _install_design
 
 import pytest
 
@@ -360,8 +361,7 @@ class TestSketchResolution:
         assert "sketch_create" in error_message(mod.handler(file_path=svg))
 
     def test_no_active_design_is_a_clean_error(self, mod, sketch, svg, monkeypatch):
-        monkeypatch.setattr(mod._common, "design", lambda: None)
-        monkeypatch.setattr(mod._inputs._common, "design", lambda: None)
+        _install_design(mod, None)
         assert "design" in error_message(mod.handler(file_path=svg)).lower()
 
 

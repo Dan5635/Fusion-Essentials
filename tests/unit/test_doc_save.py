@@ -5,7 +5,6 @@ version-description marker, and the postcondition that turns a save() which vers
 nothing into an error.
 """
 
-import json
 import time
 
 import pytest
@@ -32,9 +31,7 @@ def pump_clock(monkeypatch):
     return record
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _doc(name="PartA", **kw):

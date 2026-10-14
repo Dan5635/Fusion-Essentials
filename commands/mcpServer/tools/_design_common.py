@@ -38,9 +38,9 @@ def no_timeline_reason(direct_text):
 
 def health_handler() -> dict:
     """The active design's timeline health: feature error/warning rollup + a healthy flag."""
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     errors, warnings, total = _timeline_health(design)
     return ok({"timeline_features": total, "error_count": len(errors),
         "warning_count": len(warnings), "errors": errors, "warnings": warnings,
@@ -322,9 +322,9 @@ def _capability_map(mode):
 
 def get_mode_handler() -> dict:
     """Report the active design's modelling mode and its capability map. Read-only."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mode = _inputs.current_design_type(design)
     tl_count = _timeline_feature_count(design)
     can = _capability_map(mode)

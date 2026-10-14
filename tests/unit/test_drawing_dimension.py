@@ -9,7 +9,6 @@ drawingDimensions - the modified-flag gate the auto route falls back to. No live
 """
 
 import inspect
-import json
 import types
 
 import pytest
@@ -175,9 +174,7 @@ class _ViewIgnoringInput:
         self.datumLocation = None
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 @pytest.fixture

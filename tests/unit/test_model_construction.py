@@ -10,7 +10,6 @@ the geometry sanity read-back (normal/direction/origin read off the CREATED datu
 
 import collections
 import io
-import json
 import math
 import re
 import types
@@ -201,9 +200,7 @@ def _install_sub_placed(occ_kwargs=None, rotation_deg=-90.0):
     return sub, occ
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── fakes for the new modes' typed-kind inputs ──────────────────────────────────────────────────

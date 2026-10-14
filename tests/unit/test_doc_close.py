@@ -5,7 +5,6 @@ reference proxy is skipped rather than failing the call, and acted_on names the 
 that closed (null, with the reason, when one identity cannot name the result).
 """
 
-import json
 
 import pytest
 
@@ -15,9 +14,7 @@ dm = load_tool("doc_close")
 dk = load_tool("_doc_common")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _CloseableDoc(name, close_ok=True, urn=None, dead=False):

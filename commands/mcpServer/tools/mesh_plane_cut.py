@@ -142,9 +142,9 @@ def _rollback_state(design, feat, mesh) -> str:
 def handler(mesh: str = "", plane: str = "", cut_type: str = "trim",
             fill: str = "minimal", flip: bool = False) -> dict:
     """Cut a MeshBody by a plane - trim, split_body, or split_faces - optionally filling the opening."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mb, merr = _CUT_MESH.resolve(mesh)
     if merr:
         return error(merr)

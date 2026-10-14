@@ -14,12 +14,23 @@ from ._common import counted, safe
 MAP_BLURB = (
     "FEATURE_EDIT_SUPPORT/feature_edit_rows - closed offer; "
     "read_extrude_definition/read_sweep_definition/feature_definition - read; "
-    "write_datum; "
+    "write_datum; edit_position/roll_to_edit; "
     "all_shapes/health/same_feature; "
-    "feature_geometry_snapshot - body shapes and occurrence frames; "
+    "feature_geometry_snapshot - shapes; "
     "sketch_address/at_address/address_text; "
     "restore_definition/restore_gaps/matched/shape_match - rollback; "
     "rolled_back_text/failed/identical_geometry_reply - outcomes")
+
+
+def edit_position(rolled, timeline, index):
+    """Return whether the roll succeeded and the marker reads at the edit row."""
+    return rolled is True and counted(lambda: timeline.markerPosition) == index
+
+
+def roll_to_edit(entity, timeline, index):
+    """Roll before the feature and check its edit position, letting the roll raise."""
+    return edit_position(entity.timelineObject.rollTo(True), timeline, index)
+
 
 FEATURE_EDIT_SUPPORT = {
     "adsk::fusion::RibFeature": {

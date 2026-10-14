@@ -8,7 +8,6 @@ status read this launch hands completion to is pinned in test_cam_get_status.py.
 """
 
 import ast
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -26,9 +25,7 @@ _GENERATIONS = gen._cam_common._GENERATIONS
 _HANDLE_SEQ = gen._cam_common._HANDLE_SEQ
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── target resolution (via the shared _cam_common.resolve_cam_node) ─────────────────────────────────

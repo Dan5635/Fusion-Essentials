@@ -1,3 +1,4 @@
+from conftest import install as _install_design
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import json
@@ -29,7 +30,7 @@ def join(monkeypatch):
     monkeypatch.setattr(mod._EDGE_TWO, "resolve", lambda x: (e2, None))
     monkeypatch.setattr(mod._common, "_native_of", lambda x: x)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: a is b)
-    monkeypatch.setattr(mod._common, "design", lambda: comp.parentDesign)
+    _install_design(mod, comp.parentDesign)
     monkeypatch.setattr(mod._common, "native_identity", lambda b: id(b))
     monkeypatch.setattr(mod._sheet_common, "sheet_edge_faces", lambda e: (object(), object(), None))
     bend_map = {id(body_one): 4, id(body_two): 0, id(survivor): 6}

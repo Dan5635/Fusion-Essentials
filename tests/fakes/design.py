@@ -1096,6 +1096,17 @@ class FakeTimeline:
         return self._move(self._marker - 1)
 
 
+def _injected_roll(timeline, index, mode):
+    """Return a test-only roll callback for refusal, no-op, truthy, and exception cases."""
+    def roll(_before):
+        if mode == "raise":
+            raise RuntimeError("injected roll failure")
+        if mode != "noop":
+            timeline.markerPosition = index
+        return {"false": False, "truthy": 1, "noop": True}[mode]
+    return roll
+
+
 @fusion_fake(live_type="Feature",
              facts=("shape-dump-timeline-world", "enum-feature-health-states"))
 class FakeFeature:

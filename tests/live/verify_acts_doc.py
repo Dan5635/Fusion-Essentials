@@ -1626,6 +1626,43 @@ def _appearance_library_rows():
 _SMALL_EDITS += _appearance_library_rows()
 
 
+def _preference_unreadables(payload, retain=False):
+    """Validate and retain published unreadable names without pinning a build-specific member."""
+    prefs = payload.get("preferences") if isinstance(payload, dict) else None
+    records = {}
+
+    def collect(value, path=""):
+        if not isinstance(value, dict):
+            return False
+        if "tier" in value:
+            if path in records or not isinstance(value["tier"], str) or value["tier"] not in {"W", "R"}:
+                return False
+            records[path] = value
+            return True
+        return all(isinstance(key, str) and bool(key) and collect(record, path + "." + key if path else key)
+                   for key, record in value.items())
+
+    names = payload.get("unreadable", []) if isinstance(payload, dict) else None
+    unknown = payload.get("unknown_members", []) if isinstance(payload, dict) else None
+    count = payload.get("unreadable_count", 0 if names == [] else None) if isinstance(payload, dict) else None
+    observed = {"unreadable": names, "unreadable_count": count, "unknown_members": unknown}
+    valid = (isinstance(prefs, dict) and isinstance(prefs.get("graphics"), dict)
+             and "graphicsPreset" in prefs["graphics"] and collect(prefs)
+             and isinstance(names, list) and all(isinstance(name, str) and name for name in names)
+             and len(set(names)) == len(names) and type(count) is int and count == len(names)
+             and isinstance(unknown, list) and not unknown)
+    if valid:
+        flagged = {path for path, record in records.items() if record.get("unreadable") is True}
+        valid = (set(names) == flagged and all(record.get("unknown_member", False) is False
+                 and type(record.get("unreadable", False)) is bool for record in records.values())
+                 and all(records[name].get("value") is None for name in names))
+    _measured("published unreadable preference census", observed, valid)
+    observed = {"unreadable": list(names), "unreadable_count": count, "unknown_members": []}
+    if retain:
+        print("preference unreadable census: " + json.dumps(observed, sort_keys=True))
+    return observed
+
+
 # --- ACT 0: OVERTURE - orient, then open the first family document -----------------------------
 _OVERTURE = [
     ("doc_new", {}, _new_document, None),
@@ -1739,18 +1776,10 @@ _OVERTURE = [
      lambda p: p["preferences"]["compatibility"]["recoverSaveScanFrequency"]["value"] > 0,
      ("pref_scan",
       lambda p: p["preferences"]["compatibility"]["recoverSaveScanFrequency"]["value"])),
-    # the member that RAISES on read is published as null + named in 'unreadable', never dropped,
-    # and not miscategorised as a member the build does not carry ('unknown_members' must be
-    # absent). The two graphics members the binding marks retired are no rows of the table, so the
-    # group lists neither and 'unreadable' names neither.
     ("sys_get_preferences", {"include": ["graphics"]},
-     lambda p: ("graphicsPreset" in p["preferences"]["graphics"]
-                and "graphics.degradedSelectionDisplayStyle" in (p.get("unreadable") or [])
-                and not {"autoThrottleEffects", "isLimitEffectsDuringNavigation"}
-                & set(p["preferences"]["graphics"])
-                and not {"graphics.autoThrottleEffects", "graphics.isLimitEffectsDuringNavigation"}
-                & set(p.get("unreadable") or [])
-                and "unknown_members" not in p), None),
+     lambda p: bool(_preference_unreadables(p)),
+     ("pref_graphics_unreadable", _recall("pref_graphics_unreadable",
+                                       lambda p: _preference_unreadables(p, retain=True)))),
     ("sys_set_preferences", lambda c: {"member": "compatibility.recoverSaveScanFrequency",
                                        "value": _ctx_get(c, "pref_scan", "the scan frequency") + 1},
      lambda p: p["now"] == p["previous"] + 1, None),
@@ -2426,6 +2455,9 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
                  up_polls=_RELOAD_UP_POLLS, expected_attestation=None, evidence=None,
                  before_tool_census=None, expected_fusion_version=None):
     """Reload the add-in and verify a run-owned document survives with fresh identity."""
+    from verify_core import require_machine
+    import machine_config
+    machine_config.require_call(require_machine(), "sys_reload_addin", {})
     call, STORY = facade("call"), facade("STORY")
     home, problem = _reload_census(call, "pre-reload")
     if problem:

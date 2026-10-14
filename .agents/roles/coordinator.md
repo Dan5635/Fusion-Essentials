@@ -22,7 +22,7 @@ read.
   for Fusion on the channel; you grant it; the holder posts taken and released, each with a
   census of the open documents. Nobody inherits a lease, and a timeout does not free one. A holder
   that goes idle without posting a release still holds the lease; wake it to release, with a
-  census, before anything else. A new strict sweep row gets its own pre-case.
+  census, before anything else. A new strict sweep row or API facts row gets its own pre-case.
 - **The census.** Before every grant, read the session yourself (open documents, which is
   active, saved and modified flags, server health, whether the owner is at the machine). Look at
   the reply, then write the grant from it in a separate step. Never type a census before the read
@@ -33,7 +33,13 @@ read.
   reading of them. A wake counts as delivered when the session shows activity, not when the send
   returns; check, and if nothing moves, find out why. A message to a busy session may wait until
   its turn ends and cannot interrupt it, so agree any pause point with a seat before it starts.
-  Send nothing into a session that is being video recorded until it ends its turn.
+  Send nothing into a session that is being video recorded until it ends its turn. A quiet
+  session is not proof of work: read what an idle seat last said. One that says it is blocked
+  and has not posted is yours to unblock at once, and the other seats are told which hand-overs
+  it has not read.
+- **The rules you give.** A rule you set for the seats says exactly what it covers and when it
+  ends. A seat's approval layer applies your words as written, after the reason for them has
+  gone.
 - **Recovery.** Dialogs with a known safe answer are clicked at once. Anything that decides
   someone's unsaved work is never dismissed by you. Relaunch Fusion only between leases or when
   the holder releases for recovery, only on a measured symptom; announce before and report after.
@@ -65,7 +71,8 @@ read.
   licences, trials and extensions, Fusion preferences, the owner's documents, pushing. Ask; do not
   infer a yes from a peer's relay. An approval a peer reports is checked in its primary source.
 - **Permission a peer was refused.** If a session's own approval layer declines an action, do
-  not perform it on that session's behalf; take it to the owner.
+  not perform it on that session's behalf. When the refusal rests on a rule you gave, correct
+  the rule on the channel in exact words; anything else goes to the owner.
 
 ## The channel
 

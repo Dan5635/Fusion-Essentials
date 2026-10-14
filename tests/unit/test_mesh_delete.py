@@ -8,8 +8,8 @@ AttributeError while occ.bRepBodies reads fine;
 after a successful delete a held wrapper's isValid stays True and an entityToken lookup still
 resolves the pre-remove body; and a same-named mesh in another component is not a survivor of this
 delete, so the verdict is n_after == n_before - 1 within the owning component."""
+from conftest import install as _install_design
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -20,9 +20,7 @@ from conftest import (FakeFeatures, MakeComp, MakeDesign, MeshBody, install, loa
 md = load_tool("mesh_delete")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── fakes ──────────────────────────────────────────────────────────────────────────────────────
@@ -189,7 +187,7 @@ class TestDirectDelete:
         assert out["remaining_meshes"] == 1              # only CompB's 'Twin' remains, design-wide
 
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(md._common, "design", lambda: None)
+        _install_design(md, None)
         assert "No active design" in error_message(md.handler(mesh="H"))
 
     def test_resolver_error_surfaces(self, rig):

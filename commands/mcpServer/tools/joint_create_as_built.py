@@ -77,9 +77,9 @@ def handler(occurrence_one: str = "", occurrence_two: str = "", geometry: str = 
         if slide_err:
             return error(slide_err)
 
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     pending = _pending_move_guard(design)
     if pending:

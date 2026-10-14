@@ -4,6 +4,8 @@ This module is the substrate every MCP tool imports — one response shape, one 
 unit convention. If these drift, every tool drifts, so pin the contract explicitly.
 """
 
+from conftest import install as _install_design
+
 import json
 import types
 from types import SimpleNamespace
@@ -17,6 +19,35 @@ from conftest import (BRepBody, FakeMatrix3D, MakeComp, MakeDesign, _NamedCollec
 common = load_tool("_common")
 path_inputs = load_tool("_inputs")
 paths = load_tool("_path_common")
+
+
+def test_success_preserves_raw_content_and_message_without_changing_json_default():
+    blocks = [{"type": "text", "text": "raw\ntext"},
+              {"type": "image", "data": "YWJj", "mimeType": "image/png"}]
+    result = common.ok(content=blocks, message="")
+    assert result == {"content": blocks, "isError": False, "message": ""}
+    assert result["content"] is blocks
+    assert common.ok(content=[]) == {"content": [], "isError": False}
+    assert common.ok({"value": 7}) == {
+        "content": [{"type": "text", "text": '{\n  "value": 7\n}'}], "isError": False}
+
+
+@pytest.mark.parametrize("raw, expected", [(None, []), ("", []), ([], []),
+    (" TREE, , Timeline ", ["tree", "timeline"]),
+    (["Tree", " TIMELINE ", 2], ["tree", "timeline", "2"])])
+def test_include_normalizes_optional_comma_strings_and_lists(raw, expected):
+    assert common.normalize_include(raw) == expected
+
+
+@pytest.mark.parametrize("result, expected", [
+    ({"isError": False, "content": [{"text": '{"value": 7}'}]}, {"value": 7}),
+    ({"isError": True, "content": [{"text": '{"value": 7}'}]}, None),
+    ({"isError": False, "content": [{"text": "not JSON"}]}, None),
+    ({"isError": False, "content": []}, None)])
+def test_unwrap_decodes_success_and_preserves_failed_results(result, expected):
+    value, failure = common.unwrap(result)
+    assert value == expected
+    assert failure is (None if expected is not None else result)
 
 
 @pytest.mark.parametrize('case', ['root', 'contextual', 'nested_native', 'ambiguous', 'unreadable'])
@@ -37,7 +68,7 @@ def test_world_translation_recognizes_roots_without_treating_native_local_as_wor
         candidates.append(make_occurrence('Part:2', component=component,
                                           raises_on={'assemblyContext': 'unreadable'}))
     root = MakeComp(occurrences_by_component={'Part': candidates})
-    monkeypatch.setattr(common, 'design', lambda: MakeDesign(comp=root))
+    _install_design(common, MakeDesign(comp=root))
     got = common.occurrence_world_translation(query, 10)
     expected = ({'x': 100, 'y': 200, 'z': 50} if case == 'root' else
                 {'x': 140, 'y': 200, 'z': 100} if case == 'contextual' else None)
@@ -47,6 +78,27 @@ def test_world_translation_recognizes_roots_without_treating_native_local_as_wor
 def test_optional_none_keeps_a_reason_and_false_remains_an_answer():
     assert common.read_optional(lambda: None) == (None, "the read answered nothing")
     assert common.read_optional(lambda: False) == (False, None)
+
+
+@pytest.fixture(params=["none", "false", "active"])
+def active_design_gate(monkeypatch, request):
+    active = MakeDesign() if request.param == "active" else False if request.param == "false" else None
+    monkeypatch.setattr(common, "design", lambda: active)
+    return active
+
+
+@pytest.mark.parametrize("remedy", [None, "Open an import target, or pass new_document=true."])
+@pytest.mark.parametrize("none_only", [False, True])
+def test_require_design_preserves_the_design_or_returns_its_refusal(active_design_gate, remedy, none_only):
+    active, refusal = common.require_design(remedy=remedy, none_only=none_only)
+    if active_design_gate is None or (active_design_gate is False and not none_only):
+        assert active is None
+        assert refusal["isError"] is True
+        assert refusal["message"] == "No active design. " + (
+            remedy or "Create or open a document first (see doc_new).")
+    else:
+        assert active is active_design_gate
+        assert refusal is None
 
 
 class TestShortRef:
@@ -94,6 +146,14 @@ class TestResponseBuilders:
         assert res["isError"] is True
         assert res["message"] == "boom"
         assert res["content"][0]["text"] == "boom"
+
+    @pytest.mark.parametrize("message", ["guard refused", ""])
+    def test_explicit_error_summary_preserves_the_complete_payload(self, message):
+        body = {"blocked_by": ["guard"], "note": "Read the target again.", "error": "original detail"}
+        result = common.error("wire text", body, message=message)
+        assert result == {"content": [{"type": "text", "text": json.dumps(body, indent=2)}],
+                          "isError": True, "message": message}
+        assert body == {"blocked_by": ["guard"], "note": "Read the target again.", "error": "original detail"}
 
     def test_error_preserves_structured_partial_effects(self):
         body = {"failed": {"index": 1}, "retained": None, "note": "One entry failed."}

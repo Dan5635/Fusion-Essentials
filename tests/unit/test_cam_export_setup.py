@@ -3,7 +3,6 @@
 
 """cam_export_setup: an additive setup's parts to a 3MF file, judged by the file on disk."""
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -64,9 +63,7 @@ def _rig(monkeypatch, tmp_path, additive=True, writes=True, answers=True, unboun
     return state, str(tmp_path / "build.3mf")
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def test_the_setup_is_bound_before_the_knobs_and_supports_and_slices_are_left_out(monkeypatch, tmp_path):

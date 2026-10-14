@@ -6,20 +6,14 @@ target would satisfy the landed check for a download that never wrote), and the 
 exercised through the SAME FileLanded postcondition the Item declares.
 """
 
-import json
 import os
 
 import pytest
 
-from conftest import FakeDataFile, FakeDataFolder, FakeDataProject, error_message, load_tool
+from conftest import FakeDataFile, FakeDataFolder, FakeDataProject, error_message, load_tool, payload as _payload
 
 ddf = load_tool("data_download_file")
 kernel = load_tool("_assert")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 class _DownloadableFile(FakeDataFile):

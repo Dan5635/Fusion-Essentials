@@ -1288,9 +1288,9 @@ def handler(kind: str = "point", mode: str = "", x: float = 0.0, y: float = 0.0,
     if merr:
         return error(merr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     ops = []           # every operand's frame and owner, in the order resolved

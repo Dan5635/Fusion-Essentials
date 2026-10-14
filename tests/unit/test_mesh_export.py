@@ -6,6 +6,7 @@ import pytest
 from conftest import (BRepBody, FakeExportManager, FakeMatrix3D, FakePoint, MakeComp, MakeDesign,
                       MeshBody, _ExportOptions, _MeshBodies, _NamedCollection, install, load_tool,
                       make_occurrence, payload)
+from tests.fakes.mesh import _FakePolygonMesh
 
 mx = load_tool("mesh_export")
 
@@ -310,11 +311,14 @@ class TestExportTarget:
         assert not path.exists()
 
     def test_large_mesh_is_refused_before_reading_its_arrays(self, tmp_path):
-        class CountsOnly:
-            triangleCount = 250001
-            quadCount = 0
-            polygonCount = 0
-            nodeCount = 3
+        class CountsOnly(_FakePolygonMesh):
+            """A shared PolygonMesh that refuses the oversized coordinate read."""
+
+            def __init__(self):
+                self.triangleCount = 250001
+                self.quadCount = 0
+                self.polygonCount = 0
+                self.nodeCount = 3
 
             @property
             def nodeCoordinatesAsDouble(self):

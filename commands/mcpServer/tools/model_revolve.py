@@ -244,9 +244,9 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
         return error("Construction-plane stops currently require operation='new'; "
                      "use angle_deg without a stop for join, cut or intersect.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     sketch, requested, ambiguous = _sketch_detail.scoped_or_recent_sketch(

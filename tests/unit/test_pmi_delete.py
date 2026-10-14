@@ -1,7 +1,7 @@
 """Tests for `pmi_delete` - the deleteMe() gate, the survivor re-check, and the isDeletable
 refusal: a delete only claims success when the annotation is actually gone."""
+from conftest import install as _install_design
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -11,9 +11,7 @@ from conftest import load_tool, error_message, FakePMILeaderLineNote, MakeComp
 pd = load_tool("pmi_delete")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class _DeadHandle(FakePMILeaderLineNote):
@@ -44,7 +42,7 @@ def rig(monkeypatch):
             stats["components_unreadable"] = state.holes[0]
             stats["items_unreadable"] = state.holes[1]
         return ([] if state.ann._deleted else [(state.ann, state.comp)]), []
-    monkeypatch.setattr(pd._common, "design", lambda: object())
+    _install_design(pd, object())
     monkeypatch.setattr(pd._pmi, "find_annotation", find)
     monkeypatch.setattr(pd._pmi, "annotation_hits", hits)
     monkeypatch.setattr(pd._pmi, "walk_annotations", lambda d: iter([]))
@@ -141,5 +139,5 @@ class TestDelete:
         assert "No PMI named" in error_message(pd.handler(annotation="X"))
 
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(pd._common, "design", lambda: None)
+        _install_design(pd, None)
         assert "No active design" in error_message(pd.handler(annotation="N"))

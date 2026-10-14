@@ -250,9 +250,9 @@ def handler(operation_type: str = "milling", models=None, name: str = "",
     if cam_err:
         return error(cam_err)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     additive, aerr = _additive_inputs(op_key, machine, print_setting, print_setting_description)
     if aerr:

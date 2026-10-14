@@ -509,9 +509,9 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
         "show_thread_edges": (bool(show_thread_edges) if show_thread_edges is not None else None),
     }
 
-    design = _common.design()
-    if not design:
-        return error("No active design to draw. Open or create a design first (see doc_new), then retry.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     src, serr = _source_datafile(design)
     if serr:

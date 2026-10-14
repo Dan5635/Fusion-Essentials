@@ -44,9 +44,9 @@ def _corner(entity):
 
 def handler(occurrence: str = "", into_component: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open a document first (see doc_open / doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     wanted = (into_component or "").strip()
     if not wanted or wanted.lower() == "root":

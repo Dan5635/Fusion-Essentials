@@ -1,4 +1,5 @@
 """Unit tests for ``param_set_favorite.py`` - the flag is published as the parameter reads it back."""
+from conftest import install as _install_design
 
 import pytest
 
@@ -15,7 +16,7 @@ def _design(user_params, timeline, all_params=()):
 
 
 def _stub_design(monkeypatch, design):
-    monkeypatch.setattr(params._common, "design", lambda: design)
+    _install_design(params, design)
 
 
 @pytest.fixture

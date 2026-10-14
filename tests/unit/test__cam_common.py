@@ -38,9 +38,7 @@ cc = load_tool("_cam_common")
 cr = load_tool("_cam_read")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def FakeCAM(setups, machining_times=None):

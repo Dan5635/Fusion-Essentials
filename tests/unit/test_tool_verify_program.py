@@ -10,6 +10,130 @@ from conftest import load_tool_verify as _load_verify
 
 
 class TestToolVerifyProgram:
+    def test_base_feature_story_captures_family_handle_before_opening_scratch(self, monkeypatch):
+        f = _load_verify()
+        monkeypatch.setitem(sys.modules, "tool_verify", f)
+        mesh = sys.modules["verify_acts_mesh"]
+        monkeypatch.setitem(mesh._RECALL, "bf_story_doc", None)
+        monkeypatch.setitem(mesh._RECALL, "a8_duplicate_doc", None)
+        current = {"handle": "session:family"}
+        calls = []
+        def call(tool, args):
+            calls.append((tool, args))
+            if tool == "doc_get":
+                row = {"name": "Untitled", "document_handle": current["handle"],
+                       "is_active": True, "has_data_file": False, "is_saved": False}
+                return False, {"active": row, "open_documents": [row], "open_count": 1}
+            assert tool == "doc_new"
+            assert args["expect_document"] == "session:family"
+            current["handle"] = "session:duplicate"
+            return False, {"created": True, "is_active": True, "document_name": "Untitled",
+                           "document_handle": current["handle"]}
+        monkeypatch.setattr(f, "call", call)
+        rows = mesh._a8_duplicate_rows()
+        ctx = {}
+        result = f.run_steps(rows[:2], ctx, sleep_s=0, stop_on_failure=True)
+        assert [row[1] for row in result] == ["pass", "pass"]
+        assert calls[0][0] == "doc_get"
+        assert ctx["bf_story_doc"] == mesh._RECALL["bf_story_doc"] == "session:family"
+        assert ctx["a8_duplicate_doc"] == "session:duplicate"
+        ctx["a8_captured_doc"] = "session:captured"
+        assert rows[-3][1](ctx)["name"] == "session:family"
+        assert rows[-2][1](ctx)["expect_document"] == "session:family"
+        assert rows[-1][1](ctx)["expect_document"] == "session:family"
+
+    @pytest.mark.parametrize("marker", ["absent", None, False, True, -1, 3])
+    def test_a8_duplicate_marker_must_read_in_range(self, monkeypatch, marker):
+        _load_verify()
+        mesh = sys.modules["verify_acts_mesh"]
+        payload = {"mode_detail": {"design_type": "parametric", "has_timeline": True,
+                    "timeline_feature_count": 2, "base_feature_count": 2},
+                   "timeline": {"count": 2, "returned": 2,
+                    "timeline": [{"index": i, "name": "Shared", "component": owner,
+                                  "type": "BaseFeature"}
+                                 for i, owner in enumerate(["Left", "Right"])]}}
+        if marker != "absent":
+            payload["timeline"]["marker_position"] = marker
+        monkeypatch.setitem(mesh._RECALL, "a8_duplicate_name", "Shared")
+        with pytest.raises(AssertionError):
+            mesh._a8_duplicate_baseline(payload)
+        with pytest.raises(AssertionError):
+            mesh._a8_snapshot(payload)
+
+    @pytest.mark.parametrize("index,marker", [(0, 1), (999, 1), (0, 999), (0, 0)])
+    def test_a8_captured_actual_read_requires_index_and_end_marker(self, monkeypatch, index, marker):
+        _load_verify()
+        mesh = sys.modules["verify_acts_mesh"]
+        before = {"mode_detail": {"design_type": "parametric", "has_timeline": True,
+                   "timeline_feature_count": 0, "base_feature_count": 0},
+                  "timeline": {"count": 0, "returned": 0, "marker_position": 0, "timeline": []}}
+        assert mesh._a8_captured_baseline(before) is True
+        monkeypatch.setitem(mesh._RECALL, "a8_captured_before", mesh._a8_snapshot(before))
+        monkeypatch.setitem(mesh._RECALL, "a8_captured_name", "Captured")
+        after = {"mode_detail": {"design_type": "parametric", "has_timeline": True,
+                  "timeline_feature_count": 1, "base_feature_count": 1},
+                 "timeline": {"count": 1, "returned": 1, "marker_position": marker,
+                  "timeline": [{"index": index, "name": "Captured", "component": "Root",
+                                "type": "BaseFeature"}]}}
+        predicate = mesh._a8_duplicate_rows()[19][2].expect
+        if (index, marker) == (0, 1):
+            assert predicate(after) is True
+        else:
+            with pytest.raises(AssertionError):
+                predicate(after)
+
+    @pytest.mark.parametrize("field,value", [
+        ("closed_scopes", None), ("closed_scopes", []),
+        ("closed_scopes", [{"name": "Other", "finished": True}]),
+        ("closed_scopes", [{"name": "Captured", "finished": False}]),
+        ("closed_scopes", [{"name": "Captured", "finished": True}] * 2),
+        ("named_finished", "Other"), ("named_finished", None),
+        ("editing", True), ("editing", None)])
+    def test_a8_actual_finish_row_requires_exact_retained_closure(self, monkeypatch, field, value):
+        _load_verify()
+        mesh = sys.modules["verify_acts_mesh"]
+        monkeypatch.setitem(mesh._RECALL, "a8_captured_name", "Captured")
+        predicate = mesh._a8_duplicate_rows()[18][2]
+        good = {"editing": False, "named_finished": "Captured",
+                "closed_scopes": [{"name": "Captured", "finished": True}]}
+        assert predicate(good) is True
+        wrong = {**good, field: value}
+        with pytest.raises(AssertionError):
+            predicate(wrong)
+        wrong = dict(good)
+        del wrong[field]
+        with pytest.raises(AssertionError):
+            predicate(wrong)
+
+    @pytest.mark.parametrize("changed", ["marker", "owner", "truncated", "type"])
+    def test_duplicate_base_feature_witness_rejects_changed_independent_state(self, monkeypatch, changed):
+        import copy
+        _load_verify()
+        mesh = sys.modules["verify_acts_mesh"]
+        payload = {"mode_detail": {"design_type": "parametric", "has_timeline": True,
+                    "timeline_feature_count": 2, "base_feature_count": 2},
+                   "timeline": {"count": 2, "returned": 2, "marker_position": 2,
+                    "timeline": [{"index": index, "name": "Shared", "component": owner,
+                                  "type": "BaseFeature"}
+                                 for index, owner in enumerate(["Left", "Right"])]}}
+        monkeypatch.setitem(mesh._RECALL, "a8_duplicate_name", "Shared")
+        assert mesh._a8_duplicate_baseline(payload) is True
+        monkeypatch.setitem(mesh._RECALL, "a8_duplicate_before", mesh._a8_snapshot(payload))
+        assert mesh._a8_unchanged(payload) is True
+        wrong = copy.deepcopy(payload)
+        if changed == "marker":
+            wrong["timeline"]["marker_position"] = 1
+        elif changed == "truncated":
+            wrong["timeline"]["truncated"] = True
+        else:
+            wrong["timeline"]["timeline"][1]["component" if changed == "owner" else "type"] = (
+                "Left" if changed == "owner" else "ExtrudeFeature")
+        with pytest.raises(AssertionError):
+            mesh._a8_unchanged(wrong)
+        if changed != "marker":
+            with pytest.raises(AssertionError):
+                mesh._a8_duplicate_baseline(wrong)
+
     @pytest.mark.parametrize("capture", [0, 1, 2])
     def test_partial_edit_native_baselines_are_saved_through_real_runner(self, monkeypatch, capture):
         f = _load_verify()

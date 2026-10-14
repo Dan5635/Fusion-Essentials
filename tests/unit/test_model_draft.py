@@ -5,6 +5,9 @@ faces + pull plane reach DraftFeatures.createInput, that 'symmetric' flows into 
 drafted-face read-back, the no-active-design guard, resolution-error propagation, and the honesty
 verifier that a feature which computes with a health ERROR is reported as failure, not a false ok.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import types
 import pytest
@@ -37,7 +40,7 @@ class FakeDraftInput:
 
 
 class FakeDraftFeature:
-    def __init__(self, name="Draft1", n_faces=2, health=0, removable=True):
+    def __init__(self, name="Draft1", n_faces=2, health=_HEALTHY, removable=True):
         self.name = name
         # DraftFeature.faces - the faces the draft created or modified, which is the count the tool
         # reads back (its `inputFaces` raises on this platform).
@@ -179,7 +182,7 @@ class TestDraft:
 
     def test_health_error_reported_not_false_ok(self, monkeypatch):
         # The feature was ADDED but computes with a health ERROR (2) - honesty demands isError, not ok.
-        _wire(monkeypatch, feature=FakeDraftFeature(health=2))
+        _wire(monkeypatch, feature=FakeDraftFeature(health=_ERROR))
         res = dr.handler(faces=["a"], pull_direction="xy", angle_deg=5)
         assert res["isError"] is True
         assert "failed to compute" in res["message"] and "geometry undercut" in res["message"]

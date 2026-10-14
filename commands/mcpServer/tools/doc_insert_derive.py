@@ -845,9 +845,9 @@ def handler(document_id: str = "", into_component: str = "",
     except ValueError as exc:
         return error(str(exc))
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create the host document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     good, mode_err = _MODE_GUARD.check(design)
     if not good:

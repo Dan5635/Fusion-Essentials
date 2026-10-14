@@ -193,9 +193,9 @@ def _rule_fillet(radius, units, faces, second_faces, topology):
         if serr:
             return error(serr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     verify_bodies = _geom.owning_bodies(list(first) + list(second or []))
@@ -295,9 +295,9 @@ def _full_round_fillet(center_face, faces, second_faces):
     if terr:
         return error(terr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
     verify_bodies = _geom.owning_bodies([centre] + list(one) + list(two))
     vol_before = _geom.volumes(verify_bodies)

@@ -322,9 +322,9 @@ def handler(profile=None, path=None, operation: str = "new", orientation: str = 
         return error(f"'path_fraction' must be from 0 through 1 - got {fraction}.")
     controls_requested = any(v is not None for v in (twist, taper, fraction))
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     if solid_body not in (None, "", []):
         if profile not in (None, "", []):
             return error("Choose 'profile' or 'solid_body', not both.")

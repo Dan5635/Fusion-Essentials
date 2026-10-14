@@ -367,9 +367,9 @@ def _library_or_clear(target, color, opacity, name, wanted, library, clear):
                      + ", ".join(f"'{n}'" for n in with_it) + ".")
     if library and not wanted:
         return error("'library' narrows 'appearance'; pass the appearance name too.")
-    design = _common.design()
-    if not design:
-        return error("No active design with geometry.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     resolved, terr = _TARGET.resolve(target)
     if terr:
         return terr if isinstance(terr, dict) else error(terr)
@@ -464,9 +464,9 @@ def handler(target: str = "", color: str = "", opacity=None, name: str = "",
     if cerr:
         return error(cerr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design with geometry.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     resolved, terr = _TARGET.resolve(target)
     if terr:

@@ -4,7 +4,6 @@ Pinned: the async switch reports the VERIFIED state ('pending' while the foregro
 not caught up), and a name several open documents share is REFUSED, not guessed.
 """
 
-import json
 
 import pytest
 
@@ -14,9 +13,7 @@ dm = load_tool("doc_activate")
 dc = load_tool("_doc_common")   # the resolve reads app.documents through this seam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _doc(name, urn=None):

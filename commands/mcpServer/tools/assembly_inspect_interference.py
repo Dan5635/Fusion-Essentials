@@ -220,9 +220,9 @@ def handler(include_coincident_faces: bool = False, occurrences=None,
             max_results: int = _BODY_PAGE_DEFAULT, offset: int = 0) -> dict:
     """See TOOL_DESCRIPTION."""
     started = time.monotonic()
-    design = _common.design()
-    if not design:
-        return error("No active design to analyze.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     root = safe(lambda: design.rootComponent)
     if not root:
         return error("No root component.")

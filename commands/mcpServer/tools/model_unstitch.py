@@ -26,9 +26,9 @@ _UNSTITCH_FACES = _inputs.GeometryHandleList("faces", require="face", required=F
 
 def handler(target="", faces=None, chain=True) -> dict:
     """Explode a body (or specific faces) into per-face SURFACE bodies - the inverse of stitch."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     has_faces = faces not in (None, "", [])
     has_target = bool((target or "").strip()) if isinstance(target, str) else target not in (None, [])

@@ -26,6 +26,7 @@ seams to hand back fake entities so we exercise the handler, not the resolver. T
 resolved for real against a fake design, because refusing a duplicated sketch name is this tool's
 own promise.
 """
+from conftest import install as _install_design
 
 import json
 import types
@@ -449,9 +450,7 @@ def _selection_of(op):
     return op.parameters.itemByName("contours").value.getCurveSelections().item(0)
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────
@@ -579,7 +578,7 @@ class TestHandleKindRequirement:
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
         monkeypatch.setattr(cg._inputs, "_resolve_token_entity", lambda des, h: entity)
-        monkeypatch.setattr(cg._inputs._common, "design", lambda: object())
+        _install_design(cg, object())
 
     def test_chain_refuses_a_face_handle_naming_the_type_it_got(self, monkeypatch):
         op = _curve_op()
@@ -1424,7 +1423,7 @@ class TestTurningObjectSets:
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
         monkeypatch.setattr(cg._inputs, "_resolve_token_entity", lambda des, h: _Face(2.2))
-        monkeypatch.setattr(cg._inputs._common, "design", lambda: object())
+        _install_design(cg, object())
         res = cg.handler(operation="Chamfer1", selection="chamfer", handles=["h"], generate=False)
         assert res["isError"] is True and "must be an edge" in res["message"]
         assert op.parameters.itemByName("chamfers").value.value == []
@@ -1439,7 +1438,7 @@ class TestTurningObjectSets:
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
         monkeypatch.setattr(cg._inputs, "_resolve_token_entity", lambda des, h: _Face(2.2))
-        monkeypatch.setattr(cg._inputs._common, "design", lambda: object())
+        _install_design(cg, object())
         res = cg.handler(operation="Single Groove1", selection="groove", handles=["h"],
                          generate=False)
         assert res["isError"] is True and "must be an edge" in res["message"]
@@ -1453,7 +1452,7 @@ class TestTurningObjectSets:
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
         monkeypatch.setattr(cg._inputs, "_resolve_token_entity", lambda des, h: _Edge())
-        monkeypatch.setattr(cg._inputs._common, "design", lambda: object())
+        _install_design(cg, object())
         res = cg.handler(operation="Thread1", selection="thread", handles=["h"], generate=False)
         assert res["isError"] is True and "must be a face" in res["message"]
         assert op.parameters.itemByName("threadFaces").value.value == []

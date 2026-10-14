@@ -42,9 +42,9 @@ def handler(occurrence_one: str = "", occurrence_two: str = "", joint_type: str 
             units: str = "mm", flip: bool = False, name: str = "", min_deg=None, max_deg=None,
             rest_deg=None, min_mm=None, max_mm=None, rest_mm=None) -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with assembly geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     pending = _pending_move_guard(design)
     if pending:

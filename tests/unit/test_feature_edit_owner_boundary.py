@@ -1,3 +1,4 @@
+from conftest import install as _install_design
 from types import SimpleNamespace
 
 import pytest
@@ -28,7 +29,7 @@ def test_face_proxy_localizes_only_for_a_proven_feature_owner(monkeypatch, owner
         return original(label, entity, *args)
 
     monkeypatch.setattr(mod._inputs, "operand_in", guarded)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._inputs.GeometryHandleList, "resolve",
                         lambda *_args: ([proxy], None))
     resolved, reason = mod._inputs.FeatureEditOperands("references").resolve_for(
@@ -55,7 +56,7 @@ def test_axis_proxy_keeps_its_placed_context(monkeypatch):
         entityToken="native-axis", parentComponent=component),
                             assemblyContext=context,
                             entityToken="placed-axis")
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._inputs.AxisRef, "resolve",
                         lambda *_args, **_kwargs: (("edge", proxy), None))
     monkeypatch.setattr(mod._inputs, "operand_in", lambda _label, entity, *_args: (entity, None))

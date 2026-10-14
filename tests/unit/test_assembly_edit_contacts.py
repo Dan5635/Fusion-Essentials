@@ -10,6 +10,7 @@ ObjectCollection raises), a same-case colliding name auto-dedupes to 'Name (1)',
 back as an object neither cast accepts, and the platform refuses a scope write while contact
 analysis is disabled.
 """
+from conftest import install as _install_design
 
 import pytest
 
@@ -286,8 +287,7 @@ class TestGuards:
         assert "action" in error_message(ec.handler(action="melt"))
 
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(ec._common, "design", lambda: None)
-        monkeypatch.setattr(ec._inputs._common, "design", lambda: None)
+        _install_design(ec, None)
         assert "design" in error_message(ec.handler(action="create", members=["A:1", "B:1"])).lower()
 
     def test_a_single_member_is_refused_with_the_measured_raise(self, world):

@@ -181,9 +181,9 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
             rotation_deg=None, min_deg=None, max_deg=None, rest_deg=None,
             min_mm=None, max_mm=None, rest_mm=None) -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     joint, ambiguous = _find_joint(design, joint_name)
     if ambiguous:
         return error(ambiguous)

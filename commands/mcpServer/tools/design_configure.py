@@ -1267,9 +1267,9 @@ def handler(action: str = "", name: str = "", new_name: str = "", parameter: str
         if e:
             return error(e)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     if action == "create":
         return _do_create(design)

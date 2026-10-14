@@ -107,9 +107,9 @@ def handler(feature: str = "") -> dict:
     if not want:
         return error("Provide 'feature' - the timeline object name to delete (see design_get(include=['timeline'])).")
 
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     timeline = _timeline(design)
     if timeline is None:

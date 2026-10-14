@@ -6,8 +6,8 @@ optionally named and/or placed at x/y/z (a translation transform, scaled to cm),
 and optionally activated as the edit target. This is the prerequisite for
 modelling separate, jointable parts in an assembly.
 """
+from conftest import install as _install_design
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -183,9 +183,7 @@ def _install(intent=None):
     return design
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── behaviour ────────────────────────────────────────────────────────────────
@@ -287,7 +285,7 @@ class TestCreateComponent:
 
     def test_no_active_design_errors(self, monkeypatch):
         _install()
-        monkeypatch.setattr(cc._common, "design", lambda: None)
+        _install_design(cc, None)
         res = cc.handler()
         assert res["isError"] is True and "No active design" in res["message"]
 

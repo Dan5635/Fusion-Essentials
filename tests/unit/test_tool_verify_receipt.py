@@ -37,19 +37,44 @@ from verify_families import (  # noqa: E402
     BRACKET_PARAMETERS_PROFILES, FINISHED_BRACKET, DATUM_BENCH_DETAILS,
     DATUM_BENCH_RESIZE, STOCK_VISE, _VISE_SHOWCASE_POSE, _SWARF_FRUSTUM,
     family_names, fixture_steps, showcase_shapes)
+import machine_config  # noqa: E402
+import preflight  # noqa: E402
 
 _ATTESTATION = {"implementation_fingerprint": "a" * 64, "schema_fingerprint": "b" * 64,
                 "load_id": "fixture-load", "session_id": "fixture-session"}
+_ADMISSION_PENDING = {tool: "PENDING (no step yet)" for tool in
+                      ("doc_get", "sys_get_preferences", "sys_execute_script")}
 
 
 @pytest.fixture(autouse=True)
-def _legacy_runner_fixture(monkeypatch):
+def _legacy_runner_fixture(monkeypatch, tmp_path_factory):
     """These wire stubs declare their own tiny act programs without family ownership."""
     monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
     monkeypatch.setattr(tool_verify, "FAMILY_RECEIPTS", False)
     # The switch beat writes the add-in's Settings file: a run() here never reaches the real one.
     monkeypatch.setattr(tool_verify, "family_switch_smoke",
                         lambda rows, expected_attestation, census, **kw: expected_attestation)
+    monkeypatch.setattr(tool_verify.family_switch_smoke, "support_routes", (), raising=False)
+    config = json.loads(machine_config.example_text())
+    config["tiers"]["native_script"] = True
+    config["allow"]["preference_writes"] = True
+    config["allow"]["addin_reload"] = True
+    path = tmp_path_factory.mktemp("explicit-unit-machine") / "sweep.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv(machine_config.ENV, str(path))
+    monkeypatch.setattr(verify_core, "_MACHINE_READ", machine_config.current())
+    monkeypatch.setattr(verify_core, "MACHINE", config)
+
+
+def _preference_reply():
+    """Return the published prerequisite shape used by the injected admission wire."""
+    groups = {}
+    for path, value, _reason in preflight.MEASURED_PREFERENCES:
+        group = groups
+        for part in path[:-1]:
+            group = group.setdefault(part, {})
+        group[path[-1]] = {"enum": value}
+    return False, {"preferences": groups}
 
 
 def _registered(names, writes=()):
@@ -65,8 +90,11 @@ def _registered(names, writes=()):
 
 def _known_wire(tool, args):
     if tool == "doc_get":
-        return False, {"active": {"name": "Untitled", "document_id": None,
-                                   "document_handle": "session:test"}}
+        active = {"name": "Untitled", "document_id": None, "document_handle": "session:test"}
+        return False, {"active": active, "open_documents": [{**active, "is_active": True}],
+                       "open_count": 1, "truncated": False}
+    if tool == "sys_get_preferences":
+        return _preference_reply()
     if tool == "design_get":
         return False, {"feature_count": 1}
     return False, {"n": 1}
@@ -75,6 +103,8 @@ def _known_wire(tool, args):
 def _attested_health(identity=None):
     identity = identity or _ATTESTATION
     return {"server": tool_verify.SERVER_NAME, "version": "t",
+            "bound": {"host": "127.0.0.1", "port": verify_core.MACHINE["port"],
+                      "mcp_url": "http://127.0.0.1:%d/mcp" % verify_core.MACHINE["port"]},
             "session_id": identity["session_id"],
             "attestation": {"complete": True, "loaded_matches_source": True,
                             "implementation_fingerprint": identity["implementation_fingerprint"],
@@ -439,7 +469,10 @@ class _Harness:
         monkeypatch.setattr(verify_runner, "time", _Clock(elapsed))
         monkeypatch.setattr(verify_runner, "RESULTS_DIR", str(tmp_path))
         monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
-        monkeypatch.setattr(tool_verify, "registered_tools", _registered(["a_get", "b_get"]))
+        names = {step[0] for _name, pre, narrative, fallback in (acts or self.ACTS)
+                 for step in list(narrative) + list(fallback or []) + ([pre] if pre else [])}
+        names.update({"doc_get", "design_get", "sys_get_preferences", "sys_execute_script"})
+        monkeypatch.setattr(tool_verify, "registered_tools", _registered(sorted(names)))
         monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: src_hash)
         monkeypatch.setattr(tool_verify, "write_verified", self._write)
         reloaded = dict(_ATTESTATION, load_id="fixture-load-2",
@@ -447,6 +480,7 @@ class _Harness:
         monkeypatch.setattr(tool_verify, "reload_smoke",
                             lambda rows, notes, valued=None, **kw:
                             (self.seen.append(("reload beat", {})), reloaded)[1])
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
         monkeypatch.setattr(tool_verify, "POLL_AFTER", poll_after or {})
         monkeypatch.setattr(tool_verify, "EXCLUDED", {})
         monkeypatch.setattr(tool_verify, "STORY", {})
@@ -458,8 +492,12 @@ class _Harness:
     def _call(self, tool, args):
         self.seen.append((tool, dict(args)))
         if tool == "doc_get":
-            return False, {"active": {"name": self.document, "document_id": None,
-                                      "document_handle": self.document_handle}}
+            active = {"name": self.document, "document_id": None,
+                      "document_handle": self.document_handle}
+            return False, {"active": active, "open_documents": [{**active, "is_active": True}],
+                           "open_count": 1, "truncated": False}
+        if tool == "sys_get_preferences":
+            return _preference_reply()
         if tool == "design_get":
             return False, {"feature_count": self.features}
         return False, self.answer if self.answer is not None else {"n": 1}
@@ -484,7 +522,8 @@ class TestTheReceiptContract:
         # the sweep grew past 600 s of wall clock; capping it would refuse a receipt for a run whose
         # every step passed, which is the state this contract exists to end.
         h = _Harness(monkeypatch, tmp_path, elapsed=4000.0)
-        assert h.run() == 0 and set(h.wrote["ledger"]) == {"a_get", "b_get"}
+        assert h.run() == 0 and h.wrote["ledger"] == {
+            "a_get": "called", "b_get": "covered", "design_get": "PENDING (no step yet)", **_ADMISSION_PENDING}
         out = capsys.readouterr().out
         assert "OVER BUDGET" not in out and "4000s" in out
 
@@ -506,6 +545,7 @@ class TestTheReceiptContract:
             tool_verify, "poll_generation",
             lambda rows, notes, setup, valued=None, **kw:
             rows.append(("cam_get_status", "FAIL", "generation failed")))
+        monkeypatch.setattr(tool_verify.poll_generation, "support_routes", (), raising=False)
         assert h.run(run_id="poll-fail") == 1
         assert "b_get" not in h.tools_called() and "reload beat" not in h.tools_called()
         assert not Path(tool_verify.run_state_path("poll-fail")).exists()
@@ -518,6 +558,7 @@ class TestTheReceiptContract:
                             lambda rows, notes, setup, valued=None, max_polls=40,
                             document_pin=None:
                             polled.append((setup, max_polls, document_pin)))
+        monkeypatch.setattr(tool_verify.poll_generation, "support_routes", (), raising=False)
         acts = [("ACT P", None, [("a_get", {}, "ok", None)], []),
                 ("ACT Q", None, [("a_get", {}, "ok", None)], [])]
         h = _Harness(monkeypatch, tmp_path, acts=acts, poll_after={
@@ -547,7 +588,8 @@ class TestResumableRun:
             self, monkeypatch, tmp_path, capsys):
         first = _Harness(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            tool_verify, "registered_tools", _registered(["a_get", "b_get"], {"a_get"}))
+            tool_verify, "registered_tools", _registered(
+                sorted({"a_get", "b_get", "design_get", *_ADMISSION_PENDING}), {"a_get"}))
         assert first.run(run_id="r1", acts_spec="ACT A") == 0
         state = tool_verify.load_run_state("r1")
         assert state["home_document"]["document_handle"] == "session:fixture-document"
@@ -567,7 +609,7 @@ class TestResumableRun:
         # only the act that had not run is walked...
         assert ("b_get", {"x": 1}) in second.seen and "a_get" not in second.tools_called()
         # ...and the receipt carries BOTH acts' tools, from the union of the two chunks' ledgers
-        assert second.wrote["ledger"] == {"a_get": "called", "b_get": "covered"}
+        assert second.wrote["ledger"] == {"a_get": "called", "b_get": "covered", "design_get": "PENDING (no step yet)", **_ADMISSION_PENDING}
         # the reload beat belongs to the whole run: the first chunk must not fire it, the last must
         assert "reload beat" not in first.tools_called()
         assert "reload beat" in second.tools_called()
@@ -577,7 +619,7 @@ class TestResumableRun:
         first.run(run_id="r1", acts_spec="ACT A")
         second = _Harness(monkeypatch, tmp_path, document="Renamed document", features=8)
         assert second.run(run_id="r1", resume=True) == 0
-        assert second.wrote["ledger"] == {"a_get": "called", "b_get": "covered"}
+        assert second.wrote["ledger"] == {"a_get": "called", "b_get": "covered", "design_get": "PENDING (no step yet)", **_ADMISSION_PENDING}
 
     def test_a_resume_with_missing_current_handle_is_refused(self, monkeypatch, tmp_path, capsys):
         first = _Harness(monkeypatch, tmp_path)
@@ -760,7 +802,8 @@ class TestResumableRun:
     def test_a_single_invocation_is_unchanged_by_the_run_id_machinery(self, monkeypatch, tmp_path):
         # the path everyone runs: no run id, no state file, one stamp at the end.
         h = _Harness(monkeypatch, tmp_path)
-        assert h.run() == 0 and h.wrote["ledger"] == {"a_get": "called", "b_get": "covered"}
+        assert h.run() == 0 and h.wrote["ledger"] == {
+            "a_get": "called", "b_get": "covered", "design_get": "PENDING (no step yet)", **_ADMISSION_PENDING}
         assert not os.path.exists(tool_verify.run_state_path("r1"))
 
     def test_a_value_a_predicate_recalls_survives_the_boundary(self, monkeypatch, tmp_path):
@@ -856,7 +899,7 @@ class TestResumableRun:
             ("ACT B", None, [("b_get", {}, lambda payload: payload["n"] == 1, None)], []),
         ]
         link_tools = {step[0] for step in tool_verify.judged_steps(link_act[2])}
-        registered = sorted(link_tools | {"b_get"})
+        registered = sorted(link_tools | {"b_get", "design_get", *_ADMISSION_PENDING})
         first = _Harness(monkeypatch, tmp_path, acts=acts)
         monkeypatch.setattr(tool_verify, "registered_tools", _registered(registered))
         monkeypatch.setattr(
@@ -874,14 +917,14 @@ class TestResumableRun:
         with pytest.raises(RuntimeError, match="chunk interrupted"):
             first.run(run_id="r1")
         saved = tool_verify.load_run_state("r1")
-        reason = tool_verify.capability_skip_reason(
-            tool_verify.CLOUD_LINK_CRASH_REVIEW,
-            {tool_verify.CLOUD_LINK_CRASH_REVIEW: False})
+        reason = ("not-in-scope: cloud_link_crash_review_authorization needs "
+                  "asked=None measured=False")
         assert saved["acts_done"] == [link_name]
         assert saved["act_modes"] == [[link_name, f"skipped({reason})"]]
         assert set(saved["gated"]) == link_tools
         assert set(saved["gated"].values()) == {reason}
-        assert saved["entitlements"] == {tool_verify.CLOUD_LINK_CRASH_REVIEW: False}
+        assert saved["entitlements"] == {tool_verify.CLOUD_LINK_CRASH_REVIEW: False,
+                                          "native_script": True}
         assert saved["source_hash"] == "0" * 64
         assert saved["attestation"] == _ATTESTATION
         assert saved["document"]["name"] == "Untitled"
@@ -938,6 +981,7 @@ class TestSourceDriftDuringRun:
         def reload(*args, **kwargs):
             digest[0] = "f" * 64
         monkeypatch.setattr(tool_verify, "reload_smoke", reload)
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
         assert h.run() == 1
         assert not h.wrote
 
@@ -1061,11 +1105,13 @@ class TestPredicateKind:
         monkeypatch.setattr(tool_verify, "call", _known_wire)
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
         monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
-        monkeypatch.setattr(tool_verify, "registered_tools", _registered(["a_get", "b_get", "c_get"]))
+        monkeypatch.setattr(tool_verify, "registered_tools",
+                            _registered(sorted({"a_get", "b_get", "c_get", *_ADMISSION_PENDING})))
         monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: "0" * 64)
         monkeypatch.setattr(tool_verify, "write_verified", fake_write)
         monkeypatch.setattr(tool_verify, "reload_smoke",
                             lambda rows, notes, valued=None, **kw: _reloaded_attestation())
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
         monkeypatch.setattr(tool_verify, "POLL_AFTER", {})
         monkeypatch.setattr(tool_verify, "EXCLUDED", {})
         monkeypatch.setattr(tool_verify, "STORY", {})
@@ -1078,7 +1124,7 @@ class TestPredicateKind:
         monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
 
         assert tool_verify.run(write_json=False) == 0
-        assert ledger == {"a_get": "called", "b_get": "called", "c_get": "covered"}
+        assert ledger == {"a_get": "called", "b_get": "called", "c_get": "covered", **_ADMISSION_PENDING}
 
     def test_every_steps_row_classifies_and_no_constant_predicate_hides_in_them(self):
         # A callable in STEPS that never READS INTO its payload would be counted 'covered' on this
@@ -1240,7 +1286,7 @@ class TestCapabilityTier:
         assert tool_verify.capability_skip_reason("no", {"no": False}) == "no not entitled"
         reason = tool_verify.capability_skip_reason(tool_verify.CLOUD_TIER, {"cloud_tier": False})
         assert reason.startswith("cloud_tier not entitled")
-        assert "cloud_config.local.json" in reason and "hub, project, folder" in reason
+        assert "sweep_config.local.json" in reason and "hub, project, folder" in reason
 
     def test_the_cloud_link_review_is_a_separate_dormant_act_before_drawing(self):
         names = [name for name, _pre, _narr, _fb in tool_verify._ACT_PROGRAM]
@@ -1248,7 +1294,10 @@ class TestCapabilityTier:
         assert names.index("ACT 11b - CLOUD: THE SAVED DOCUMENT") < names.index(link)
         assert names.index(link) < names.index("ACT 11c - CLOUD: THE DRAWING")
         program = {name: narr for name, _pre, narr, _fb in tool_verify._ACT_PROGRAM}
-        assert program[link] == tool_verify._CLOUD_LINK
+        assert [(tool, args, tool_verify._unparked(expect), save)
+                for tool, args, expect, save in program[link]] == [
+            (tool, args, tool_verify._unparked(expect), save)
+            for tool, args, expect, save in tool_verify._CLOUD_LINK]
         assert not [step for step in tool_verify._CLOUD_DOC if step[0] == "joint_drive"]
         assert tool_verify.ACT_NEEDS[link] == tool_verify.CLOUD_LINK_CRASH_REVIEW
         for safe in ("ACT 11a - CLOUD: THE DATA MODEL",
@@ -1268,18 +1317,16 @@ class TestCapabilityTier:
         monkeypatch.setitem(verify_core.CAPABILITY_PROBES, "fake_tier", lambda: False)
         monkeypatch.setitem(verify_core.CAPABILITY_DETAIL, "fake_tier", "opt-in: write the config")
 
-    def test_a_gated_acts_ledger_row_carries_the_capability_detail(self, monkeypatch):
-        # consumer one: the ACT-level skip in run(). A row saying only 'not entitled' leaves the
-        # reader with no way to turn the tier on.
+    def test_a_gated_acts_ledger_row_carries_its_actual_request_and_observation(self, monkeypatch):
         self._detailed(monkeypatch)
         acts = [("ACT F", None, [("a_get", {}, "ok", None)], [("fb_get", {}, "ok", None)])]
         ledger, _seen, modes = self._run(monkeypatch, acts, {"ACT F": "fake_tier"}, entitled=False,
                                          tools=["a_get", "fb_get"])
-        assert ledger["a_get"] == "skipped: fake_tier not entitled (opt-in: write the config)"
+        assert ledger["a_get"] == "skipped: held: fake_tier needs asked=None measured=False"
         assert ledger["fb_get"] == ledger["a_get"]
-        assert modes == [("ACT F", "skipped(fake_tier not entitled (opt-in: write the config))")]
+        assert modes == [("ACT F", "skipped(held: fake_tier needs asked=None measured=False)")]
 
-    def test_a_gated_steps_ledger_row_carries_the_capability_detail(self, monkeypatch):
+    def test_a_gated_steps_ledger_row_carries_the_actual_request_and_observation(self, monkeypatch):
         # consumer two: the per-STEP skip in run(), which words its bucket through the same helper.
         self._detailed(monkeypatch)
         acts = [("ACT S", None, [
@@ -1288,8 +1335,7 @@ class TestCapabilityTier:
         ], [])]
         ledger, seen, _modes = self._run(monkeypatch, acts, {}, entitled=False,
                                          tools=["a_get", "gated_get"])
-        assert ledger["gated_get"] == ("skipped: fake_tier not entitled "
-                                       "(opt-in: write the config)")
+        assert ledger["gated_get"] == "skipped: held: fake_tier needs asked=None measured=False"
         assert seen == ["a_get"]
 
     def test_the_declaration_is_read_through_both_wrappers(self):
@@ -1319,6 +1365,12 @@ class TestCapabilityTier:
         with, the act modes)."""
         out = {}
         seen = []
+        config = json.loads(json.dumps(verify_core.MACHINE))
+        config["tiers"]["machining_extension"] = entitled is True
+        path = verify_core._MACHINE_READ[2]
+        Path(path).write_text(json.dumps(config), encoding="utf-8")
+        monkeypatch.setattr(verify_core, "MACHINE", config)
+        monkeypatch.setattr(verify_core, "_MACHINE_READ", (config, [], path, machine_config.ENV))
 
         def fake_write(rows, version, date, src_hash, path=None, notes=None, act_modes=None, attestation=None):
             out["ledger"] = dict(rows)
@@ -1331,6 +1383,8 @@ class TestCapabilityTier:
                 flags = {n: entitled for n in ("steep_and_shallow", "multiaxis_finishing",
                                                "swarf", "probe_geometry")}
                 return False, {"machining_capabilities": {"observed_generation": flags}}
+            if tool == "sys_get_preferences":
+                return _preference_reply()
             if tool == "doc_get":
                 return False, {"active": {"name": "Untitled", "document_id": None,
                                            "document_handle": "session:test"},
@@ -1348,12 +1402,24 @@ class TestCapabilityTier:
         monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
         monkeypatch.setattr(
             tool_verify, "registered_tools",
-            _registered(sorted(tools), {"doc_new"} if "doc_new" in tools else ()))
+            _registered(sorted(set(tools) | set(_ADMISSION_PENDING) | {"design_get", "workspace_orient"}
+                               | ({"doc_close", "doc_activate"} if any(
+                                   row[0] == "doc_new"
+                                   and not any(machine_config.asked(config).get(cap) is False
+                                               for cap in ((act_needs.get(name),)
+                                                           if not isinstance(act_needs.get(name), tuple)
+                                                           else act_needs[name]) if cap is not None)
+                                   and not any(polarity == "needs" and machine_config.asked(config).get(cap) is False
+                                               for cap, polarity in verify_core.step_conditions(row[2]))
+                                   for name, _pre, narrative, fallback in acts
+                                   for row in list(narrative) + list(fallback or [])) else set())),
+                        {"doc_new"} if "doc_new" in tools else ()))
         monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: "0" * 64)
         monkeypatch.setattr(tool_verify, "write_verified", fake_write)
         # the post-run reload beat is another act's business; stubbed so 'seen' is this tier's
         monkeypatch.setattr(tool_verify, "reload_smoke",
                             lambda rows, notes, valued=None, **kw: _reloaded_attestation())
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
         monkeypatch.setattr(tool_verify, "POLL_AFTER", poll_after or {})
         monkeypatch.setattr(tool_verify, "EXCLUDED", {})
         monkeypatch.setattr(tool_verify, "STORY", {})
@@ -1361,7 +1427,8 @@ class TestCapabilityTier:
         monkeypatch.setattr(tool_verify, "ACTS", acts)
         monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", None)
         assert tool_verify.run(write_json=False) == 0
-        return out["ledger"], seen, out["act_modes"]
+        assert seen[:2] == ["doc_get", "sys_get_preferences"]
+        return out["ledger"], seen[2:], out["act_modes"]
 
     def test_a_gated_act_runs_nothing_and_banks_the_capability_bucket(self, monkeypatch):
         # BOTH lanes bank the bucket: neither ran, so a tool the fallback alone drives is skipped
@@ -1371,12 +1438,13 @@ class TestCapabilityTier:
         ledger, seen, modes = self._run(
             monkeypatch, acts, {"ACT E": "machining_extension"}, entitled=False,
             tools=["a_get", "fb_get", "pre_get"])
-        assert ledger["a_get"] == "skipped: machining_extension not entitled"
-        assert ledger["fb_get"] == "skipped: machining_extension not entitled"
+        reason = "not-in-scope: machining_extension needs asked=False measured=False"
+        assert ledger["a_get"] == "skipped: " + reason
+        assert ledger["fb_get"] == "skipped: " + reason
         # not even the act's PRECONDITION read fires - it decides between two lanes neither of
         # which may run, and a wire call for that is a call for nothing.
         assert seen == ["workspace_orient"]
-        assert modes == [("ACT E", "skipped(machining_extension not entitled)")]
+        assert modes == [("ACT E", "skipped(" + reason + ")")]
 
     def test_the_same_act_runs_where_the_capability_is_entitled(self, monkeypatch):
         acts = [("ACT E", None, [("a_get", {}, lambda p: p["n"] == 1, None)], [])]
@@ -1406,8 +1474,8 @@ class TestCapabilityTier:
         ], [])]
         ledger, seen, _modes = self._run(
             monkeypatch, acts, {}, entitled=True, tools=["a_get", "unless_get"])
-        assert ledger["unless_get"] == ("skipped: machining_extension entitled - this row runs "
-                                        "only where it is absent")
+        assert ledger["unless_get"] == ("skipped: not-applicable: machining_extension unless "
+                                        "asked=True measured=True")
         assert seen == ["workspace_orient", "a_get"]
 
     def test_an_unless_step_carries_its_capability_and_its_inner_judgement(self):
@@ -1434,21 +1502,19 @@ class TestCapabilityTier:
         ledger, seen, _modes = self._run(
             monkeypatch, acts, {}, entitled=False, tools=["a_get", "gated_get", "c_get"])
         assert ledger == {"a_get": "called",
-                          "gated_get": "skipped: machining_extension not entitled",
-                          "c_get": "covered"}
+                          "gated_get": "skipped: not-in-scope: machining_extension needs asked=False measured=False",
+                          "c_get": "covered", "design_get": "PENDING (no step yet)",
+                          "workspace_orient": "PENDING (no step yet)", **_ADMISSION_PENDING}
         assert seen == ["workspace_orient", "a_get", "c_get"]
 
-    def test_the_probe_waits_for_the_first_act_that_declares_a_capability(self, monkeypatch):
-        # workspace_orient errors with no document open, so a probe taken before the opening act
-        # reads unreadable and skips every gated row on an ENTITLED machine. The first act declares
-        # nothing: its steps run first, and the probe lands between them and the gated act's.
+    def test_requested_extension_is_admitted_before_the_opening_act(self, monkeypatch):
         acts = [("ACT OPEN", None, [("doc_new", {}, "ok", None)], []),
                 ("ACT E", None, [("a_get", {}, lambda p: p["n"] == 1, None)], [])]
         ledger, seen, _modes = self._run(
             monkeypatch, acts, {"ACT E": "machining_extension"}, entitled=True,
             tools=["a_get", "doc_new"])
-        assert seen == ["doc_get", "design_get", "doc_new", "doc_get", "design_get",
-                        "workspace_orient", "a_get", "doc_get", "design_get", "doc_get"]
+        assert seen == ["workspace_orient", "doc_get", "design_get", "doc_new", "doc_get",
+                        "design_get", "a_get", "doc_get", "design_get", "doc_get"]
         assert ledger["a_get"] == "covered"
 
     def test_a_gated_act_polls_nothing(self, monkeypatch):
@@ -1457,6 +1523,7 @@ class TestCapabilityTier:
         polled = []
         monkeypatch.setattr(tool_verify, "poll_generation",
                             lambda rows, notes, setup, valued=None: polled.append(setup))
+        monkeypatch.setattr(tool_verify.poll_generation, "support_routes", (), raising=False)
         acts = [("ACT E", None, [("a_get", {}, "ok", None)], [])]
         self._run(monkeypatch, acts, {"ACT E": "machining_extension"}, entitled=False,
                   tools=["a_get", "workspace_orient"],
@@ -1470,6 +1537,7 @@ class TestCapabilityTier:
         monkeypatch.setattr(tool_verify, "poll_generation",
                             lambda rows, notes, setup, valued=None, document_pin=None:
                             polled.append((setup, document_pin)))
+        monkeypatch.setattr(tool_verify.poll_generation, "support_routes", (), raising=False)
         acts = [("ACT G", None, [("a_get", {}, "ok", None)], [])]
         self._run(monkeypatch, acts, {}, entitled=True,
                   tools=["a_get", "doc_new", "workspace_orient"],
@@ -1478,17 +1546,19 @@ class TestCapabilityTier:
 
     def test_an_unreadable_probe_holds_the_steps_back_and_says_so(self, monkeypatch):
         def call(tool, args):
-            return (False, {}) if tool == "workspace_orient" else (False, {"n": 1})
+            return (False, {}) if tool == "workspace_orient" else _known_wire(tool, args)
         monkeypatch.setattr(tool_verify, "call", call)
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
         monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
-        monkeypatch.setattr(tool_verify, "registered_tools", _registered(["a_get", "workspace_orient"]))
+        monkeypatch.setattr(tool_verify, "registered_tools",
+                            _registered(sorted({"a_get", "workspace_orient", *_ADMISSION_PENDING})))
         monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: "0" * 64)
         ledger = {}
         monkeypatch.setattr(tool_verify, "write_verified",
                             lambda rows, v, d, h, **kw: ledger.update(rows))
         monkeypatch.setattr(tool_verify, "reload_smoke",
                             lambda rows, notes, valued=None, **kw: _reloaded_attestation())
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
         monkeypatch.setattr(tool_verify, "POLL_AFTER", {})
         monkeypatch.setattr(tool_verify, "EXCLUDED", {})
         monkeypatch.setattr(tool_verify, "STORY", {})
@@ -1496,15 +1566,17 @@ class TestCapabilityTier:
         monkeypatch.setattr(tool_verify, "ACTS",
                             [("ACT E", None, [("a_get", {}, "ok", None)], [])])
         assert tool_verify.run(write_json=False) == 0
-        assert ledger["a_get"] == ("skipped: machining_extension not entitled - the capability "
-                                   "probe did not read")
+        assert ledger["a_get"] == ("skipped: not-in-scope: machining_extension needs "
+                                   "asked=False measured=None")
 
     def test_every_declared_capability_in_the_real_program_has_a_probe(self):
         # a declaration with no probe routes as unmet forever, so the acts it gates would never run
         # again on any installation - and nothing else in the harness would say why.
-        declared = set(tool_verify.ACT_NEEDS.values()) | {
+        core = tool_verify.verify_core
+        declared = {cap for value in tool_verify.ACT_NEEDS.values()
+                    for cap, _polarity in core.step_conditions(core.Needs(value))} | {
             cap for step in tool_verify.STEPS
-            for cap in [tool_verify.step_capability(step[2])] if cap}
+            for cap, _polarity in core.step_conditions(step[2])}
         assert declared, "no capability is declared - the tier has no consumer"
         assert declared <= set(tool_verify.CAPABILITY_PROBES), (
             "capabilities declared with no probe registered: "
@@ -2132,11 +2204,14 @@ class TestReloadBeat:
             return "VERIFIED_TOOLS.md"
 
         seen = []
-        wire = _reload_wire()
+        wire = _reload_wire(found=tuple(sorted({"a_get", "sys_reload_addin", *_ADMISSION_PENDING}
+                                              | {"doc_new", "doc_close", "doc_activate", "param_add", "param_get", "param_delete", "view_switch_workspace", "workspace_orient", "sys_find_tool", "sys_capability_map"})))
         reload_scheduled = {"value": False}
 
         def call(tool, args):
             seen.append(tool)
+            if tool == "sys_get_preferences":
+                return _preference_reply()
             if tool == "sys_reload_addin":
                 reload_scheduled["value"] = True
             if tool == "a_get":
@@ -2159,7 +2234,8 @@ class TestReloadBeat:
 
         def registered(health=None, include_rows=False):
             registry_health.append(health)
-            names = ["a_get", "sys_reload_addin"]
+            names = sorted({"a_get", "sys_reload_addin", *_ADMISSION_PENDING}
+                           | {"doc_new", "doc_close", "doc_activate", "param_add", "param_get", "param_delete", "view_switch_workspace", "workspace_orient", "sys_find_tool", "sys_capability_map"})
             rows = [{"name": name, "annotations": {"readOnlyHint": True},
                      "inputSchema": {"properties": {"expect_document": {}}}}
                     for name in names]
@@ -2175,8 +2251,10 @@ class TestReloadBeat:
                             [("ACT T", None, [("a_get", {}, lambda p: p["n"] == 1, None)], None)])
 
         assert tool_verify.run(write_json=False) == 0
-        assert ledger == {"a_get": "covered", "sys_reload_addin": "covered"}
-        assert seen[0] == "a_get"
+        assert ledger == {"a_get": "covered", "sys_reload_addin": "covered",
+                          **{tool: "PENDING (no step yet)" for tool in {"doc_new", "doc_close", "doc_activate", "param_add", "param_get", "param_delete", "view_switch_workspace", "workspace_orient", "sys_find_tool", "sys_capability_map"}},
+                          **_ADMISSION_PENDING}
+        assert seen[:3] == ["doc_get", "sys_get_preferences", "a_get"]
         assert seen.index("sys_reload_addin") < seen.index("sys_find_tool")
         assert "param_add" in seen and "param_delete" in seen
         assert [row["session_id"] for row in registry_health] == [
@@ -2192,7 +2270,8 @@ class TestReloadBeat:
 
         wire = _reload_wire()
         monkeypatch.setattr(tool_verify, "call",
-                            lambda tool, args: ((False, {"n": 1}) if tool == "a_get"
+                            lambda tool, args: (_preference_reply() if tool == "sys_get_preferences"
+                                               else (False, {"n": 1}) if tool == "a_get"
                                                 else wire(tool, args)))
         monkeypatch.setattr(tool_verify, "_post", lambda *a, **kw: (
             {"result": {"serverInfo": {"name": tool_verify.SERVER_NAME}}}, "session-before"))
@@ -2200,7 +2279,8 @@ class TestReloadBeat:
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
         monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
         monkeypatch.setattr(tool_verify, "registered_tools",
-                            _registered(["a_get", "sys_reload_addin"]))
+                            _registered(sorted({"a_get", "sys_reload_addin", *_ADMISSION_PENDING}
+                                               | {"doc_new", "doc_close", "doc_activate", "param_add", "param_get", "param_delete", "view_switch_workspace", "workspace_orient", "sys_find_tool", "sys_capability_map"})))
         monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: "0" * 64)
         monkeypatch.setattr(tool_verify, "write_verified", fake_write)
         monkeypatch.setattr(tool_verify, "POLL_AFTER", {})
@@ -2508,9 +2588,12 @@ class TestFamilySwitchBeat:
             return _reloaded_attestation()
 
         monkeypatch.setattr(tool_verify, "family_switch_smoke", switch)
+        monkeypatch.setattr(tool_verify.family_switch_smoke, "support_routes", (), raising=False)
         monkeypatch.setattr(tool_verify, "reload_smoke", reload)
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
         assert h.run() == 0
-        assert handed == {"switch_expected": _ATTESTATION, "census": ["a_get", "b_get"],
+        assert handed == {"switch_expected": _ATTESTATION,
+                          "census": sorted({"a_get", "b_get", "design_get", *_ADMISSION_PENDING}),
                           "reload_expected": switched}
         assert h.wrote["attestation"] == _reloaded_attestation()
 
@@ -2519,6 +2602,7 @@ class TestFamilySwitchBeat:
         h = _Harness(monkeypatch, tmp_path)
         monkeypatch.setattr(tool_verify, "family_switch_smoke", lambda rows, *a, **kw: rows.append(
             ("sys_capability_map", "FAIL", "stubbed stop")))
+        monkeypatch.setattr(tool_verify.family_switch_smoke, "support_routes", (), raising=False)
         assert h.run() == 1 and not h.wrote and "reload beat" not in h.tools_called()
         assert "family switch beat did not end on the starting tools" in capsys.readouterr().out
 
@@ -2569,18 +2653,23 @@ class TestActSelection:
                             lambda tool, args: (seen.append(tool), _known_wire(tool, args))[1])
         monkeypatch.setattr(tool_verify.time, "sleep", lambda s: None)
         monkeypatch.setattr(tool_verify, "health_gate", _attested_health)
-        monkeypatch.setattr(tool_verify, "registered_tools", _registered(sorted(tools)))
+        monkeypatch.setattr(tool_verify, "registered_tools",
+                            _registered(sorted(set(tools) | set(_ADMISSION_PENDING)
+                                               | ({"doc_activate"} if "doc_close" in tools else set()))))
         monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: "0" * 64)
         monkeypatch.setattr(tool_verify, "write_verified",
                             lambda *a, **k: wrote.append(True) or "VERIFIED_TOOLS.md")
         monkeypatch.setattr(tool_verify, "reload_smoke",
                             lambda rows, notes, valued=None, **kw2: None)
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
         monkeypatch.setattr(tool_verify, "POLL_AFTER", {})
         monkeypatch.setattr(tool_verify, "EXCLUDED", {})
         monkeypatch.setattr(tool_verify, "STORY", {})
         monkeypatch.setattr(tool_verify, "ACT_NEEDS", {})
         monkeypatch.setattr(tool_verify, "ACTS", TestActSelection._WALK)
-        return seen, wrote, tool_verify.run(write_json=False, **kw)
+        code = tool_verify.run(write_json=False, **kw)
+        assert seen[:2] == ["doc_get", "sys_get_preferences"]
+        return seen[2:], wrote, code
 
     def test_the_runner_walks_only_the_selected_acts(self, monkeypatch, capsys):
         seen, _wrote, code = self._run(monkeypatch, ["a_get", "b_get", "c_get", "doc_close"],
@@ -2643,6 +2732,8 @@ class _DocumentWire:
 
     def __call__(self, tool, args):
         self.seen.append((tool, dict(args)))
+        if tool == "sys_get_preferences":
+            return _preference_reply()
         if tool == "doc_get":
             self.doc_reads += 1
             active = dict(self.documents[self.active], document_handle=self.active,
@@ -2734,7 +2825,9 @@ def _run_document_program(monkeypatch, tmp_path, wire, acts, writes, run_id=None
     wrote = {}
     names = sorted({step[0] for _name, _pre, narrative, fallback in acts
                     for step in list(narrative) + list(fallback or [])
-                    if step[0] != tool_verify._DWELL})
+                    if step[0] != tool_verify._DWELL} | set(_ADMISSION_PENDING)
+                   | {"design_get", "doc_close", "doc_activate"}
+                   | ({"view_screenshot"} if shots_dir else set()))
     monkeypatch.setattr(tool_verify, "call", wire)
     monkeypatch.setattr(verify_runner, "time", _Clock(1.0))
     monkeypatch.setattr(verify_runner, "RESULTS_DIR", str(tmp_path))
@@ -2747,6 +2840,8 @@ def _run_document_program(monkeypatch, tmp_path, wire, acts, writes, run_id=None
     monkeypatch.setattr(
         tool_verify, "reload_smoke",
         reload_smoke or (lambda rows, notes, valued=None, **kw: _reloaded_attestation()))
+    if reload_smoke is None:
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
     monkeypatch.setattr(tool_verify, "POLL_AFTER", poll_after or {})
     monkeypatch.setattr(tool_verify, "EXCLUDED", {})
     monkeypatch.setattr(tool_verify, "STORY", {})
@@ -2854,6 +2949,7 @@ class TestWithinActDocumentPin:
         monkeypatch.setattr(
             tool_verify, "poll_generation",
             lambda rows, notes, setup, valued=None, **kw: polled.append(setup))
+        monkeypatch.setattr(tool_verify.poll_generation, "support_routes", (), raising=False)
         acts = [
             ("ACT 0 - OVERTURE", None, [
                 ("doc_new", {}, lambda p: p["created"] is True, None),
@@ -2947,6 +3043,7 @@ class TestWithinActDocumentPin:
         def reload_smoke(rows, notes, valued=None, **kw):
             at_reload.append(wire.active)
             return _reloaded_attestation()
+        monkeypatch.setattr(reload_smoke, "support_routes", (), raising=False)
 
         acts = [
             ("ACT 0 - OVERTURE", None, [
@@ -2992,7 +3089,8 @@ class TestWithinActDocumentPin:
             captured.append(payload)
             return payload["active"]["document_handle"]
 
-        wire = _DocumentWire(drift_after_doc_get=1)
+        # Admission reads the first census; drift occurs at the first context-pin census.
+        wire = _DocumentWire(drift_after_doc_get=2)
         acts = [("ACT INITIAL PIN", None, [
             ("doc_get", {}, predicate, ("captured", extract)),
             ("model_write", {}, lambda p: p["changed"] is True, None),
@@ -3318,27 +3416,65 @@ class TestDocumentHandleLifecycleRows:
 class TestOwnedFamilies:
     """Real family-loop boundaries with a changing exact-handle document wire."""
 
+    def test_home_getter_declares_only_its_exact_native_read_under_permission_off(self, monkeypatch):
+        wire = _DocumentWire()
+        config = json.loads(machine_config.example_text())
+        config["tiers"]["native_script"] = True
+        declarations = []
+        def call(tool, args, *, script_declaration=None):
+            effects = machine_config.declared_effects(tool, args, script_declaration)
+            machine_config.require_call(config, tool, args, effects)
+            if tool == "sys_execute_script":
+                declarations.append((args, script_declaration))
+            return wire(tool, args)
+        monkeypatch.setattr(tool_verify, "call", call)
+        snapshot, problem = verify_runner._home_now({"document_handle": "session:home"})
+        assert problem is None and snapshot["document_handle"] == "session:home"
+        assert len(declarations) == 1
+        arguments, declaration = declarations[0]
+        assert declaration == machine_config.effect_declaration(arguments["script"], [])
+        assert set(arguments) == {"script", "read_only", "expect_document"}
+        assert arguments["read_only"] is True and arguments["expect_document"] == "session:home"
+        assert [tool for tool, _args in wire.seen] == ["doc_get", "sys_execute_script", "doc_get"]
+
     @staticmethod
     def _run(monkeypatch, tmp_path, wire, acts, acts_spec=None, hash_values=None,
              resume=False, run_id=None, fixture=None, keep_open=False, continue_families=False,
-             health=None, native_available=True):
+             health=None, native_available=True, accept_open_work=False):
+        def admitted_wire(tool, args, **kwargs):
+            if tool == "sys_get_preferences":
+                return _preference_reply()
+            return wire(tool, args)
+
+        def admitted_health():
+            result = dict((health or _attested_health)())
+            result["bound"] = _attested_health()["bound"]
+            return result
+
         wrote = []
         hashes = iter(hash_values or ["0" * 64] * 20)
-        monkeypatch.setattr(tool_verify, "call", wire)
+        monkeypatch.setattr(tool_verify, "call", admitted_wire)
         monkeypatch.setattr(verify_runner, "time", _Clock(1.0))
         monkeypatch.setattr(verify_runner, "RESULTS_DIR", str(tmp_path))
         monkeypatch.setattr(verify_runner, "REPO_ROOT", str(tmp_path))
         monkeypatch.setattr(verify_runner, "fixture_steps", fixture or (lambda *a, **k: []))
-        monkeypatch.setattr(tool_verify, "health_gate", health or _attested_health)
+        monkeypatch.setattr(tool_verify, "health_gate", admitted_health)
+        names = {step[0] for _name, pre, narrative, fallback in acts
+                 for step in list(narrative) + list(fallback or []) + ([pre] if pre else [])
+                 if step[0] != tool_verify._DWELL}
+        names.update({"model_write", "doc_new", "doc_close", "doc_open", "view_switch_workspace",
+                      "doc_get", "design_get", "doc_activate", "sys_get_preferences", "sys_execute_script"})
+        if not native_available:
+            names.discard("sys_execute_script")
         monkeypatch.setattr(tool_verify, "registered_tools", _registered(
-            ["model_write", "doc_new", "doc_close", "view_switch_workspace"]
-            + (["sys_execute_script"] if native_available else []),
+            sorted(names),
             {"model_write", "doc_new", "doc_close", "sys_execute_script"}))
         monkeypatch.setattr(tool_verify, "source_hash", lambda *a, **k: next(hashes))
         monkeypatch.setattr(tool_verify, "write_verified", lambda *a, **k:
                             wrote.append(True) or "VERIFIED_TOOLS.md")
         monkeypatch.setattr(tool_verify, "reload_smoke", lambda *a, **k:
                             _reloaded_attestation())
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
         monkeypatch.setattr(tool_verify, "POLL_AFTER", {})
         monkeypatch.setattr(tool_verify, "ACT_NEEDS", {})
         monkeypatch.setattr(tool_verify, "EXCLUDED", {})
@@ -3347,7 +3483,7 @@ class TestOwnedFamilies:
         monkeypatch.setattr(tool_verify, "FAMILY_PROGRAM", family_names(acts))
         code = tool_verify.run(write_json=False, acts_spec=acts_spec,
                                resume=resume, run_id=run_id, keep_open=keep_open,
-                               continue_families=continue_families)
+                               continue_families=continue_families, accept_open_work=accept_open_work)
         evidence = sorted((tmp_path / "outputs" / "tool-sweep").glob("families-*.json"))
         return code, wrote, json.loads(evidence[-1].read_text()) if evidence else None
 
@@ -3358,7 +3494,7 @@ class TestOwnedFamilies:
     def test_home_content_or_flag_change_stops_before_the_next_family(
             self, monkeypatch, tmp_path, mode, field, value):
         wire = _DocumentWire()
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             result = wire(tool, args)
             if tool == "model_write":
                 wire.documents["session:home"][field] = value
@@ -3385,7 +3521,7 @@ class TestOwnedFamilies:
         acts = [("ACT 3 - SURFACES", None, [("model_write", {}, "ok", None)], []),
                 ("ACT 4 - MESH", None, [("model_write", {}, "ok", None)], [])]
         code, wrote, evidence = self._run(monkeypatch, tmp_path, wire, acts,
-            acts_spec="ACT 3,ACT 4" if selected else None)
+            acts_spec="ACT 3,ACT 4" if selected else None, accept_open_work=True)
         assert code == 0 and evidence["receipt_written"] is (not selected)
         assert wrote == ([] if selected else [True])
         checks = [e for e in evidence["family_events"] if e["phase"] == "home-preservation"]
@@ -3405,7 +3541,7 @@ class TestOwnedFamilies:
         wire = _DocumentWire()
         wire.active = "session:intruder"
         reads = 0
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             nonlocal reads
             bad, payload = wire(tool, args)
             if tool == "doc_get":
@@ -3437,7 +3573,7 @@ class TestOwnedFamilies:
         assert code == 1 and not wrote and evidence is None
         assert wire.created == 0 and not [t for t, _a in wire.seen
                                           if t in {"model_write", "sys_execute_script", "doc_new"}]
-        assert "strict home preservation requires" in capsys.readouterr().out
+        assert "tiers.native_script=true but sys_execute_script is not registered" in capsys.readouterr().out
 
     @pytest.mark.parametrize("fault", ["native-refusal", "native-handle", "native-name",
         "native-urn", "native-flag", "closing-handle", "closing-flag", "closing-flag-type",
@@ -3447,7 +3583,7 @@ class TestOwnedFamilies:
     def test_home_snapshot_refuses_unreadable_or_mixed_identity(self, monkeypatch, fault):
         wire = _DocumentWire()
         reads = 0
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             nonlocal reads
             if tool == "sys_execute_script" and fault == "transport":
                 raise TimeoutError("observer outcome unknown")
@@ -3496,7 +3632,7 @@ class TestOwnedFamilies:
 
     def test_truncated_sketch_adapter_damage_cannot_receive_a_pass_label(self, monkeypatch, tmp_path):
         wire = _DocumentWire()
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             result = wire(tool, args)
             if tool == "model_write":
                 wire.documents[wire.active].update(feature_count=18, sketch_count=17,
@@ -3592,7 +3728,7 @@ class TestOwnedFamilies:
     def test_canonical_opening_in_subset_writes_only_the_owned_document(self, monkeypatch, tmp_path):
         wire = _DocumentWire()
         targets = []
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             result = wire(tool, args)
             if tool == "model_write":
                 targets.append((wire.active, args["expect_document"]))
@@ -3670,7 +3806,7 @@ class TestOwnedFamilies:
         wire = _DocumentWire(refuse_close=fault == "cleanup", drift_after_write=fault == "pin")
         damaged = False
 
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             nonlocal damaged
             if tool == "doc_close" and fault == "cleanup-transport":
                 wire.seen.append((tool, dict(args)))
@@ -3760,7 +3896,7 @@ class TestOwnedFamilies:
         monkeypatch.setattr(cloud, "_CLOUD_DRAWING", [])
         monkeypatch.setattr(cloud, "_CLOUD_CAM_PERSISTENCE", [terminal, cleanup])
 
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             if tool == "sys_execute_script" and not args.get("read_only"):
                 return False, {"restored": True}
             if tool == "cam_get_status":
@@ -3868,7 +4004,7 @@ class TestOwnedFamilies:
         baseline = dict(wire.documents)
         targets = []
 
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             if tool == "design_get" and args.get("include") == ["tree", "timeline"]:
                 targets.append(wire.active)
                 if wire.active == "session:home":
@@ -3904,7 +4040,7 @@ class TestOwnedFamilies:
             self, monkeypatch, tmp_path, mode):
         wire = _DocumentWire()
 
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             result = wire(tool, args)
             if tool == "model_write":
                 wire.documents["session:dependency"] = {
@@ -3966,7 +4102,7 @@ class TestOwnedFamilies:
     @pytest.mark.parametrize("fault", [None, "unknown", "changed"])
     def test_keep_open_checks_home_without_cleanup_or_activation(self, monkeypatch, tmp_path, fault):
         wire = _DocumentWire()
-        def call(tool, args):
+        def call(tool, args, **kwargs):
             result = wire(tool, args)
             if tool == "model_write" and fault:
                 wire.documents["session:home"]["body_count"] = None if fault == "unknown" else 2
@@ -4279,3 +4415,156 @@ class TestChamferGeometryWitness:
             seed(dict(units='mm', matches=[dict(kind='line_edge', handle='seed', position=[20, 0, 0])]))
         assert [row[0] for row in rows[-2:]] == ['doc_activate', 'doc_close']
         assert rows[-1][1](ctx)['save_changes'] is False
+
+
+def _baseline_real_consumer_spies(monkeypatch, extra_tools):
+    """Inject only explicit inert support and retain real admission/dispatch batch objects."""
+    program = sys.modules["verify_program"]
+    original_registered = _registered
+    original_tools = preflight.required_tools
+    original_steps = verify_runner.run_steps
+    original_run = tool_verify.run
+    registration, dispatch, records = [], [], []
+
+    def registered(names, writes=()):
+        return original_registered(sorted(set(names) | set(extra_tools)), writes)
+
+    def required(config, batch, conditions, support_routes=()):
+        registration.append((batch, tuple(support_routes)))
+        return original_tools(config, batch, conditions, support_routes=support_routes)
+
+    def steps(batch, *args, **kwargs):
+        assert isinstance(batch, tuple), "consumer recomputed the admitted batch"
+        assert any(batch is candidate for candidate, _routes in registration), (
+            "dispatch did not consume the identical checked batch")
+        dispatch.append(batch)
+        return original_steps(batch, *args, **kwargs)
+
+    def run(*args, **kwargs):
+        # These existing helpers replace lifecycle with inert functions, explicitly no wire support.
+        monkeypatch.setattr(tool_verify.reload_smoke, "support_routes", (), raising=False)
+        monkeypatch.setattr(tool_verify.family_switch_smoke, "support_routes", (), raising=False)
+        return original_run(*args, **dict(kwargs, batch_records=records))
+
+    monkeypatch.setitem(globals(), "_registered", registered)
+    monkeypatch.setattr(preflight, "required_tools", required)
+    monkeypatch.setattr(verify_runner, "run_steps", steps)
+    monkeypatch.setattr(tool_verify, "run", run)
+    return program, registration, dispatch, records
+
+
+@pytest.mark.parametrize("selected,keep_open", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("observed", [False, None])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_baseline_real_family_consumer_caches_false_branch_and_resolves_once(
+        monkeypatch, tmp_path, selected, keep_open, observed, fallback):
+    wire = _DocumentWire()
+    act = "ACT 10e - CAM: THE PART"
+    # These are reached by the actual pin/home, false-entitlement observer/poll and cleanup.
+    extra = {"pre_get", "design_get", "workspace_orient", "cam_get_status"}
+    if not keep_open:
+        extra.add("doc_activate")
+    program, registration, dispatch, records = _baseline_real_consumer_spies(monkeypatch, extra)
+    made, evaluated = {}, []
+
+    def fixture(family, before_act=None, entitled=True):
+        key = (family, before_act, entitled if before_act else None)
+        made[key] = made.get(key, 0) + 1
+        assert made[key] == 1, "fixture rebuilt between admission and real run"
+        def args(context):
+            evaluated.append(key)
+            return {"stage": repr(key), "seed": context.get("seed", 7)}
+        return [("model_write", args, "ok", ("seed", lambda _payload: 7))]
+
+    def arguments(context):
+        evaluated.append("actor")
+        return {"stage": "actor", "seed": context["seed"]}
+
+    actors = [("model_write", arguments, "ok", None)]
+    acts = [(act, ("pre_get", {}), actors, list(actors))]
+    def call(tool, args):
+        if tool == "pre_get":
+            wire.seen.append((tool, args))
+            return (True, "injected missing premise") if fallback else (False, {"found": True})
+        if tool == "workspace_orient":
+            wire.seen.append((tool, args))
+            return False, {"machining_capabilities": {"observed_generation": {"swarf": observed}}}
+        if tool == "cam_get_status":
+            wire.seen.append((tool, args))
+            return False, {"completed": True, "empty_toolpaths": [], "live_states": {"valid": 1}}
+        return wire(tool, args)
+
+    code, wrote, evidence = TestOwnedFamilies._run(
+        monkeypatch, tmp_path, call, acts, fixture=fixture,
+        acts_spec=act if selected else None, keep_open=keep_open)
+    assert code == 0
+    assert made == {("part_cam", None, None): 1, ("part_cam", act, False): 1,
+                    ("part_cam", act, True): 1}
+    assert evaluated == [("part_cam", None, None), ("part_cam", act, False), "actor"]
+    assert evidence["admitted_batches"] == records
+    assert all(record["status"] == "admitted" for record in records)
+    assert any(record["phase"] == act + (" fallback" if fallback else " narrative")
+               for record in records)
+    assert dispatch and all(any(batch is cached for cached, _routes in registration)
+                            for batch in dispatch)
+    assert all(not any(route[0] in ("reload-smoke", "family-switch") for route in routes)
+               for _batch, routes in registration if selected)
+    assert (wire.active != "session:home") is keep_open
+
+
+@pytest.mark.parametrize("selected,keep_open", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_baseline_real_tiny_legacy_consumer_has_no_unreachable_family_support(
+        monkeypatch, tmp_path, selected, keep_open, fallback):
+    program, registration, dispatch, records = _baseline_real_consumer_spies(
+        monkeypatch, {"pre_get"})
+    evaluated = []
+    actors = [("probe_get", lambda context: evaluated.append("actor") or {"n": 7}, "ok", None)]
+    acts = [("A", ("pre_get", {}), actors, list(actors))]
+    def call(tool, args):
+        if tool == "sys_get_preferences":
+            assert evaluated == [], "arguments evaluated before admission"
+            return _preference_reply()
+        if tool == "doc_get":
+            return False, {"active": {"document_handle": "session:home", "is_modified": False},
+                           "open_count": 1, "truncated": False, "open_documents": [
+                               {"document_handle": "session:home", "is_active": True}]}
+        if tool == "pre_get":
+            return (True, "missing") if fallback else (False, {"n": 1})
+        return False, {"n": 1}
+    real_run = tool_verify.run
+    monkeypatch.setattr(tool_verify, "run", lambda *args, **kwargs: real_run(
+        *args, **dict(kwargs, acts_spec="A" if selected else None, keep_open=keep_open)))
+    code, wrote = _run_document_program(monkeypatch, tmp_path, call, acts, writes=())
+    assert code == 0 and evaluated == ["actor"] and len(dispatch) == 1
+    assert all(not routes for _batch, routes in registration)
+    assert records == [{"phase": "A " + ("fallback" if fallback else "narrative"),
+                        "tools": ["probe_get"], "source_indices": [0], "status": "admitted"}]
+
+
+@pytest.mark.parametrize("branch", ["initial", "before"])
+def test_baseline_real_consumer_refuses_substituted_cached_row_before_arguments(
+        monkeypatch, tmp_path, branch):
+    wire = _DocumentWire()
+    act = "ACT 3 - SURFACES"
+    program, registration, dispatch, records = _baseline_real_consumer_spies(
+        monkeypatch, {"design_get", "doc_activate"})
+    original_cache = program.cache_baseline_plan
+    forbidden = []
+    def substitute(*args, **kwargs):
+        plan = original_cache(*args, **kwargs)
+        rogue = ("model_write", lambda context: forbidden.append(True) or {}, "ok", None)
+        if branch == "initial":
+            plan["initial"]["surfaces"] = (rogue,)
+        else:
+            plan["before"][act][True] = (rogue,)
+        return plan
+    monkeypatch.setattr(program, "cache_baseline_plan", substitute)
+    def fixture(family, before_act=None, entitled=True):
+        return [("model_write", {}, "ok", None)]
+    code, wrote, evidence = TestOwnedFamilies._run(
+        monkeypatch, tmp_path, wire, [(act, None, [("model_write", {}, "ok", None)], [])],
+        fixture=fixture, acts_spec=act)
+    assert code == 1 and not wrote and not forbidden
+    assert evidence["stopped"] is True
+    assert any(record["status"] == "blocked" for record in records)

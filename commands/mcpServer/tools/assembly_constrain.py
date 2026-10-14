@@ -92,9 +92,9 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
     flip?, offset?, angle_deg?} geometry pairs added to ONE constraint and solved together;
     snap_one/snap_two is the single-pair shorthand, and no snaps takes the Fusion selection. The
     relationship type is INFERRED from the geometry. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # Normalize inputs into a list of relationship specs: {snap_one, snap_two, flip, offset, angle}.
     offset_v, refusal = _number("offset", offset)

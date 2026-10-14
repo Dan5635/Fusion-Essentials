@@ -48,9 +48,9 @@ def _count_reversed(bodies):
 
 def reverse_normal_handler(bodies=None) -> dict:
     """Reverse the normals of one or more open surface bodies - flip which side is 'out'."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     surf_bodies, berr = _BODIES.resolve(bodies) # validates each isSolid == false before mutating

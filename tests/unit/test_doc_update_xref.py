@@ -4,8 +4,8 @@ Pins: no-refs early-out, matched/skipped/error paths, and that getLatestVersion
 raises rather than being swallowed when the call fails. A STALE reference refuses both refresh
 routes by default (the measured derive-link state), so a row whose refresh lands says refreshes=True.
 """
+from conftest import install as _install_design
 
-import json
 
 import pytest
 
@@ -16,9 +16,7 @@ from conftest import (FakeApplication, FakeDataFile, FakeDocumentReference, Fake
 xr = load_tool("doc_update_xref")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def FakeRef(name, is_out_of_date=True, version=1, latest_returns=True, latest_raises=None,
@@ -434,7 +432,7 @@ class _World:
 def world(monkeypatch):
     def _make(lies=(), target=0):
         w = _World(lies)
-        monkeypatch.setattr(xr._common, "design", lambda: w)
+        _install_design(xr, w)
         monkeypatch.setattr(xr._OCCURRENCE, "resolve", lambda raw: (w.occs[target], None))
         monkeypatch.setattr(xr._common, "timeline_health", lambda d: (list(w.errors), [], 0))
         monkeypatch.setattr(xr._data_common, "_resolve_data_file",

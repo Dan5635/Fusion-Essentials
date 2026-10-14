@@ -27,9 +27,9 @@ def handler(kind: str = "", curves=None, target_body: str = "", thickness=None, 
             symmetric: bool = True, flip: bool = False, extend: bool = False,
             component: str = "", name: str = "", units: str = "mm") -> dict:
     """Return the retained feature and target shape, or an explicit creation failure."""
-    design = _common.design()
-    if design is None:
-        return _common.error("No active design. Create or open a design first.")
+    design, design_refusal = _common.require_design(none_only=True)
+    if design_refusal is not None:
+        return design_refusal
     values, refusal = _inputs.resolve_inputs([_KIND, _CURVES, _inputs.UNITS],
                                             {"kind": kind, "curves": curves, "units": units})
     if refusal:

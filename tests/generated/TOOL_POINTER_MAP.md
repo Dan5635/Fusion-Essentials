@@ -6,7 +6,7 @@ navigate by: where each tool's text (its **description** = the manual, its runti
 = the situational tip) names ANOTHER tool. Act on the Blindspots below - fix dead references,
 close orphans, factor duplicated guards into shared helpers.
 
-**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 771
+**Tools:** 224  |  **description breadcrumbs:** 355  |  **note/error breadcrumbs:** 677
   |  **guidance smells flagged:** 8
 ## Blindspots to engineer
 
@@ -21,15 +21,11 @@ close orphans, factor duplicated guards into shared helpers.
   `cam_activate_setup`, `cam_delete_template`, `cam_export_setup`, `cam_generate_setup_sheet`, `cam_reorder`, `cam_show_toolpath`, `data_create_project`, `data_delete_folder`, `data_move_file`, `design_edit_plastic_rule`, `design_edit_reference_image`, `design_remove_feature`, `doc_save_milestone`, `drawing_add_sketch`, `drawing_add_symbol`, `drawing_delete_sketch`, `drawing_dimension`, `drawing_insert_image`, `joint_create_as_built`, `mesh_combine`, `mesh_delete`, `mesh_plane_cut`, `mesh_reverse_normal`, `mesh_separate`, `mesh_shell`, `mesh_smooth`, `model_arrange`, `model_base_feature`, `model_create_rib`, `model_draft`, `model_edit_body`, `model_edit_extrude`, `model_edit_feature`, `model_edit_sweep`, `model_loft`, `model_pattern_path`, `model_pattern_rectangular`, `model_replace_face`, `model_scale`, `model_set_material`, `model_thread`, `model_unstitch`, `param_set_favorite`, `render_edit`, `sheet_create_fold`, `sheet_create_join_by_bend`, `sheet_create_rip`, `sheet_create_unfold`, `sketch_add_3d_line`, `sketch_add_3d_spline`, `sketch_copy`, `sketch_insert_svg`, `surface_create_ruled`, `surface_delete_face`, `surface_extend`, `surface_fill`, `surface_offset`, `surface_revolve`, `surface_untrim`, `sys_reload_addin`
 
 ### Duplicated guard strings (>=4 copies = factor into a shared _common helper)
-- **59x** across 58 module(s): "No active design. Create or open a document first (see doc_new)."
-- **25x** across 24 module(s): "No active design. Open or create a document first (see doc_new)."
-- **8x** across 8 module(s): "No active design with components."
 - **7x** across 2 module(s): "' with design_delete_feature."
 - **6x** across 3 module(s): "Could not create output directory '"
 - **5x** across 4 module(s): "' has unreadable timeline identity; nothing was edited."
 - **5x** across 5 module(s): "'. Use: new, join, cut, intersect."
 - **5x** across 5 module(s): "Fusion declined to delete '"
-- **5x** across 4 module(s): "No active design (open a document with design geometry)."
 - **4x** across 4 module(s): "'. Use sketch_get or sketch_create."
 - **4x** across 3 module(s): "'s evaluated-health census is unreadable; nothing was edited."
 - **4x** across 1 module(s): ". Read design_get(include=['configurations'])."
@@ -40,7 +36,6 @@ close orphans, factor duplicated guards into shared helpers.
 - **4x** across 1 module(s): "setMotionData reported success on '"
 
 ### Hubs (most breadcrumbs lead here - the connective tissue)
-- `doc_new`  <- 92  (desc 0, note 92)
 - `design_get`  <- 74  (desc 18, note 56)
 - `find_geometry`  <- 62  (desc 18, note 44)
 - `design_delete_feature`  <- 41  (desc 16, note 25)
@@ -49,9 +44,10 @@ close orphans, factor duplicated guards into shared helpers.
 - `model_inspect`  <- 34  (desc 6, note 28)
 - `sketch_get`  <- 31  (desc 9, note 22)
 - `data_get`  <- 28  (desc 10, note 18)
-- `doc_open`  <- 27  (desc 5, note 22)
 - `sketch_create`  <- 26  (desc 7, note 19)
 - `assembly_get`  <- 24  (desc 4, note 20)
+- `doc_get`  <- 23  (desc 10, note 13)
+- `doc_open`  <- 23  (desc 5, note 18)
 
 ## The detected guidance surface
 
@@ -74,7 +70,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - body(ies) could not be compared, so the color is UNCONFIRMED there - see 'unverified_bodies'.
 - The color was written to
 - but could not be compared with a read-back there, so the appearance's own color is UNCONFIRMED.
-- No active design with geometry.
 - is outside 0-100. It is a PERCENT - the browser's Opacity Control - not a 0-255 color alpha.
 - has no bodies to color.
 - Opacity override applied - the browser's 'Opacity Control'.
@@ -155,7 +150,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `assembly_constrain`
 - Components constrained with the relationship set (type inferred from geometry).
-- No active design with components.
 - '. Valid: mm, cm, in.
 - Assembly constraint creation returned nothing.
 - ' was created but its healthState cannot be read, so whether it SOLVED is UNCONFIRMED - nothing here says the parts are located. Read it back with assembly_get(include=['relations']).
@@ -188,7 +182,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - 'moved' is null - no target occurrence's transform could be read on both sides of the add, so whether any part moved is UNKNOWN here (it is not a 'no'). Read the positions with assembly_get.
 
 ### `assembly_edit_contacts`
-- No active design. Open or create a document first (see doc_new).
 - This design reports no contactSets collection, so contact sets cannot be read or changed here.
 - Fusion declined to delete contact set '
 - ' (deleteMe returned false) - it is still in the design.
@@ -264,7 +257,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `assembly_edit_relations`
 - ' does not apply to a
-- No active design with components.
 - Coupling re-valued - 'interpreted' states how the ratio was read, and value_one/value_two are the link's own parameters READ BACK after the set. The SIGN of ratio SETS the direction, so a positive ...
 - 'ratio' must be non-zero (a 0 ratio links no motion).
 - ' does not report both coupled motions (motionOne/motionTwo), so its values cannot be re-set without guessing which degrees of freedom it links.
@@ -339,7 +331,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 ### `assembly_get`
 - Structured kinematic state. CHECK is_healthy FIRST - false means a joint, relation or feature FAILED TO COMPUTE, or the design holds an occurrence whose external reference does not resolve; broken_...
 - '. Use mm, cm, or in.
-- No active design. Open or create a document first (see doc_new).
 - Occurrence rows carry identity, ground flags, body_count and joints. include=['poses'] adds each one's world origin, x/y/z basis axes and bodies-only bbox; model_inspect(target='<occurrence>') meas...
 - occurrence(s) hold an UNRESOLVED external reference (): reading their component raises, so they carry no readable geometry, placement or joints and are excluded from every position/interference rea...
 - all_occurrences could not be enumerated by EITHER walk (root.allOccurrences and the component.occurrences fallback both failed): all_occurrence_count is null - the census is UNKNOWN, not zero, and ...
@@ -361,7 +352,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 ### `assembly_ground`
 - Parent lock set. Parametric re-locks discard free moves; direct-mode re-locks keep the current position. assembly_get's grounded_occurrences lists only the UI Ground/Fix flag (not settable here), s...
 - Specify 'ground_to_parent' (true/false): true locks the occurrence to its parent; false releases it.
-- No active design with components.
 - isGroundToParent cannot be read on '
 - ' after setting it to
 - , so the change is UNCONFIRMED. Re-read the occurrence with assembly_get.
@@ -376,7 +366,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - interfering occurrence pair(s) - bodies overlap or meet at coincident faces. Each lists the two occurrences and readable overlap volume from analysed body pairs; fix positioning/sizing/joints. (A s...
 - No interference found among the compared solid bodies
 - within the selected occurrences
-- No active design to analyze.
 - max_results must be an integer from 1 to
 - offset must be a nonnegative integer.
 - Cannot check interference: this scope exposes
@@ -398,7 +387,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - '. Use mm, cm, or in.
 - Provide a translation (dx/dy/dz), rotate_deg, or rotate_x/y/z - no movement specified.
 - Use EITHER rotate_deg (single axis) OR rotate_x/y/z (multi-axis), not both.
-- No active design with components.
 - ' did not read its current transform, so a relative move has nothing to compose onto - nothing was moved. Re-read it with assembly_get and retry.
 - Move was accepted but '
 - ' reads an unchanged transform - it did not move. A grounded/jointed occurrence can snap back: free it (assembly_ground false) or pose it through its joint (joint_drive).
@@ -414,7 +402,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `assembly_rigid_group`
 - Occurrences locked together as a rigid group.
-- No active design with components.
 - A rigid group needs at least two occurrences.
 - Rigid group creation returned nothing.
 - ' was created but reports only
@@ -526,7 +513,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `cam_create_setup`
 - Cutting setup uses the flat bodies of the named folded sources. Use cam_create_operation(strategy='profile2d') for a cutting path.
-- No active design. Open or create a document first (see doc_new).
 - No bodies to machine. The root component holds no bodies - add geometry first, or pass 'models' = body handles/names (a body inside a sub-component is not in the default set).
 - Setup creation returned nothing.
 - setups.add returned a setup for '
@@ -834,7 +820,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `cam_find_holes`
 - Omitted 'bodies' scans every solid body. Each hole's 'faces' lists handles PER SEGMENT, in the group's 'segments' order - pass handles to cam_select_geometry(selection='holes', handles=[...]), whic...
-- No active design (open or create a document first).
 - No solid body to recognize holes on:
 - unreadable body/bodies were skipped. Name a solid body in 'bodies' (find_geometry / design_get(include=['tree'])).
 - surface_bodies_skipped
@@ -843,7 +828,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `cam_find_pockets`
 - Omitted 'bodies' scans every solid body. 'faces' holds the pocket's own faces; cam_select_geometry(selection='pocket') takes exactly one of them, the FLOOR; it refuses a wall. include_bosses=true a...
-- No active design (open or create a document first).
 - No solid body to recognize pockets on:
 - unreadable body/bodies were skipped. Name a solid body in 'bodies' (find_geometry / design_get(include=['tree'])).
 - surface_bodies_skipped
@@ -1370,7 +1354,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Destination folder path not found: '' (missing segment ''). Folders available at '': . Pass create_path=true to create missing folders, or use data_get(include=['folders']) to see the structure.
 
 ### `design_activate_component`
-- No active design. Create or open a document first (see doc_new).
 - Occurrence.activate() returned false for '
 - ' - could not make it the active edit target.
 - activate() returned true for '
@@ -1391,7 +1374,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' as the NEW component '
 - ', with its own geometry. Joints on the source were not copied. Position it with assembly_move / joint_create.
 - '. Use mm, cm, or in.
-- No active design. Open or create a document first (see doc_new).
 - Could not reach the component behind '
 - Refusing to instance '
 - ' itself or sits inside it, so the component would contain an instance of itself. Pick a target outside it (omit 'into_component' for root).
@@ -1441,7 +1423,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Whether its position is pending did not read - assembly_capture_position(action='status') says. Uncaptured, the next feature moves the copy to the pose of ''.
 
 ### `design_configure`
-- No active design. Open or create a document first.
 - 'occurrence' belongs to action='switch_occurrence', not '
 - The active design is not yet a configured design. Run action='create' first.
 - Save the document first (doc_save_as), THEN run create. Converting an unsaved document builds the table only in memory - it won't materialize as a configured design (no DataFile to carry it, and th...
@@ -1616,7 +1597,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ', but its absence is UNVERIFIED:
 - , so the re-read cannot prove the object is gone - and a check that could not read is not a check that found nothing. Nothing was rolled back; re-read design_get(include=['timeline']) to see what i...
 - Provide 'feature' - the timeline object name to delete (see design_get(include=['timeline'])).
-- No active design (open a document with design geometry).
 - This design has no timeline (a direct-modelling design has no deletable timeline features). Delete bodies/occurrences directly instead.
 - ' is a timeline GROUP, which has no deletable entity. Ungroup it (or delete its member features) instead.
 - ' has no associated entity to delete (it may be a group or an unsupported timeline object).
@@ -1637,7 +1617,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - deleteMe() reported success for '
 - ', but its absence is UNVERIFIED: the occurrence walk did not carry '
 - ' even before the delete, so the re-read cannot prove the instance is gone - and a check that could not read is not a check that found nothing. Nothing was rolled back; re-read design_get(include=[...
-- No active design with components.
 - Fusion refused to delete '
 - ': deleteMe() returned false, which carries no reason. Read design_get(include=['timeline']) to see which feature built this instance - an instance a pattern/mirror feature owns is removed by editi...
 - deleteMe() reported success but '
@@ -1653,7 +1632,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `design_edit_reference_image`
 - '. Use mm, cm, or in.
-- No active design. Create or open a document first (see doc_new).
 - was changed but its row did not read back; design_get(include=['reference_images']) reads it.
 - ' was not changed as asked:
 - . design_get(include=['reference_images']) reads it as it is.
@@ -1662,7 +1640,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - The  did not land as one new image (count  before,  after); design_get(include=['reference_images']) reads what is there.
 
 ### `design_edit_timeline`
-- No active design (open a document with design geometry).
 - This design has no timeline (a direct-modelling design keeps no history), so there is no marker to move and nothing to group.
 - confirm_delete_after_marker must be a Boolean, got
 - . Use false for a preview or true to discard the items after the marker.
@@ -1803,7 +1780,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - dxf_flat_pattern takes dxf_flat_units, dxf_bend_lines and dxf_bend_extents only; drop
 - ') and split_by_component=true cannot be combined: the split writes one file per TOP-LEVEL occurrence and would not narrow to that target - refusing rather than dropping it. Omit 'target' to split ...
 - Provide 'file_path' - the local output path (a file, or a DIRECTORY when split_by_component=true). The format extension is appended if missing.
-- No active design to export. Open or create a document first (see doc_new).
 - component(s) to separate
 - files. Each top-level occurrence is one file - ready to print/assemble individually.
 - takes no occurrence, so each file was written from that occurrence's COMPONENT.
@@ -1850,7 +1826,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - . 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/'tree_handles' scope the tree; 'group'/'include_suppressed'/'timeline_params' the timeline; 'library'/'name_filter'/'max_results'...
 - 'default' keeps overview; include=
 - contents.occurrences_walk='unreadable': NEITHER root.allOccurrences nor the component.occurrences fallback enumerated, so the occurrence count is missing because it is UNKNOWN, not because the desi...
-- No active design. Open or create a document first (see doc_new).
 - 'feature' scopes include=['definition']; include that slice to read its definition.
 - Component/occurrence not found: '
 - Could not read root occurrences:
@@ -1879,7 +1854,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `design_move_occurrence`
 - '. A move keeps the part's WORLD position (measured) - it changes where the instance sits in the browser tree, not where the geometry is. Every path beneath it changed too, so re-read with design_g...
-- No active design. Open a document first (see doc_open / doc_new).
 - 'into_component' is required (an occurrence whose component receives the instance). This call cannot move an instance back to the TOP LEVEL: the API moves an occurrence into another OCCURRENCE, and...
 - ' has no component to move into.
 - Could not read the component behind '
@@ -1906,7 +1880,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `design_remove_feature`
 - Remove is a TIMELINE feature - suppress it (design_edit_timeline) or delete it (design_delete_feature) to bring the item back. Pair with design_get(include=['tree']) to confirm the assembly.
-- No active design. Create or open a document first (see doc_new).
 - Provide EITHER 'body' ('
 - ') OR 'occurrence' ('
 - ') - one Remove feature takes one item. Call the tool twice to remove two things.
@@ -1937,7 +1910,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ' - read back after the set.
 - Nothing to set - pass 'part_number', 'description', or both.
 - An empty 'part_number' is ignored by Fusion - the component keeps the number it already has. Pass the number to set.
-- No active design. Open a document first (see doc_open / doc_new).
 - must be a string. No metadata was changed.
 - Could not reach the component behind occurrence '
 - ' to set its metadata.
@@ -1950,7 +1922,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `design_set_mode`
 - The design mode does not read back after the assignment, so the conversion is UNCONFIRMED - 'converted' and 'history_discarded' are null. Re-read with design_get(include=['mode']) to see what the d...
-- No active design. Create or open a document first (see doc_new).
 - 'target' must be one of:
 - Converting to DIRECT destroys the timeline and all design history (irreversible). Re-call with confirm_history_loss=true to proceed.
 - Re-run design_get(include=['mode']) to see the updated capability map.
@@ -1960,7 +1931,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 ### `design_set_name`
 - 'new_name' is required - a non-empty name to give the target.
 - Unknown rename kind '
-- No active design. Open a document first (see doc_open / doc_new).
 - already holds the name '
 - ' but the name could not be read back, so the rename is unverified. Check the browser (design_get(include=['tree'])).
 - The rename did not take -
@@ -2082,7 +2052,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 ### `doc_insert_derive`
 - One-way linked COPY of the source's last SAVED cloud version - unsaved in-session edits in the source are NOT derived (save the source, then doc_update_xref). Edits made here (a fillet, a patch, an...
 - Provide 'document_id' - the lineage URN (or web URL) of the saved cloud document to derive.
-- No active design. Open or create the host document first (see doc_new).
 - ' to a saved document. Tried:
 - . Pass a lineage URN or web URL (from data_get). The document must be SAVED to the cloud.
 - The source document '
@@ -2135,7 +2104,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - No readable file at '
 - '. Pass a full path on THIS machine's disk; a cloud file must be downloaded first, or referenced with doc_insert_occurrence.
 - Application.importManager is unavailable - nothing can be imported.
-- No active design to import into. Open or create a document first (see doc_new), or pass new_document=true.
 - import reported no failure but nothing landed in
 - : importToTarget2 returned no objects and the component gained no body and no occurrence. Read the design back with design_get(include=['tree']) - the geometry may have landed elsewhere.
 - Imported as solid/surface geometry. An assembly file lands as sub-occurrences, a single part as bodies. Inspect it with design_get(include=['tree']) and pick faces/edges for the model tools with fi...
@@ -2172,7 +2140,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 
 ### `doc_insert_occurrence`
 - Provide 'document_id' - the lineage URN (or web URL) of the saved cloud document to insert.
-- No active design. Open the host document first.
 - ' to a saved document. Tried:
 - . Pass a lineage URN or web URL (from data_get). The document must be SAVED to the cloud.
 - '. Use mm, cm, or in.
@@ -2395,7 +2362,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - bend_table_location requires a bend table; omit the location or enable bend_table.
 - creation_mode 'manual' requires template_file, which was empty.
 - This call stops here without creating anything. Pass the template's DataFile id/URL as template_file, or use creation_mode 'automatic'.
-- No active design to draw. Open or create a design first (see doc_new), then retry.
 - DrawingManager is unavailable in this Fusion session - cannot create a drawing.
 - createDrawingInput returned null - Fusion could not start a drawing from this design.
 - createDrawing returned null - Fusion did not generate a drawing (nothing created).
@@ -2691,7 +2657,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - A match on a body that is not visible carries hidden:true.
 A planar face's 'frame' is that plane in world space: the point at local (u, v) is frame.origin + u*frame.x_world + v*frame.y_world, and f...
 - '. Use mm, cm, or in.
-- No active design (open or create a document first).
 - 'sketch' and 'name' narrow sketch_* and construction-datum kinds; kind='
 - ' reads a Form's cage: 'name' names the Form; drop
 - 'position' is WORLD: a vertex, an edge's middle, a face's centroid. Cage handles feed form_edit and hold until the cage changes.
@@ -2707,7 +2672,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `form_create`
 - '. Use mm, cm, or in.
 - 'origin' is three numbers [x, y, z] - got
-- No active design. Create or open a document first (see doc_new).
 - with total surface area
 - 'primitive' is an object of
 - The cage was refused before Fusion saw it:
@@ -2719,7 +2683,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The cage re-read matches the edit.
 - The Form's B-Rep reads the same as before: this change does not alter the surface.
 - '. Use mm, cm, or in.
-- No active design. Create or open a document first (see doc_new).
 - ' did not open (startEdit
 - ' did not confirm closed (
 - ). If the design still reads direct (workspace_orient design.mode), ask the user to click Finish Form; find_geometry then reads the cage as it is.
@@ -2729,7 +2692,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `form_get`
 - '. Use mm, cm, or in.
-- No active design. Open or create a document first (see doc_new).
 - include=['cage'] reads one Form and the design holds
 - - name it with 'form'.
 
@@ -2754,7 +2716,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `joint_create`
 - Joint created as a timeline feature. View it with view_screenshot.
-- No active design (open a document with assembly geometry).
 - '. Valid: mm, cm, in.
 - Provide 'occurrence_one' and 'occurrence_two' - each a Joint Origin name OR an autonomous geometry snap '<occurrence>:<snap>' (snap = origin/center/top/bottom/left/right/front/back/cylinder).
 - Could not resolve joint input '
@@ -2781,7 +2742,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Occurrences joined where they already are with
 - - an as-built joint moves neither part.
 - Occurrences rigidly joined where they already are.
-- No active design with components.
 - As-built joint needs two distinct occurrences.
 - ' needs 'geometry' - the anchor its motion runs on (a find_geometry handle, or '<occurrence>:<snap>' with snap = origin/center/top/bottom/left/right/front/back/cylinder). Fusion refuses a non-rigid...
 - joint_type 'rigid' takes no 'geometry' - a rigid as-built joint locks the two occurrences with no anchor to move along, so '
@@ -2817,7 +2777,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `joint_create_origin`
 - Joint origin created. frame_axes shows the resulting Z/X/Y directions. For an oriented frame: anchor='bbox_center' (Z = orient_axis) / 'face_center' (Z = face normal) / a sketch line. anchor='coord...
-- No active design. Open or create a document first (see doc_new).
 - '. Valid: mm, cm, in.
 - Could not build joint geometry from the given anchor.
 - createInput returned nothing for this geometry.
@@ -2844,7 +2803,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Joint driven (the Drive Joints command). This pose is TRANSIENT: a recompute resets it unless captured, so call assembly_capture_position (action='capture') to write it into the timeline as a Posit...
 - Provide 'angle_deg' (revolute/cylindrical) and/or 'distance' (slider/cylindrical) to drive the joint to.
 - '. Use mm, cm, or in.
-- No active design with components.
 - '. Use assembly_get or design_get(include=['timeline']) to list joint names.
 - - only revolute, slider, and cylindrical joints can be driven by value. (rigid has no value; for a ball joint pose the part with assembly_move.)
 - ' is a slider - it has no rotation. Use 'distance', not 'angle_deg'.
@@ -2970,7 +2928,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `mesh_combine`
 - Mesh bodies combined. 'algorithm' is what the input read back before the add; the algorithm that ran is not confirmed. The edit lands on the COMPONENT, so EVERY instance carries it; a tool addresse...
-- No active design. Create or open a document first (see doc_new).
 - REFUSED before combining: a
 - needs the tool to OVERLAP the target, and
 - ' (bounding boxes are separated; the gap is a lower bound). The API would report success while consuming the tool and changing nothing. Move the tool into the target (model_move) and combine again....
@@ -2991,7 +2948,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - WARNING:  - a join cannot fuse what does not touch, so nothing of the target fused with those directly ('gap_cm' is the bounding-box separation, a LOWER BOUND on the real clearance). Check the resu...
 
 ### `mesh_delete`
-- No active design. Create or open a document first (see doc_new).
 - Delete reported success but a mesh named '
 - ' still resolves in component '
 - ' - treat the delete as failed.
@@ -3013,7 +2969,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - with split_by_component
 - ') and split_by_component=true cannot be combined: the split writes one file per TOP-LEVEL occurrence and would not narrow to that target - refusing rather than dropping it. Omit 'target' to split ...
 - Provide 'file_path' - the local output path (a file, or a DIRECTORY when split_by_component=true). The format extension is appended if missing.
-- No active design to export. Open or create a document first (see doc_new).
 - ' not found. Pass a body HANDLE from find_geometry (precise), a body/mesh/component/occurrence NAME, or omit 'target' to export the whole design.
 - This design exposes no exportManager - cannot export.
 - This build's ExportManager has no
@@ -3054,7 +3009,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `mesh_generate_face_groups`
 - Face-group generation ran -
 - . Convert with mesh_to_brep(method='prismatic').
-- No active design. Open or create a document first (see doc_new).
 - This design has no meshGenerateFaceGroupsFeatures collection (generate face groups unavailable here).
 - mesh_generate_face_groups reported no error, but add() returned no feature and neither the mesh's face group count nor its group ids read before or after - nothing observed what this generation did.
 - meshGenerateFaceGroupsFeatures.createInput returned nothing.
@@ -3064,7 +3018,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `mesh_get`
 - These are MESH bodies (not BRep). Inspect one with model_inspect (it reports mesh stats on a mesh target), edit with mesh_reduce / mesh_remesh, or convert with mesh_to_brep. A mesh has no BRep face...
-- No active design. Open or create a document first (see doc_new).
 - List one instance's meshes by its occurrence name/fullPathName (design_get(include=['tree']) lists the instances), or pass target='' to scan the whole design.
 - No component/occurrence named '
 - '. List the tree with design_get(include=['tree']), or pass target='' to scan the whole design.
@@ -3080,7 +3033,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Unsupported mesh file '
 - '. Import needs one of:
 - . (To import from the data model, first resolve the file to a local path with the data_* tools, then pass that path.)
-- No active design. Open or create a document first (see doc_new).
 - ' for mesh import. Use mm, cm, m, in, or ft.
 - Mesh import returned no bodies (the file may be empty or unreadable as a mesh).
 - Mesh import failed (meshBodies.add raised):
@@ -3091,7 +3043,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `mesh_plane_cut`
 - Mesh cut by the plane. 'trim' keeps one side, 'split_body' makes two mesh bodies, 'split_faces' cuts the triangulation in place. fill controls the new opening (none / minimal / uniform). Use flip=t...
-- No active design. Open or create a document first (see doc_new).
 - This design has no meshPlaneCutFeatures collection (mesh plane cut unavailable here).
 - Refusing before any cut: '
 - . The plane does not straddle the mesh, and
@@ -3125,7 +3076,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - This mesh reads is_closed=true, so the open-mesh explanation does not apply - check that the plane actually passes through the body.
 
 ### `mesh_reduce`
-- No active design. Open or create a document first (see doc_new).
 - For target=proportion, 'value' is a percent in (0, 100].
 - For target=max_deviation, 'value' must be a positive length (in 'units').
 - This design has no meshReduceFeatures collection (mesh reduce unavailable here).
@@ -3147,7 +3097,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . Read the mesh back with mesh_get before building on it.
 - is not a number. Pass a positive number, or 0 for the API default.
 - is negative. Use a positive density, or 0 for the API default.
-- No active design. Open or create a document first (see doc_new).
 - This design has no meshRemeshFeatures collection (mesh remesh unavailable here).
 - meshRemeshFeatures.createInput returned nothing.
 - Could not create the mesh-remesh input:
@@ -3160,7 +3109,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Mesh repaired. Re-read the body with mesh_get.
 - Nothing changed: the mesh reads the same before and after (
 - found nothing of its kind to fix. A MeshBody exposes no defect count beyond is_closed, so this is reported as it was measured rather than judged.
-- No active design. Open or create a document first (see doc_new).
 - applies to repair_type='rebuild' only (got repair_type='
 - ') - drop it, or switch repair_type to 'rebuild'.
 - 'offset' applies to rebuild_method='accurate' only (got rebuild_method='
@@ -3183,7 +3131,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `mesh_reverse_normal`
 - Mesh normals flipped. is_closed and is_oriented do not move across a reverse, so they are not evidence - the flip reported here is the signed volume and the per-node normals. Pair with view_screens...
-- No active design. Open or create a document first (see doc_new).
 - This design has no meshReverseNormalFeatures collection (mesh reverse normal unavailable here).
 - meshReverseNormalFeatures.createInput returned nothing.
 - Mesh reverse normal raised no error, but neither the body's signed volume nor its per-node normals could be read back - the flip is UNVERIFIED, so it is reported as a failure. is_closed and is_orie...
@@ -3195,7 +3142,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `mesh_separate`
 - shells. 'pieces' names them as Fusion auto-named them, read back from the component - a mesh feature reports no bodies of its own. Re-read them with mesh_get.
-- No active design. Open or create a document first (see doc_new).
 - This design has no meshSeparateFeatures collection (mesh separate unavailable here).
 - meshSeparateFeatures.createInput returned nothing.
 - Mesh separate raised no error, but the component's mesh body list could not be read back - whether the mesh was divided is UNVERIFIED, so it is reported as a failure. Check the component with mesh_...
@@ -3206,7 +3152,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `mesh_shell`
 - Mesh hollowed in place - the same body, re-triangulated. Re-read it with mesh_get.
-- No active design. Open or create a document first (see doc_new).
 - This design has no meshShellFeatures collection (mesh shell unavailable here).
 - meshShellFeatures.createInput returned nothing.
 - Mesh shell raised no error, but nothing could be read back off the mesh afterwards (triangle and vertex counts and volume are all unreadable) - the hollow is UNVERIFIED, so it is reported as a fail...
@@ -3226,7 +3171,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The mesh changed but its enclosed volume did not drop (volume_change ), so the hollow is NOT confirmed by volume - check the body with mesh_get.
 
 ### `mesh_smooth`
-- No active design. Open or create a document first (see doc_new).
 - This design has no meshSmoothFeatures collection (mesh smooth unavailable here).
 - meshSmoothFeatures.createInput returned nothing.
 - Mesh smooth raised no error, but the mesh node coordinates could not be read back. Triangle and vertex counts hold still across a smooth, so there is nothing else to judge it on - the smooth is UNV...
@@ -3242,7 +3186,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `mesh_to_brep`
 - Converted to BRep - find_geometry / fillet / chamfer / CAM can now act on these bodies. 'prismatic' merges flat face groups (fewest faces); 'faceted' is one face per triangle (exact, heavy).
-- No active design. Open or create a document first (see doc_new).
 - This mesh is NOT watertight (is_closed=false), so method='
 - ' has no closed volume to convert to a solid. Close the holes with mesh_repair(repair_type='close_holes') and retry, or convert it as a surface with method='faceted'.
 - OrganicMeshConvertMethodType is absent or unreadable in this Fusion API session. Check API availability, or use method='prismatic' or 'faceted'.
@@ -3261,7 +3204,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Shapes arranged within the envelope. Pair with view_screenshot (top) to view the nest.
 - '. Use mm, cm, or in.
 - Unknown solver '%s'. Use 'true_shape', 'rectangular' or '3d'.
-- No active design. Create or open a document first (see doc_new).
 - 'quantity' must be a whole number of 1 or more, got
 - Pass exactly ONE envelope: 'boundary_sketch' (a sketch profile), or 'envelope_plane' with 'envelope_length' and 'envelope_width'. Given boundary_sketch='
 - solver='3d' packs into a 3D envelope: pass 'envelope_plane' with 'envelope_length', 'envelope_width' and 'envelope_height' instead of 'boundary_sketch' ('
@@ -3308,7 +3250,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - captured open base-feature scope(s); design is now
 - scope(s) did NOT confirm closed (
 - ) - each may still be OPEN, which keeps the design reading direct and the timeline inaccessible. Their handles are KEPT (an open base feature can be reached no other way), so model_base_feature(act...
-- No active design. Create or open a document first (see doc_new).
 - 'action' must be one of:
 - Base-feature edit OPEN - geometry from subsequent tool calls lands in this scope. While it is open the design READS as 'direct' and the timeline is inaccessible; that reverts on finish. ALWAYS pair...
 - This component has no baseFeatures collection - cannot create a base feature here.
@@ -3318,6 +3259,8 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The active document identity is unreadable, so this call refused before finishEdit. All captured handles were kept; refresh the active document and retry.
 - A captured base-feature scope has no readable document owner, so this call refused before finishEdit. Its only handle was kept, but it cannot be assigned safely; finish that open scope in Fusion be...
 - A captured scope owned by the active document remains open; editing is unconfirmed until that handle closes successfully.
+- Base-feature lookup for '{name}' is incomplete; a component identity, collection, or feature name did not read. No finishEdit was called. Refresh the design and retry, or finish the scope in Fusion.
+- Base feature '' is ambiguous:  matches (). No finishEdit was called. Rename the intended feature uniquely in Fusion and retry with its exact name.
 - scope(s) did NOT confirm closed () - each may still be OPEN, which keeps the design reading direct and the timeline inaccessible. Their handles are KEPT (an open base feature can be reached no othe...
 - Note: a scope opened by a DIFFERENT session/tool cannot be seen while it is open (the API hides an in-edit base feature) - only the session that opened it holds the object needed to close it.
 
@@ -3327,7 +3270,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_combine`
 - Bodies combined. Pair with view_screenshot to view the result.
 - '. Use: join, cut, intersect.
-- No active design. Create or open a document first (see doc_new).
 - No valid tool bodies resolved.
 - A tool body is the same as the target - pick distinct bodies.
 - . (Bodies must overlap for cut/intersect; all bodies must be solids in the same component.)
@@ -3349,7 +3291,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - WARNING: this  DISCONNECTED the target into  separate bodies () - reference each piece by name; a later op assuming one body may hit the wrong piece.
 
 ### `model_compute_holder`
-- No active design. Open the holder model first (see doc_open).
 - 'axis' must be a CYLINDRICAL or CONICAL face, or a straight EDGE - that handle doesn't define an axis of rotation. Use find_geometry(kind=cylinder_face / line_edge) on the holder.
 - 'end_datum' must be a PLANAR face (or edge/vertex) NORMAL to the axis - that handle isn't a valid end datum for this axis. Pick the flat end face of the holder.
 - No holder profile could be derived - no coaxial faces reduced to segments. Check that 'axis' is the true axis of revolution and the body is a turned holder.
@@ -3361,7 +3302,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Construction datum created - snap joints/sketches to it (e.g. joint_create_origin).
 - '. Use mm, cm, or in.
 - '. Use: point, axis, plane.
-- No active design. Create or open a document first (see doc_new).
 - creation returned nothing.
 - Fusion reported success but the datum '
 - ' where it was built. It is still in the design - remove it with design_delete_feature.
@@ -3405,7 +3345,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Empty sheet-metal component created
 - Empty component created
 - '. Use mm, cm, or in.
-- No active design. Create or open a document first (see doc_new).
 - sheet_metal=true has only been verified at root; omit parent and create a root sheet-metal component.
 - Could not access the target occurrences collection to create the component.
 - Component creation returned nothing.
@@ -3430,7 +3369,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Faces tapered to the pull direction. Pair with view_screenshot to view.
 - 'angle_deg' must be non-zero - a 0 deg draft tapers nothing.
 - 'angle_deg' must be between -90 and 90 degrees (got
-- No active design. Create or open a document first (see doc_new).
 - Draft feature was created but failed to compute:
 - . Try a smaller angle, 'flip', or a different pull direction.
 - Draft computed but tapered nothing - on
@@ -3454,7 +3392,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'faces' is unused for action='
 - action='create_component' does not use 'destination'; omit it.
 - ' requires explicit 'destination' (occurrence or root).
-- No active design. Open a design document first.
 - 'body' did not resolve to a BRep or mesh body.
 - returned no body. The operation may have partially landed; inspect source and destination with design_get(include=['tree']). Partial state:
 - Body ownership changes the component definition in every placement. Use the fresh handle promptly; old move/create handles may be stale.
@@ -3576,7 +3513,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `model_emboss`
 - Profile stamped onto the face(s). 'mode' ECHOES the sign of the depth requested; the call is refused when the body's measured volume moves the other way, so the mode reported here is also the direc...
-- No active design. Create or open a document first (see doc_new).
 - 'faces' resolved to face(s) with no readable owning body - cannot emboss.
 - ) - an emboss stamps the faces of ONE body. Pass faces from a single body, one call per body.
 - 'faces' sit on a body in component '
@@ -3612,7 +3548,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'wall_thickness_two' requires the first 'wall_thickness' and 'wall_side'.
 - 'wall_thickness_two' and 'wall_side_two' require extent='two_side'.
 - '. Use: new, join, cut, intersect.
-- No active design. Create or open a document first (see doc_new).
 - profile_index mixes the sketch text '
 - ' with other regions. A sketch text extrudes on its own - pass just '
 - ', and a separate call for the closed regions.
@@ -3731,7 +3666,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Rule fillet created - the rounded edge set is defined by the selected FACES, not by individual edge handles. Pair with view_screenshot.
 - '. Use mm, cm, or in.
 - A rule fillet needs 'faces' - find_geometry face handles. Every edge of those faces is rounded; add 'second_faces' to round only the edges between the two sets.
-- No active design. Create or open a document first (see doc_new).
 - Provide a positive radius: the expression '
 - Rule fillet reported success but rounded nothing. topology '
 - ' may exclude every edge of the selected faces ('rounds_only' takes convex edges, 'fillets_only' concave ones), or the faces meet smoothly and have no corner to round.
@@ -3835,7 +3769,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `model_inspect`
 - Mesh target: triangle/vertex counts + watertight (is_closed) + bbox. (A mesh has no B-Rep bounding box or mass; target a solid body/occurrence for include=['mass'].)
-- No active design. Open or create a document first (see doc_new).
 - Bounding box over the SOLID/SURFACE/MESH bodies only - sketch and construction geometry (planes, axes) are excluded, so an orphaned datum does not inflate it. Add include=['mass'] for physical prop...
 - Material/appearance reads require a body, component, or occurrence target.
 - '. Valid: mm, cm, in.
@@ -3868,7 +3801,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_loft`
 - Lofted through %d sections in order.
 - '. Use: new, join, cut, intersect.
-- No active design. Create or open a document first (see doc_new).
 - Loft needs at least 2 sections (got
 - An open edge surface Loft supports operation='new' only.
 - centerLineOrRails takes a centerline OR rails, not both.
@@ -3903,7 +3835,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Loft reported success but this  changed nothing - every solid body in '' measures the volume it had before and none was consumed, so the lofted shape does not overlap any of them. Check the profile...
 
 ### `model_measure_between`
-- No active design. Open or create a document first (see doc_new).
 - '. Use 'distance' or 'angle'.
 - '. Valid: mm, cm, in.
 - Minimum gap between the two targets (0 = touching/overlapping). closest_point_on_a/b are the nearest points; their separation IS the distance.
@@ -3925,12 +3856,10 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - max_curvature_jump is per
 - '. Use mm, cm, or in.
 - 'samples' is a whole number from 1 to
-- No active design. Create or open a document first (see doc_new).
 - 'edges' takes at most
 - . Measure them in batches.
 
 ### `model_measure_relation`
-- No active design. Open or create a document first (see doc_new).
 - '. Valid: mm, cm, in.
 - tolerance_deg must be >= 0 (degrees).
 - tolerance_deg must be a number (degrees).
@@ -3948,7 +3877,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_mirror`
 - Feature(s) mirrored across the plane. Confirm with design_get(include=['timeline']) / view_screenshot.
 - Bodies mirrored across the plane. Pair with view_screenshot to view.
-- No active design. Create or open a document first (see doc_new).
 - Give ONE thing to mirror: 'bodies' (
 - Nothing to mirror. Pass 'bodies' (body handles/names) or 'features' (timeline feature names from design_get(include=['timeline'])).
 - Nothing resolved to mirror.
@@ -3965,7 +3893,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Geometry repositioned. To reposition a component instance instead, use assembly_move.
 - A move feature cannot move FACES - pass 'bodies'. createInput2 accepts a BRepFace collection and then raises InternalValidationError inside the kernel. To push or pull a face, use model_offset_face.
 - 'bodies' is required - the bodies to move.
-- No active design. Create or open a document first (see doc_new).
 - 'bodies' mixes mesh and BRep bodies - move each kind in its own call.
 - A mesh body moves by mode 'translate' only - got '
 - Move feature was created but failed to compute:
@@ -3992,7 +3919,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `model_offset_face`
 - Face(s) pushed/pulled along their normal. Positive extends outward (adds material); negative pushes inward (removes material).
-- No active design. Create or open a document first (see doc_new).
 - 'faces' resolved to face(s) with no readable owning body - cannot offset.
 - Offset face was created but failed to compute:
 - . Try a smaller distance or a different face selection.
@@ -4004,7 +3930,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_pattern_circular`
 - patterned around the axis.
 - quantity must be >= 2 for a circular pattern.
-- No active design. Open or create a document with components first.
 - Pattern seed owner did not read; reacquire its feature or face before retrying.
 - were requested. The feature is left in the timeline for inspection - design_delete_feature removes it.
 - Pair with view_screenshot to view.
@@ -4015,7 +3940,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_pattern_path`
 - Instances placed along the path. Copies keep the seed's orientation; they do not rotate to follow the path. Pair with view_screenshot to view.
 - quantity must be >= 2 for a path pattern (the original plus at least one copy).
-- No active design. Open or create a document with components first.
 - Pattern seed owner did not read; reacquire its feature or face before retrying.
 - is not available on this Fusion version.
 - Path pattern createInput returned nothing, so no pattern was created.
@@ -4032,7 +3956,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - must be >= 1. Use 1 for a single row.
 - spacing_one=0 would stack every instance exactly on the seed (coincident duplicates). Provide a non-zero spacing_one.
 - spacing_two=0 would stack the second-direction instances exactly on the first row (coincident duplicates). Provide a non-zero spacing_two.
-- No active design. Open or create a document with components first.
 - Pattern seed owner did not read; reacquire its feature or face before retrying.
 - ). The feature is left in the timeline for inspection - design_delete_feature removes it.
 - patterned in a grid. Pair with view_screenshot to view.
@@ -4048,7 +3971,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - but 'path_fraction' is not set - the forward extent must be given before the reverse one.
 - ) plus 'path_fraction_reverse' (
 - - the two directions together cannot cover more than the whole path (1.0).
-- No active design. Create or open a document first (see doc_new).
 - but this path is OPEN. Fusion IGNORES the reverse extent on an open path, so it is refused here instead of reported as applied - use 'path_fraction' alone, or close the path.
 - Pipe createInput returned nothing, so no pipe was created.
 - 'path_fraction_reverse' needs a CLOSED path and this path did not report whether it is closed, so the reverse extent could not be verified. Re-run without 'path_fraction_reverse'.
@@ -4077,7 +3999,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `model_replace_face`
 - The listed face(s) of that body now follow the target surface; the deltas below are the measured change on the body.
 - The feature computed cleanly, but NONE of the body's volume, face count or surface area could be read back, so there is no geometric proof the faces were replaced - no deltas are reported. Re-read ...
-- No active design. Create or open a document first (see doc_new).
 - 'faces' resolved to face(s) with no readable owning body - cannot replace.
 - 'faces' must all be on ONE body, but they span
 - ). Replace the faces of one body per call.
@@ -4094,7 +4015,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'to_object_two' requires the first-side 'to_object' construction-plane stop.
 - Construction-plane stops cannot be combined with symmetric or second_angle_deg.
 - Construction-plane stops currently require operation='new'; use angle_deg without a stop for join, cut or intersect.
-- No active design. Create or open a document first (see doc_new).
 - No sketch to revolve. Create one and draw a closed profile first.
 - Could not resolve axis '
 - use x | y | z, a straight-edge/sketch handle, or line:<index>.
@@ -4140,7 +4060,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - . Give all three, or use 'factor' for a uniform scale.
 - Give EITHER 'factor' (uniform) OR x_factor/y_factor/z_factor (per-axis), not both.
 - 'factor' is required (the uniform scale factor), or give x_factor, y_factor and z_factor together for a per-axis scale.
-- No active design. Create or open a document first (see doc_new).
 - Scale feature was created but failed to compute:
 - . Try a factor closer to 1, or a different anchor.
 - No 'anchor' given and the active component has no origin construction point to scale about. Pass a vertex handle from find_geometry.
@@ -4157,7 +4076,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Empty target: assigned to the bodies of all
 - component(s) the design listed.
 - failed - see 'failed' ('<component>/<body>' names each).
-- No active design with geometry.
 - has no bodies to assign a material to.
 - Selected material source identity is unavailable (name or id could not be read); refusing mutation. Read design_get(include=['materials']) and retry with a source carrying both fields.
 - No body assignment was verified for material '
@@ -4168,7 +4086,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `model_shell`
 - Body hollowed into a shell. Pair with view_section to inspect the wall thickness.
-- No active design. Create or open a document first (see doc_new).
 - (The body could not be hollowed at this thickness.)
 - Shell returned feature '
 - ', but its effect is unverified:
@@ -4176,7 +4093,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Shell returned feature '' on '', but its effect is unverified: . Nothing was rolled back. Inspect the retained feature with model_inspect and view_section before retrying.
 
 ### `model_split`
-- No active design. Create or open a document first (see doc_new).
 - 'view_direction' is used only by split='silhouette' (got split='
 - 'split_line' is used only by split='along_vector' (got split='
 - split='along_vector' takes 'faces', 'split_line' and 'view_direction', not 'target', 'split_plane' or 'split_tool_body'.
@@ -4236,7 +4152,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Surfaces closed into a SOLID within tolerance.
 - '. Use: new, join, cut, intersect.
 - '. Use mm, cm, or in.
-- No active design. Create or open a document first (see doc_new).
 - Stitch needs at least 2 surface bodies (got
 - Stitch reported success but the feature owns no result body - nothing was stitched.
 - Surfaces did NOT close into a solid within tolerance (
@@ -4253,7 +4168,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Unknown orientation '
 - '. Use: perpendicular, parallel, rigid, aligned.
 - 'path_fraction' must be from 0 through 1 - got
-- No active design. Create or open a document first (see doc_new).
 - Profile orientation must be perpendicular or parallel - got '
 - 'solid_aligned_axis' applies only to 'solid_body' with orientation='aligned'.
 - 'twist_deg', 'taper_deg', and 'path_fraction' exclude 'guide_path'. Omit them or sweep without a guide rail.
@@ -4339,7 +4253,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Provide 'designation' - the thread call-out, e.g. 'M8x1.25' or '1/4-20 UNC'.
 - 'offset' positions a partial thread, so it needs 'length' too; without 'length' the thread runs the whole cylinder and the offset is ignored.
 - 'location' picks which end a partial thread is measured from, so it needs 'length' too.
-- No active design. Create or open a document first (see doc_new).
 - Could not read the outward normal of face(s)
 - (0-based), so whether they are bores or shafts is unknown. Re-run find_geometry for fresh handles and pass faces whose 'normal' it reports.
 - One Thread feature cannot mix internal and external faces: face(s)
@@ -4385,7 +4298,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - A modeled thread cuts material away, but the body's volume GREW by  cm3 - '' does not fit this cylinder, so the thread form was built outside it. Check the designation against the cylinder's diamet...
 
 ### `model_unstitch`
-- No active design. Create or open a document first (see doc_new).
 - Unstitch needs a 'target' body (to fully explode) or 'faces' (to peel off).
 - Pass EITHER 'target' (a whole body) OR 'faces' (specific faces), not both.
 - The target may already be loose surfaces, or the faces are not unstitchable.
@@ -4426,7 +4338,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - deleteMe() reported success but '' is still in the design's user parameters - it was NOT deleted. Nothing was rolled back; re-read with param_get to see what is actually there.
 
 ### `param_get`
-- No active design (open a document with design geometry).
 - 'trace' traces ONE parameter, so it needs 'name' - pass the parameter to trace, or drop 'trace' to list the table.
 - Parameter not found: '
 - Could not read user parameters:
@@ -4443,7 +4354,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `param_set`
 - Provide 'name' - the parameter to set.
 - Provide 'expression' - the new value/expression for the parameter.
-- No active design (open a document with design geometry).
 - Assignment raised no error but '
 - ' still reads expression '
 - Parameter not found: '
@@ -4476,7 +4386,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `pmi_create`
 - Verify placement visually with view_screenshot; read all PMI with pmi_get.
-- No active design. Create or open a document first (see doc_new).
 - No annotation was created.
 - '. Use mm, cm, or in.
 - 'flags'/'values'/'display' apply to kind='hole_note' only.
@@ -4491,7 +4400,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The delete is confirmed by the annotation object itself (isValid=
 - ). The PMI re-walk could not read
 - annotation(s), so 'remaining_pmi' counts only what was reachable.
-- No active design. Create or open a document first (see doc_new).
 - ) reports isDeletable=false - the platform refuses to delete it (e.g. PMI owned by an imported folder). Nothing was changed.
 - deleteMe() declined for '
 - ) - the annotation was NOT deleted.
@@ -4509,7 +4417,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The delete is confirmed by the annotation object itself (isValid=). The PMI re-walk could not read  component(s) and  annotation(s), so 'remaining_pmi' counts only what was reachable.
 
 ### `pmi_edit`
-- No active design. Create or open a document first (see doc_new).
 - '. Use mm, cm, or in.
 - ' is already Fusion-authored (
 - ) - nothing to convert.
@@ -4564,7 +4471,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `pmi_get`
 - - 'segments' adds the {symbol} markup (round-trips into pmi_create/pmi_edit text), 'detail' adds per-kind structure (placement/format, hole values+tolerances+thread+display, imported dimension/GDT/...
 - Light records. Pull deeper with include=
-- No active design. Create or open a document first (see doc_new).
 - '. Use mm, cm, or in.
 - Unknown include slice(s)
 - component(s) and  annotation(s) could not be read, so 'total' and 'by_kind' count only what was reachable - the design may hold more PMI than this.
@@ -4597,7 +4503,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Tessellated the BRep body into a persistent MESH body.
 - Wrapped in a BaseFeature edit scope (parametric design requires it for a mesh write).
 - Direct design - no base-feature scope needed.
-- No active design. Open or create a document first (see doc_new).
 - 'body' is already a MESH body - save_as_mesh tessellates a BRep solid/surface. To re-triangulate an existing mesh use mesh_remesh; to copy/export it use mesh_export.
 - '. Use mm, cm, or in.
 - Could not resolve a component to add the mesh body into.
@@ -4619,7 +4524,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - The controls read back on the calculator; the mesh is not checked against them - compare 'triangle_count' across settings.
 
 ### `sheet_convert`
-- No active design. Create or open a design first.
 - ' does not belong to body '
 - '. Re-find its broad face.
 - ' is not verified as an ordinary solid (isSheetMetal=
@@ -4646,7 +4550,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - body '' measures  cm but existing active rule '' reads  cm. Conversion could change that shared rule; use an ordinary component and a design-local rule instead.
 
 ### `sheet_create_flange`
-- No active design. Create or open a document first (see doc_new).
 - profile's component '
 - ' is not the active component '
 - ' - the flange body lands wherever is active. Activate it first with design_activate_component.
@@ -4775,7 +4678,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Serial unfold policy: pending unfold(s) . Nothing unfolded. Finish sheet_create_refold(unfold='') before another unfold; read design_get(include=['timeline']) for its group if hidden.
 
 ### `sheet_edit_rule`
-- No active design. Create or open a design first.
 - are unavailable in this build; no rule mutation attempted.
 - ' is a library rule; copy it with action='copy' before editing.
 - Rule persists; final k_factor=
@@ -4810,14 +4712,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `sheet_get`
 - . Use rules, library_rules, components, features, or default.
 - ' must be an integer from 1 to 200.
-- No active design. Create or open a design first.
 - Use active_rule_ref with sheet_edit_rule; unknown means identity is unconfirmed. Component names may repeat; use a face/edge handle from find_geometry on the body for sheet_convert.
 - Design-local rules could not be read. If uninitialized, create a root sheet-metal component with model_create_component(sheet_metal=true), then retry.
 
 ### `sketch_add_3d_line`
 - Line drawn in 3D. The end point's non-zero z places it off the sketch's x-y plane. View it from an iso angle with view_screenshot (a top view hides the out-of-plane component).
 - '. Valid: mm, cm, in.
-- No active design. Create or open a document first (see doc_new).
 - No sketch to draw on. Create one first with sketch_create.
 - 3D line creation returned no entity.
 - Provide the end point: x2, y2, z2 (the start defaults to the origin, 0,0,0; set coincident_start_to_origin=true to lock it there).
@@ -4830,7 +4730,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Valid: mm, cm, in.
 - Give either 'points' or 'helix', not both.
 - Provide 'points' (a list of [x, y, z] in 'units') or 'helix' (a computed helix path).
-- No active design. Create or open a document first (see doc_new).
 - No sketch to draw on. Create one first with sketch_create.
 - -spline creation returned no entity.
 - 'degree' only applies to kind='control' - a fitted spline takes no degree, got degree=
@@ -4843,7 +4742,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `sketch_add_geometry`
 - '. Valid: mm, cm, in.
-- No active design. Create or open a document first (see doc_new).
 - No sketch to draw on. Create one first with sketch_create.
 - '. Use sketch_get to list them, or sketch_create first.
 - Rectangle drawn. NO horizontal/vertical constraint took, so its sides are held only by their coordinates - a later edit can skew it. Add them with sketch_constrain (horizontal / vertical) before di...
@@ -4936,7 +4834,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - ', but its endpoint XYZ coordinates did not verify against the requested transform. Read sketch_get with include_entities=true.
 - Each copy follows its original through symmetry constraints; sketch_delete_entity on those constraints frees it.
 - mirror_line mirrors in place of a transform, in the same sketch. Drop:
-- No active design. Create or open a document first (see doc_new).
 - No sketch to mirror in. Draw one first with sketch_create.
 - mirror_line mirrors lines, arcs and circles;
 - is none of them. Mirror those, and draw the rest.
@@ -4963,7 +4860,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `sketch_create`
 - Draw on it with sketch_add_geometry (target this sketch by name).
-- No active design. Create or open a document first (see doc_new).
 - Sketch creation returned nothing on
 - Failed to create sketch on
 - ' instead - 'on_face' takes a planar-FACE handle from find_geometry.
@@ -4997,7 +4893,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Provide 'target' as '<type>:<index>' - type =  | constraint | dimension | text (e.g. 'circle:0', 'dimension:2'). sketch_get(include_entities=true) lists the curve/constraint/dimension indexes; a te...
 
 ### `sketch_dimension`
-- No active design. Create or open a document first (see doc_new).
 - No sketch to dimension. Create one first with sketch_create.
 - 'units' applies to an existing dimension's 'text_position' only; omit it when adding dimensions.
 - Drive it later by name via param_set.
@@ -5021,7 +4916,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `sketch_edit`
 - Pass exactly one of new_name, visible, plane; got
 - . Nothing was changed.
-- No active design. Create or open a document first (see doc_new).
 - 'sketch_name' is required - sketch_get lists the sketches.
 - the target's. later_features lists the timeline rows after this sketch with their health. Moving back to an earlier plane can return a different in-plane orientation; compare frame_after.
 - The timeline marker did not read, so the plane of sketch '
@@ -5062,7 +4956,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - A curvature handle is removed with its tangent handle: use action='tangent_handle' with state=false, which removes both.
 - 'state' applies to construction/centerline, the spline handles and close; '
 - '. Valid: mm, cm, in.
-- No active design. Create or open a document first (see doc_new).
 - No sketch to edit. Draw one first with sketch_create + sketch_add_geometry.
 - ' needs the pick point x1,y1 (in 'units') - it chooses which segment, end, quadrant or side of the curve the edit applies to.
 - ' needs a pick point on EACH curve: x1,y1 on entity_one and x2,y2 on entity_two - together they choose the quadrant to build in.
@@ -5151,14 +5044,12 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'max_results' must be a nonnegative integer for an entity X-ray, got
 - ), so a row's 'component' does not identify which one holds it, and this list does not tell those rows apart. 'placements' lists every occurrence path placing a component of one of the names just l...
 - More than one component wears the same name here (
-- No active design (open or create a document with design geometry).
 - Could not read sketches:
 - Sketches are paged {cap} per read; 'sketch_count' is the true total. Raise max_results for the rows past the page, narrow with component='<name or occurrence path>', or read one sketch by sketch_ge...
 - More than one component wears the same name here (), so a row's 'component' does not identify which one holds it, and this list does not tell those rows apart. 'placements' lists every occurrence p...
 
 ### `sketch_insert_svg`
 - 'scale' must be greater than 0, got
-- No active design. Open or create a document first (see doc_new).
 - No sketch to import the SVG into. SVG curves land in an EXISTING sketch - make one with sketch_create, then name it in 'sketch_name'.
 - Fusion refused the SVG import (importSVG returned false); sketch '
 - before the call. Check the file opens as SVG.
@@ -5194,7 +5085,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Partial:  read the same coordinates afterwards - an existing constraint or dimension refused the move for those, or the transform leaves them where they were.
 
 ### `sketch_project`
-- No active design. Create or open a document first (see doc_new).
 - No sketch to project into. Create one first with sketch_create.
 - . Create one with sketch_create.
 - Extrude a resulting profile via sketch_get -> model_extrude.
@@ -5282,7 +5172,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - and design recomputed so any engraving/emboss that consumes it rebuilt
 - Provide 'text' or 'parameter' - the string to display or the Text parameter to bind.
 - 'explode' acts on an existing text; it cannot ride create=true.
-- No active design (open a document with sketch text).
 - '. Use mm, cm, or in.
 - No sketch text matched index
 - 'parameter' binds an EXISTING sketch text, so it cannot ride a create. Create the text with its starting string first, then call again with parameter='
@@ -5370,7 +5259,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - 'direction' was given with ruled_type='
 - ', which sweeps off the face the edge bounds - the direction is ignored, not applied. Pass ruled_type='direction' to sweep along '
 - ', or drop 'direction'.
-- No active design. Create or open a document first (see doc_new).
 - 'edges' resolved to no edges. Pass find_geometry edge handles.
 - is not available on this Fusion version.
 - The ruled surface feature was created but added nothing: every body it reports was already in '
@@ -5391,7 +5279,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - %s %s Neither the result-body list nor 'bodies_consumed' is available without a feature object - check the bodies with design_get(include=['tree']).
 - %d input body(ies) were fully consumed by the delete - no result body remains. Deleting every face of a body removes the body.
 - The face count ROSE by %d - unexpected for a delete, which normally lowers it. The edit did land (the count moved), but the requested face(s) may not be what was removed: inspect the body with desi...
-- No active design. Create or open a document first (see doc_new).
 - 'faces' resolved to no faces. Pass find_geometry face handles.
 - Delete-face reported no error, but its result bodies did not all read back, so how many input bodies it consumed is unknown. Check the bodies with design_get(include=['tree']).
 - Delete-face reported no error, but the face count of %d result body(ies) (%s) would not read back, so whether any face was deleted is UNVERIFIED - a count that will not read is not a count of zero....
@@ -5411,7 +5298,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Use: natural, tangent, perpendicular.
 - Unknown extend_alignment '
 - '. Use: free_edges, align_edges.
-- No active design. Create or open a document first (see doc_new).
 - 'edges' resolved to no edges. Pass the outer edges of ONE surface body.
 - . (Extend the OUTER edges of ONE open body; tangent/perpendicular need edges connected at endpoints.)
 
@@ -5420,7 +5306,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Use mm, cm, or in.
 - Provide a non-zero 'distance' to extrude.
 - '. Surface extrude supports: new, join.
-- No active design. Create or open a document first (see doc_new).
 - Surface extrude reported success but the feature owns no result body - no sheet was created.
 - The result reads back SOLID (isSolid=true) - the profile closed into a solid, not a sheet.
 - Surface body created, but no result body's isSolid flag could be read back - whether it is an open sheet is UNVERIFIED.
@@ -5432,7 +5317,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `surface_fill`
 - . cells_volume_picked is the volume the input predicted for the kept cell(s); result_volume is what the feature's bodies measure now.
-- No active design. Create or open a document first (see doc_new).
 - remove_tools=true is not supported with operation='
 - '. For join/cut/intersect the target body must itself be among 'tools', and remove_tools consumes the tools AFTER the boolean - measured on join: the merged result is deleted along with them, leavi...
 - boundaryFillFeatures.createInput returned nothing - no boundary could be calculated from the tools given.
@@ -5456,7 +5340,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Faces copied as a COINCIDENT surface (distance=0) - the zero-offset copy-face idiom.
 - '. Use mm, cm, or in.
 - '. Offset supports: new, new_component.
-- No active design. Create or open a document first (see doc_new).
 - Offset reported success but created no faces - nothing was offset. The feature remains in the timeline; remove it with design_delete_feature.
 - chaining=true EXPANDED the selection:  face(s) requested,  tangent-connected face(s) offset. Pass chaining=false to offset only the picked faces.
 
@@ -5464,7 +5347,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Some loops failed - see 'errors'.
 - '. Patch supports: new, new_component.
 - '. Use: connected, tangent, curvature.
-- No active design. Create or open a document first (see doc_new).
 - 'edge_conditions' maps one complete boundary; use 'boundary' and omit 'boundaries'.
 - 'interior_rails' fits ONE patch surface, so it goes with 'boundary' (a single loop). With 'boundaries' every loop would be handed the same rails.
 - Pass 'boundary' (one loop) or 'boundaries' (a list of loops, each an edge handle Fusion auto-completes - the way to patch every hole in one call).
@@ -5478,7 +5360,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 ### `surface_reverse_normal`
 - Normals flipped - isParamReversed toggled on all %d face(s), read back off the feature.
 - Reverse Normal feature created and consumed %d face(s), but the isParamReversed read-back did NOT confirm a full flip (before_reversed=%d, after_reversed=%d of %d faces). Verify with view_screenshot.
-- No active design. Create or open a document first (see doc_new).
 - 'bodies' resolved to no surface bodies. Pass open surface body handles/names.
 - Reverse normal failed:
 - . (Pass OPEN surface bodies - a solid has no free normal to flip.)
@@ -5487,7 +5368,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Open surface body created (isSolid=false).
 - Provide a non-zero 'angle_deg' to revolve (e.g. 360 for a full revolve).
 - '. Surface revolve supports: new, join.
-- No active design. Create or open a document first (see doc_new).
 - Could not resolve the
 - -axis of the active component.
 - Surface revolve reported success but the feature owns no result body - no sheet was created.
@@ -5508,7 +5388,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - '. Thicken supports: new, join, cut.
 - Unknown thicken_type '
 - '. Use: sharp, rounded.
-- No active design. Create or open a document first (see doc_new).
 - Thicken reported success but the feature owns no result body - no wall was created, so there is nothing to read isSolid back off.
 - Thicken reported success but no CREATED body reads isSolid=true - the wall did not close into a solid. The feature remains in the timeline; inspect it with model_inspect or remove it with design_de...
 - The selected faces face opposite ways; thicken each face in its own call with chaining=false, or rebuild a symmetric revolve one-sided over the full angle.
@@ -5518,7 +5397,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Surface trimmed: the target owned
 - computed cell(s), and
 - cell(s) owned by another body were left in place.
-- No active design. Create or open a document first (see doc_new).
 - (The tool may not intersect the surface.)
 - The open transaction was cancelled.
 - Trim committed but the surface area did not decrease (
@@ -5541,7 +5419,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - Untrim feature created, but the untrimmed area did not exceed the original (area_before=%.6f, area_after=%.6f cm^2). The loop may already be at the natural boundary, or the created faces could not ...
 - '. Use: all, external, internal.
 - '. Use mm, cm, or in.
-- No active design. Create or open a document first (see doc_new).
 - 'faces' resolved to no faces. Pass find_geometry face handles.
 - The selected loops could not be removed.
 - ] belongs to a SOLID body - untrim only restores faces on OPEN surface bodies. Unstitch or delete-face the solid first.
@@ -5680,7 +5557,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 - and the camera is aimed at the cut face.
 - ; the camera was left where it was (auto_view=false).
 - 'section' is only valid with action='clear'.
-- No active design. Open a document with design geometry first.
 - All section analyses removed - the model is no longer cut.
 - section analysis(es), but the remaining count could not be read back - view_section(list) confirms whether the model is still cut.
 - '. Use mm, cm, or in.
@@ -5707,7 +5583,6 @@ A planar face's 'frame' is that plane in world space: the point at local (u, v) 
 
 ### `view_set`
 - 'projection'/'perspective_angle_deg' apply to action='orient', not action='
-- No active design. Open a document with design geometry first.
 - Current camera, visual style, and all occurrence visibility saved. Explore freely; call view_set(restore) to put it all back.
 - PARTIAL: this assembly holds more than
 - occurrences, so only the first

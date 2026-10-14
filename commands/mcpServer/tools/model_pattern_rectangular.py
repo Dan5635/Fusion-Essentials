@@ -45,9 +45,9 @@ def handler(occurrences: str = "", bodies=None, quantity_one: int = 2, spacing_o
     if int(quantity_two) > 1 and float(spacing_two) == 0:
         return error("spacing_two=0 would stack the second-direction instances exactly on the "
                      "first row (coincident duplicates). Provide a non-zero spacing_two.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document with components first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies, features, faces)
     if rerr:

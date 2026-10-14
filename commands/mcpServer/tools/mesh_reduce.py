@@ -31,9 +31,9 @@ def handler(mesh: str = "", target: str = "proportion", value: float = 0.0,
             method: str = "adaptive", units: str = "mm") -> dict:
     """Decimate a mesh to a target triangle/face count, a percent proportion, or a max deviation.
     WRITES (a MeshReduceFeature on the timeline)."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mb, merr = _REDUCE_MESH.resolve(mesh)
     if merr:
         return error(merr)

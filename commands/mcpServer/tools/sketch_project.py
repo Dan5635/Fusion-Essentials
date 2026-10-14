@@ -14,6 +14,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, all_sketch_names
+from ._common import same_component as _same_sketch
 from . import _assert
 from . import _common
 from . import _edit_feature_common
@@ -236,22 +237,6 @@ def _resolve_curve(sketch, ref, label):
                       + "/".join(_ADDRESSABLE)
                       + " - ids come from sketch_get(include_entities=true).")
     return ent, None
-
-
-def _same_sketch(a, b):
-    """True when two sketch reads denote the SAME sketch, False for DIFFERENT ones, None when the
-    comparison COULD NOT BE MADE - so callers branch on all three states."""
-    # An entityToken is DOCUMENT-LOCAL: two components brought in by two references of ONE source
-    # design read byte-identical tokens, so a token compare answers "same sketch" for two different
-    # ones. ``_common.native_identity`` carries the urn half that tells them apart.
-    if a is None or b is None:
-        return None
-    if a is b:
-        return True
-    ia, ib = _common.native_identity(a), _common.native_identity(b)
-    if ia is None or ib is None:
-        return None
-    return ia == ib
 
 
 def _source_label(ent) -> str:
@@ -937,9 +922,9 @@ def handler(entities="", sketch_name: str = "", link: bool = None, action: str =
     if ferr:
         return error(ferr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     sk, requested, refusal = _sketch_detail.scoped_or_recent_sketch(design, sketch_name, component)
     if refusal:

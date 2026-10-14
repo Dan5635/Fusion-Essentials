@@ -195,6 +195,13 @@ ACT_PRODUCER_CONDITIONAL_OVERRIDES = {
 
 
 def fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None):
+    """Return scoped executable producers while retaining authored raw closure inputs."""
+    from verify_core import tiered
+    rows = _fixture_steps(family, before_act, entitled, raw, slots)
+    return rows if raw else tiered(rows)
+
+
+def _fixture_steps(family, before_act=None, entitled=True, raw=False, slots=None):
     """Return local producer rows for one family boundary."""
     selected = None if raw else (FAMILY_SLOTS[family] if slots is None else slots)
     place = (lambda rows: list(rows)) if raw else (lambda rows: _placed(rows, selected))

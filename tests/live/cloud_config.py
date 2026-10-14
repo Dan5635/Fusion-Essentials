@@ -18,11 +18,12 @@ import sys
 import tempfile
 import time
 import uuid
+import machine_config
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
-CONFIG_NAME = "cloud_config.local.json"
-CONFIG_PATH = os.path.join(_HERE, CONFIG_NAME)
+CONFIG_NAME = machine_config.CONFIG_NAME
+CONFIG_PATH = machine_config.config_path()[0]
 
 # The three strings a run of the tier needs, and the shape every refusal quotes back.
 KEYS = ("hub", "project", "folder")
@@ -32,26 +33,14 @@ CONFIG_SHAPE = ('{"hub": "<the hub name data_get publishes as active_hub>", '
 
 
 def load_config(path=None):
-    """(config, problem): the three named strings stripped, or (None, one sentence saying why not).
-
-    The problem sentence names the FILE and the shape it holds, because it is what an operator
-    reading a skipped receipt row has to act on."""
-    path = path or CONFIG_PATH
-    if not os.path.isfile(path):
-        return None, (f"{path} does not exist - the cloud tier is opt-in. Write it holding "
-                      f"{CONFIG_SHAPE} to drive the cloud and drawing acts against that hub.")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except (OSError, ValueError) as e:
-        return None, f"{path} would not read as JSON ({e}) - it holds {CONFIG_SHAPE}."
-    if not isinstance(raw, dict):
-        return None, (f"{path} holds a {type(raw).__name__}, not an object - it holds "
-                      f"{CONFIG_SHAPE}.")
-    missing = [k for k in KEYS if not str(raw.get(k) or "").strip()]
-    if missing:
-        return None, (f"{path} names no {', '.join(missing)} - it holds {CONFIG_SHAPE}.")
-    return {k: str(raw[k]).strip() for k in KEYS}, None
+    """Return cloud scope from the one complete machine file, never a stale legacy file."""
+    chosen = CONFIG_PATH if path is None else path
+    config, found = machine_config.load(chosen)
+    if found:
+        return None, machine_config.refusal(chosen, "cloud scope", found)
+    if config["tiers"]["cloud"] is not True:
+        return None, "tiers.cloud is explicitly false in " + str(chosen)
+    return {key: config["cloud"][key].strip() for key in KEYS}, None
 
 
 # What the config held when this module was imported, so an act's rows can be written as plain
@@ -71,7 +60,8 @@ RUN_BINDING = None
 ARTIFACT_STAMP = None
 _INVOCATION_STARTED = False
 _BOOTSTRAP_RESUME = False
-_MANIFEST_DIR = os.path.join(_HERE, "results")
+_MACHINE = machine_config.current()[0]
+_MANIFEST_DIR = os.path.join(machine_config.record_root(_MACHINE) if _MACHINE else _HERE, "results")
 
 
 def new_destination(config, config_hash, run_id=None):
@@ -179,10 +169,8 @@ def bootstrap(argv):
     HUB, PROJECT, FOLDER = (CONFIG[key] for key in KEYS)
 
 
-def admit_destination(wire, record, save):
-    """Create once, independently read an empty top-level folder, or recheck its retained identity."""
-    config = record["operator"]
-    validate_destination(record, config, record["config_hash"], record["run_id"])
+def read_destination_project(wire, config):
+    """Read the exact configured hub/project identity without creating a destination."""
     failed, hub = wire("data_get", {})
     projects = hub.get("projects") if isinstance(hub, dict) else None
     matching = [p for p in projects if isinstance(p, dict) and p.get("name") == config["project"]] if isinstance(projects, list) else []
@@ -193,6 +181,14 @@ def admit_destination(wire, record, save):
             or not isinstance(matching[0].get("id"), str) or not matching[0]["id"]):
         raise DestinationError("cloud destination hub/project is unreadable or ambiguous; nothing created")
     project_id = matching[0]["id"]
+    return project_id
+
+
+def admit_destination(wire, record, save):
+    """Create once, independently read an empty top-level folder, or recheck its retained identity."""
+    config = record["operator"]
+    validate_destination(record, config, record["config_hash"], record["run_id"])
+    project_id = read_destination_project(wire, config)
     if record["state"] == "ready" and record["project_id"] != project_id:
         raise DestinationError("cloud destination project identity changed; nothing created")
     creating = record["state"] == "planned"

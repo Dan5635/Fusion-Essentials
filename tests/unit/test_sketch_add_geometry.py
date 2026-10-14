@@ -8,7 +8,7 @@ import math
 from types import SimpleNamespace
 import pytest
 from conftest import SketchCurves, load_tool
-from _sketch_fakes import (FakeSketch, _Curve, _SketchPoint, _payload, draw_installer,
+from tests.fakes.sketch_scenarios import (FakeSketch, _Curve, _SketchPoint, _payload, draw_installer,
                            scoped_installer)
 
 sk = load_tool("sketch_add_geometry")

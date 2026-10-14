@@ -19,9 +19,9 @@ _RULE = _inputs.SheetMetalRuleRef("rule", required=True)
 
 def handler(body: str = "", base_face: str = "", rule: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if design is None:
-        return error("No active design. Create or open a design first.")
+    design, design_refusal = _common.require_design(none_only=True)
+    if design_refusal is not None:
+        return design_refusal
     target, berr = _BODY.resolve(body)
     if berr:
         return error(berr)

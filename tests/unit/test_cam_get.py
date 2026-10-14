@@ -25,9 +25,7 @@ def test_cam_read_core_is_loaded_with_the_router():
     assert sys.modules[cg._cr.__name__] is cg._cr
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _named_op(name):
@@ -2245,17 +2243,20 @@ class TestParameterDiscovery:
         assert err is None and out["requested_parameter_count"] == 1
 
     def test_unavailable_scan_expands_only_rows_on_the_returned_page(self, monkeypatch):
-        class Tracked:
-            isVisible = False
-            isEnabled = False
-            isEditable = False
-            isDeprecated = False
-            value = SimpleNamespace(value=None)
-            error = ""
-            warning = ""
+        class Tracked(FakeCAMParameter):
+            """A shared CAMParameter that counts expanded field reads."""
 
             def __init__(self, name):
                 self._name = name
+                self._title = name.title()
+                self._expression = "1"
+                self.value = SimpleNamespace(value=None)
+                self.isVisible = False
+                self.isEnabled = False
+                self.isEditable = False
+                self.isDeprecated = False
+                self._error = ""
+                self.warning = ""
                 self.expanded_reads = 0
 
             @property
@@ -2263,15 +2264,27 @@ class TestParameterDiscovery:
                 self.expanded_reads += 1
                 return self._name
 
+            @name.setter
+            def name(self, value):
+                self._name = value
+
             @property
             def title(self):
                 self.expanded_reads += 1
-                return self._name.title()
+                return self._title
+
+            @title.setter
+            def title(self, value):
+                self._title = value
 
             @property
             def expression(self):
                 self.expanded_reads += 1
-                return "1"
+                return self._expression
+
+            @expression.setter
+            def expression(self, value):
+                self._expression = value
 
         first, second = Tracked("first"), Tracked("second")
         coll = SimpleNamespace(count=2, item=lambda index: (first, second)[index])
@@ -2281,19 +2294,26 @@ class TestParameterDiscovery:
         assert first.expanded_reads > 0 and second.expanded_reads == 0
 
     def test_expanded_flags_stay_separate_and_unread_flags_are_null(self):
-        class PartialFlags:
-            name = "dependent"
-            title = "Dependent"
-            expression = "1"
-            value = SimpleNamespace(value=1)
-            error = ""
-            warning = ""
-            isEnabled = False
-            isEditable = True
+        class PartialFlags(FakeCAMParameter):
+            """A shared CAMParameter whose visibility flags refuse to read."""
+
+            def __init__(self):
+                self._initializing = True
+                try:
+                    super().__init__("dependent", expression="1", value=1,
+                                     title="Dependent", editable=True, enabled=False)
+                finally:
+                    self._initializing = False
 
             @property
             def isVisible(self):
                 raise RuntimeError("unread visible")
+
+            @isVisible.setter
+            def isVisible(self, value):
+                if not self._initializing:
+                    raise RuntimeError("unread visible")
+                self._visible = value
 
             @property
             def isDeprecated(self):

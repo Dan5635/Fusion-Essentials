@@ -1,6 +1,5 @@
 """Unit tests for sketch X-ray geometry, references, dimensions and state."""
 
-import json
 import math
 from types import SimpleNamespace
 
@@ -265,9 +264,7 @@ def _install(sketch):
     return install(sd, make_design(sketches=[sketch]))
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── a sketch attached to a FACE, whose support needs the marker rolled back ─────────────────────

@@ -441,13 +441,18 @@ def _framed(steps, layout=None):
     A component or sketch that never gets geometry before the next entity starts gets no row at
     all - there is nothing to frame yet.
     """
+    from verify_core import (declared_allows, step_conditions, condition_expect,
+                             replace_inner_expect, compatible_neighbour, _unparked)
     home = _CHUNK_OF if layout is None else layout["home"]
     components = _COMPONENTS if layout is None else layout["components"]
     patterned = _PATTERNED if layout is None else layout["patterned"]
     planes = None if layout is None else layout["planes"]
     ready = {}                       # group -> (last step index it is ready at, [member names])
+    subject_conditions = {}
     hand_framed = set()
     for k, step in enumerate(steps):
+        if not declared_allows(step[2]):
+            continue
         a = steps[k][1] if isinstance(steps[k][1], dict) else {}
         if steps[k][0] == "view_set" and a.get("focus"):
             f = a["focus"]
@@ -455,6 +460,7 @@ def _framed(steps, layout=None):
                 hand_framed.add(_group_of(str(nm)))
 
     def note(name, at, member):
+        subject_conditions[member] = step_conditions(steps[at][2])
         g = _group_of(name)
         if g in hand_framed:
             return
@@ -465,6 +471,8 @@ def _framed(steps, layout=None):
         ready[g] = (max(at, cur[0]) if cur else at, members)
 
     for i, step in enumerate(steps):
+        if not declared_allows(step[2]):
+            continue
         args = step[1] if isinstance(step[1], dict) else {}
         if step[0] == "sketch_create" and args.get("name"):
             name = args["name"]
@@ -510,7 +518,7 @@ def _framed(steps, layout=None):
     # left. These frame on their own operands, at the step that does the work.
     relation_at = set()
     for i, step in enumerate(steps):
-        if step[0] not in _RELATION_TOOLS or not isinstance(step[1], dict):
+        if not declared_allows(step[2]) or step[0] not in _RELATION_TOOLS or not isinstance(step[1], dict):
             continue
         operands = []
         for key in ("occurrence", "occurrences", "occurrence_one", "occurrence_two"):
@@ -531,6 +539,8 @@ def _framed(steps, layout=None):
     # story renames and deletes as it goes, and view_set refuses a focus it cannot resolve.
     retired = {}
     for k, step in enumerate(steps):
+        if not declared_allows(step[2]):
+            continue
         a = step[1] if isinstance(step[1], dict) else {}
         if step[0] in ("design_set_name", "design_delete_occurrence", "design_move_occurrence",
                        "design_delete_feature", "mesh_delete", "cam_delete"):
@@ -538,13 +548,17 @@ def _framed(steps, layout=None):
                 if isinstance(a.get(key), str):
                     retired.setdefault(re.sub(r":\d+$", "", a[key]), k)
 
-    out, frame, built = [], None, []
+    out, frame, built, frame_conditions = [], None, [], ()
     for i, step in enumerate(steps):
         out.append(step)
+        if not declared_allows(step[2]):
+            continue
+        if not compatible_neighbour(step_conditions(step[2]), frame_conditions):
+            frame = None
         # A scratch document opened mid-act holds none of the story's parts: nothing built before
         # it is a neighbour there, and the standing frame belongs to the other document.
         if step[0] in ("doc_new", "doc_activate"):
-            built, frame = [], None
+            built, frame, frame_conditions = [], None, ()
             continue
         if step[0] == "view_set" and isinstance(step[1], dict) and step[1].get("focus"):
             f = step[1]["focus"]
@@ -552,15 +566,16 @@ def _framed(steps, layout=None):
             # so a flat subject falls back to iso and renders edge-on. Rewriting the row here - and
             # only a row _watch itself wrote - shoots that sketch down its own normal.
             fresh = _watch(f, planes=planes)
-            if (step[2] in ("ok", fresh[2]) and step[3:] == fresh[3:]
+            if (_unparked(step[2]) in ("ok", fresh[2]) and step[3:] == fresh[3:]
                     and step[1] == dict(fresh[1], orientation="iso-top-right")):
-                out[-1] = fresh
+                out[-1] = (fresh[0], fresh[1], replace_inner_expect(step[2], fresh[2]), fresh[3])
             # A hand-authored row that FITS on its focus IS the standing frame from here on.
             # Tracking only the rows this pass inserts leaves the frame where the camera no longer
             # is, and the next subject then tests as already on screen - the act plays off camera.
             if step[1].get("action") == "orient" and step[1].get("fit") is not False:
                 held = _frame_box(f if isinstance(f, list) else [f], layout)
                 frame = _expand(held, _FRAME_MARGIN) if held else None
+                frame_conditions = step_conditions(step[2])
         members = inserts.get(i)
         if not members:
             continue
@@ -604,9 +619,18 @@ def _framed(steps, layout=None):
             span, cap = _FRAME_SKETCH_SPAN, _FRAME_SKETCH_GROUP
         else:
             cap = _FRAME_MAX_SUBJECTS
-        focus, box = _frame_neighbourhood(members, subject, built, span, cap)
+        primary = tuple(dict.fromkeys(condition for member in members
+                                     for condition in subject_conditions.get(member, ())))
+        neighbours = [(names, bounds) for names, bounds in built
+                      if compatible_neighbour(primary, tuple(condition for member in names
+                                                   for condition in subject_conditions.get(member, ())))]
+        focus, box = _frame_neighbourhood(members, subject, neighbours, span, cap)
         frame = _expand(box, _FRAME_MARGIN) if box else None
-        out.append(_watch(focus, planes=planes))
+        camera = _watch(focus, planes=planes)
+        conditions = tuple(condition for member in focus
+                           for condition in subject_conditions.get(member, ()))
+        frame_conditions = tuple(dict.fromkeys(conditions))
+        out.append((camera[0], camera[1], condition_expect(conditions, camera[2]), camera[3]))
     return out
 
 

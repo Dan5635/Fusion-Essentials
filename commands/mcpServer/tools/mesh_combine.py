@@ -70,9 +70,9 @@ def _algorithm_held(inp, at):
 def handler(target: str = "", tools=None, operation: str = "join",
             algorithm: str = "enhanced") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     tgt, terr = _TARGET.resolve(target)
     if terr:

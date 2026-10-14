@@ -243,9 +243,9 @@ def handler(target: str = "", new_name: str = "", kind: str = "target") -> dict:
     if kind not in _KINDS:
         return error(f"Unknown rename kind '{kind}'. Use {', '.join(_KINDS)}.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open a document first (see doc_open / doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     owner = None
     address = None

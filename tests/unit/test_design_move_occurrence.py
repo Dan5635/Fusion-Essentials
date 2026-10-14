@@ -12,6 +12,7 @@ Also pinned: the world position the re-parent is measured to keep (evidence, not
 self-nesting refusal, and the swallowed no-op (a call that reports success while the tree is
 unchanged) turned into an error.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -398,7 +399,6 @@ class TestGuards:
         assert des.moved_into is None
 
     def test_no_active_design_refused(self, monkeypatch):
-        monkeypatch.setattr(mo._common, "design", lambda: None)
-        monkeypatch.setattr(mo._inputs._common, "design", lambda: None)
+        _install_design(mo, None)
         assert "No active design" in error_message(
             mo.handler(occurrence="A:1", into_component="B:1"))

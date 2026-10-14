@@ -14,7 +14,6 @@ program's parameters, writing (or not writing) a file there.
 """
 
 import itertools
-import json
 import pytest
 import os
 import types
@@ -333,9 +332,7 @@ def _install(monkeypatch, cam, valid=1):
     return cam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 @pytest.fixture

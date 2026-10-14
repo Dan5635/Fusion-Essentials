@@ -6,6 +6,7 @@ keeps both), a MESH target routes to mesh stats,
 the kind tag is surfaced, unknown include + target errors guard. The slice→handler delegation is proven
 by live validation.
 """
+from conftest import install as _install_design
 
 import json
 import math
@@ -21,14 +22,12 @@ from conftest import (load_tool, error_message, FakePoint, FakeBoundingBox3D, Fa
 mi = load_tool("model_inspect")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _resolve_to(monkeypatch, kind):
     """Make TargetRef resolve to (a dummy entity, `kind`) and a design exist."""
-    monkeypatch.setattr(mi._common, "design", lambda: object())
+    _install_design(mi, object())
     monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((object(), kind), None))
 
 
@@ -80,7 +79,7 @@ class TestDefaultAndDispatch:
             def material(self):
                 raise AssertionError("material read without opt-in")
 
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((Body(), "body"), None))
         out = _payload(mi.handler(target="Body1"))
         assert "material" not in out and "appearance" not in out
@@ -88,7 +87,7 @@ class TestDefaultAndDispatch:
     def test_material_slice_reads_the_resolved_body_assignment(self, monkeypatch, stub_slices):
         body = BRepBody("Body1")
         body.material = SimpleNamespace(name="Stainless Steel")
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
         out = _payload(mi.handler(target="Body1", include=["material"]))
         assert out["material"]["bodies"] == [{
@@ -98,7 +97,7 @@ class TestDefaultAndDispatch:
     def test_appearance_slice_keeps_native_rendered_opacity_unavailable(self, monkeypatch, stub_slices):
         body = BRepBody("Body1", opacity=0.6)
         body.appearanceSourceType = 1
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
         out = _payload(mi.handler(target="Body1", include=["appearance"]))
         row = out["appearance"]["bodies"][0]
@@ -109,7 +108,7 @@ class TestDefaultAndDispatch:
     def test_missing_material_assignment_is_unknown_with_a_reason(self, monkeypatch, stub_slices):
         body = BRepBody("Body1")
         body.material = None
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
         row = _payload(mi.handler(target="Body1", include=["material"]))["material"]["bodies"][0]
         assert row["material"] is None
@@ -138,7 +137,7 @@ class TestDefaultAndDispatch:
         proxy = body_proxy(body, occurrence)
         occurrence.bRepBodies = _NamedCollection([proxy])
         occurrence.childOccurrences = _NamedCollection([])
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((occurrence, "occurrence"), None))
         row = _payload(mi.handler(target="Comp:1", include=["appearance"]))["appearance"]["bodies"][0]
         assert row["body"] == "Body1" and row["occurrence"] == "Comp:1"
@@ -149,7 +148,7 @@ class TestDefaultAndDispatch:
         body.appearanceSourceType = 1
         occurrence = make_occurrence(path="Carrier:1+Plate:2")
         proxy = body_proxy(body, occurrence)
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((proxy, "body"), None))
         monkeypatch.setattr(mi._prefs, "enum_member_name", lambda family, value: "BodyAppearanceSource")
         row = _payload(mi.handler(target="placed", include=["appearance"]))["appearance"]["bodies"][0]
@@ -167,7 +166,7 @@ class TestDefaultAndDispatch:
                 pass
 
         body = BlindContext("Body1")
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
         out = _payload(mi.handler(target="body", include=["material"]))["material"]
         assert out["scope_complete"] is False and out["bodies"][0]["occurrence"] is None
@@ -177,7 +176,7 @@ class TestDefaultAndDispatch:
         body = BRepBody("Body1", opacity=0.4)
         body.appearanceSourceType = 1
         del body.appearance
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, "body"), None))
         row = _payload(mi.handler(target="Body1", include=["appearance"]))["appearance"]["bodies"][0]
         assert row["appearance"] is None and "appearance" in row["unavailable"]
@@ -190,7 +189,7 @@ class TestDefaultAndDispatch:
         component = MakeComp("Root", bodies=[BRepBody(f"Root{i}")
                                                for i in range(mi._MAX_PER_BODY_ROWS)],
                              occurrences=[occurrence], all_occurrences=[occurrence])
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
         result = _payload(mi.handler(target="Root", include=["material"]))["material"]
         assert len(result["bodies"]) == mi._MAX_PER_BODY_ROWS
@@ -204,7 +203,7 @@ class TestDefaultAndDispatch:
 
         component = SimpleNamespace(name="Root", bRepBodies=UnreadableBodies(),
                                     allOccurrences=_NamedCollection([]))
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
         result = _payload(mi.handler(target="Root", include=["material"]))["material"]
         assert result["bodies"] == [] and result["scope_complete"] is False
@@ -222,7 +221,7 @@ class TestDefaultAndDispatch:
 
         component = MakeComp("Root", bodies=[])
         component.bRepBodies = OneUnreadableSlot()
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
         result = _payload(mi.handler(target="Root", include=["material"]))["material"]
         assert [row["body"] for row in result["bodies"]] == ["Readable"]
@@ -233,7 +232,7 @@ class TestDefaultAndDispatch:
         component = MakeComp("Root", bodies=[BRepBody("RootBody")])
         component.allOccurrences = None
         component.occurrences = _NamedCollection(raises="occurrence count unavailable")
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
         result = _payload(mi.handler(target="Root", include=["material"]))["material"]
         assert len(result["bodies"]) == 1
@@ -250,7 +249,7 @@ class TestDefaultAndDispatch:
         component.allOccurrences = None
         occurrence = make_occurrence("Child:1", component=component,
                                      bodies=[BRepBody("InstanceBody")], children=[])
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((occurrence, "occurrence"), None))
         result = _payload(mi.handler(target="Child:1", include=["material"]))["material"]
         assert [row["body"] for row in result["bodies"]] == ["InstanceBody"]
@@ -263,7 +262,7 @@ class TestDefaultAndDispatch:
         occurrences = [make_occurrence(f"Child:{i + 1}", component=child_component)
                        for i in range(mi._MAX_PER_BODY_ROWS)] + [None]
         component = MakeComp("Root", all_occurrences=occurrences)
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((component, "component"), None))
         result = _payload(mi.handler(target="Root", include=["material"]))["material"]
         assert result["scope_complete"] is False
@@ -310,7 +309,7 @@ class TestDefaultAndDispatch:
     def _mesh_route(self, monkeypatch, mesh):
         """The mesh route with the REAL measure core behind it - no stub_slices, so the note the
         payload carries is the one _mesh_common actually ships."""
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((mesh, "mesh"), None))
         return _payload(mi.handler(target=mesh.name))
 
@@ -339,7 +338,7 @@ class TestDefaultAndDispatch:
 
 class TestGuards:
     def test_unresolvable_target_errors(self, monkeypatch):
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: (None, "no such target 'Ghost'"))
         res = mi.handler(target="Ghost")
         assert "ghost" in error_message(res).lower()
@@ -379,7 +378,7 @@ class TestBodyAabb:
     not inflate it and model_inspect + assembly_get agree on one occurrence's size."""
 
     def test_default_bbox_reads_via_geom_body_aabb(self, monkeypatch):
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((object(), "occurrence"), None))
         seen = []
         def fake_aabb(entity):
@@ -399,7 +398,7 @@ class TestBodyLumpCount:
     from the one read that can, _geom.lump_count."""
 
     def _resolve_body(self, monkeypatch, body, kind="body"):
-        monkeypatch.setattr(mi._common, "design", lambda: object())
+        _install_design(mi, object())
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((body, kind), None))
 
     def test_a_body_target_publishes_its_lump_count(self, monkeypatch, stub_slices):
@@ -704,7 +703,7 @@ def _rotated_rig(monkeypatch, deg=30.0):
                           transform2=_rot_z(deg))
     root.allOccurrencesByComponent = lambda c: [occ]
     design = make_design(comp=root)
-    monkeypatch.setattr(mi._common, "design", lambda: design)
+    _install_design(mi, design)
     native = BRepBody(name="Body1", parent_component=_comp_wrapper("Slab", "SLAB"))
     return SimpleNamespace(root=root, comp=comp, occ=occ,
                            jo=_part_frame_jo(_comp_wrapper("Slab", "SLAB")),
@@ -1227,7 +1226,7 @@ class TestPhysicalProperties:
         entity = SimpleNamespace(name="Plate", getPhysicalProperties=lambda acc: pp)
         compute_calls = []
         design = SimpleNamespace(computeAll=lambda: compute_calls.append(True))
-        monkeypatch.setattr(mi._common, "design", lambda: design)
+        _install_design(mi, design)
         monkeypatch.setattr(mi._TARGET, "resolve", lambda raw: ((entity, "body"), None))
         out = _payload(mi.handler(target="Plate", include=["mass"]))
         mass = out["mass"]

@@ -12,7 +12,6 @@ source text for the ``family_enabled_<fam>`` settings-key contract (same source-
 """
 
 import ast
-import json
 import os
 import re
 import types
@@ -134,9 +133,7 @@ class _FakeDoc:
         self.products = FakeProducts(cam=cam)
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 @pytest.fixture

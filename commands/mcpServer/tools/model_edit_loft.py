@@ -16,7 +16,7 @@ from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_a
                                    feature_body_keys as _feature_body_keys,
                                    health as _health, identical_geometry_reply,
                                    later_operand_refusal, matched,
-                                   restore_definition, restore_gaps, rolled_back_text,
+                                   restore_definition, restore_gaps, roll_to_edit, rolled_back_text,
                                    same_feature as _same_feature, sentence, shape_match,
                                    sketch_address)
 from ._common import counted, error, ok, outcome_clause, safe
@@ -281,7 +281,7 @@ def _reorder(entity, label, section_index, new_index):
     attempted = False
     before_shapes = after_shapes = target_before = target_after = None
     try:
-        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+        if not roll_to_edit(entity, timeline, index):
             raise RuntimeError("Fusion refused the Loft edit position.")
         before = _order(entity)
         if before is None:
@@ -303,7 +303,7 @@ def _reorder(entity, label, section_index, new_index):
         target_before = _feature_body_keys(entity)
         if before_shapes is None or not target_before:
             raise ValueError("The original Loft's body census is unreadable.")
-        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+        if not roll_to_edit(entity, timeline, index):
             raise RuntimeError("The Loft could not return to its edit position.")
         attempted = True
         returned = entity.loftSections.item(section_index).reorder(new_index)
@@ -418,7 +418,7 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
     definition_before = definition_after = desired = address = address_after = None
     before_shapes = after_shapes = target_before = target_after = None
     try:
-        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+        if not roll_to_edit(entity, timeline, index):
             raise RuntimeError("Fusion refused the Loft edit position.")
         definition_before = _definition(entity)
         if definition_before is None:
@@ -463,7 +463,7 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
         target_before = _feature_body_keys(entity)
         if before_shapes is None or not target_before:
             raise ValueError("The original Loft's body census is unreadable.")
-        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+        if not roll_to_edit(entity, timeline, index):
             raise RuntimeError("The Loft could not return to its edit position.")
         attempted = True
         section = entity.loftSections.item(section_index)
@@ -477,7 +477,7 @@ def handler(feature: str = "", action: str = "", section_index: int = None,
             raise RuntimeError("The edited Loft could not be evaluated for a body census.")
         after_shapes = _all_shapes(design)
         target_after = _feature_body_keys(entity)
-        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+        if not roll_to_edit(entity, timeline, index):
             raise RuntimeError("The evaluated Loft could not return to its edit position.")
         definition_after = _definition(entity)
         address_after = _section_at(entity, section_index)

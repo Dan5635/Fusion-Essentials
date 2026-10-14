@@ -8,6 +8,7 @@ setToTappedHole), and the guards (unknown type, missing diameters, no face/point
 
 The HoleFeatureInput fake RECORDS the calls so we can assert the exact builder path.
 """
+from conftest import install as _install_design
 
 import pytest
 from types import SimpleNamespace
@@ -2432,7 +2433,7 @@ class TestBlindDepthGuard:
     def test_expression_depth_passes_the_guard(self, monkeypatch):
         # A parameter expression is the API's to evaluate - the guard must not float-parse it away.
         # The absent-design error AFTER the guard is the proof it let the expression through.
-        monkeypatch.setattr(mh._common, "design", lambda: None)
+        _install_design(mh, None)
         res = mh.handler(face="F", points=[[0, 0, 0]], diameter="8 mm", extent="blind",
                          depth="hole_depth")
         assert "POSITIVE depth" not in res.get("message", "")

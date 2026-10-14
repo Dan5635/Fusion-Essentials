@@ -1,7 +1,7 @@
 """Tests for `pmi_create` - the guards (one entity per note, faces-only hole notes, the closed
 {symbol} vocabulary), the leader-extension pin, and the create-then-read-back composition."""
+from conftest import install as _install_design
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +14,7 @@ from conftest import (load_tool, error_message, BRepEdge, BRepFace, FakePMIAnnot
 pc = load_tool("pmi_create")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _face(comp):
@@ -37,7 +35,7 @@ def rig(monkeypatch):
     comp = MakeComp("Root")
     comp.pmiAnnotations = FakePMIAnnotations(leader_notes=notes, hole_notes=hole_notes)
     design = MakeDesign(comp=comp)
-    monkeypatch.setattr(pc._common, "design", lambda: design)
+    _install_design(pc, design)
     monkeypatch.setattr(pc._pmi, "segments_markup", lambda a: None)
 
     def stub_geometry(ents):
@@ -63,7 +61,7 @@ class TestNoteGuards:
         assert "'{bogus}'" in msg and "flatness" in msg
 
     def test_no_active_design_is_an_error(self, monkeypatch):
-        monkeypatch.setattr(pc._common, "design", lambda: None)
+        _install_design(pc, None)
         assert "No active design" in error_message(
             pc.handler(kind="note", geometry=["a"], text="X"))
 

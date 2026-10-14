@@ -295,9 +295,9 @@ def handler(sketch_name: str = "", component: str = "", new_name=None, visible=N
     if len(given) != 1:
         return error("Pass exactly one of new_name, visible, plane; got "
                      f"{', '.join(given) or 'none'}. Nothing was changed.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     wanted = (sketch_name or "").strip()
     if not wanted:
         return error("'sketch_name' is required - sketch_get lists the sketches.")

@@ -8,6 +8,10 @@ NONE of the heavy slices; an include= returns exactly its slice, the orientation
 errors; no-active-design guards. What each slice reads out of Fusion
 is proven by live validation, not re-mocked here.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+from conftest import install as _install_design
 
 import json
 import os
@@ -17,7 +21,7 @@ from types import SimpleNamespace
 import adsk.fusion
 import pytest
 
-from _datum_fakes import datum_scene
+from tests.fakes.datum_scenarios import datum_scene
 from conftest import (FakeOccurrence, FakeTimeline, FakeTimelineObject, FakeFeature,
                       FakeUserParameters, FakeModelParameter, Profile, Sketch, MakeComp, MakeDesign,
                       _NamedCollection, error_message, load_tool, make_design, make_sketch_curve, install)
@@ -73,9 +77,7 @@ _UNREADABLE_WALK = "2 : InternalValidationError : occ"
 _DIRECT_DESIGN_TIMELINE = "3 : this is not a parametric design"
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 @pytest.mark.parametrize("units,factor", [("mm", 10), ("in", 1 / 2.54)])
@@ -546,7 +548,7 @@ def test_definition_caps_participants_and_preserves_unread_profile(extrude_defin
 
 @pytest.fixture
 def stub_slices(monkeypatch):
-    monkeypatch.setattr(dg._common, "design", lambda: object())   # a non-None design
+    _install_design(dg, object())
     monkeypatch.setattr(dg, "_slice_mode", lambda d: (
         {"design_type": "parametric", "has_timeline": True, "timeline_feature_count": 4,
          "can": {"timeline_ops": True}}, None))
@@ -997,7 +999,7 @@ class TestTimelineSlice:
     """Timeline slice logic moved into design_get (_entity_type / _object_summary / _slice_timeline)."""
 
     def _tlobj(self, index=0, name="Extrude1", is_group=False, suppressed=False, rolled_back=False,
-               parent_group=None, health=0, message=None, entity_name="ExtrudeFeature",
+               parent_group=None, health=_HEALTHY, message=None, entity_name="ExtrudeFeature",
                members=None, collapsed=False):
         from types import SimpleNamespace
         _Ent = type(entity_name, (), {})
@@ -1021,7 +1023,7 @@ class TestTimelineSlice:
         assert dg._entity_type(self._tlobj()) == "ExtrudeFeature"
 
     def test_object_summary_maps_health_label(self):
-        assert dg._object_summary(self._tlobj(health=2))["health"] == "error"
+        assert dg._object_summary(self._tlobj(health=_ERROR))["health"] == "error"
 
     def test_object_summary_message_only_when_present(self):
         assert dg._object_summary(self._tlobj(message="x"))["message"] == "x"
@@ -1038,7 +1040,7 @@ class TestTimelineSlice:
                              count=len(items), item=lambda i, _it=list(items): _it[i])
         return SimpleNamespace(timeline=tl, rootComponent=SimpleNamespace(name=root_name))
 
-    def _owned_row(self, index, name, component, health=0):
+    def _owned_row(self, index, name, component, health=_HEALTHY):
         """A timeline row whose entity names the COMPONENT that owns it - what tells the Slider's
         Sketch1 from the Ball's."""
         row = self._tlobj(index, name, health=health)
@@ -1172,7 +1174,7 @@ class TestTimelineSlice:
         del member.index
         d = self._design_with([self._tlobj(0, "Group1", is_group=True, health=5, collapsed=True,
                                            members=[member]),
-                               self._tlobj(2, "Extrude1", health=0)])
+                               self._tlobj(2, "Extrude1", health=_HEALTHY)])
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
         assert out["summary"]["states"] == {"healthy": 2}     # Fixture + Extrude1, not the group
         assert out["summary"]["exceptions"] == []
@@ -1187,7 +1189,7 @@ class TestTimelineSlice:
         del fixture.index
         d = self._design_with([self._tlobj(0, "Group1", is_group=True, health=5, collapsed=True,
                                            members=[hidden, fixture]),
-                               self._tlobj(3, "Extrude1", health=0)])
+                               self._tlobj(3, "Extrude1", health=_HEALTHY)])
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
         assert out["summary"]["states"] == {"suppressed": 1, "healthy": 2}
         assert [r["name"] for r in out["timeline"]] == ["Group1", "Extrude1"]   # rows unchanged
@@ -1197,7 +1199,7 @@ class TestTimelineSlice:
     def test_a_COLLAPSED_groups_ERRORED_member_becomes_an_exception_addressed_by_name(self):
         # index RAISES on a collapsed member (measured), so the exception it raises carries a null
         # index - the name is the address, and the note is what says so.
-        broken = self._tlobj(name="Loft2", health=2)
+        broken = self._tlobj(name="Loft2", health=_ERROR)
         del broken.index
         d = self._design_with([self._tlobj(0, "Group1", is_group=True, health=5, collapsed=True,
                                            members=[broken])])
@@ -1210,7 +1212,7 @@ class TestTimelineSlice:
         # OBSERVED live after deleting and re-adding an overlapping group: a group read collapsed
         # while its members stayed enumerated beside its row. Tallying both doors without deduping
         # doubles every state count in that state.
-        member = self._tlobj(1, "Fixture", parent_group="Group1", health=0)
+        member = self._tlobj(1, "Fixture", parent_group="Group1", health=_HEALTHY)
         d = self._design_with([self._tlobj(0, "Group1", is_group=True, collapsed=True,
                                            members=[member]), member])
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
@@ -1244,7 +1246,7 @@ class TestTimelineSlice:
         """A COLLAPSED outer group holding a COLLAPSED inner group holding one healthy and one
         errored feature. Only the outer's row is enumerated, so the inner is reached by recursion
         and its members answer no index."""
-        good, bad = self._tlobj(3, "Fixture", health=0), self._tlobj(4, "Loft2", health=2)
+        good, bad = self._tlobj(3, "Fixture", health=_HEALTHY), self._tlobj(4, "Loft2", health=_ERROR)
         inner = self._tlobj(1, "Inner", is_group=True, health=5, collapsed=True,
                             members=[good, bad])
         for obj in (good, bad, inner):
@@ -1263,7 +1265,7 @@ class TestTimelineSlice:
         # OBSERVED live after deleting and re-adding an overlapping group: the group read
         # isCollapsed true while its members stayed enumerated beside its row. The index guard is
         # what stops that state from doubling every count it touches.
-        member = self._tlobj(7, "Fixture", health=0)
+        member = self._tlobj(7, "Fixture", health=_HEALTHY)
         group = self._tlobj(6, "G1", is_group=True, health=5, collapsed=True, members=[member])
         states, exceptions, tallied = {}, [], set()
         summ = dg._object_summary(group)
@@ -1369,8 +1371,8 @@ class TestTimelineSlice:
     def test_slice_summary_states_and_exceptions(self):
         # the timeline slice leads with a states tally + exceptions = the FAILED features
         # (error/warning health). A suppressed (intentional) feature is NOT an exception.
-        d = self._design_with([self._tlobj(0, "Good", health=0),
-                               self._tlobj(1, "Bad", health=2),                    # error
+        d = self._design_with([self._tlobj(0, "Good", health=_HEALTHY),
+                               self._tlobj(1, "Bad", health=_ERROR),                    # error
                                self._tlobj(2, "Warned", health=1),                 # warning
                                self._tlobj(3, "Off", suppressed=True, health=3)])  # suppressed
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
@@ -1523,19 +1525,31 @@ class TestTimelineParams:
                            type_name="FilletFeature", token=None, tl_index=None):
         """A ModelParameter whose createdBy mints a NEW proxy object per read - the measured
         live behavior (proxy identity is never stable) - around a shared owner identity."""
-        class _P:
+        class _P(FakeModelParameter):
+            """A shared ModelParameter whose maker read returns a fresh proxy."""
+
             def __init__(self):
                 self.name, self.role = name, role
-                self.expression, self.value = expression, value
+                self._tracks = False
+                self._expression, self.value = expression, value
+                self._type_name = type_name
+                self._owner_name = owner_name
+                self._token = token
+                self._timeline_index = tl_index
+
             @property
             def createdBy(self):
-                ent = type(type_name, (), {})()
-                ent.name = owner_name
-                if token is not None:
-                    ent.entityToken = token
-                if tl_index is not None:
-                    ent.timelineObject = SimpleNamespace(index=tl_index)
+                ent = type(self._type_name, (), {})()
+                ent.name = self._owner_name
+                if self._token is not None:
+                    ent.entityToken = self._token
+                if self._timeline_index is not None:
+                    ent.timelineObject = SimpleNamespace(index=self._timeline_index)
                 return ent
+
+            @createdBy.setter
+            def createdBy(self, value):
+                self._created_by = value
         return _P()
 
     def test_tokenless_owners_are_matched_by_timeline_index_only(self):
@@ -1629,7 +1643,7 @@ class TestTimelineRazor:
 
 class TestGuards:
     def test_unknown_include_errors(self, monkeypatch):
-        monkeypatch.setattr(dg._common, "design", lambda: object())   # a design, so we reach the check
+        _install_design(dg, object())
         res = dg.handler(include=["bogus"])
         msg = error_message(res)
         assert "bogus" in msg.lower() or "unknown" in msg.lower()
@@ -1637,7 +1651,7 @@ class TestGuards:
     def test_the_refusal_lists_default_beside_the_slices(self, monkeypatch):
         # the refusal IS the vocabulary a caller that mistyped reads next; naming only the deep
         # slices hides the token that keeps the orientation block beside them.
-        monkeypatch.setattr(dg._common, "design", lambda: object())
+        _install_design(dg, object())
         msg = error_message(dg.handler(include=["bogus"]))
         assert "tree" in msg and "default" in msg
 
@@ -1657,7 +1671,7 @@ class TestGuards:
             assert keys.get(name, name) in out, name
 
     def test_no_active_design_guard(self, monkeypatch):
-        monkeypatch.setattr(dg._common, "design", lambda: None)
+        _install_design(dg, None)
         res = dg.handler()
         assert error_message(res)
 
@@ -1690,7 +1704,7 @@ def _occ(name, comp_name, full=None):
 def _wire_tree(monkeypatch, occs):
     root = MakeComp("RootComp", occurrences=occs)
     design = SimpleNamespace(rootComponent=root)
-    monkeypatch.setattr(dg._common, "design", lambda: design)
+    _install_design(dg, design)
     return root
 
 
@@ -2063,7 +2077,7 @@ class TestTreeNameFilter:
 
     def test_tree_bodies_reaches_a_component_scoped_walk(self, monkeypatch):
         design = _tree_design([_tocc("Bracket:1", comp="Bracket", bodies=1)])
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_tree(design, 3, "Bracket", with_bodies=True)
         assert err is None and out["tree"]["bodies"][0]["handle"] == "btok-B1"
 
@@ -2102,7 +2116,7 @@ class TestTreeNameFilter:
 
     def test_scoped_tree_body_truncation_gets_the_same_note(self, monkeypatch):
         design = _tree_design([_tocc("Gear:1", comp="Gear", bodies=30)])
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_tree(design, 3, "Gear", with_bodies=True)
         assert err is None
         assert out["note"].startswith("'Gear' bodies: 25 of 30 shown (cap 25).")
@@ -2156,7 +2170,7 @@ class TestTreeNameFilter:
         monkeypatch.setattr(dg, "_TREE_MAX_NODES", 2)
         kids = [_tocc(f"Pin:{i}") for i in range(1, 5)]
         design = _tree_design([_tocc("Bracket:1", comp="Bracket", kids=kids)])
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_tree(design, 3, "Bracket")
         assert err is None and out["truncated"] is True
 
@@ -2280,8 +2294,7 @@ class TestSliceConfigurations:
     def _delivered(self, monkeypatch, rows, cols):
         """The slice as the handler delivers it, over the given row and column collections."""
         table = SimpleNamespace(name="Table1", id="t1", activeRow=None, rows=rows, columns=cols)
-        monkeypatch.setattr(dg._common, "design",
-                            lambda: SimpleNamespace(configurationTopTable=table))
+        _install_design(dg, SimpleNamespace(configurationTopTable=table))
         return _payload(dg.handler(include=["configurations"]))["configurations"]
 
     def _rows(self, n, **faults):
@@ -2651,7 +2664,7 @@ class TestSliceMetadata:
             FakeOccurrence(path="Bike:1", component=bike),
             FakeOccurrence(path="Other:1", component=other)])
         design = _metadata_design(root, bike, wheel, other)
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_metadata(design, "", 0, "Bike")
         assert err is None and out["component"] == "Bike"
         assert [r["name"] for r in out["components"]] == ["Bike", "Wheel"]
@@ -2672,7 +2685,7 @@ class TestSliceMetadata:
         root = MakeComp(name="Assembly", entity_token="T:root",
                         occurrences=[FakeOccurrence(path="Bike:1", component=bike)])
         design = _metadata_design(root, bike, wheel)
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_metadata(design, "", 0, "Bike")
         assert err is None and [r["name"] for r in out["components"]] == ["Bike", "Wheel"]
         assert out["incomplete"] is True and "Hub:1" in out["note"]
@@ -2680,7 +2693,7 @@ class TestSliceMetadata:
     def test_a_scope_that_names_nothing_is_an_error(self, monkeypatch):
         root = MakeComp(name="Assembly", entity_token="T:root")
         design = _metadata_design(root)
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_metadata(design, "", 0, "Ghost")
         assert out is None and "'Ghost'" in error_message(err)
 
@@ -2712,7 +2725,7 @@ class TestSliceMetadata:
         root = MakeComp(name="Assembly", entity_token="T:root")
         bracket = MakeComp(name="Bracket", entity_token="T:b", part_number="FE-BRACKET-001",
                            description="Sweep bracket", component_id="id-b", revision_id="r2")
-        monkeypatch.setattr(dg._common, "design", lambda: _metadata_design(root, bracket))
+        _install_design(dg, _metadata_design(root, bracket))
         out = _payload(dg.handler(include=["metadata"]))
         assert verify_core._component_metadata(
             "Bracket", part_number="FE-BRACKET-001", description="Sweep bracket")(out) is True

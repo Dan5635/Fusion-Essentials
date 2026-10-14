@@ -57,9 +57,12 @@ stop.
 - Each Dev has reserved files. A change to someone else's file is sent as a transfer hunk for
   them to place, never applied.
 - Work is handed over as a patch under `outputs/<campaign>/<lane>/` with its sha256.
+- A tree whose patch is handed over stays as it is. Start the next piece in a new tree from the
+  last commit; never reverse a candidate to reuse its tree or to tidy it.
 - Build offline in your assigned isolated tree. Nothing unfinished goes into the shared main
-  checkout. Run tests and version-control checks from your own tree. Leave no files behind in
-  a tree you do not own, and give every search a path inside your own tree;
+  checkout. Run tests and version-control checks from your own tree. Your session may start in
+  the shared checkout, so a command that writes names your tree by its full path. Leave no files
+  behind in a tree you do not own, and give every search a path inside your own tree;
   [tests/README.md](../../tests/README.md) gives the commands.
 - `plans/` and `outputs/` are gitignored, so they are not in a worktree. Read them from the main
   checkout by absolute path, and write your handover where you were told to.
@@ -85,17 +88,18 @@ stop.
 - A command your runner's approval layer refuses is a stop for that action. Report its exact text
   and carry on only with work that does not need it. Reach the same effect by no other route: not
   a script, not another tool, not a different spelling, not another agent.
+- A tool or command that fails the same way twice is reported at once, in one line: a seat to
+  the Coordinator on the channel, a helper to its seat. Work queued in silence behind a broken
+  tool looks like progress to everyone else.
 
 ## Sweep rows, price and scope
 
 - A sweep story is part of your share: each new behaviour gets rows with a separate read of its
   effect, built offline, run as a pre-case under a lease, then once in the full sweep.
 - The live acts under `tests/live/` are the lead's. Hand a sweep row over as its own hunk, apart
-  from your patch. You may apply it in your worktree to check that it compiles; reverse it
-  afterwards, following [tests/README.md](../../tests/README.md), and say so. If an existing
-  sweep row asserts the behaviour your change corrects, name that row in your report: the
-  receipt fails on a working tool until it
-  changes with you. `tests/unit/test_tool_verify_receipt.py` pins rows by position: a row you add
+  from your patch. Check that it compiles in a throwaway tree, not the one your patch comes
+  from, and say so. If an existing sweep row asserts the behaviour your change corrects, name
+  that row in your report: the receipt fails on a working tool until it changes with you. `tests/unit/test_tool_verify_receipt.py` pins rows by position: a row you add
   or move takes its pin updates in the same hunk, and your report says so.
 - Price a proposal before you make it: the full text of each new or changed tool against the
   per-tool allowance and the tool count, both of which are the owner's to set, using the wire
@@ -203,7 +207,8 @@ For a probe driver or a premise recipe, the lint runs and the repo patch do not 
   outcome and a non-zero exit on a miss, and check its calls against the registered tool schemas
   (`conftest.register_all_tools()`): a fake accepts any argument.
 - EVERY reply key the driver or a predicate reads is taken from the tool's source or a recorded
-  reply. Recomputing the expected numbers does not verify the payload's shape.
+  reply. Recomputing the expected numbers does not verify the payload's shape. A key the tool
+  leaves out at its default is left out of your fake too.
 - Mutants of the driver live in your scratch folder and are passed to the check by path.
 - Steps for owner-present work are PROPOSED: a written recipe handed over by hash. A helper never
   runs them, schedules them or addresses the owner.
@@ -279,7 +284,9 @@ clock stamp is what sorts out order when two entries cross.
    a private branch) based on the last commit. Nothing unfinished goes into the shared main
    checkout.
 3. **Trade reviews.** Post a patch and its sha256, computed from the file as posted; the other
-   Dev reads it whole, computes the hash again and quotes it in the verdict. Corrections come
+   Dev reads it whole, computes the hash again and quotes it in the verdict. A verdict names the
+   files the reader opened whole; a check that a patch applies is reported as that and is not a
+   verdict. Corrections come
    back as a delta on the version the reader last read, and earlier versions stay on disk. A
    reviewer's required change needs evidence; when you required something and were wrong, say so
    on the channel.

@@ -7,6 +7,7 @@ occurrence target writes its COMPONENT; and only the fields that were given are 
 The fake models what the shared component fake does not: a metadata setter the platform normalizes
 or silently refuses, which is what the read-back exists to catch.
 """
+from conftest import install as _install_design
 
 import os
 import sys
@@ -200,8 +201,7 @@ class TestGuards:
         assert "did not resolve" in error_message(sm.handler(target="Ghost", part_number="FE-1"))
 
     def test_no_active_design_refused(self, monkeypatch):
-        monkeypatch.setattr(sm._common, "design", lambda: None)
-        monkeypatch.setattr(sm._inputs._common, "design", lambda: None)
+        _install_design(sm, None)
         assert "No active design" in error_message(sm.handler(target="Bracket", part_number="FE-1"))
 
     def test_ambiguous_component_name_is_refused_without_writing_either(self, wire):

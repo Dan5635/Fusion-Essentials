@@ -1,8 +1,8 @@
 """Tests for `pmi_edit` - per-action read-back gating: a set that does not take is an error, an
 imported annotation refuses text edits, and the below-floor leader extension is normalized before
 a segment edit."""
+from conftest import install as _install_design
 
-import json
 import math
 from types import SimpleNamespace
 
@@ -15,9 +15,7 @@ from conftest import (load_tool, error_message, FakePMIDisplaySettings,
 pe = load_tool("pmi_edit")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class _FakeAnn(FakePMILeaderLineNote):
@@ -86,7 +84,7 @@ def _install_suppressed(rig, item, hits_after):
 def rig(monkeypatch):
     ann = _FakeAnn()
     comp = MakeComp("Root")
-    monkeypatch.setattr(pe._common, "design", lambda: object())
+    _install_design(pe, object())
     monkeypatch.setattr(pe._pmi, "find_annotation", lambda d, n, c="": (ann, comp, None))
     monkeypatch.setattr(pe._pmi, "segments_markup", lambda a: "NEW")
     return SimpleNamespace(ann=ann, comp=comp, monkeypatch=monkeypatch)
@@ -845,7 +843,7 @@ class TestGuards:
                                                           new_name="Y"))
 
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(pe._common, "design", lambda: None)
+        _install_design(pe, None)
         assert "No active design" in error_message(pe.handler(action="hide", annotation="N"))
 
     def test_an_unknown_action_is_refused_listing_the_vocabulary(self, rig):

@@ -7,20 +7,12 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe
+from ._common import normalize_include as _normalize_include
 from . import _common, _sheet_common, _edit_feature_common
 
 _SLICES = ("rules", "library_rules", "components", "features")
 _LOCAL_RULE_HINT = ("Design-local rules could not be read. If uninitialized, create a root sheet-metal "
                     "component with model_create_component(sheet_metal=true), then retry.")
-
-
-def _normalize_include(include):
-    """Return requested rich-read slices."""
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [part.strip().lower() for part in include.split(",") if part.strip()]
-    return [str(part).strip().lower() for part in include]
 
 
 def _rules(design, scope, limit):
@@ -112,9 +104,9 @@ def handler(include=None, max_results: int = 50) -> dict:
         return error(f"Unknown include {bad}. Use rules, library_rules, components, features, or default.")
     if not isinstance(max_results, int) or not 1 <= max_results <= 200:
         return error(f"max_results '{max_results}' must be an integer from 1 to 200.")
-    design = _common.design()
-    if design is None:
-        return error("No active design. Create or open a design first.")
+    design, design_refusal = _common.require_design(none_only=True)
+    if design_refusal is not None:
+        return design_refusal
     out = {}
     if not inc or "default" in inc:
         local = safe(lambda: design.designSheetMetalRules)

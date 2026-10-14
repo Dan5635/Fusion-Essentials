@@ -22,7 +22,16 @@ import tool_verify  # noqa: E402
 import verify_core  # noqa: E402
 
 
+def _machine(cloud):
+    return {"machine": "cloud-unit", "port": 37182,
+            "tiers": {"native_script": False, "machining_extension": False, "cloud": True},
+            "cloud": cloud,
+            "allow": {"library_writes": False, "preference_writes": False, "addin_reload": False}}
+
+
 def _write(tmp_path, body):
+    if isinstance(body, dict):
+        body = _machine(body)
     path = tmp_path / cloud_config.CONFIG_NAME
     path.write_text(body if isinstance(body, str) else json.dumps(body), encoding="utf-8")
     return str(path)
@@ -36,10 +45,19 @@ class TestLoadConfig:
 
     def test_a_complete_config_loads_the_three_strings_stripped(self, tmp_path):
         path = _write(tmp_path, {"hub": " Some Hub ", "project": "Some Project",
-                                 "folder": "Sweep/Runs", "extra": "ignored"})
+                                 "folder": "Sweep/Runs"})
         config, problem = cloud_config.load_config(path)
         assert problem is None
         assert config == {"hub": "Some Hub", "project": "Some Project", "folder": "Sweep/Runs"}
+
+    def test_unknown_cloud_key_and_legacy_scope_cannot_opt_in(self, tmp_path):
+        path = _write(tmp_path, {**_GOOD, "extra": "unadmitted"})
+        config, problem = cloud_config.load_config(path)
+        assert config is None and "unknown key: cloud.extra" in problem
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(_GOOD, stream)
+        config, problem = cloud_config.load_config(path)
+        assert config is None and "missing: machine" in problem and "missing: tiers" in problem
 
     def test_a_missing_file_names_the_path_and_the_shape(self, tmp_path):
         path = str(tmp_path / cloud_config.CONFIG_NAME)
@@ -55,7 +73,7 @@ class TestLoadConfig:
         path = _write(tmp_path, {"hub": "Some Hub", "project": "   "})
         config, problem = cloud_config.load_config(path)
         assert config is None
-        named = problem.split(" - it holds")[0]
+        named = problem.split("Copy tests/live/")[0]
         assert "project" in named and "folder" in named and "hub" not in named
 
     def test_unreadable_json_and_a_non_object_both_refuse(self, tmp_path):
@@ -339,7 +357,7 @@ def isolated_cloud_binding(monkeypatch, tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     config_path = tmp_path / "operator.json"
-    config_path.write_text(json.dumps({"hub": "Test Hub", "project": "Test Project", "folder": "OldFolder"}) + "\n")
+    config_path.write_text(json.dumps(_machine({"hub": "Test Hub", "project": "Test Project", "folder": "OldFolder"})) + "\n")
     original = config_path.read_bytes()
     monkeypatch.setattr(module, "CONFIG_PATH", str(config_path))
     monkeypatch.setattr(module, "_MANIFEST_DIR", str(tmp_path / "results"))

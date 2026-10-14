@@ -10,7 +10,6 @@ include_suppressed=true counts them), the empty-setup answer (a setup with no op
 not an exception), and the guards (the shared no-CAM gate, a non-boolean verdict, a raising check).
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -22,9 +21,7 @@ mod = load_tool("cam_inspect_toolpaths")
 cc = load_tool("_cam_common")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _cam(*setups, verdict=True, scoped_verdict=None, raises=None, all_raises=None,

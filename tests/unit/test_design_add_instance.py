@@ -7,6 +7,7 @@ other tool can resolve. The fakes reproduce that asymmetry, the global per-compo
 counter that names the new instance, and the failure the read-back exists to catch: a call that
 returns an occurrence while the tree gains nothing.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -447,8 +448,7 @@ class TestGuards:
         assert getattr(des, "added", None) is None
 
     def test_no_active_design_refused(self, monkeypatch):
-        monkeypatch.setattr(ai._common, "design", lambda: None)
-        monkeypatch.setattr(ai._inputs._common, "design", lambda: None)
+        _install_design(ai, None)
         assert "No active design" in error_message(ai.handler(component="Bolt"))
 
 

@@ -6,6 +6,9 @@ the cm-scaled length/offset/location), the designation/handedness/modeled settin
 input, and the honesty gates - a failed compute, a designation or side that reads back different
 from the one requested, and a modeled thread that left the body's volume untouched.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import pytest
 
@@ -70,7 +73,7 @@ class FakeThreadFeature:
     """A live ThreadFeature reports the partial extent back: isFullLength plus threadLength /
     threadOffset as ModelParameters carrying centimetres, and threadLocation as the enum. The
     fake echoes the input unless a test overrides it to model an extent that did not take."""
-    def __init__(self, inp, name="Thread1", health=0, info=None, full_length=None,
+    def __init__(self, inp, name="Thread1", health=_HEALTHY, info=None, full_length=None,
                  length_cm=None, offset_cm=None):
         self.name = name
         self.healthState = health
@@ -90,7 +93,7 @@ class FakeThreadFeature:
 
 class FakeThreadFeatures:
     """Record thread inputs and optionally change modeled fixture volume."""
-    def __init__(self, bodies=(), volume_delta=-2.0, return_feature=True, health=0,
+    def __init__(self, bodies=(), volume_delta=-2.0, return_feature=True, health=_HEALTHY,
                  feature_info=None, full_length=None, length_cm=None, offset_cm=None):
         self.added = 0
         self.full_length = full_length
@@ -467,7 +470,7 @@ class TestLibraryChoices:
 
 class TestHonesty:
     def test_health_error_reported_not_false_ok(self, monkeypatch):
-        feats = FakeThreadFeatures(health=2)
+        feats = FakeThreadFeatures(health=_ERROR)
         _wire(monkeypatch, feats, [_shaft()])
         res = mt.handler(faces=["h"], designation="M10x1.5")
         assert res["isError"] is True

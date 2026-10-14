@@ -54,9 +54,9 @@ def handler(action: str = "copy", rule: str = "", name: str = "", thickness: str
             relief_shape: str = None, two_bend_relief_shape: str = None,
             two_bend_relief_placement: str = None, three_bend_relief_shape: str = None) -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if design is None:
-        return error("No active design. Create or open a design first.")
+    design, design_refusal = _common.require_design(none_only=True)
+    if design_refusal is not None:
+        return design_refusal
     choice, cerr = _ACTION.resolve(action)
     if cerr:
         return error(cerr)

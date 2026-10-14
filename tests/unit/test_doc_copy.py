@@ -6,7 +6,6 @@ the post-copy rename disclosure, and the external-reference count that is null w
 reference read did not answer.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -18,9 +17,7 @@ dm = load_tool("doc_copy")
 dc = load_tool("_data_common")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def FakeFile(name, fid="urn:adsk.file:src", child_refs=None, copy_returns=True, rename_ok=True,

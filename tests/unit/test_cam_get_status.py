@@ -8,7 +8,6 @@ live path (document + by-name target) that reports an inline/UI generation with 
 handle. ``_live_op_tally`` is pinned in test_tier2_misc.py.
 """
 
-import json
 import sys
 from types import SimpleNamespace
 
@@ -23,9 +22,7 @@ from conftest import FakeApplication, FakeFusionDocument, FakeProducts
 st = load_tool("cam_get_status")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── target resolution (via the shared _cam_common.resolve_cam_node) ─────────────────────────────────

@@ -44,9 +44,9 @@ def _list_sketches(component: str = "", max_results: int = 0) -> dict:
     'component' narrows the list, taking the same component name / occurrence path / handle the
     by-name read scopes by. Two components can wear one NAME, so the rows they own are identical -
     top-level 'placements' carries the occurrence paths that tell them apart."""
-    design = _common.design()
-    if not design:
-        return error("No active design (open or create a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comps, scope_error = _detail_engine().scope_components(design, component)
     if scope_error:
         return error(scope_error)

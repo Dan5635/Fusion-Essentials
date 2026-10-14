@@ -6,19 +6,13 @@ explicit 'recursive_confirm' token AND surfaces a full-SUBTREE preview so the ca
 sees the blast radius.
 """
 
-import json
 
 import pytest
 
-from conftest import FakeApplication, FakeData, FakeDataFolder, load_tool
+from conftest import FakeApplication, FakeData, FakeDataFolder, load_tool, payload as _payload
 
 dm = load_tool("data_delete_folder")
 dc = load_tool("_data_common")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 def _blind(name, folder_id, files=(), blind_files=True, blind_subs=True):

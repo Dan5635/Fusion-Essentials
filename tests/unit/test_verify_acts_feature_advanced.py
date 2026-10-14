@@ -9,6 +9,7 @@ import pytest
 TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(TESTS_DIR, "live"))
 import verify_acts_feature_advanced as witness  # noqa: E402
+from verify_core import _unparked  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -151,7 +152,7 @@ def test_first_roll_uses_fixture_index_before_any_definition_read():
               "timeline_count": 24, "marker": 24, "healthy": True, "control_body": "R10"}
     assert witness._fixture_result(result) is True
     assert "adv_pipe" not in witness._ADVANCED_STATE
-    check = next(expect for name, _args, expect, _save in rows
+    check = next(_unparked(expect) for name, _args, expect, _save in rows
                  if name == "design_edit_timeline")
     roll = {"rolled": True, "to": "before", "feature": "PS_R22",
             "marker_position": 4, "timeline_count": 24, "rolled_back": 20}

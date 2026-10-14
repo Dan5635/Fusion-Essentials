@@ -59,9 +59,9 @@ def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_acc
             accuracy: str = "medium", face_count: int = 0,
             operation: str = "parametric") -> dict:
     """Convert a MeshBody into a BRep solid/surface (the bridge back to the BRep tools). WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mb, merr = _CONVERT_MESH.resolve(mesh)
     if merr:
         return error(merr)

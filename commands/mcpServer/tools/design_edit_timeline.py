@@ -13,6 +13,7 @@ from . import _common
 from . import _design_common
 from . import _inputs
 from ._common import error, ok, outcome_clause, safe, short_ref, timeline_health
+from ._inputs import _timeline_objects as _objects
 
 _ACTIONS = ("roll", "reorder", "suppress", "group", "ungroup", "group_state", "delete_after_marker",
             "set_attribute", "delete_attribute")
@@ -37,13 +38,6 @@ _TO = _inputs.Choice(
 # The attribute actions target the FEATURE ENTITY, which is what the FeatureRef kind resolves to;
 # it rides on the shared 'feature' input rather than adding a second name for the same thing.
 _ATTR_TARGET = _inputs.FeatureRef("feature")
-
-
-def _objects(timeline):
-    """Every TimelineObject in timeline order, unreadable slots dropped - the shared collection walk,
-    so this list and the one FeatureRef resolves against skip the same slots. A skip leaves a HOLE, so
-    a position here is NOT an object's .index; everything addressing an index reads .index itself."""
-    return list(_common.iter_collection(timeline))
 
 
 def _index(obj):
@@ -749,9 +743,9 @@ def handler(action: str = "roll", feature: str = "", to: str = "before", end_fea
         return verr
     action, to = values["action"], values["to"]
 
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     timeline = safe(lambda: design.timeline)
     # Timeline defines __len__, so an EMPTY one reads falsy - test it against None, never for truth.
     if timeline is None:

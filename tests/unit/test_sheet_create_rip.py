@@ -1,3 +1,4 @@
+from conftest import install as _install_design
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import json
@@ -53,7 +54,7 @@ def rip(monkeypatch):
     monkeypatch.setattr(mod._POINT_TWO, "resolve", lambda x: (vertex_two, None))
     monkeypatch.setattr(mod._common, "_native_of", lambda x: x)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: True)
-    monkeypatch.setattr(mod._common, "design", lambda: comp.parentDesign)
+    _install_design(mod, comp.parentDesign)
     monkeypatch.setattr(mod._common, "native_identity", lambda b: getattr(b, "token", None))
     monkeypatch.setattr(mod._sheet_common, "bend_face_count", lambda b: 2)
     monkeypatch.setattr(mod._geom, "signed_volume", lambda b: vol_map.get(id(b)))

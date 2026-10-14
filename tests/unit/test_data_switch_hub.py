@@ -30,9 +30,7 @@ def cloud(monkeypatch):
     return _use
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _error_payload(res):

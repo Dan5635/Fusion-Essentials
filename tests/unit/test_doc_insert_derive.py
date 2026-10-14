@@ -9,8 +9,11 @@ through the real _inputs.OccurrenceRef kind against a fake design (dual seam pat
 carrying a live shape dump uses its shared conftest fake; the DeriveFeature family has none, so it
 keeps the bespoke doubles below.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+from conftest import install as _install_design
 
-import json
 from types import SimpleNamespace
 
 import adsk.fusion
@@ -39,7 +42,7 @@ class FakeDeriveFeature:
     """The landed DeriveFeature: its health pair, the bodies it brought in, whether it is parametric
     and the documentReference a freshness read goes through. DeriveFeature carries no live shape
     dump, so it has no shared fake."""
-    def __init__(self, name="Derive1", health=0, message="", bodies=(), is_parametric=True,
+    def __init__(self, name="Derive1", health=_HEALTHY, message="", bodies=(), is_parametric=True,
                  out_of_date=False):
         self.name = name
         self.healthState = health
@@ -74,7 +77,7 @@ class FakeDeriveFeatures:
     simulate a side effect that happens DURING the derive (a new occurrence landing, a param count
     change). last_input captures the DeriveFeatureInput the handler populated."""
 
-    def __init__(self, result="default", bodies=("Body1",), health=0, message="",
+    def __init__(self, result="default", bodies=("Body1",), health=_HEALTHY, message="",
                  out_of_date=False, is_parametric=True, on_add=None):
         self.result = result
         self.bodies = bodies
@@ -218,8 +221,7 @@ def _install(monkeypatch, *, design_type=1, user_param_count=0, occurrences=(),
     comp = FakeComp(comp_name, derive_features=derive_features, occurrences=occurrences)
     design = FakeDesign(comp, design_type=design_type, user_param_count=user_param_count,
                         all_param_count=all_param_count)
-    monkeypatch.setattr(io._common, "design", lambda: design)
-    monkeypatch.setattr(io._inputs._common, "design", lambda: design)
+    _install_design(io, design)
     df = data_file if data_file is not None else FakeDataFile(
         "SourcePart", file_id="urn:adsk.wipprod:dm.lineage:src", version=3)
     src = _make_source() if source_design is _NO_DEFAULT else source_design
@@ -230,9 +232,7 @@ def _install(monkeypatch, *, design_type=1, user_param_count=0, occurrences=(),
     return design, comp, docs, df, derive_features, source_doc
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ─────────────────────────────────────────────────────────────────────────────────────
@@ -243,7 +243,7 @@ class TestGuards:
         assert res["isError"] is True and "document_id" in res["message"]
 
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(io._common, "design", lambda: None)
+        _install_design(io, None)
         res = io.handler(document_id="urn:x")
         assert res["isError"] is True and "No active design" in res["message"]
 
@@ -759,8 +759,7 @@ class TestAddFailures:
         comp = FakeComp()
         comp.features.deriveFeatures = None      # this build's Features carries no derive collection
         design = FakeDesign(comp)
-        monkeypatch.setattr(io._common, "design", lambda: design)
-        monkeypatch.setattr(io._inputs._common, "design", lambda: design)
+        _install_design(io, design)
         df = FakeDataFile("SourcePart", file_id="urn:adsk.wipprod:dm.lineage:src")
         source_doc = FakeSourceDoc(data_file=df, design=_make_source())
         monkeypatch.setattr(io, "app",
@@ -774,7 +773,7 @@ class TestAddFailures:
 
 class TestHealthAndReferenceVerify:
     def test_error_health_state_bites(self, monkeypatch):
-        derive_features = FakeDeriveFeatures(health=2, message="boundary edges do not match")
+        derive_features = FakeDeriveFeatures(health=_ERROR, message="boundary edges do not match")
         _install(monkeypatch, derive_features=derive_features)
         res = io.handler(document_id="urn:x")
         assert res["isError"] is True
@@ -937,8 +936,7 @@ class TestIntoComponent:
                 design.activeOccurrence = None
             return True
         design.activateRootComponent = _restore_root
-        monkeypatch.setattr(io._common, "design", lambda: design)
-        monkeypatch.setattr(io._inputs._common, "design", lambda: design)
+        _install_design(io, design)
         df = FakeDataFile("SourcePart", file_id="urn:adsk.wipprod:dm.lineage:src")
         source_doc = FakeSourceDoc(data_file=df, design=_make_source())
         monkeypatch.setattr(io, "app",

@@ -325,9 +325,9 @@ def handler(boundary=None, boundaries=None, continuity: str = "connected",
     if cont_key not in _CONTINUITY:
         return error(f"Unknown continuity '{continuity}'. Use: connected, tangent, curvature.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
     op = getattr(adsk.fusion.FeatureOperations, _common.OPERATIONS[op_key])
     cont = safe(lambda: getattr(adsk.fusion.SurfaceContinuityTypes, _CONTINUITY[cont_key]))

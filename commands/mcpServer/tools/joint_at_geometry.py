@@ -137,9 +137,9 @@ def handler(handle_one: str = "", handle_two: str = "", motion: str = "revolute"
     if ax_err:
         return error(ax_err)
 
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     pending = pending_move_guard(design)
     if pending:

@@ -73,9 +73,9 @@ def _add_one(design, name, expression, unit, comment, favorite):
 def handler(name: str = "", expression: str = "", unit: str = "mm",
             comment: str = "", favorite: bool = False, params: list = None) -> dict:
     """Add one (name+expression) or many ('params' list) user parameters. WRITES; health-guarded."""
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # batch path
     if params:

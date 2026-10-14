@@ -1,3 +1,4 @@
+from conftest import install as _install_design
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import json
@@ -36,7 +37,7 @@ def flange(monkeypatch):
 
     monkeypatch.setattr(mod._EDGES, "resolve", lambda x: ([edge], None))
     monkeypatch.setattr(mod._common, "_native_of", lambda x: x)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: True)
     monkeypatch.setattr(mod._common, "native_identity", lambda x: id(x))
     monkeypatch.setattr(mod._sheet_common, "sheet_edge_faces", lambda e: (sheet_face, rim_face, None))
@@ -182,7 +183,7 @@ def base_flange(monkeypatch):
     active.features = NS(flangeFeatures=ff)
 
     monkeypatch.setattr(mod._PROFILE, "resolve", lambda raw, comp="": (prof, None))
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._common, "target_component", lambda d: active)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: a is b)
     return mod, active, ff, feat, inp, new_body, sketch

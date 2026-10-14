@@ -57,14 +57,76 @@ without staging content. Export with `git diff --binary --output=<file> HEAD`; u
 sign, because the spaced form can leave an empty file. Keep earlier patch versions on disk and
 compute SHA256 from the posted bytes.
 
-An outputs-only sweep hunk may be applied in your private tree to check compilation, then removed
-with `git apply -R <sweep-hunk.patch>` before exporting your source patch. Report the temporary
-application and its reversal; do not use it to change a reserved shared act in the main checkout.
+Check an outputs-only sweep hunk in a throwaway tree before exporting your source patch. Report
+the compilation check; do not change a reserved shared act in the main checkout.
 
 A persistent fixture requires explicit admission, a name identifying it as a test leftover, and
 a handoff giving its name and location. A probe needing a saved cloud source creates exactly one
 file named `TestDetritus-<row>.<timestamp>` in the configured test project's sweep folder, reports
 its name and lineage, and does not delete, switch hubs or walk a project.
+
+## Running the sweep on your machine
+
+The live sweep requires one explicit machine configuration before it makes any server call.
+Copy [sweep_config.example.json](live/sweep_config.example.json) to
+`tests/live/sweep_config.local.json` and fill in every key. The example excludes every optional
+tier and persistent-write permission; it is not a full-acceptance configuration.
+
+| Key | Meaning |
+|---|---|
+| `machine` | A portable 1-to-40-character record-folder label: letters, digits, dots, dashes or underscores; no trailing dot or reserved Windows name. |
+| `port` | The add-in's configured loopback port, an integer from 1024 through 49151. This does not change the add-in's `mcp_port`. |
+| `tiers.native_script` | Admit native-script rows. The setting `Allow AI scripts (unsafe)` must already expose `sys_execute_script`. |
+| `tiers.machining_extension` | Request machining-extension rows; an unavailable or unread entitlement stops admission. |
+| `tiers.cloud` | Request cloud rows in the configured destination. |
+| `cloud.hub`, `cloud.project`, `cloud.folder` | The existing hub name, project name and operator folder path. All three must be nonblank when cloud is on; they may be empty when it is off. |
+| `allow.library_writes` | Admit writes to shared tool, machine and template libraries; document-local CAM tools are separate. |
+| `allow.preference_writes` | Admit preference-write rows. |
+| `allow.addin_reload` | Admit the add-in reload/switch verification rows. |
+
+Every tier and permission is a JSON `true` or `false`, not text or a number. Missing, unknown,
+duplicate and mistyped keys are refused; no missing choice is supplied silently. Set the cloud
+scope in the `cloud` object of this same machine configuration.
+
+Path precedence is one `--config PATH`, then `FUSION_ESSENTIALS_SWEEP_CONFIG`, then the default
+`tests/live/sweep_config.local.json`. A CLI path is validated before cloud/act imports and before
+publishing the environment override. For example, from the repository root:
+
+```powershell
+py -3 tests/live/tool_verify.py --config tests/live/sweep_config.local.json
+```
+
+Use `python3` instead of `py -3` on macOS/Linux; native operation there remains untested.
+Only run a live sweep with the Fusion session's permission and no other driver using it.
+
+Admission reads the actual bound endpoint, loaded identity, selected tool registry, complete
+open-document census and prerequisite preferences. The measured prerequisites are Z-up modeling,
+millimetre/gram Design defaults and English; the sweep does not change them to satisfy admission.
+Unaccepted modified documents stop admission. `--accept-open-work` acknowledges their presence;
+it does not authorize editing, saving or closing them. Resume exempts only exact checkpoint-owned
+handles, not names or arbitrary open files.
+
+A requested-on tier with missing or unread capability stops rather than silently skipping. An
+off tier produces explicit out-of-scope rows, not evidence that the capability is absent. The
+family sweep also requires the read-only native home observer: with `native_script=false` it
+refuses before family writes because public document reads cannot certify the strict home
+content-count/modified-flag fence. No permission is automatically enabled to work around that.
+Those counts are a bounded fence, not proof that arbitrary existing geometry is unchanged.
+
+Cloud work creates its own fresh top-level run folder in the configured project, leaving the
+operator folder setting unchanged; pre-existing folders and documents are not cleanup targets.
+Review the selected library-write rows before opting in:
+the library-seed story retains the Local asset named 'Fusion-Essentials sweep test data' at
+its selected exact URL and has no library-delete step. Before opting in, admit that test
+namespace on the target installation; a name alone does not establish its identity. Its
+create/reuse and stored-content checks require native verification. A permission-off run
+makes no claim that permission-on effects were tested.
+
+The exact machine label `reference` uses tracked reference-record locations only when all three
+tiers and all three persistent-write permissions are on. Other runs use
+`tests/live/records/<machine>/<scope-hash>/`; changing choices, OS or checkout separates records.
+These records and the local configuration are private and ignored. A label or green partial run
+does not turn scoped evidence into full acceptance; normal source/load and receipt checks remain.
 
 ## Live sweep local inputs
 
@@ -181,7 +243,7 @@ Producer additions list late act-local setup beyond the family default. Entitlem
 | `ACT 12f - SHEET METAL FOLD POSITIONS` | `sheet_positions` | family default | inherited | `none` | `always` | `null` |
 | `ACT 12g - SHEET METAL FLANGE FAMILY` | `sheet_flange` | family default | inherited | `none` | `always` | `null` |
 | `ACT 13 - SMALL EDIT SAFETY` | `small_edits` | family default | inherited | `none` | `always` | `null` |
-| `ACT 14 - LOOKUP TARGETING` | `lookup` | family default | manufacture | `none` | `always` | `null` |
+| `ACT 14 - LOOKUP TARGETING` | `lookup` | family default | manufacture | `none` | `('native_script', 'cloud_tier', 'library_writes', 'preference_writes', 'addin_reload')` | `null` |
 | `ACT 15 - RENDER: LOCAL START` | `render` | family default | inherited | `none` | `always` | `null` |
 | `ACT 15 - RENDER: LOCAL JPEG` | `render` | family default | inherited | `none` | `always` | `null` |
 | `ACT 15 - RENDER: LOCAL TIFF` | `render` | family default | inherited | `none` | `always` | `null` |

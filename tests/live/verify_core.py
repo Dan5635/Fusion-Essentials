@@ -31,6 +31,7 @@ import urllib.request
 import zlib
 
 import cloud_config
+import machine_config
 
 
 def _addin_endpoint():
@@ -44,7 +45,10 @@ def _addin_endpoint():
 
 
 ENDPOINT = _addin_endpoint()
-BASE = f"http://{ENDPOINT.HOST}:{ENDPOINT.DEFAULT_PORT}"
+_MACHINE_READ = machine_config.current()
+MACHINE = _MACHINE_READ[0]
+PORT = MACHINE["port"] if MACHINE else ENDPOINT.DEFAULT_PORT
+BASE = f"http://{ENDPOINT.HOST}:{PORT}"
 MCP = BASE + "/mcp"
 SERVER_NAME = "Fusion-Essentials MCP Server"
 DOC_PREFIX = "EVAL_sweep"
@@ -84,7 +88,8 @@ _DWELL = "_dwell"
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 SRC_ROOT = os.path.join(REPO_ROOT, "commands", "mcpServer")
-VERIFIED = os.path.join(_HERE, "VERIFIED_TOOLS.md")
+VERIFIED = os.path.join(machine_config.record_root(MACHINE) if MACHINE else _HERE,
+                        "VERIFIED_TOOLS.md")
 
 _FACADE_NS = None
 
@@ -111,7 +116,25 @@ def facade(name):
     return ns[name]
 
 
-def _post(payload, with_session=False):
+def require_machine():
+    """Require the same complete configuration before each real transport dispatch."""
+    config, found, path, source = _MACHINE_READ
+    if found:
+        raise SystemExit(machine_config.refusal(path, source, found))
+    current, problems = machine_config.load(path)
+    if problems or current != config:
+        raise SystemExit("Sweep configuration changed or became unreadable: " + path
+                         + ". Start a new process; no further call was made.")
+    return config
+
+
+def _post(payload, with_session=False, script_declaration=None):
+    config = require_machine()
+    if payload.get("method") == "tools/call":
+        params = payload.get("params") or {}
+        tool, arguments = params.get("name", ""), params.get("arguments") or {}
+        effects = machine_config.declared_effects(tool, arguments, script_declaration)
+        machine_config.require_call(config, tool, arguments, effects)
     req = urllib.request.Request(
         MCP, data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json",
@@ -124,10 +147,15 @@ def _post(payload, with_session=False):
         return body
 
 
-def call(tool, arguments):
+def call(tool, arguments, script_declaration=None):
     """One tools/call. Returns (is_error, payload_or_text)."""
-    out = _post({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                 "params": {"name": tool, "arguments": arguments}})
+    config = require_machine()
+    effects = machine_config.declared_effects(tool, arguments, script_declaration)
+    machine_config.require_call(config, tool, arguments, effects)
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": tool, "arguments": arguments}}
+    out = (_post(payload, script_declaration=script_declaration) if script_declaration is not None
+           else _post(payload))
     if "error" in out:
         return True, out["error"].get("message", str(out["error"]))
     result = out["result"]
@@ -165,6 +193,7 @@ def attestation_identity(health):
 
 def _health_read():
     """The /health body; a read that times out is taken once more after 5 s, then raises."""
+    require_machine()
     for last in (False, True):
         try:
             with urllib.request.urlopen(BASE + "/health", timeout=20) as resp:
@@ -178,6 +207,7 @@ def _health_read():
 
 
 def health_gate():
+    require_machine()
     data = _health_read()
     if data.get("server") != SERVER_NAME:
         sys.exit(f"Refusing to run: {BASE} is answering as {data.get('server')!r}, "
@@ -195,6 +225,7 @@ def _schema_fingerprint(rows):
 
 
 def registered_tools(health=None, include_rows=False):
+    require_machine()
     out, response_session = _post(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         with_session=True)
@@ -326,7 +357,37 @@ def _unless(capability, expect="refused"):
     return Unless(capability, expect)
 
 
-_GATES = (Parked, Needs, Unless, Independent)
+class ScriptEffects:
+    """Carry source-audited persistent effects bound to one exact native script, not a wire field."""
+
+    def __init__(self, script, effects, expect="ok"):
+        self.declaration = machine_config.effect_declaration(script, effects)
+        self.expect = expect
+
+
+_GATES = (Parked, Needs, Unless, Independent, ScriptEffects)
+
+
+def step_script_declaration(expect):
+    """Return the single exact-source declaration through existing expectation wrappers."""
+    found = None
+    while isinstance(expect, _GATES):
+        if isinstance(expect, ScriptEffects):
+            if found is not None and found != expect.declaration:
+                raise ValueError("row has conflicting script-effect declarations")
+            found = expect.declaration
+        expect = expect.expect
+    return found
+
+
+def scope_unit(rows, capabilities):
+    """Gate a source-closed producer/consumer story together without changing its judged callbacks."""
+    names = tuple(dict.fromkeys(capabilities))
+    if not names or any(name not in machine_config.SWITCHES for name in names):
+        raise ValueError("scope unit needs explicit machine prerequisite names")
+    for capability in reversed(names):
+        rows = [(tool, args, Needs(capability, expect), save) for tool, args, expect, save in rows]
+    return rows
 
 
 def _unparked(expect):
@@ -336,6 +397,86 @@ def _unparked(expect):
     while isinstance(expect, _GATES):
         expect = expect.expect
     return expect
+
+
+def step_conditions(expect):
+    """Read every prerequisite with its own polarity through all expectation wrappers."""
+    found = []
+    while isinstance(expect, _GATES):
+        if isinstance(expect, (Needs, Unless)):
+            names = expect.capability if isinstance(expect.capability, tuple) else (expect.capability,)
+            found.extend((name, "unless" if isinstance(expect, Unless) else "needs") for name in names)
+        expect = expect.expect
+    return tuple(dict.fromkeys(found))
+
+
+def gate_decision(entitlements, expect):
+    """Resolve all prerequisites without conflating operator exclusions with observations."""
+    requested = machine_config.asked(MACHINE) if MACHINE is not None else {}
+    return machine_config.conjunction(machine_config.condition(
+        name, polarity, requested.get(name), entitlements.get(name), [CLOUD_LINK_CRASH_REVIEW])
+        for name, polarity in step_conditions(expect))
+
+
+def tiered(rows):
+    """Attach idempotent tool requirements while preserving existing gates and predicates."""
+    out = []
+    for tool, args, expect, save in rows:
+        declaration = step_script_declaration(expect)
+        if declaration is not None and tool != "sys_execute_script":
+            raise ValueError("script effects attached to a non-script row")
+        effects = declaration["effects"] if declaration is not None else None
+        if isinstance(args, dict):
+            if declaration is not None:
+                machine_config.declared_effects(tool, args, declaration)
+            needed = machine_config.call_requirements(tool, args, effects)
+        else:
+            needed = machine_config.call_requirements(tool, {}, effects)
+            if tool == "cam_edit_tools":
+                needed = tuple(sorted(set(needed) | {"library_writes"}))
+        existing = set(step_conditions(expect))
+        for capability in reversed(needed):
+            if (capability, "needs") not in existing:
+                expect = Needs(capability, expect)
+        out.append((tool, args, expect, save))
+    return out
+
+
+def declared_allows(expect):
+    """Exclude only explicit positive opt-outs, never infer measured absence from a choice."""
+    requested = machine_config.asked(MACHINE) if MACHINE is not None else {}
+    return not any(polarity == "needs" and requested.get(name) is False
+                   for name, polarity in step_conditions(expect))
+
+
+def condition_expect(conditions, expect):
+    """Attach each prerequisite with its own polarity while preserving the judged predicate."""
+    for name, polarity in reversed(tuple(dict.fromkeys(conditions))):
+        expect = (Unless if polarity == "unless" else Needs)(name, expect)
+    return expect
+
+
+def replace_inner_expect(original, inner):
+    """Preserve annotation wrappers when an existing camera constructor settles its predicate."""
+    import copy
+    wrappers = []
+    while isinstance(original, _GATES):
+        wrappers.append(original)
+        original = original.expect
+    for wrapper in reversed(wrappers):
+        outer = copy.copy(wrapper)
+        outer.expect = inner
+        inner = outer
+    return inner
+
+
+def compatible_neighbour(primary, neighbour):
+    """Use an uncertain conditional neighbour only when the primary shares its prerequisite."""
+    requested = machine_config.asked(MACHINE) if MACHINE is not None else {}
+    if not requested or all(requested.values()):
+        return True
+    return all(row in primary or (row[1] == "needs" and requested.get(row[0]) is True)
+               for row in neighbour)
 
 
 def step_capability(expect):
@@ -358,24 +499,19 @@ def step_runs_unentitled(expect):
 
 
 def gate_allows(entitlements, expect):
-    """Whether the run may execute this step: a Needs step where its capability reads entitled, an
-    Unless step where it reads absent (False - an unreadable probe runs neither), any other step
-    always."""
-    capability = step_capability(expect)
-    if capability is None:
-        return True
-    if step_runs_unentitled(expect):
-        return entitlements.get(capability) is False
-    return capability_met(entitlements, capability)
+    """Allow only conjunctive run outcomes; requested unavailable work stops admission."""
+    decision = gate_decision(entitlements, expect)
+    if decision["state"] == "stop":
+        raise SystemExit("Requested sweep prerequisite unavailable: " + str(decision["conditions"]))
+    return decision["state"] == "run"
 
 
 def gate_skip_reason(entitlements, expect):
-    """The receipt's bucket line for a gated step the run held back - an Unless step on an entitled
-    installation says so, every other case is the capability's own skip reason."""
-    capability = step_capability(expect)
-    if step_runs_unentitled(expect) and entitlements.get(capability) is True:
-        return f"{capability} entitled - this row runs only where it is absent"
-    return capability_skip_reason(capability, entitlements)
+    """Name every observed/requested prerequisite of an omitted executable row."""
+    decision = gate_decision(entitlements, expect)
+    return decision["state"] + ": " + "; ".join(
+        f"{row['capability']} {row['polarity']} asked={row['asked']!r} measured={row['measured']!r}"
+        for row in decision["conditions"])
 
 
 def parked_reason(expect):
@@ -463,7 +599,14 @@ def _cloud_tier_probe():
 # One probe function per capability name. A capability a step or act declares is looked up here at
 # the start of a run; a name with no probe answers None and routes as unmet, so a typo cannot read
 # as entitled.
-CAPABILITY_PROBES = {"machining_extension": _machining_extension_probe,
+def _native_script_probe():
+    """Observe native-script registration without treating an off request as absence."""
+    return "sys_execute_script" in facade("registered_tools")()
+
+
+CAPABILITY_PROBES = {"native_script": _native_script_probe,
+                     **{name: lambda: None for name in machine_config.PERMISSIONS},
+                     "machining_extension": _machining_extension_probe,
                      CLOUD_TIER: _cloud_tier_probe,
                      CLOUD_LINK_CRASH_REVIEW: _cloud_link_crash_review_probe}
 
@@ -472,7 +615,8 @@ CAPABILITY_PROBES = {"machining_extension": _machining_extension_probe,
 # installation loses that tool's coverage. A tier is the opposite: it exists so that tools which
 # touch an operator's own cloud data are held back BY DEFAULT, and being skipped is their resting
 # state (test_tool_verify_receipt reads this to keep the two invariants apart).
-OPT_IN_TIERS = frozenset({CLOUD_TIER, CLOUD_LINK_CRASH_REVIEW})
+OPT_IN_TIERS = frozenset({CLOUD_TIER, CLOUD_LINK_CRASH_REVIEW, "native_script"}
+                         | machine_config.PERMISSIONS)
 
 # One sentence beside a capability's skip verdict - what an operator does to turn the tier on. A
 # capability with no entry says only that it is not entitled.
@@ -957,7 +1101,7 @@ def _bound_on_harness(source, bound):
     """True when a published 'bound' row is the endpoint this harness connected on."""
     return _measured(f"{source} bound endpoint (harness uses {MCP})", bound,
                      isinstance(bound, dict) and bound.get("mcp_url") == MCP
-                     and bound.get("port") == ENDPOINT.DEFAULT_PORT)
+                     and bound.get("port") == PORT)
 
 
 # Values a LATER step's predicate has to compare against. A predicate is handed the payload alone,

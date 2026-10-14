@@ -2,6 +2,9 @@
 
 Includes the subtle carve-out that an expression of ``"0"`` is NOT treated as "empty".
 """
+import live_api_facts as _api_facts
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+from conftest import install as _install_design
 
 import json
 import math
@@ -25,7 +28,7 @@ def _design(user_params, timeline, all_params=()):
 
 
 def _stub_design(monkeypatch, design):
-    monkeypatch.setattr(params._common, "design", lambda: design)
+    _install_design(params, design)
     # the create path uses adsk.core.ValueInput.createByString; the string it carries is what the
     # new parameter's expression reads back as.
     monkeypatch.setattr(adsk.core.ValueInput, "createByString",
@@ -48,7 +51,7 @@ class TestSetValidation:
         # (note the explicit `expression != "0"` carve-out in the source). Stub
         # _design to a known failure so we can prove we got PAST validation to a
         # different, later error - not the "Provide 'expression'" rejection.
-        monkeypatch.setattr(params._common, "design", lambda: None)
+        _install_design(params, None)
         result = params.handler(name="StockX", expression="0")
         assert result["isError"] is True
         assert "Provide 'expression'" not in result["message"]
@@ -326,7 +329,7 @@ class TestNewTimelineProblems:
         assert "Split1, Loft1" in out["note"]
 
     def test_a_clean_set_publishes_no_problem_keys(self, monkeypatch):
-        old = FakeTimelineObject(name="Old1", index=0, health=2)
+        old = FakeTimelineObject(name="Old1", index=0, health=_ERROR)
         up = FakeUserParameters([FakeUserParameter(name="PartX", expression="10 mm")])
         _stub_design(monkeypatch, _design(up, FakeTimeline([old])))
         out = _payload(params.handler(name="PartX", expression="20 mm"))

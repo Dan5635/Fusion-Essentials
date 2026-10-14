@@ -17,7 +17,7 @@ from ._common import counted, error, ok, outcome_clause, safe
 from ._edit_feature_common import (at_address, extrude_tapers, failed, health as _health,
                                    identical_geometry_reply, later_operand_refusal, matched,
                                    read_extrude_definition, extrude_extent_kind as _extent_kind,
-                                   restore_definition, restore_gaps,
+                                   restore_definition, restore_gaps, roll_to_edit,
                                    same_feature as _same_feature, sentence, sketch_address)
 from .model_extrude import _start_definition_readback
 
@@ -362,8 +362,7 @@ def _replay_scope(feature, timeline, index, scoped):
     timeline.markerPosition = index + 1
     if counted(lambda: timeline.markerPosition) != index + 1:
         raise RuntimeError("The feature could not be evaluated before participant replay.")
-    if (feature.timelineObject.rollTo(True) is not True
-            or counted(lambda: timeline.markerPosition) != index):
+    if not roll_to_edit(feature, timeline, index):
         raise RuntimeError("The feature could not be rolled back for participant replay.")
     feature.participantBodies = list(scoped)
 

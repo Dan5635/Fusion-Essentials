@@ -281,9 +281,9 @@ def handler(profiles=None, rails=None, centerline="", operation="new",
     if op_key not in _OPERATION_KEYS:
         return error(f"Unknown operation '{operation}'. Use: new, join, cut, intersect.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     secs, perr = _LOFT_PROFILES.resolve(profiles, component)
     if perr:

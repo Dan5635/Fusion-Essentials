@@ -116,9 +116,9 @@ def handler(target: str = "", tools=None, operation: str = "join",
     if op_key not in _OPERATION_KEYS:
         return error(f"Unknown operation '{operation}'. Use: join, cut, intersect.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     tgt, terr = _TARGET.resolve(target)

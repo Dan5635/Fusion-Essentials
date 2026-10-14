@@ -6,7 +6,6 @@ model selection (handles / names / all-bodies default), naming, and the no-desig
 guards. No live Fusion - fakes mimic adsk.cam.CAM.setups.
 """
 
-import json
 import pytest
 from types import SimpleNamespace
 
@@ -14,7 +13,7 @@ import adsk.cam
 import adsk.fusion
 
 from conftest import (ADDITIVE_SETUP_SEEDS, BRepBody, FakePrintSetting, FakeSetup, FakeSetups,
-                      MakeComp, install, load_tool, make_design)
+                      MakeComp, install, load_tool, make_design, payload as _payload)
 
 cs = load_tool("cam_create_setup")
 
@@ -43,11 +42,6 @@ def _install(monkeypatch, bodies=None, has_cam=True, setups=None):
     # models is a TargetRefList -> resolves through _common.design()/target_component()
     install(cs, design)
     return design, cam, comp
-
-
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
 
 
 # ── operation type ───────────────────────────────────────────────────────────

@@ -7,7 +7,6 @@ _CAPABILITIES registry derives. No adsk.* - the map points at the tool that read
 rather than probing one itself.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -28,9 +27,7 @@ def install_tools(monkeypatch):
     return install
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 @pytest.fixture

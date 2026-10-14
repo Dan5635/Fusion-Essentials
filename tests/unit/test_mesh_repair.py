@@ -18,6 +18,7 @@ Pinned (the DoD):
   - close_holes that changes the mesh but leaves it open reports PARTIAL, not plain success.
   - a mesh that cannot be read back at all is reported as unverified, not as success.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -293,7 +294,7 @@ class TestInputGuards:
         assert rig.feats.add_called is False
 
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(mr._common, "design", lambda: None)
+        _install_design(mr, None)
         assert "No active design" in error_message(mr.handler(mesh="H", repair_type="rebuild"))
 
     def test_missing_repair_features_collection_is_an_error(self, monkeypatch):

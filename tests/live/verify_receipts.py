@@ -16,9 +16,10 @@ import tempfile
 import types
 import uuid
 import cloud_config
+import machine_config
 from verify_core import CLOUD_TIER, CLOUD_LINK_CRASH_REVIEW
 
-FORMAT = 1
+FORMAT = 2
 BAD = {"FAIL", "blocked", "pass*"}
 IDENTITY = ("implementation_fingerprint", "schema_fingerprint", "load_id", "session_id")
 COMMON_TOOLS = {"doc_get", "doc_new", "doc_close", "doc_activate", "doc_open",
@@ -35,50 +36,31 @@ _FOLDER_TOOLS = {"cam_get", "cam_get_status", "cam_edit_operation", "cam_edit_fo
 
 
 def declared_scope():
-    """Read existing cloud opt-in scope without treating a broken requested config as opt-out."""
-    path = Path(cloud_config.CONFIG_PATH)
-    try:
-        checksum = hashlib.sha256(path.read_bytes()).hexdigest()
-    except FileNotFoundError:
-        return {"cloud_tier": "off", "cloud_config_hash": None,
-                "quarantined": [CLOUD_LINK_CRASH_REVIEW]}
-    except OSError:
-        checksum = "unreadable"
-    return {"cloud_tier": "requested", "cloud_config_hash": checksum,
-            "quarantined": [CLOUD_LINK_CRASH_REVIEW]}
+    """Read complete explicit machine scope, never treating missing keys as an opt-out."""
+    return machine_config.record_scope(machine_config.require())
 
 
 def scope_disposition(capability, scope):
-    """Distinguish explicitly omitted admitted work from requested but unavailable work."""
-    if capability in scope["quarantined"]:
-        return "not-in-scope", "quarantined capability is outside admitted scope"
-    if capability == CLOUD_TIER and scope["cloud_tier"] == "off":
-        return "not-in-scope", "cloud tier is opt-in; local config is absent"
+    """Report a positive prerequisite's declared exclusion independently of observed facts."""
+    machine_config.validate_scope(scope)
+    if capability in scope["quarantined"] or scope["asked"].get(capability) is False:
+        return "not-in-scope", "configuration excludes this prerequisite or it is quarantined"
     return "held", None
 
 
 def scope_description(records):
-    """Summarize the recorded exercised scope, without rereading a clone's local config."""
-    omitted = sorted({row["capability"] for record in records.values()
-                      for row in record.get("omitted", []) if row["state"] == "not-in-scope"})
-    conditional = sorted({row["capability"] for record in records.values()
-                          for row in record.get("omitted", []) if row["state"] == "not-applicable"})
-    held = sorted({row["capability"] for record in records.values()
-                   for row in record.get("omitted", []) if row["state"] == "held"})
-    return ("not in scope: " + (", ".join(omitted) or "none")
-            + "; not applicable (conditional): " + (", ".join(conditional) or "none")
-            + "; held: " + (", ".join(held) or "none"))
+    """Summarize retained conjunctive conditions without consulting this machine's choices."""
+    conditions = [condition for record in records.values() for row in record.get("omitted", [])
+                  for condition in row["conditions"]]
+    return "; ".join(label + ": " + (", ".join(sorted({row["capability"] for row in conditions
+                      if row["state"] == state})) or "none") for state, label in (
+        ("not-in-scope", "not in scope"), ("not-applicable", "not applicable (conditional)"),
+        ("held", "held")))
 
 
 def _recorded_scope(scope):
-    """Require the bounded existing cloud opt-in and permanent quarantine provenance."""
-    if (not isinstance(scope, dict) or scope.get("cloud_tier") not in {"off", "requested"}
-            or scope.get("quarantined") != [CLOUD_LINK_CRASH_REVIEW]
-            or (scope["cloud_tier"] == "off" and scope.get("cloud_config_hash") is not None)
-            or (scope["cloud_tier"] == "requested" and scope.get("cloud_config_hash") != "unreadable"
-                and not re.fullmatch(r"[0-9a-f]{64}", scope.get("cloud_config_hash") or ""))):
-        raise ValueError("family recorded scope provenance incomplete")
-    return scope
+    """Require versioned machine, configuration, all requested switches and permanent quarantine."""
+    return machine_config.validate_scope(scope)
 
 
 def aggregate_records(receipt):
@@ -91,7 +73,7 @@ def aggregate_records(receipt):
 
 
 def _scope_rows(records, acts=None):
-    """Validate explicit act/step omissions without inventing executed evidence."""
+    """Validate omission shape before checking every retained prerequisite against its scope."""
     if not isinstance(records, list):
         raise ValueError("family scope records must be a list")
     for row in records:
@@ -100,26 +82,11 @@ def _scope_rows(records, acts=None):
                 or any(not isinstance(row.get(key), str) or not row[key]
                        for key in ("act", "capability", "reason"))
                 or (acts is not None and row["act"] not in acts)
+                or not isinstance(row.get("conditions"), list) or not row["conditions"]
                 or not isinstance(row.get("tools"), list)
                 or any(not isinstance(tool, str) or not tool for tool in row["tools"])
                 or row["tools"] != sorted(set(row["tools"]))):
-            raise ValueError("family scope record lacks act/capability/reason provenance")
-        if row["state"] == "not-applicable" and (
-                row["kind"] not in {"step", "fixture"} or row.get("polarity") != "unless"
-                or row.get("observed_verdict") is not True):
-            raise ValueError("conditional omission lacks an entitled Unless verdict")
-        if "polarity" in row or "observed_verdict" in row:
-            if (row["kind"] not in {"step", "fixture"}
-                    or row.get("polarity") not in {"needs", "unless"}
-                    or (row.get("observed_verdict") is not None
-                        and type(row.get("observed_verdict")) is not bool)):
-                raise ValueError("conditional omission has invalid gate provenance")
-            polarity, verdict = row["polarity"], row["observed_verdict"]
-            impossible = ((polarity == "needs" and verdict is True)
-                          or (polarity == "unless" and verdict is False))
-            expected = ("not-applicable" if verdict is True else "held") if polarity == "unless" else "held"
-            if impossible or row["state"] != expected:
-                raise ValueError("conditional omission disagrees with its gate verdict")
+            raise ValueError("family scope record lacks conjunctive prerequisite provenance")
     return records
 
 
@@ -130,13 +97,8 @@ def digest(value):
 
 
 def _validate_omission_scope(row, scope):
-    """Validate omission state against declared scope and any conditional gate verdict."""
-    disposition, _reason = scope_disposition(row["capability"], scope)
-    if row["state"] == "not-applicable":
-        if disposition != "held" or row.get("polarity") != "unless" or row.get("observed_verdict") is not True:
-            raise ValueError("conditional omission is not an entitled Unless control")
-    elif row["state"] != disposition:
-        raise ValueError("family omission disagrees with recorded scope")
+    """Recompute all gate conditions, including their individual polarity and observed verdict."""
+    machine_config.validate_omission(row, scope)
 
 
 def tool_census(root):
@@ -352,7 +314,8 @@ def callable_sources(value, root, names, seen=None, trees=None, selections=None)
 _ENGINE = ("tests/live/tool_verify.py", "tests/live/verify_core.py",
            "tests/live/verify_runner.py", "tests/live/verify_receipts.py",
            "tests/live/verify_families.py", "tests/live/verify_program.py",
-           "tests/live/verify_layout.py", "tests/live/cloud_config.py")
+           "tests/live/verify_layout.py", "tests/live/cloud_config.py",
+           "tests/live/machine_config.py", "tests/live/preflight.py")
 
 
 def _module_bindings(node):
@@ -862,8 +825,28 @@ def _retained(reference, directory):
     return json.loads(encoded)
 
 
+def lifecycle_omissions(scope):
+    """Return unevidenced closing-hook exclusions from the recorded explicit permissions."""
+    _recorded_scope(scope)
+    requirements = {"switch": ("preference_writes", "addin_reload"), "reload": ("addin_reload",)}
+    return {name: machine_config.omission("LIFECYCLE " + name, "act", ["sys_reload_addin"], rows)
+            for name, names in requirements.items()
+            for rows in [[machine_config.condition(capability, "needs", scope["asked"][capability], None)
+                          for capability in names]]
+            if machine_config.conjunction(rows)["state"] == "not-in-scope"}
+
+
 def make_lifecycle(evidence, run_id, source, fusion_version, evidence_dir=None):
-    """Bind reload observations to the source, build, census and fresh retained evidence."""
+    """Bind actual reload observations, or a strictly unevidenced explicit exclusion."""
+    scope = declared_scope()
+    omissions = lifecycle_omissions(scope)
+    if "reload" in omissions:
+        if evidence is not None:
+            raise ValueError("excluded reload cannot carry execution evidence")
+        record = {"state": "not-in-scope", "run_id": run_id, "source_hash": source,
+                  "fusion_version": fusion_version, "scope": scope, "omitted": omissions}
+        _validate_lifecycle(record, source, fusion_version, (), evidence_dir)
+        return record
     raw = retain_evidence({"run_id": run_id, "source_hash": source,
                            "fusion_version": fusion_version, "observations": evidence}, evidence_dir)
     record = {"run_id": run_id, "source_hash": source, "fusion_version": fusion_version,
@@ -884,12 +867,29 @@ def make_lifecycle(evidence, run_id, source, fusion_version, evidence_dir=None):
               "scratch_handle_before_reload": evidence.get("scratch_handle_before_reload"),
               "nonce_name": evidence.get("nonce_name"),
               "nonce_value_mm": evidence.get("nonce_value_mm")}
+    record.update(state="executed", scope=scope, omitted=omissions)
     _validate_lifecycle(record, source, fusion_version, record["before_tool_census"], evidence_dir)
     return record
 
 
 def _validate_lifecycle(record, source, fusion_version, census, evidence_dir=None):
-    """Require complete fresh reload evidence without assigning it to a family."""
+    """Require actual reload evidence or an explicit, unevidenced recorded-scope exclusion."""
+    scope = _recorded_scope(record.get("scope"))
+    omissions = lifecycle_omissions(scope)
+    if record.get("omitted") != omissions:
+        raise ValueError("lifecycle omissions disagree with explicit recorded permissions")
+    if record.get("state") == "not-in-scope":
+        if (set(record) != {"state", "run_id", "source_hash", "fusion_version", "scope", "omitted"}
+                or "reload" not in omissions or not isinstance(record.get("run_id"), str) or not record["run_id"]
+                or record.get("source_hash") != source or not re.fullmatch(r"[0-9a-f]{64}", source or "")
+                or record.get("fusion_version") != fusion_version
+                or not isinstance(fusion_version, str) or not fusion_version):
+            raise ValueError("excluded lifecycle carries evidence or incomplete scope binding")
+        for row in omissions.values():
+            _validate_omission_scope(row, scope)
+        return
+    if record.get("state") != "executed" or "reload" in omissions:
+        raise ValueError("lifecycle reload execution disagrees with recorded permission")
     required = {"new_load_and_session", "same_implementation_and_schema", "tool_census_matches",
                 "old_transport_refused_empty_404", "fresh_session_changed",
                 "fresh_session_read_new_handle", "nonce_read_back_before_reload",
@@ -1068,7 +1068,7 @@ def _validate_stamp(name, stamp, closure, evidence_dir=None, current=True):
                 or any(not str(pair[1]).startswith("skipped(") for pair in stamp["act_modes"])
                 or (current and acts != closure["acts"])
                 or any(row["state"] != "not-in-scope"
-                       or scope_disposition(row["capability"], scope)[0] != row["state"]
+                       or not machine_config.validate_omission(row, scope)
                        for row in omitted)
                 or set(stamp) != {"family", "state", "scope", "acts", "act_modes", "omitted"}):
             raise ValueError("not-in-scope record contains execution evidence or incomplete omissions: " + name)
@@ -1196,18 +1196,27 @@ def validate_aggregate(receipt, closures, census, attestation=None, evidence_dir
     for name, closure in closures.items():
         stamp = aggregate_records(receipt)[name]
         _validate_stamp(name, stamp, closure, evidence_dir, current=require_current)
+        if full_scope:
+            machine_config.require_full_scope(stamp["scope"])
         if require_exercised and stamp["state"] == "held":
             reasons = "; ".join(row["act"] + ": " + row["reason"]
                                 for row in stamp["omitted"] if row["state"] == "held")
             raise ValueError("aggregate incomplete; family held: " + name + " - " + reasons)
-        if full_scope and any(row["state"] == "not-in-scope"
-                and row["capability"] not in stamp["scope"]["quarantined"] for row in stamp["omitted"]):
+        if full_scope and any(condition["state"] == "not-in-scope"
+                and condition["capability"] not in stamp["scope"]["quarantined"]
+                for row in stamp["omitted"] for condition in row["conditions"]):
             raise ValueError("receipt is not full admitted scope: " + name)
         if stamp.get("state") != "not-in-scope":
             builds.add(stamp["fusion_version"])
     if require_current and len(builds) != 1:
         raise ValueError("family receipt mixes Fusion builds")
     lifecycle = receipt.get("lifecycle")
+    scopes = [record["scope"] for record in aggregate_records(receipt).values()]
+    if (not scopes or any(scope != scopes[0] for scope in scopes)
+            or not isinstance(lifecycle, dict) or lifecycle.get("scope") != scopes[0]):
+        raise ValueError("aggregate mixes machine/configuration/scope provenance")
+    if full_scope and lifecycle.get("omitted"):
+        raise ValueError("receipt is not full admitted lifecycle scope")
     if not isinstance(lifecycle, dict):
         raise ValueError("lifecycle reload evidence missing")
     _validate_lifecycle(lifecycle, source_hash or lifecycle.get("source_hash"),
@@ -1310,7 +1319,9 @@ def aggregate_ledger(receipt, closures, census, skipped=None, source_hash=None):
     try:
         _validate_lifecycle(lifecycle, source_hash or lifecycle.get("source_hash"),
                             lifecycle.get("fusion_version"), census)
-        lifecycle_current = True
+        lifecycle_current = lifecycle["state"] == "executed"
+        if not lifecycle_current:
+            omissions["sys_reload_addin"] = "skipped: not-in-scope allow.addin_reload is false"
     except (ValueError, OSError, KeyError, TypeError):
         lifecycle_current = False
     for tool in census:

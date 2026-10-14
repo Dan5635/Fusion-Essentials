@@ -1,4 +1,5 @@
 """Unit tests for model_pattern_rectangular.py - the grid, its directions and its counts."""
+from conftest import install as _install_design
 
 import types
 import pytest
@@ -715,7 +716,7 @@ class TestZeroSpacingGuards:
     def test_single_row_zero_spacing_two_is_fine_to_pass_the_guard(self, monkeypatch):
         # quantity_two=1 never uses spacing_two - the guard must not refuse it. The absent-design
         # error AFTER the guard is the proof the guard let the call through.
-        monkeypatch.setattr(pt._common, "design", lambda: None)
+        _install_design(pt, None)
         res = pt.handler(bodies="B", quantity_one=2, spacing_one=5,
                                      quantity_two=1, spacing_two=0)
         assert "spacing_two" not in res.get("message", "")

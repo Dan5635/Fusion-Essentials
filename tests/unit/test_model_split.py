@@ -5,6 +5,9 @@ no-active-design guard, resolution-error propagation, and the honesty verifiers 
 yields a SINGLE body is reported as an error (no silent ok), a face split that creates no new faces is
 an error, and the resulting body count / net face-count increase are read back and reported.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import math
 from types import SimpleNamespace
@@ -23,7 +26,7 @@ sp = load_tool("model_split")
 # ── body-split fakes ────────────────────────────────────────────────────────
 
 class FakeSplitBodyFeature:
-    def __init__(self, result_names=("Body1", "Body2"), health=0):
+    def __init__(self, result_names=("Body1", "Body2"), health=_HEALTHY):
         self.name = "Split1"
         self.bodies = _NamedCollection([BRepBody(name=n) for n in result_names])
         self.healthState = health
@@ -66,7 +69,7 @@ class FakeSplitBodyFeatures:
 # ── face-split fakes ────────────────────────────────────────────────────────
 
 class FakeSplitFaceFeature:
-    def __init__(self, created=2, health=0):
+    def __init__(self, created=2, health=_HEALTHY):
         self.name = "SplitFace1"
         self.faces = _NamedCollection([None] * created)
         self.healthState = health
@@ -209,7 +212,7 @@ class TestSplitBody:
         assert feats.last[1] == "surf-body"        # the resolved tool body reached createInput
 
     def test_health_error_reported(self, monkeypatch):
-        _wire_body(monkeypatch, feature=FakeSplitBodyFeature(("A", "B"), health=2))
+        _wire_body(monkeypatch, feature=FakeSplitBodyFeature(("A", "B"), health=_ERROR))
         res = sp.handler(split="body", target="Body1", split_plane="xy")
         assert res["isError"] is True and "failed to compute" in res["message"]
 

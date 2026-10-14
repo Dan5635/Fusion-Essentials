@@ -5,7 +5,6 @@ assert: matching across name/description/inputs, name matches outranking descrip
 input-kind search against the real _inputs module, and the guards (empty query).
 """
 
-import json
 
 import pytest
 
@@ -33,9 +32,7 @@ def _install(tools):
     ft.get_tools = lambda: [_item(t) for t in tools]
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────

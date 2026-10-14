@@ -28,9 +28,9 @@ _MESH_ROWS_CEILING = 200
 def handler(target: str = "", max_results: int = _MESH_ROWS_DEFAULT,
             units: str = "mm") -> dict:
     """List the MeshBody objects in a component (target name) or the whole design (target='')."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     name = (target or "").strip()
 
     sf, uerr = _MEASURE_UNITS.resolve(units)

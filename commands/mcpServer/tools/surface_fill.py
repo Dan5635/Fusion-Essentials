@@ -186,9 +186,9 @@ def _total_volume(bodies, factor):
 def handler(tools=None, cells=None, operation: str = "new", remove_tools: bool = False,
             units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     vals, verr = _inputs.resolve_inputs(_SPEC, {"tools": tools, "operation": operation,
                                                 "units": units})

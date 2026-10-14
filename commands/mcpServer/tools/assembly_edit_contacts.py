@@ -339,9 +339,9 @@ def handler(action: str = "", name: str = "", members=None, new_name: str = "",
         return verr
     action, scope = values["action"], values["scope"]
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     if _contacts.contact_sets(design) is None:
         return error("This design reports no contactSets collection, so contact sets cannot be read "
                      "or changed here.")

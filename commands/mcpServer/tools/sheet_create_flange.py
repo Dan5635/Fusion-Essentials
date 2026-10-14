@@ -267,9 +267,9 @@ def handler(kind="", edges=None, distance=None, units="mm", angle_deg=90.0, heig
     kind_v, kerr = _KIND.resolve(kind)
     if kerr:
         return error(kerr)
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     if kind_v == "edge":
         return _edge_flange(design, edges, distance, units, angle_deg, height_datum, position,
                             flip, mitered_corners)

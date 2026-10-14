@@ -4,6 +4,7 @@ The live analyzeInterference call needs Fusion, but the logic worth pinning is p
 placed-body pairs to run (box-pruned, capped), aggregating overlap volume per pair, the clear=true
 path, and the body-less-occurrence census refusal.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -600,7 +601,7 @@ class TestInterferenceHandler:
         assert out["measured"]["interference_count"] == 1
 
     def test_no_design_errors(self, monkeypatch):
-        monkeypatch.setattr(ai._common, "design", lambda: None)
+        _install_design(ai, None)
         res = ai.handler()
         assert res["isError"] is True
         assert "No active design" in res["message"]

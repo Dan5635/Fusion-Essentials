@@ -18,26 +18,33 @@ from ._design_primitives import _MESSAGE_MARKUP, _MESSAGE_GLUE, _MESSAGE_LIMIT  
 from ._feature_address import feature_address
 
 MAP_BLURB = (
-    "response+resolve: ok/error/safe (per-FIELD, never a MUTATION), "
-    "read_optional/measured/read_flag/counted/finite_number, design/target_component, "
-    "find_sketch (ambiguity), timeline_health/timeline_message/"
+    "core: ok/error/unwrap/normalize_include/safe (reads only), "
+    "read_optional/measured/read_flag/counted/finite_number, design/require_design/target_component, "
+    "find_sketch, timeline_health/timeline_message/"
     "set_verified/rolled_to (effect; roll-restore), same_component/native_identity/occurrence_walk/"
-    "broken_reference (TRI-STATE), scale/iter_collection/named_with_remainder/told_apart")
+    "broken_reference, box_center/box_extent/scale/iter_collection/named_with_remainder/told_apart")
 
 app = adsk.core.Application.get()
 
 
 # ── response builders (the MCP tool-result contract) ────────────────────────
 
-def ok(payload: dict) -> dict:
-    """A successful tool result: JSON-encodes ``payload`` as the text content."""
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
+def ok(payload=None, *, content=None, message=None) -> dict:
+    """Return a success with JSON payload or supplied MCP content blocks."""
+    blocks = content if content is not None else [
+        {"type": "text", "text": json.dumps(payload, indent=2)}]
+    result = {"content": blocks, "isError": False}
+    if message is not None:
+        result["message"] = message
+    return result
 
 
-def error(text: str, payload=None) -> dict:
-    """A failed tool result with its message and optional structured partial-effect payload."""
+def error(text: str, payload=None, *, message=None) -> dict:
+    """A failed result; an explicit message preserves the payload and supplies its envelope summary."""
     if payload is None:
         content = text
+    elif message is not None:
+        content = json.dumps(payload, indent=2)
     else:
         body = dict(payload)
         note = body.get("note")
@@ -47,10 +54,30 @@ def error(text: str, payload=None) -> dict:
             body.pop("error", None)
             body = {"error": text, **body}
         content = json.dumps(body, indent=2)
-    return {"content": [{"type": "text", "text": content}], "isError": True, "message": text}
+    return {"content": [{"type": "text", "text": content}], "isError": True,
+            "message": text if message is None else message}
 
 
 _UNREADABLE = object()      # a getter that RAISED - distinct from one that returned None
+
+
+def normalize_include(include):
+    """Return normalized slice names from a list, comma-string, or absent selector."""
+    if include in (None, "", []):
+        return []
+    if isinstance(include, str):
+        return [s.strip().lower() for s in include.split(",") if s.strip()]
+    return [str(s).strip().lower() for s in include]
+
+
+def unwrap(result):
+    """Return (decoded payload, None), or (None, original result) on error or decode failure."""
+    if result.get("isError"):
+        return None, result
+    try:
+        return json.loads(result["content"][0]["text"]), None
+    except Exception:
+        return None, result
 
 
 def read_optional(getter):
@@ -110,6 +137,16 @@ def design():
         d = safe(lambda: adsk.fusion.Design.cast(
             app.activeDocument.products.itemByProductType('DesignProductType')))
     return d
+
+
+def require_design(remedy=None, *, none_only=False):
+    """Return (active design, None), or (None, the shared no-active-design refusal)."""
+    active = design()
+    absent = active is None if none_only else not active
+    if absent:
+        fix = remedy or "Create or open a document first (see doc_new)."
+        return None, error(f"No active design. {fix}")
+    return active, None
 
 
 def target_component(d):
@@ -1140,6 +1177,13 @@ def occurrence_world_translation(occ, factor=1.0):
             return None
         occ = matches[0]
     return ptxyz(safe(lambda: occ.transform2.translation), factor)
+
+
+def box_center(box):
+    """Return a box's unrounded (x, y, z) midpoint in its own coordinate space."""
+    return ((box.minPoint.x + box.maxPoint.x) / 2,
+            (box.minPoint.y + box.maxPoint.y) / 2,
+            (box.minPoint.z + box.maxPoint.z) / 2)
 
 
 def box_extent(box, f):

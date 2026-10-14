@@ -7,8 +7,8 @@ albedo channel only, assign to .appearance), and the guards (bad color, bad opac
 missing target, absent library/base appearance, component with no bodies).
 Fakes capture the assignments so a regression to a wrong attribute fails here.
 """
+from conftest import install as _install_design
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -179,7 +179,7 @@ def _root(name="Root", bodies=(), occurrences=()):
 def _install(root, existing_appearances=(ap._BASE_NAME,), tokens=None):
     apps = FakeAppearances([FakeAppearance(n) for n in existing_appearances])
     design = MakeDesign(comp=root, tokens=tokens, appearances=apps)
-    ap._common.design = lambda: design
+    _install_design(ap, design)
     import adsk.core, adsk.fusion
     adsk.core.Color.create = staticmethod(lambda r, g, b, o: ("color", r, g, b, o))
     # isinstance checks in the handle path need these bound to the fakes
@@ -203,9 +203,7 @@ def _library(name, *appearances):
     return make_material_library(name, appearances=appearances)
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _silent_body(name):
@@ -522,7 +520,7 @@ class TestGuards:
         assert "inherited" not in out["note"] and "ancestor" not in out["note"]
 
     def test_no_active_design_errors(self):
-        ap._common.design = lambda: None
+        _install_design(ap, None)
         res = ap.handler(target="Body1", color="#000000")
         assert res["isError"] is True and "no active design" in res["message"].lower()
 
@@ -592,7 +590,7 @@ def _install_mp(monkeypatch, root, existing_appearances=(ap._BASE_NAME,), tokens
     apps = FakeAppearances([FakeAppearance(n) for n in existing_appearances])
     design = MakeDesign(comp=root, tokens=tokens, appearances=apps)
     import adsk.core, adsk.fusion
-    monkeypatch.setattr(ap._common, "design", lambda: design)
+    _install_design(ap, design)
     monkeypatch.setattr(adsk.core.Color, "create",
                         staticmethod(lambda r, g, b, o: ("color", r, g, b, o)))
     monkeypatch.setattr(adsk.fusion, "BRepFace", FakeFace)

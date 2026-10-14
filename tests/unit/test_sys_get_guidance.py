@@ -42,9 +42,7 @@ def _canonical():
         return json.load(fh)
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _rule(section_id, rule_id):

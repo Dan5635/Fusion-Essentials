@@ -18,7 +18,7 @@ from ._edit_feature_common import (address_text, all_shapes as _all_shapes, at_a
                                    feature_body_keys as _feature_body_keys,
                                    health as _health, identical_geometry_reply,
                                    later_operand_refusal, matched, operand_source,
-                                   read_sweep_definition, restore_definition, restore_gaps, rolled_back_text,
+                                   read_sweep_definition, restore_definition, restore_gaps, roll_to_edit, rolled_back_text,
                                    same_feature as _same_feature, sentence, shape_match,
                                    sketch_address)
 from ._common import counted, error, ok, outcome_clause, safe
@@ -526,7 +526,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
     sketch_curve_count = members_before = members_after = None
     left_out = []
     try:
-        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+        if not roll_to_edit(entity, timeline, index):
             raise RuntimeError("Fusion refused the Sweep edit position.")
         current_guide = safe(lambda: entity.guideRail, _UNREAD)
         current_guide_surfaces = safe(lambda: entity.guideSurfaces, _UNREAD)
@@ -554,7 +554,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
             result_bodies_before = _result_body_rows(entity)
             if result_bodies_before is None:
                 raise ValueError("The original Sweep result-body identities are unreadable.")
-        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+        if not roll_to_edit(entity, timeline, index):
             raise RuntimeError("The Sweep could not return to its edit position.")
         definition_before = _definition(entity)
         if definition_before is None:
@@ -681,7 +681,7 @@ def handler(feature: str = "", action: str = "", profile=None, path=None,
         linked_evaluated = _inactive_link_count(entity, index)
         if linked_evaluated is None:
             raise RuntimeError("The edited Sweep has an active or unreadable linked feature.")
-        if entity.timelineObject.rollTo(True) is not True or counted(lambda: timeline.markerPosition) != index:
+        if not roll_to_edit(entity, timeline, index):
             raise RuntimeError("The evaluated Sweep could not be rolled back for definition verification.")
         definition_after = _definition(entity)
         members_after = (_addresses(safe(lambda: getattr(entity, member)))

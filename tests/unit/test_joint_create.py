@@ -7,6 +7,7 @@ fallthrough), ``_apply_limits`` (the read-back writer create and edit share) and
 handler end to end. Resolve-one/qualified/ambiguity of a JO by name is the JointOriginRef kind's
 contract - tested in test_inputs.py, not here.
 """
+from conftest import install as _install_design
 
 import math as _math
 from types import SimpleNamespace
@@ -1213,7 +1214,7 @@ def _raise_refusal(*_a, **_k):
 
 class TestCreateHandlerFailurePaths:
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(joint._common, "design", lambda: None)
+        _install_design(joint, None)
         res = joint.handler(occurrence_one="JO_A", occurrence_two="JO_B")
         assert res["isError"] is True and "No active design" in res["message"]
 

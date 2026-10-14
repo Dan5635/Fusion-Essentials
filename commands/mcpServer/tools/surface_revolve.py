@@ -41,9 +41,9 @@ def handler(sketch_name: str = "", curves=None, axis: str = "z",
     if a not in _inputs.WORLD_AXIS_ATTRS:
         return error(f"Unknown axis '{axis}'. Use x, y, or z.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     # Build the profile, take the axis and create the feature on the SOURCE's owning component: a

@@ -3,14 +3,17 @@
 ConstructionPlane, ConstructionAxis, ConstructionPoint and their definition classes carry no
 measured shape, so each double here holds only the members the edit reads or writes.
 """
-
 from types import SimpleNamespace
 
 import adsk.core
 import adsk.fusion
 
-from conftest import (BRepBody, BRepEdge, BRepFace, FakeJointOrigin, FakePoint, FakeTimeline,
-                      FakeTimelineObject, FakeVector3D, MakeComp, MakeDesign, _Vertex, make_bbox)
+from conftest import install as _install_design
+from tests.fakes.design import (BRepBody, BRepEdge, BRepFace, FakeTimeline, FakeTimelineObject,
+                                 MakeComp, MakeDesign)
+from tests.fakes.geometry import FakePoint, FakeVector3D, make_bbox
+from tests.fakes.joints import FakeJointOrigin
+from tests.fakes.scaffold import _Vertex, fusion_fake
 
 _PLANE_NORMALS = {"xy": (0, 0, 1), "xz": (0, 1, 0), "yz": (1, 0, 0)}
 
@@ -25,6 +28,7 @@ class _Datum:
         self.definition = None
 
 
+@fusion_fake(scenario_double="datum edit scene construction-plane double")
 class DatumPlane(_Datum):
     """A construction plane double; ConstructionPlane has no measured shape."""
     objectType = "adsk::fusion::ConstructionPlane"
@@ -37,6 +41,7 @@ class DatumPlane(_Datum):
         self.geometry = SimpleNamespace(origin=FakePoint(*origin), normal=FakeVector3D(*normal))
 
 
+@fusion_fake(scenario_double="datum edit scene construction-axis double")
 class DatumAxis(_Datum):
     """A construction axis double; ConstructionAxis has no measured shape."""
     objectType = "adsk::fusion::ConstructionAxis"
@@ -50,6 +55,7 @@ class DatumAxis(_Datum):
                                         direction=FakeVector3D(*direction))
 
 
+@fusion_fake(scenario_double="datum edit scene construction-point double")
 class DatumPoint(_Datum):
     """A construction point double; ConstructionPoint has no measured shape."""
     objectType = "adsk::fusion::ConstructionPoint"
@@ -59,6 +65,7 @@ class DatumPoint(_Datum):
         self.geometry = FakePoint(*at)
 
 
+@fusion_fake(scenario_double="datum edit scene owned vertex with a body reference")
 class OwnedVertex(_Vertex):
     """The shared vertex plus the owning body an operand descriptor reads."""
 
@@ -149,6 +156,7 @@ class PointEntityDefinition(_Definition):
             self.world["shape"] = "start" if landed is self.home else landed.entityToken
 
 
+@fusion_fake(scenario_double="datum edit scene joint-origin double with retained frame members")
 class AnchoredJointOrigin(FakeJointOrigin):
     """The shared joint origin plus the geometry, frame and retained members a re-anchor reads."""
     objectType = "adsk::fusion::JointOrigin"
@@ -184,6 +192,7 @@ class AnchoredJointOrigin(FakeJointOrigin):
     thirdAxisVector = property(lambda self: self._geometry.thirdAxisVector)
 
 
+@fusion_fake(factory_for="FakePoint")
 def joint_geometry(face, origin, primary, secondary, third):
     """A JointGeometry stand-in holding the entity and the frame the origin's members read."""
     return SimpleNamespace(entityOne=face, origin=FakePoint(*origin),
@@ -192,6 +201,7 @@ def joint_geometry(face, origin, primary, secondary, third):
                            thirdAxisVector=FakeVector3D(*third))
 
 
+@fusion_fake(factory_for="BRepFace")
 def _face(token, body, at, normal):
     return BRepFace(SimpleNamespace(surfaceType=adsk.core.SurfaceTypes.PlaneSurfaceType), area=1,
                     centroid=FakePoint(*at), entity_token=token, body=body,
@@ -199,6 +209,7 @@ def _face(token, body, at, normal):
                     param_reversed=False)
 
 
+@fusion_fake(factory_for="DatumPlane")
 def datum_scene(mod, monkeypatch, kind, **behaviour):
     """One three-row timeline whose middle row is the datum or joint origin under edit."""
     edit = getattr(mod, "_edit", None) or mod._edit_feature_common
@@ -253,7 +264,7 @@ def datum_scene(mod, monkeypatch, kind, **behaviour):
                             lambda face, _edge, _keypoint: joint_geometry(
                                 face, (0, 1, 0.5), (-1, 0, 0), (0, 0, 1), (0, -1, 0)))
     row.entity = entity
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._inputs, "_resolve_token_entity",
                         lambda _design, token: tokens.get(token))
     monkeypatch.setattr(edit.adsk.core.ValueInput, "createByString", lambda text: ("text", text))

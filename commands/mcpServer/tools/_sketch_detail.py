@@ -1094,9 +1094,9 @@ def _prepare(sketch_name, entities, units, dx, dy, rotation_deg, center_x, cente
         return blank + (error(uerr),)
     unit = (units or "mm").strip().lower()
 
-    design = _common.design()
-    if not design:
-        return blank + (error("No active design. Create or open a document first (see doc_new)."),)
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return blank + (design_refusal,)
     sketch, requested, refusal = scoped_or_recent_sketch(design, sketch_name, component)
     if refusal:
         return blank + (error(refusal),)
@@ -1199,9 +1199,9 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
     if f is None:
         return error(f"Unknown units '{units}'. Valid: mm, cm, in.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     name = (sketch_name or "").strip()
     if not name:

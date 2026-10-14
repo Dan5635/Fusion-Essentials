@@ -10,7 +10,6 @@ UNREADABLE modified flag is published as null, never false, since the Images col
 count, item or delete. No live Fusion.
 """
 
-import json
 import math
 import types
 
@@ -62,9 +61,7 @@ class _RotationIgnoringInput(_RecordingInput):
         super().__setattr__(name, value)
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 @pytest.fixture

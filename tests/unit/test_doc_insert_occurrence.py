@@ -7,8 +7,8 @@ ambiguity REFUSED - never the wrong instance). The DataFile resolution is monkey
 test stays offline; occurrence resolution goes through the real _inputs kind against a fake design
 (dual seam: both io._common.design and io._inputs._common.design point at the same fake).
 """
+from conftest import install as _install_design
 
-import json
 import math
 
 import pytest
@@ -61,8 +61,7 @@ def _install(monkeypatch, occurrences=(), root_comp=None, data_file=None, host_d
     design = (MakeDesign(comp=root_comp) if host_document is None
               else MakeDesign(comp=root_comp, parent_document=host_document))
     source = FakeDataFile("Part") if data_file is None else data_file
-    monkeypatch.setattr(io._common, "design", lambda: design)
-    monkeypatch.setattr(io._inputs._common, "design", lambda: design)
+    _install_design(io, design)
     monkeypatch.setattr(io, "_resolve_data_file", lambda raw: (source, raw, [raw]))
     import adsk.core
     monkeypatch.setattr(adsk.core.Matrix3D, "create", staticmethod(FakeMatrix3D))
@@ -73,9 +72,7 @@ def _install(monkeypatch, occurrences=(), root_comp=None, data_file=None, host_d
     return design, root_comp
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestPlacement:
@@ -501,12 +498,12 @@ class TestHandlerGates:
         assert res["isError"] is True and "document_id" in res["message"]
 
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(io._common, "design", lambda: None)
+        _install_design(io, None)
         res = io.handler(document_id="urn:x")
         assert res["isError"] is True and "No active design" in res["message"]
 
     def test_unresolvable_document_errors(self, monkeypatch):
-        monkeypatch.setattr(io._common, "design", lambda: object())
+        _install_design(io, object())
         monkeypatch.setattr(io, "_resolve_data_file", lambda raw: (None, None, []))
         res = io.handler(document_id="urn:nope")
         assert res["isError"] is True and "Could not resolve" in res["message"]

@@ -9,20 +9,20 @@ downstream feature is reported, the deletion still standing), and the occurrence
 Remove feature's timeline entity is the removed OCCURRENCE, so the delete goes to the RemoveFeature
 resolved by the same name).
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import adsk.fusion
 import pytest
 
-import live_api_facts as _api_facts
 from conftest import (FakeFeature, FakeFeatures, FakeOccurrence, FakeTimeline, FakeTimelineObject,
                       MakeComp, _NamedCollection, error_message, install, load_tool, make_design,
                       payload)
 
 df = load_tool("design_delete_feature")
 
-_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
 _WARNING = _api_facts.ENUMS["fusion.FeatureHealthStates"]["WarningFeatureHealthState"]
-_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 
 # ── fakes ────────────────────────────────────────────────────────────────────

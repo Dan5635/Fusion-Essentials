@@ -17,6 +17,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, scale, all_sketch_names
+from ._cam_common import quote_expression as _quote
 from . import _common
 from . import _inputs
 from . import _param_common
@@ -827,11 +828,6 @@ def _edit_layout(design, sketch_name, component, index, units, mode, path, above
     return ok(out)
 
 
-def _quote(text):
-    """Quote a plain string for a text-parameter expression, escaping any single quotes."""
-    return "'" + str(text).replace("'", "\\'") + "'"
-
-
 # The unit a TEXT parameter reads, and the one param_add takes to make one (measured: a text
 # parameter reads 'Text' where a length parameter reads 'mm').
 _TEXT_UNIT = "Text"
@@ -922,9 +918,9 @@ def handler(text: str = None, sketch_name: str = "", index: int = -1,
         if serr:
             return error(serr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with sketch text).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     if layout:
         return _edit_layout(design, sketch_name, component, index, units, mode, path, above_path,
                             align, character_spacing, flip_h, flip_v, style, explode,

@@ -5,6 +5,9 @@ MoveFeatureInput definer (cm distances, radians for an angle, the resolved axis 
 pair), and the honesty gates - a refused definition, a feature that failed to compute, geometry that
 did not move, and geometry that cannot be read back all surface as errors rather than a false ok.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import math
 import types
@@ -47,7 +50,7 @@ def _shift(target, delta, move_box=True):
 
 class FakeMoveFeature:
     """The created MoveFeature."""
-    def __init__(self, name="Move1", health=0):
+    def __init__(self, name="Move1", health=_HEALTHY):
         self.name = name
         self.healthState = health
         self.errorOrWarningMessage = "the move pulls the faces off the body"
@@ -559,7 +562,7 @@ class TestHonesty:
 
     def test_health_error_reported_not_false_ok(self, monkeypatch):
         body = _body()
-        _wire(monkeypatch, [body], FakeMoveFeatures([body], feature=FakeMoveFeature(health=2)))
+        _wire(monkeypatch, [body], FakeMoveFeatures([body], feature=FakeMoveFeature(health=_ERROR)))
         res = mm.handler(bodies=["Block"], dx=5)
         assert res["isError"] is True
         assert "failed to compute" in res["message"]

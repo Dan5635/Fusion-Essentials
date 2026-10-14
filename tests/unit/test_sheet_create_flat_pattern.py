@@ -1,3 +1,4 @@
+from conftest import install as _install_design
 import json
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
@@ -20,7 +21,7 @@ def flat(monkeypatch):
     monkeypatch.setattr(mod._common, "_native_of", lambda x: x)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: True)
     monkeypatch.setattr(mod._common, "native_identity", lambda x: id(x) if x else None)
-    monkeypatch.setattr(mod._common, "design", lambda: comp.parentDesign)
+    _install_design(mod, comp.parentDesign)
     return mod, comp, flat
 
 

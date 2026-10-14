@@ -471,9 +471,9 @@ def handler(dimensions=None, sketch_name: str = "", component: str = "", dimensi
         entries, eerr = _sketch_batch.entries_or_error(dimensions, "dimensions", _ENTRY_FIELDS)
         if eerr:
             return error(eerr)
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     sketch, requested, refusal = _sketch_detail.scoped_or_recent_sketch(
         design, sketch_name, component)
     if refusal:

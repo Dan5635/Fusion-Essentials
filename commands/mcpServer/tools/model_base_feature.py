@@ -47,32 +47,62 @@ _NO_ACTIVE_SCOPE = "No captured scope owned by the active document was open to c
 _ACTIVE_SCOPE_REMAINS = (
     "A captured scope owned by the active document remains open; editing is unconfirmed until that "
     "handle closes successfully.")
+_INCOMPLETE_BASE_FEATURE = (
+    "Base-feature lookup for '{name}' is incomplete; a component identity, collection, or feature name did "
+    "not read. No finishEdit was called. Refresh the design and retry, or finish the scope in Fusion.")
 
 
 def _resolve_base_feature(design, comp, name):
-    """Find an existing base feature by name across the design (the named comp first, then root, then
-    all components). Returns the BaseFeature or None."""
+    """(base feature, error): one fully read exact name match across the design."""
     nm = (name or "").strip()
     if not nm:
-        return None
+        return None, None
+    incomplete = _INCOMPLETE_BASE_FEATURE.format(name=nm)
     candidates = []
     if comp is not None:
         candidates.append(comp)
     root = safe(lambda: design.rootComponent)
-    # same_component, never `is`/`in`: component wrappers are not identity-stable, so an identity
-    # dedupe never fires. Both de-dupes drop a candidate only on a PROVEN match - this is a SEARCH
-    # order, and an unproven pair costs one repeated read where dropping it could skip the holder.
-    if root is not None and _common.same_component(root, comp) is not True:
+    if root is None:
+        return None, incomplete
+    root_match = _common.same_component(root, comp) if comp is not None else False
+    if root_match is None:
+        return None, incomplete
+    if root_match is False:
         candidates.append(root)
-    for c in _common.all_components(design):
-        if c is not None and not any(_common.same_component(c, k) is True for k in candidates):
-            candidates.append(c)
+    components = safe(lambda: design.allComponents)
+    count = safe(lambda: components.count)
+    if type(count) is not int or count < 0:
+        return None, incomplete
+    for index in range(count):
+        c = safe(lambda: components.item(index))
+        if c is None:
+            return None, incomplete
+        comparisons = [_common.same_component(c, k) for k in candidates]
+        if True in comparisons:
+            continue
+        if None in comparisons:
+            return None, incomplete
+        candidates.append(c)
+    matches, labels = [], []
     for c in candidates:
-        bf = safe(lambda c=c: c.features.baseFeatures.itemByName(nm))
-        actual = safe(lambda b=bf: b.name) if bf else None
-        if isinstance(actual, str) and actual.strip().lower() == nm.lower():
-            return bf
-    return None
+        features = safe(lambda c=c: c.features.baseFeatures)
+        count = safe(lambda: features.count)
+        if type(count) is not int or count < 0:
+            return None, incomplete
+        for index in range(count):
+            bf = safe(lambda: features.item(index))
+            actual = safe(lambda: bf.name)
+            if not isinstance(actual, str) or not actual.strip():
+                return None, incomplete
+            if actual.strip().lower() == nm.lower():
+                matches.append(bf)
+                labels.append(f"{safe(lambda: c.name) or '(unread component name)'}: {actual}")
+    if len(matches) > 1:
+        listed = _common.named_with_remainder(labels)
+        return None, (f"Base feature '{nm}' is ambiguous: {len(matches)} matches ({listed}). "
+                      "No finishEdit was called. Rename the intended feature uniquely in Fusion "
+                      "and retry with its exact name.")
+    return (matches[0] if matches else None), None
 
 
 def _captured_named(scopes, eligible, name):
@@ -94,9 +124,9 @@ def _captured_named(scopes, eligible, name):
 def handler(action: str = "start", base_feature: str = "") -> dict:
     """Start or finish a base-feature edit scope - the multi-call escape hatch; tool code takes the
     run_in_base_feature helper instead. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     act = (action or "start").strip().lower()
     if act not in _ACTIONS:
@@ -169,7 +199,9 @@ def handler(action: str = "start", base_feature: str = "") -> dict:
     if nm:
         selected, readable = _captured_named(open_scopes, eligible, nm)
         if not selected:
-            named_target = _resolve_base_feature(design, comp, nm)
+            named_target, lookup_error = _resolve_base_feature(design, comp, nm)
+            if lookup_error:
+                return error(lookup_error)
             if named_target is None:
                 available = _common.named_with_remainder([f"'{name}'" for name in readable])
                 return error(_MISSING_BASE_FEATURE.format(

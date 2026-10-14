@@ -8,6 +8,7 @@ auto-generator config mapping (standard/units/content/size/orientation/scope, sh
 auto-dimensioning, fastener omission, view style, isometric), the size<->standard and portrait
 guards, and that a created cloud drawing reports its file_id. No live Fusion.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -151,7 +152,7 @@ def install(monkeypatch):
         namespace = install_drawing(monkeypatch, **_UNMEASURED_FAMILIES)
         design = MakeDesign(parent_document=FakeFusionDocument(
             data_file=_datafile() if datafile else None))
-        monkeypatch.setattr(dc._common, "design", lambda: design)
+        _install_design(dc, design)
         monkeypatch.setattr(dc, "app", types.SimpleNamespace(activeDocument=object()))
         if result_df == "default":
             result_df = _datafile("Widget Drawing v1")
@@ -164,10 +165,7 @@ def install(monkeypatch):
     return _install
 
 
-def _payload(res):
-    import json
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _gp(dm):
@@ -224,7 +222,7 @@ class TestGuards:
 
     def test_no_active_design_errors(self, install, monkeypatch):
         install()
-        monkeypatch.setattr(dc._common, "design", lambda: None)
+        _install_design(dc, None)
         res = dc.handler()
         assert res["isError"] is True
         assert "design" in res["message"].lower()

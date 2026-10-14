@@ -38,12 +38,11 @@ import argparse
 import os
 import subprocess
 import sys
-import urllib.request
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TESTS)
 sys.path.insert(0, os.path.join(TESTS, "live"))
-from verify_core import BASE  # noqa: E402  the live harness's one server address
+from verify_core import BASE, require_machine, health_gate, _bound_on_harness  # noqa: E402
 
 HEALTH = BASE + "/health"
 
@@ -59,12 +58,12 @@ def _run(label, cmd, repair):
 
 
 def _fusion_up():
-    # GET /health recomputes the loaded attestation over the whole import closure on every call -
-    # seconds of hashing - so a tight timeout reads a live Fusion as absent.
+    """Read the configured endpoint only after explicit configuration and exact health admission."""
+    require_machine()
     try:
-        with urllib.request.urlopen(HEALTH, timeout=10) as resp:
-            return b"Fusion-Essentials" in resp.read()
-    except Exception:
+        health = health_gate()
+        return _bound_on_harness("check_all /health", health.get("bound"))
+    except (Exception, SystemExit):
         return False
 
 
@@ -89,6 +88,8 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    if not (args.offline or args.fast or args.gen):
+        require_machine()
 
     if not _run("gen_all --check", [sys.executable, os.path.join(TESTS, "gen_all.py"), "--check"],
                 "py -3 tests/gen_all.py   (then commit the regenerated files)"):

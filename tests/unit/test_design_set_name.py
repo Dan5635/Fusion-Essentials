@@ -10,6 +10,7 @@ The fakes model two measured platform behaviours the shared conftest fakes do no
 that dedupes against its siblings, and an occurrence whose displayed name derives from its
 component's.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -277,8 +278,7 @@ class TestGuards:
         assert root_bolt.name == "Bolt" and sub_bolt.name == "Bolt"
 
     def test_no_active_design_refused(self, monkeypatch):
-        monkeypatch.setattr(sn._common, "design", lambda: None)
-        monkeypatch.setattr(sn._inputs._common, "design", lambda: None)
+        _install_design(sn, None)
         assert "No active design" in error_message(sn.handler(target="Body1", new_name="Plate"))
 
     def test_no_op_rename_is_a_clean_ok(self, wire):

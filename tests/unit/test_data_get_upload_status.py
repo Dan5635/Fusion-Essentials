@@ -8,7 +8,6 @@ True - the cloud confirms the file has landed), or 'failed'. It must NEVER sleep
 CURRENT state and returns.
 """
 
-import json
 from types import SimpleNamespace
 
 from conftest import FakeDataFile, load_tool
@@ -17,9 +16,7 @@ dc = load_tool("_data_common")
 sut = load_tool("data_get_upload_status")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _future(upload_state, df=None):

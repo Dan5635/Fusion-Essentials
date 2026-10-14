@@ -10,7 +10,6 @@ claiming success. Side-effects are observable because the fakes expose a real
 conftest), so the fake ops flow through unchanged.
 """
 
-import json
 import math
 import types
 import pytest
@@ -39,9 +38,7 @@ def _install(setups):
     return fake_app
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _simple_world():

@@ -1,4 +1,5 @@
 """Plastic-rule identity, bounded edits and truthful partial-effect checks."""
+from conftest import install as _install_design
 
 import json
 from types import SimpleNamespace
@@ -27,8 +28,7 @@ def rules(monkeypatch):
         return result
 
     local.addByCopy = copy
-    monkeypatch.setattr(mod._common, "design", lambda: design)
-    monkeypatch.setattr(mod._inputs._common, "design", lambda: design)
+    _install_design(mod, design)
     return design, library
 
 

@@ -119,7 +119,9 @@ Spend the review where a defect costs most: API truth and what the tool believes
   each phrased as a testable claim.
 - Not a defect, and untested: a finding that the reported bug is not one, and a classification
   of "untested, not failed", are valid verdict content. Say which evidence each rests on.
-- Evidence: the test/lint commands you ran and their tail lines, and the hash of each patch read.
+- Evidence: the test/lint commands you ran and their tail lines, the hash of each patch read, and
+  the files you opened whole. A check that a patch applies is reported as an apply check; it is
+  never an APPROVE or an AGREED.
 
 APPROVE means: you would stake the repo's honesty contract on this diff as it stands, pending only
 the listed live probes and the item's tool_verify sweep act. When torn, REJECT - a second review

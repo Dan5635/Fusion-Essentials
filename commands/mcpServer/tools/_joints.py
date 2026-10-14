@@ -158,14 +158,6 @@ def _non_planar_face_geometry(entity, keypoint):
 _KEYPOINT_TOL_CM = 1e-4
 
 
-def _xyz(pt):
-    """(x, y, z) off a Point3D, or None when any component is unreadable."""
-    if pt is None:
-        return None
-    vals = (safe(lambda: pt.x), safe(lambda: pt.y), safe(lambda: pt.z))
-    return None if any(not isinstance(v, (int, float)) or isinstance(v, bool) for v in vals) else vals
-
-
 def _fmt_point(xyz):
     """A published coordinate, rounded to 4dp (a micron in cm); the caller labels its FRAME."""
     return "(%.4f, %.4f, %.4f)" % xyz
@@ -270,14 +262,14 @@ def _world_torus_centre(entity):
     if origin is None:
         return None
     if safe(lambda: entity.assemblyContext) is not None:
-        return _xyz(origin)
+        return _geom._coords(origin)
     m = _world_placement(entity)
     if m is None:
         return None
     moved = safe(lambda: origin.copy())
     if moved is None or not safe(lambda: moved.transformBy(m)):
         return None
-    return _xyz(moved)
+    return _geom._coords(moved)
 
 
 def _torus_keypoint_error(g, entity):
@@ -286,7 +278,7 @@ def _torus_keypoint_error(g, entity):
     # createByNonPlanarFace on a torus inside a BASE FEATURE returns the OWNING COMPONENT'S ORIGIN,
     # world-framed, and raises nothing - so the keypoint is compared against the torus's own centre
     # read in the SAME world frame, the only comparison that separates the two.
-    kp = _xyz(safe(lambda: g.origin))
+    kp = _geom._coords(safe(lambda: g.origin))
     centre = _world_torus_centre(entity)
     if kp is None or centre is None:
         return None

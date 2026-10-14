@@ -7,7 +7,6 @@ False return into an error, and the guards (no CAM, position not before/after, e
 moving an entity relative to itself).
 """
 
-import json
 
 from conftest import (FakeCAMFolder, FakeOperation, FakeSetup, _AdditiveContainer,
                       _NamedCollection, load_tool, make_cam)
@@ -85,9 +84,7 @@ def _install(monkeypatch, setups=None):
     return cam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _named(cam, name):

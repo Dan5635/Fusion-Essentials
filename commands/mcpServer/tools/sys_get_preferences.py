@@ -13,6 +13,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe, iter_collection
+from ._common import normalize_include as _normalize_include
 from . import _outputs
 
 app = adsk.core.Application.get()
@@ -318,15 +319,6 @@ def _slice_collection(prefs, key, wanted, unreadable, unknown=None):
         return None
     return {name: _read_into(obj, key, wanted, unreadable, f"{key}.{name}", unknown)
             for name, obj in items}
-
-
-def _normalize_include(include):
-    """Accept include as a list, a comma-string, or a single group name; -> a list of group names."""
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
 
 
 def handler(include=None) -> dict:

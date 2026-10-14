@@ -9,6 +9,7 @@ its components and its bodies come from conftest, and ``install`` wires BOTH des
 tool's own ``_common`` and ``_inputs._common``) to the same design - the dual-seam trap - so
 TargetRef('') resolves against the same root component the handler reads.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -384,7 +385,7 @@ class TestPartialSuccess:
 
 class TestDesignGuard:
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(mm._common, "design", lambda: None)
+        _install_design(mm, None)
         res = mm.handler(target="", material="Steel")
         assert res["isError"] is True
         assert "design" in res["message"].lower()

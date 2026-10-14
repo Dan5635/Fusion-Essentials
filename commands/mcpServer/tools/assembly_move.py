@@ -46,9 +46,9 @@ def handler(occurrence: str = "", dx: float = 0.0, dy: float = 0.0, dz: float = 
         return error("Provide a translation (dx/dy/dz), rotate_deg, or rotate_x/y/z - no movement specified.")
     if (rotate_deg or 0) and multi:
         return error("Use EITHER rotate_deg (single axis) OR rotate_x/y/z (multi-axis), not both.")
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     # The shared OccurrenceRef logic: an entityToken handle (the exact identity) or a
     # fullPathName/name, REFUSING an ambiguous one instead of grabbing the first instance.
     occ, occ_err = _inputs._resolve_occurrence(occurrence, occurrence)

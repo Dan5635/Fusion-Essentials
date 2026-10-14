@@ -750,9 +750,9 @@ def _apply(kind, body_name, size, units, edge_filter, edge_handles=None, distanc
         if sz <= 0:
             return error(f"Provide a positive {size_key}.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = _common.target_component(design)
     # One ValueInput for both forms: a literal scaled to internal cm, an expression crossing as a
     # string once the units engine evaluated it, so an unresolvable one is refused BY NAME. The

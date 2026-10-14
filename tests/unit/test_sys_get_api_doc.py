@@ -8,7 +8,6 @@ caps, regex/empty-input validation, and the pure string helpers (``_class_filter
 ``_trim``, ``_signature``, ``_load_modules`` filtering).
 """
 
-import json
 import sys
 import types
 
@@ -71,9 +70,7 @@ def _install_fake_api(monkeypatch):
     monkeypatch.setattr(ad, "_API_MODULES", ("adsk.core", "adsk.fusion"))
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── pure helpers ─────────────────────────────────────────────────────────────

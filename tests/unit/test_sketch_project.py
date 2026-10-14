@@ -10,6 +10,7 @@ entity and the plane, a partial result is an ok that names the zero contributors
 entities are reported as '<type>:<index>' refs computed from the per-collection count delta. The
 actual BRep projection is a live side-effect covered by the post-reload verification pass.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -491,7 +492,7 @@ class TestGuards:
 
     def test_no_active_design(self, monkeypatch):
         install(sp, make_design())
-        sp._common.design = lambda: None
+        _install_design(sp, None)
         res = sp.handler(entities="E1")
         assert res["isError"] is True and "design" in res["message"].lower()
 
@@ -1332,7 +1333,7 @@ def iso(run, monkeypatch):
         placed_child = kw.pop("placed_child", False)
         root = (MakeComp(name="Root", entity_token="root") if placed_child
                 else sk.parentComponent)
-        monkeypatch.setattr(sp._common, "design", lambda: types.SimpleNamespace(rootComponent=root))
+        _install_design(sp, types.SimpleNamespace(rootComponent=root))
         fake = _IsoCurves(sk, **{k: kw.pop(k) for k in list(kw) if k in (
             "kind", "count", "links", "setter", "raises", "reads", "no_input", "unreadable")})
         sk.sketchCurves.sketchIsoparametricCurves = fake

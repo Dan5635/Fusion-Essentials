@@ -32,9 +32,9 @@ def _group_ids(mb):
 
 def handler(mesh: str = "", method: str = "accurate") -> dict:
     """Segment a MeshBody into planar face groups - the required pre-step for a prismatic mesh_to_brep."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mb, merr = _FG_MESH.resolve(mesh)
     if merr:
         return error(merr)

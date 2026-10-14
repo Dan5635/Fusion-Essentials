@@ -3,7 +3,6 @@ parameters. Covers the diff logic (same vs differing parameters, not-present-on-
 bounded-read cap on 'differences'.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -49,9 +48,7 @@ def install(monkeypatch):
     return _install
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestGuards:

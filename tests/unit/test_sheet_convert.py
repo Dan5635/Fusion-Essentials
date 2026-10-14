@@ -1,4 +1,5 @@
 """Focused conversion effect checks for a measured constant-thickness blank."""
+from conftest import install as _install_design
 
 import json
 from types import SimpleNamespace
@@ -31,7 +32,7 @@ def coupon(monkeypatch):
     body.convertToSheetMetal = convert
     face = SimpleNamespace(body=body)
     rule = SimpleNamespace(name="Shop gauge")
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._BODY, "resolve", lambda raw: (body, None))
     monkeypatch.setattr(mod._FACE, "resolve", lambda raw: (face, None))
     monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((rule, "design"), None))
@@ -122,7 +123,7 @@ def test_applied_rule_ref_carries_the_ordinal_when_the_name_repeats(monkeypatch)
     body.convertToSheetMetal = convert
     face = SimpleNamespace(body=body)
     rule = SimpleNamespace(name="Shop gauge")
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._BODY, "resolve", lambda raw: (body, None))
     monkeypatch.setattr(mod._FACE, "resolve", lambda raw: (face, None))
     monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((rule, "design"), None))

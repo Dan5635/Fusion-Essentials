@@ -183,9 +183,9 @@ def _from_data(data, target_component, units, name):
     flat, derr = _mesh_data(data, unit_cm)
     if derr:
         return error(derr)
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp, terr = _target_of(design, target_component)
     if terr:
         return error(terr)
@@ -226,9 +226,9 @@ def handler(file_path: str = "", target_component: str = "",
         return error(f"File not found: {path}. (To import from the data model, first resolve the file "
                      "to a local path with the data_* tools, then pass that path.)")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     comp, terr = _target_of(design, target_component)
     if terr:

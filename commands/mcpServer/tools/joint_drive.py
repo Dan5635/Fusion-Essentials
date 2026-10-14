@@ -492,9 +492,9 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
     if k is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     joint, ambiguous = _find_joint(design, joint_name)
     if ambiguous:
         return error(ambiguous)

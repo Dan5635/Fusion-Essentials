@@ -9,7 +9,7 @@ Each tool has one or two pure helpers worth pinning:
 import json as _json
 from types import SimpleNamespace
 
-from conftest import load_tool
+from conftest import FakeDataFile, FakeDocumentReference, load_tool
 
 uxref = load_tool("doc_update_xref")
 # _cam_common is loaded inside each TestLiveReadiness test rather than at module top, so this file's
@@ -34,19 +34,13 @@ class TestRefName:
 
 # ── doc_update_xref.handler ────────────────────────────────────────────────
 
-class _XRef:
+class _XRef(FakeDocumentReference):
     def __init__(self, name, ood=False, version=1, latest_returns=True, after_version=None):
-        self.dataFile = SimpleNamespace(name=name)
-        self.isOutOfDate = ood
-        self.version = version
-        self._latest_returns = latest_returns
-        self._after = after_version if after_version is not None else version + 1
-
-    def getLatestVersion(self):
-        if self._latest_returns:
-            self.version = self._after
-            self.isOutOfDate = False
-        return self._latest_returns
+        latest = after_version if after_version is not None else version + 1
+        super().__init__(data_file=FakeDataFile(name=name, version=version,
+                                                latest_version=latest),
+                         version=version, out_of_date=ood,
+                         refresh_ok=latest_returns, refresh_lands=True)
 
 
 class _XRefColl:

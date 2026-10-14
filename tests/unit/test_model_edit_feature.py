@@ -1,4 +1,5 @@
 """Checks the measured feature editor's typed operands, retained controls and restore proof."""
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 import math
@@ -6,6 +7,7 @@ import math
 import adsk.core
 import adsk.fusion
 import pytest
+from tests.fakes.design import _injected_roll
 
 
 @pytest.fixture
@@ -50,7 +52,7 @@ def test_curved_path_descriptor_reads_both_callers_and_distinguishes_complements
     assert mod._edit._reference_kind(arc, "edges") is None
     assert mod._edit._reference_kind(arc, "axis") is None
 
-from _datum_fakes import datum_scene
+from tests.fakes.datum_scenarios import datum_scene
 import test_doc_insert_derive as derive_fakes
 from tests.fakes.design import MirrorPlaneResetScene
 from conftest import (BRepBody, BRepEdge, BRepFace, FakeFeature, FakeTimeline, FakeTimelineObject,
@@ -117,7 +119,7 @@ def scene(monkeypatch):
     feature._axis = before_axis
     timeline_object.rollTo = lambda before: (
         setattr(timeline, "markerPosition", 1 if before else 2) or True)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._inputs, "_resolve_token_entity",
                         lambda _design, token: {"axis-before": before_axis,
                                                 "axis-after": new_axis}.get(token))
@@ -1026,6 +1028,17 @@ def test_hem_rebuild_uses_the_measured_mode_argument_order(hem_scene, kind, dime
     assert calls == [(*args, False, adsk.fusion.BendPositionTypes.StartEdgeBendPositionType)]
 
 
+def test_hem_rebuild_maps_tangent_to_side_position(hem_scene):
+    feature, _timeline, _design, calls = hem_scene
+    feature.redefineAsFlatHem = lambda *values: calls.append(values) or True
+    mod._sheet_edit.write_hem(feature, {
+        "type": "flat", "flip": False, "bend_position": "tangent_to_side",
+        "dimensions": {"length": {"expression": "9 mm"}},
+    })
+    assert calls == [(
+        "9 mm", False, adsk.fusion.BendPositionTypes.TangentToSideBendPositionType)]
+
+
 def test_rip_face_edit_writes_native_definition_not_a_dotted_shadow(offset_scene):
     feature, timeline, old_face, new_face, _calls = offset_scene
     feature.objectType = "adsk::fusion::RipFeature"
@@ -1674,7 +1687,7 @@ class TestDeriveEdits:
     def host(self, monkeypatch):
         design = derive_fakes._edit_design(
             [derive_fakes._typed("PS_Fav_Ref", "DerivedParameter")], local=("PS_B",))
-        monkeypatch.setattr(mod._common, "design", lambda: design)
+        _install_design(mod, design)
         monkeypatch.setattr(mod._edit, "all_shapes", derive_fakes._shapes)
 
         def build(**behaviour):
@@ -2077,3 +2090,14 @@ def test_grid_definition_offers_a_call_with_only_the_direction_entities_it_read(
     assert "may move with direction_one" in definition["direction_two_note"]
     assert mod._edit.FEATURE_EDIT_SUPPORT[feature.objectType]["axis"]["example"] == (
         "references=[{'direction_one': 'z'}]")
+
+
+@pytest.mark.parametrize("mode", ["false", "truthy", "noop", "raise"])
+def test_feature_safe_roll_keeps_generic_refusal_and_restore(scene, monkeypatch, mode):
+    feature, timeline, _new_axis, old_axis, _design, _body = scene
+    monkeypatch.setattr(feature.timelineObject, "rollTo", _injected_roll(timeline, 1, mode))
+    text = error_message(mod.handler(feature="Part/Revolve1@1", action="axis",
+                                             references=["axis-after"]))
+    assert text == ("Feature edit refused: Fusion refused the feature edit position.. "
+                    "The marker was restored at 3.")
+    assert feature.axis is old_axis and timeline.markerPosition == 3

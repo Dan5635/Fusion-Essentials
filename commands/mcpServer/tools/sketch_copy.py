@@ -129,9 +129,9 @@ def _mirror(sketch_name, entities, mirror_line, component, others):
     if stray:
         return error("mirror_line mirrors in place of a transform, in the same sketch. Drop: "
                      + ", ".join(stray) + ".")
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     sketch, requested, refusal = _sketch_detail.scoped_or_recent_sketch(design, sketch_name,
                                                                         component)
     if refusal:

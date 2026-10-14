@@ -6,7 +6,6 @@ cannot restore. The stand-ins model the three shapes that make that hard: a memb
 RAISES, a setter that accepts a value and silently ignores it, and a setter that clamps.
 """
 
-import json
 import types
 
 import pytest
@@ -166,9 +165,7 @@ def prefs(monkeypatch):
     return p
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _message(res):

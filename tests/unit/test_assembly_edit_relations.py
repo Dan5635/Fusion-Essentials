@@ -9,6 +9,7 @@ AssemblyConstraint has no shared conftest fake (no live SHAPES dump), so the con
 local; the rigid groups, motion links, timeline and design/component/occurrence skeleton come from
 the shared fakes.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -538,8 +539,7 @@ class TestGuards:
         assert [g.isSuppressed for g in groups] == [False, False]
 
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(rel._common, "design", lambda: None)
-        monkeypatch.setattr(rel._inputs._common, "design", lambda: None)
+        _install_design(rel, None)
         msg = error_message(rel.handler(kind="rigid_group", name="RG1", action="delete"))
         assert "design" in msg.lower()
 

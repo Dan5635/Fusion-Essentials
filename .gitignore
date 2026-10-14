@@ -182,6 +182,9 @@ commands/mcpServer/.wire_bare
 # private and machine-local. Without it the cloud_tier capability probe answers false and ACT 11a-c
 # are skipped - see tests/live/cloud_config.py for the shape.
 tests/live/cloud_config.local.json
+# Portable sweep operator input and machine-scoped records are private.
+tests/live/sweep_config.local.json
+tests/live/records/
 
 # measure_api / tool_verify run archives: per-run records; the durable state they feed
 # (tests/live/CONTRACTS.md + tests/live_api_facts.py + tests/live/VERIFIED_TOOLS.md) is tracked,

@@ -1,4 +1,5 @@
 """Focused measured fillet edge-set construction and retained-readback cases."""
+from conftest import install as _install_design
 
 import types
 
@@ -346,7 +347,7 @@ def test_non_finite_or_boolean_input_lengths_are_refused(monkeypatch):
 def test_non_finite_standalone_measured_size_stops_before_feature_input(monkeypatch):
     _common_patches(monkeypatch)
     made = []
-    monkeypatch.setattr(edges._common, "design", lambda: object())
+    _install_design(edges, object())
     monkeypatch.setattr(edges._common, "target_component", lambda _design: object())
     monkeypatch.setattr(edges._inputs, "looks_like_expression", lambda _value: False)
     monkeypatch.setattr(edges._inputs, "length_value_input",

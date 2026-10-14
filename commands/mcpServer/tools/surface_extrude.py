@@ -47,9 +47,9 @@ def handler(sketch_name: str = "", curves=None, distance: float = 0.0,
     if op_key not in _SURFACE_OPS:
         return error(f"Unknown operation '{operation}'. Surface extrude supports: new, join.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     # profile: from explicit curve handles, else from a sketch's open chain. Build the profile AND the

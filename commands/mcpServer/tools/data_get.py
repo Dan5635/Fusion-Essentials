@@ -8,12 +8,11 @@ deliberately separate from doc_get, which reads the in-memory session. Delegates
 _data_read cores and the data_switch_hub handler so the cloud-error guards and caps live in one place.
 """
 
-import json
-
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error
+from ._common import normalize_include as _normalize_include, unwrap as _unwrap
 
 _SLICES = ("hubs", "folders", "summary")
 
@@ -29,24 +28,6 @@ def _walk_limits():
 
 
 _FOLDER_BUDGET_DEFAULT, _FOLDER_BUDGET_MAX, _TIME_BUDGET_DEFAULT, _TIME_BUDGET_MAX = _walk_limits()
-
-
-def _unwrap(result):
-    """(payload, None) on ok; (None, error_result) on error - so a cloud failure propagates verbatim."""
-    if result.get("isError"):
-        return None, result
-    try:
-        return json.loads(result["content"][0]["text"]), None
-    except Exception:
-        return None, result
-
-
-def _normalize_include(include):
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
 
 
 def handler(project: str = "", project_id: str = "", folder: str = "", recursive: bool = True,

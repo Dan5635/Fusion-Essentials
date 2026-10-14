@@ -5,12 +5,13 @@ document's captured objects, keeps any unknown-owner or failed-close handle, and
 An explicit name must resolve before mutation. The mode-guard rejection names PARAMETRIC, and the
 capability map get_mode_handler is derived from the same reader that guard runs on.
 """
+from conftest import install as _install_design
 
 import json
 
 import pytest
 
-from conftest import FakeBaseFeature, FakeFeatures, FakeTimeline, MakeDesign, load_tool
+from conftest import FakeBaseFeature, FakeBaseFeatures, FakeFeatures, FakeTimeline, MakeDesign, load_tool
 
 dm = load_tool("model_base_feature")
 dc = load_tool("_design_common")
@@ -53,7 +54,7 @@ class _FakeBaseFeature(FakeBaseFeature):
         return True
 
 
-class _Coll:
+class _Coll(FakeBaseFeatures):
     """Counted collection with itemByName + add(). Mirrors the live API: an in-edit base feature is
     HIDDEN (not in count / itemByName) - see _FakeBaseFeature."""
     def __init__(self, items=()):
@@ -146,7 +147,7 @@ def _install(monkeypatch, design, document_handle="session:test"):
     monkeypatch.setattr(dm._common, "app", app)
     import adsk.fusion
     monkeypatch.setattr(adsk.fusion.Design, "cast", lambda x: x if isinstance(x, FakeDesign) else None)
-    monkeypatch.setattr(dm._inputs._common, "design", lambda: design)
+    _install_design(dm, design)
     monkeypatch.setattr(dm._inputs._common, "target_component", lambda d: d.rootComponent)
     monkeypatch.setattr(dm._write_guard, "active_document_handle", lambda: document_handle)
     return design
@@ -157,9 +158,7 @@ def _open_handles():
     return [bf for _owner, bf in dm._OPEN_BASE_FEATURES]
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _failed(result):

@@ -1,3 +1,4 @@
+from conftest import install as _install_design
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import json
@@ -29,7 +30,7 @@ def unfold(monkeypatch):
     monkeypatch.setattr(mod._common, "_native_of", lambda x: x)
     monkeypatch.setattr(mod._common, "native_identity", lambda x: id(x) if x else None)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: True)
-    monkeypatch.setattr(mod._common, "design", lambda: comp.parentDesign)
+    _install_design(mod, comp.parentDesign)
     # The wall census before the add, then the groups still standing after it.
     monkeypatch.setattr(mod._sheet_common, "bend_wall_groups",
                         Mock(side_effect=[[["inner", "outer"]], []]))
@@ -112,7 +113,7 @@ def test_unfold_all_bends_succeeds_through_the_real_wall_pairing(monkeypatch):
     monkeypatch.setattr(mod._common, "_native_of", lambda x: x)
     monkeypatch.setattr(mod._common, "native_identity", lambda x: id(x) if x else None)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: True)
-    monkeypatch.setattr(mod._common, "design", lambda: comp.parentDesign)
+    _install_design(mod, comp.parentDesign)
     monkeypatch.setattr(mod._geom, "face_frames", lambda faces: {})
     monkeypatch.setattr(mod._geom, "faces_moved", lambda faces, before: (2, 14))
 

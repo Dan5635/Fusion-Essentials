@@ -6,20 +6,14 @@ the call is the read the claim rests on, and the per-operation tool status is re
 own walk.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
 
 from conftest import (FakeCAMFolder, FakeOperation, FakeSetup, FakeTool, _NamedCollection,
-                      load_tool, make_cam, make_cam_parameters)
+                      load_tool, make_cam, make_cam_parameters, payload as _payload)
 
 ct = load_tool("cam_apply_template")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 class _FakeTemplate:

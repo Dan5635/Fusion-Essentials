@@ -33,9 +33,9 @@ def handler(mesh: str = "", density: float = 0.0) -> dict:
     if d < 0:
         return error(f"density={density!a} is negative. Use a positive density, "
                      "or 0 for the API default.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mb, merr = _REMESH_MESH.resolve(mesh)
     if merr:
         return error(merr)

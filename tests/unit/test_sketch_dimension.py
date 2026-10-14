@@ -7,6 +7,8 @@ what failed, what was not attempted). No live Fusion — the fakes mimic Sketch.
 each add* carrying the argument order and operand types its binding declares, so a mis-ordered or
 wrong-kind call fails here the way it would live.
 """
+import live_api_facts as _api_facts
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import ast
 import json
@@ -1812,7 +1814,7 @@ class TestExistingDimensionState:
         assert out["unread"] == {"is_driving": "3 : flag unavailable"}
 
     def test_only_a_problem_the_write_raised_is_called_new(self):
-        old = FakeTimelineObject(name="Old1", index=0, health=2)
+        old = FakeTimelineObject(name="Old1", index=0, health=_ERROR)
         fresh = FakeTimelineObject(name="Extrude1", index=1)
         dim = _StateDim("d15")
         dim.on_write = lambda: setattr(fresh, "healthState", 1)

@@ -1,19 +1,19 @@
 """Unit tests for ``design_recompute.py`` (computeAll() then re-reports health; surfaces a computeAll
 failure) and the timeline health rollup design_get's health slice reads (feature healthState into
 errors/warnings + a healthy flag). Pure logic over a faked timeline; no live Fusion."""
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import math
 
-import live_api_facts as _api_facts
 from conftest import (FakeTimeline, FakeTimelineObject, MakeComp, MakeDesign, error_message,
                       install, load_tool, make_design, make_joint, payload)
 
 dops = load_tool("design_recompute")
 dm = load_tool("_design_common")
 
-_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
 _WARNING = _api_facts.ENUMS["fusion.FeatureHealthStates"]["WarningFeatureHealthState"]
-_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 
 def _timeline(*rows):

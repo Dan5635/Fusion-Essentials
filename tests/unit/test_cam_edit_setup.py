@@ -154,9 +154,7 @@ def _install(monkeypatch, setups=("Setup1",), require_enable=True):
     return cam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────

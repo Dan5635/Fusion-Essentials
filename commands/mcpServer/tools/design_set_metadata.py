@@ -41,9 +41,9 @@ def handler(target: str = "", part_number: str = None, description: str = None) 
             return error(f"'{field}'={shown} must be a string. "
                          "No metadata was changed.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open a document first (see doc_open / doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     resolved, terr = _TARGET.resolve(target)
     if terr:

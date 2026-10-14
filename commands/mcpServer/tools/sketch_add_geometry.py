@@ -804,9 +804,9 @@ def handler(geometry=None, sketch_name: str = "", component: str = "", units: st
     k = scale(units)
     if k is None:
         return error(f"Unknown units '{units}'. Valid: mm, cm, in.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # 'component' narrows the by-name walk to one component's own sketches - the way through a name
     # two components carry, which Fusion's per-component numbering makes the norm. Unscoped, the

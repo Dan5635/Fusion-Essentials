@@ -1,4 +1,5 @@
 """Focused rich-read routing checks for sheet_get."""
+from conftest import install as _install_design
 
 import json
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ def payload(result):
 def sheet_design(monkeypatch):
     design = SimpleNamespace(designSheetMetalRules=SimpleNamespace(count=2),
                              librarySheetMetalRules=SimpleNamespace(count=6))
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     return design
 
 

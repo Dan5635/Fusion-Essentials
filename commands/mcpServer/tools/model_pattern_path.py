@@ -74,9 +74,9 @@ def handler(occurrences: str = "", bodies=None, path=None, quantity: int = 2, di
     if serr:
         return error(serr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document with components first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies, features, faces)
     if rerr:

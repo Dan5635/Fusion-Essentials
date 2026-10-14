@@ -1,3 +1,4 @@
+from conftest import install as _install_design
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import math
@@ -21,7 +22,7 @@ def fold(monkeypatch):
     monkeypatch.setattr(mod._LINE, "resolve", lambda x, c: (line, None))
     monkeypatch.setattr(mod._common, "_native_of", lambda x: x)
     monkeypatch.setattr(mod._common, "same_component", lambda a, b: True)
-    monkeypatch.setattr(mod._common, "design", lambda: comp.parentDesign)
+    _install_design(mod, comp.parentDesign)
     return mod, body, factory, feature
 
 

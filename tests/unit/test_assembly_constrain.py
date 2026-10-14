@@ -5,19 +5,19 @@ cm-scaled length, an angle a 'deg' string), and what the create VERIFIES - the c
 it broke no existing timeline feature, it holds every relationship submitted, and which parts it
 repositioned.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import pytest
 
-import live_api_facts as _api_facts
 from conftest import (BRepFace, FakeMatrix3D, FakeSelection, FakeSelections, FakeTimeline, FakeTimelineObject,
                       FakeUserInterface, MakeComp, _NamedCollection,
                       install, load_tool, make_design, make_occurrence, make_placed_occurrence, payload)
 
 ja = load_tool("assembly_constrain")
 
-_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
 _WARNING = _api_facts.ENUMS["fusion.FeatureHealthStates"]["WarningFeatureHealthState"]
-_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 _ORIGIN = (0.0, 0.0, 0.0)
 

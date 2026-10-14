@@ -631,8 +631,7 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
     if own_role and own_before is None:
         return error(f"'{label}' geometry is unreadable ({own_reason}); nothing was edited.")
     try:
-        if safe(lambda: entity.timelineObject.rollTo(True)) is not True or counted(
-                lambda: timeline.markerPosition) != index:
+        if not _edit.edit_position(safe(lambda: entity.timelineObject.rollTo(True)), timeline, index):
             raise RuntimeError("Fusion refused the feature edit position.")
         if row.get("set_collection"):
             edge_sets = _edit.edge_set_entities(entity, row)
@@ -768,8 +767,7 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
             surface_normals_before = _edit.surface_normal_snapshot(surface_targets)
             if surface_normals_before is None:
                 raise ValueError("The selected surface face normals are unreadable or exceed the 64-face cap.")
-        if safe(lambda: entity.timelineObject.rollTo(True)) is not True or counted(
-                lambda: timeline.markerPosition) != index:
+        if not _edit.edit_position(safe(lambda: entity.timelineObject.rollTo(True)), timeline, index):
             raise RuntimeError("The feature could not return to its edit row.")
         prepared = _prepared(row, resolved)
         mutation_attempted = True
@@ -787,8 +785,7 @@ def handler(feature: str = "", action: str = "", references=None, mode: str = ""
                                                           new_entities)
             if normal_effect is not True:
                 raise ValueError("The selected surface face normals did not read as reversed.")
-        if safe(lambda: entity.timelineObject.rollTo(True)) is not True or counted(
-                lambda: timeline.markerPosition) != index:
+        if not _edit.edit_position(safe(lambda: entity.timelineObject.rollTo(True)), timeline, index):
             raise RuntimeError("The edited feature could not return to its edit row for read-back.")
         after_state, after_fields, after_unavailable = _edit.feature_edit_state(entity)
         after = _edit.feature_definition_view(entity, after_state, after_fields, after_unavailable)

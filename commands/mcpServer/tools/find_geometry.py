@@ -438,9 +438,9 @@ def handler(target: str = "", kind: str = "", radius: float = None,
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
     inv_k = 1.0 / k
 
-    design = _common.design()
-    if not design:
-        return error("No active design (open or create a document first).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     knd = (kind or "").strip().lower()
     if knd in _FORM_KINDS:

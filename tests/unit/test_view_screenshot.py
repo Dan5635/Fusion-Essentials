@@ -4,6 +4,7 @@ The image capture itself needs a live viewport (integration-tested), but the fit
 visibility bookkeeping: find the named occurrence, hide the others, return a restore() that turns
 them back on. That's exactly the bug-prone part (matching + restore), so it gets unit coverage.
 """
+from conftest import install as _install_design
 
 import base64
 import math
@@ -17,6 +18,12 @@ from conftest import (BRepBody, Camera, FakeApplication, FakeFusionDocument, Fak
                       camera_state, install, load_tool, make_design, make_occurrence)
 
 gs = load_tool("view_screenshot")
+
+
+def _install_none(monkeypatch):
+    app = gs.app
+    _install_design(gs, None)
+    monkeypatch.setattr(gs, "app", app)
 
 
 def FakeOcc(path, on=True):
@@ -458,7 +465,7 @@ class TestCaptureSwitchPassThrough:
     @pytest.fixture
     def rig(self, monkeypatch):
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=SimpleNamespace()))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         calls = []
 
         def fake_capture(viewport, width, height, prefix="fe_mcp_shot",
@@ -516,7 +523,7 @@ class TestFitParam:
         monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
         vp = Viewport(camera=Camera(eye=(0.0, -20.0, 0.0), target=(0.0, 0.0, 0.0)))
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "capture_png_b64", lambda *a, **k: ("B64DATA", None))
         return vp
 
@@ -568,7 +575,7 @@ class TestFitToRestoreDisclosure:
     def rig(self, monkeypatch):
         vp = Viewport(camera=Camera())
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "capture_png_b64",
                             lambda *a, **k: ("B64DATA", None))
         monkeypatch.setattr(gs._view_common, "apply_named_view", lambda v, name, fit=False, smooth=False: (None, None))
@@ -775,7 +782,7 @@ class TestCameraRestore:
 
     @pytest.fixture
     def rig(self, monkeypatch):
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "capture_png_b64",
                             lambda *a, **k: ("B64DATA", None))
         return monkeypatch
@@ -908,7 +915,7 @@ class TestStandoffFallbackDisclosure:
     def rig(self, monkeypatch):
         vp = Viewport(camera=Camera())
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "capture_png_b64", lambda *a, **k: ("B64DATA", None))
         return monkeypatch
 
@@ -955,7 +962,7 @@ class TestFilePathWrite:
     def rig(self, monkeypatch):
         vp = Viewport(camera=Camera())
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         oriented = []
         monkeypatch.setattr(gs._view_common, "apply_named_view",
                             lambda v, name, fit=False, smooth=False: (oriented.append(name), None))
@@ -1095,7 +1102,7 @@ class TestHandlerInputGuards:
     def rig(self, monkeypatch):
         vp = Viewport(camera=Camera())
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "apply_named_view", lambda v, name, fit=False, smooth=False: (None, None))
         return monkeypatch
 

@@ -15,6 +15,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, scale
+from ._common import normalize_include as _normalize_include
 from ._assembly_detail import (_MEMBER_CAP, _all_occurrence_rows, _contact_analysis, _contact_rows,
                                _health, _health_fields, _joint_frame, _joint_origin_rows,
                                _limit_facts, _motion_axes, _occ_record, _relation_rows,
@@ -104,14 +105,6 @@ def _joint_record(design, j, inv_k, placements=None):
     return rec
 
 
-def _normalize_include(include):
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
-
-
 def handler(units: str = "mm", include=None, include_joints: bool = True,
             max_occurrences: int = _MAX_OCCURRENCES_DEFAULT,
             max_joints: int = _MAX_JOINTS_DEFAULT,
@@ -130,9 +123,9 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
     if bad:
         return error(f"Unknown include {bad}. Valid: {', '.join(_SLICES)}.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     root = design.rootComponent
     with_poses = "poses" in inc
 

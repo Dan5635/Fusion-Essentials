@@ -54,9 +54,9 @@ def handler(action: str = "status", marker: str = "") -> dict:
     act, aerr = _CAPTURE_ACTION.resolve(action)
     if aerr:
         return error(aerr)
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     snaps = safe(lambda: design.snapshots)
     if snaps is None:
         return error("This design does not expose snapshots (capture position).")

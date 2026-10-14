@@ -5,7 +5,6 @@ reporting, the name-list-vs-comma-string parsing, and that the FeatureOperations
 are set on the CombineInput.
 """
 
-import json
 import types
 
 import adsk.fusion
@@ -118,9 +117,7 @@ def _install(body_names, cf=None, design_type=None, lumps=None):
     return cf
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestGuards:

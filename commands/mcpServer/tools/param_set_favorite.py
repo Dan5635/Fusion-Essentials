@@ -15,9 +15,9 @@ def handler(name: str = "", favorite: bool = True) -> dict:
     name = (name or "").strip()
     if not name:
         return error("Provide 'name'.")
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     p = safe(lambda: design.userParameters.itemByName(name))
     if not p:
         return error(f"No USER parameter named '{name}'.")

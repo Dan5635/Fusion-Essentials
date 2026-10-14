@@ -411,9 +411,9 @@ def handler(split: str = "body", target: str = "", faces=None, split_plane: str 
     if kerr:
         return error(kerr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
     if kind == "along_vector":
         if target or split_plane or split_tool_body:

@@ -239,9 +239,7 @@ def kin_design():
     return _build
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestGuards:
@@ -1335,7 +1333,7 @@ class TestRelationsSlice:
         assert row["joint_one"] == "CrankAxis" and row["joint_two"] is None
 
     def test_a_broken_relation_reports_unhealthy_with_its_message(self, relations_design):
-        relations_design(links=[_link("Bad", health=2, message="Compute Failed")],
+        relations_design(links=[_link("Bad", health=_ERROR, message="Compute Failed")],
                          constraints=[_RelConstraint("AC1", health=1, message="over-constrained")])
         rels = _payload(ap.handler(include=["relations"]))["relations"]
         assert rels["motion_links"][0]["healthy"] is False

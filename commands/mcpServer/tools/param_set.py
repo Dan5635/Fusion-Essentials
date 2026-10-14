@@ -178,9 +178,9 @@ def _rename(name, new_name, expression, create, unit):
     if given:
         return error(f"new_name '{new_name}' only renames '{name}'; it was sent with "
                      f"{', '.join(given)}. Rename in one call and set the value in another.")
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     param = _find_parameter(design, name)
     if not param:
         return error(f"Parameter not found: '{name}'. Use param_get to list them.")
@@ -274,9 +274,9 @@ def handler(name: str = "", expression: str = "", create: bool = False,
     if (expression or "").strip() == "" and expression != "0":
         return error("Provide 'expression' - the new value/expression for the parameter.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     param = _find_parameter(design, name)
     if not param:

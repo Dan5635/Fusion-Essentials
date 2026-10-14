@@ -343,9 +343,9 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
     label = _SOLVER_LABEL[member]
     is_3d = label == "3d"
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     rot_key, rot_err = _ROTATION.resolve(rotation)
     if rot_err:

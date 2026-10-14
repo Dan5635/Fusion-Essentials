@@ -20,23 +20,17 @@ local-only refusal, the asset identity gate, and the two read-backs that decide 
 ``deleteAsset`` true is a delete at all.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import FakeMachine, load_tool
+from conftest import FakeMachine, load_tool, payload as _payload
 
 ccm = load_tool("cam_create_machine")
 cdm = load_tool("cam_delete_machine")
 
 _LOCAL = ccm.adsk.cam.LibraryLocations.LocalLibraryLocation
 _F360 = ccm.adsk.cam.LibraryLocations.Fusion360LibraryLocation
-
-
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
 
 
 def _mach(description="Generic 3-axis", vendor="Autodesk", model="Generic 3-axis Mill",

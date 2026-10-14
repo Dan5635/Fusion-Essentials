@@ -4,7 +4,6 @@
 """Family stamps refuse stale closures and unsupported evidence provenance."""
 
 import copy
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -17,6 +16,7 @@ import verify_core
 import verify_receipts as receipts
 import verify_runner
 import tool_verify
+import machine_config
 
 
 def _lifecycle_observations(census):
@@ -57,7 +57,17 @@ def _lifecycle_observations(census):
 
 
 @pytest.fixture(autouse=True)
-def retained_results(tmp_path, monkeypatch):
+def retained_results(tmp_path, tmp_path_factory, monkeypatch):
+    config = json.loads(machine_config.example_text())
+    config["machine"] = "reference"
+    for group in ("tiers", "allow"):
+        config[group] = {name: True for name in config[group]}
+    config["cloud"] = {"hub": "unit hub", "project": "unit project", "folder": "unit folder"}
+    config_path = tmp_path_factory.mktemp("family-record-config") / "sweep.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv(machine_config.ENV, str(config_path))
+    monkeypatch.setattr(verify_core, "MACHINE", config)
+    monkeypatch.setattr(verify_core, "_MACHINE_READ", machine_config.current())
     monkeypatch.setattr(receipts, "_evidence_directory", lambda directory:
                         Path(directory) if directory is not None else tmp_path / "results")
     real_write = receipts.write_aggregate
@@ -109,10 +119,13 @@ def closures(candidate):
 
 def change(root, path):
     file = root / path
+    content = file.read_bytes()
     if path == "tests/live/verify_predicate.py":
-        file.write_bytes(file.read_bytes().replace(b"== 1", b"== 2"))
+        assert content.count(b"return p['value'] == 1") == 1
+        content = content.replace(b"return p['value'] == 1", b"return p['value'] == 2")
     else:
-        file.write_bytes(file.read_bytes() + b"CHANGED = 1\n")
+        content += b"CHANGED = 1\n"
+    file.write_bytes(content)
 
 
 @pytest.mark.parametrize("path, affected", [
@@ -439,27 +452,33 @@ def test_check_never_falls_back_to_green_legacy_table(monkeypatch, tmp_path):
 
 def test_local_cloud_config_distinguishes_absent_opt_out_from_present_invalid_request(
         monkeypatch, tmp_path):
-    config = tmp_path / "cloud_config.local.json"
-    monkeypatch.setattr(receipts.cloud_config, "CONFIG_PATH", str(config))
-    absent = receipts.declared_scope()
-    assert absent["cloud_tier"] == "off"
-    assert absent["cloud_config_hash"] is None
-    config.write_bytes(b"not json\n")
-    requested = receipts.declared_scope()
-    assert requested == {"cloud_tier": "requested",
-                         "cloud_config_hash": hashlib.sha256(config.read_bytes()).hexdigest(),
-                         "quarantined": [verify_core.CLOUD_LINK_CRASH_REVIEW]}
-    assert receipts.scope_disposition(verify_core.CLOUD_TIER, requested)[0] == "held"
+    path = tmp_path / "explicit-config.json"
+    monkeypatch.setenv(machine_config.ENV, str(path))
+    with pytest.raises(SystemExit, match="not found"):
+        receipts.declared_scope()
+    config = json.loads(machine_config.example_text())
+    path.write_text(json.dumps(config), encoding="utf-8")
+    excluded = receipts.declared_scope()
+    assert excluded["asked"]["cloud_tier"] is False
+    assert excluded["config_hash"] == machine_config.fingerprint(config)
+    path.write_bytes(b"not json\n")
+    with pytest.raises(SystemExit, match="would not read as JSON"):
+        receipts.declared_scope()
+
+
+def _omission_record(scope, capability, polarity, measured, tools, kind="step"):
+    """Build a valid injected omission for later data-level corruption checks."""
+    condition = machine_config.condition(capability, polarity, scope["asked"].get(capability),
+                                         measured, scope["quarantined"])
+    return machine_config.omission("act", kind, tools, [condition])
 
 
 def test_whole_family_held_at_zero_rows_keeps_other_bootstrap_stamp(execution, closure, tmp_path):
-    scopes = {"cloud_tier": "requested", "cloud_config_hash": "a" * 64,
-              "quarantined": [verify_core.CLOUD_LINK_CRASH_REVIEW]}
+    scopes = receipts.declared_scope()
     held = copy.deepcopy(execution)
     held.update(rows=[], producers=[], self_reported=[], independent=[], witnesses=[],
-                scope=scopes, omitted=[{"act": "act", "kind": "act",
-                    "capability": verify_core.CLOUD_TIER, "reason": "active hub did not match",
-                    "tools": ["read_tool", "write_tool"], "state": "held"}])
+                scope=scopes, omitted=[_omission_record(scopes, "unavailable_feature", "needs", False,
+                    ["read_tool", "write_tool"], kind="act")])
     closures = {"cloud": dict(closure, tools=["read_tool", "write_tool"]),
                 "model": dict(closure, tools=["read_tool", "write_tool"])}
     stamps = {"cloud": receipts.make_stamp("cloud", closures["cloud"], held, closures["cloud"])}
@@ -484,12 +503,9 @@ def test_whole_family_held_at_zero_rows_keeps_other_bootstrap_stamp(execution, c
 def test_unless_entitled_control_is_conditional_scope_without_evidence(execution, closure, tmp_path):
     capability = verify_runner.MACHINING_EXTENSION
     run = copy.deepcopy(execution)
-    run.update(scope={"cloud_tier": "requested", "cloud_config_hash": "a" * 64,
-                      "quarantined": [verify_core.CLOUD_LINK_CRASH_REVIEW]},
-               omitted=[{"act": "act", "kind": "step", "capability": capability,
-                         "reason": "extension is entitled; control runs only when absent",
-                         "tools": ["conditional_tool"], "state": "not-applicable",
-                         "polarity": "unless", "observed_verdict": True}])
+    scope = receipts.declared_scope()
+    run.update(scope=scope, omitted=[_omission_record(scope, capability, "unless", True,
+                                                     ["conditional_tool"])])
     stamp = receipts.make_stamp("family", closure, run, closure)
     census = ["conditional_tool", "read_tool", "write_tool"]
     receipt = receipts.write_aggregate(tmp_path / "families.json", {"family": stamp},
@@ -505,42 +521,43 @@ def test_unless_entitled_control_is_conditional_scope_without_evidence(execution
 def test_unless_not_applicable_requires_positive_entitlement(execution, closure, verdict):
     capability = verify_runner.MACHINING_EXTENSION
     run = copy.deepcopy(execution)
-    run.update(scope={"cloud_tier": "requested", "cloud_config_hash": "a" * 64,
-                      "quarantined": [verify_core.CLOUD_LINK_CRASH_REVIEW]},
-               omitted=[{"act": "act", "kind": "step", "capability": capability,
-                         "reason": "invalid conditional skip", "tools": ["write_tool"],
-                         "state": "not-applicable", "polarity": "unless",
-                         "observed_verdict": verdict}])
-    with pytest.raises(ValueError, match="conditional omission"):
+    scope = receipts.declared_scope()
+    omitted = _omission_record(scope, capability, "unless", True, ["write_tool"])
+    omitted["conditions"][0]["measured"] = verdict
+    run.update(scope=scope, omitted=[omitted])
+    with pytest.raises(ValueError, match="omission disagrees with declared scope"):
         receipts.make_stamp("family", closure, run, closure)
 
 
-def test_requested_needs_omission_with_entitlement_is_invalid(execution, closure):
+def test_needs_omission_with_positive_observation_is_invalid(execution, closure):
     run = copy.deepcopy(execution)
-    run.update(scope={"cloud_tier": "requested", "cloud_config_hash": "a" * 64,
-                      "quarantined": [verify_core.CLOUD_LINK_CRASH_REVIEW]},
-               omitted=[{"act": "act", "kind": "step", "capability": verify_runner.MACHINING_EXTENSION,
-                         "reason": "invalid Needs omission", "tools": ["write_tool"],
-                         "state": "held", "polarity": "needs", "observed_verdict": True}])
-    with pytest.raises(ValueError, match="conditional omission"):
+    scope = receipts.declared_scope()
+    omitted = _omission_record(scope, "unavailable_feature", "needs", False, ["write_tool"])
+    omitted["conditions"][0]["measured"] = True
+    run.update(scope=scope, omitted=[omitted])
+    with pytest.raises(ValueError, match="omission disagrees with declared scope"):
         receipts.make_stamp("family", closure, run, closure)
 
 
 def test_not_in_scope_is_omission_only_and_clone_check_uses_recorded_scope(
         execution, closure, tmp_path, monkeypatch):
-    scope = {"cloud_tier": "off", "cloud_config_hash": None,
-             "quarantined": [verify_core.CLOUD_LINK_CRASH_REVIEW]}
+    config_path = Path(machine_config.config_path()[0])
+    full_config = json.loads(config_path.read_text(encoding="utf-8"))
+    excluded_config = copy.deepcopy(full_config)
+    excluded_config["tiers"]["cloud"] = False
+    config_path.write_text(json.dumps(excluded_config), encoding="utf-8")
+    scope = receipts.declared_scope()
+    omission = _omission_record(scope, verify_core.CLOUD_TIER, "needs", None,
+                                ["read_tool", "write_tool"], kind="act")
     out = copy.deepcopy(execution)
     out.update(rows=[], producers=[], self_reported=[], independent=[], witnesses=[], scope=scope,
-               omitted=[{"act": "act", "kind": "act", "capability": verify_core.CLOUD_TIER,
-                         "reason": "cloud tier is opt-in; local config is absent",
-                         "tools": ["read_tool", "write_tool"], "state": "not-in-scope"}])
+               omitted=[omission])
     closures = {"cloud": dict(closure, tools=["read_tool", "write_tool"]),
                 "model": dict(closure, tools=["read_tool", "write_tool"])}
-    out["act_modes"] = [["act", "skipped(cloud tier is opt-in; local config is absent)"]]
+    out["act_modes"] = [["act", "skipped(cloud prerequisite explicitly excluded)"]]
     omitted = receipts.make_stamp("cloud", closures["cloud"], out, closures["cloud"])
     assert omitted == {"family": "cloud", "state": "not-in-scope", "scope": scope,
-                       "acts": ["act"], "act_modes": [["act", "skipped(cloud tier is opt-in; local config is absent)"]],
+                       "acts": ["act"], "act_modes": out["act_modes"],
                        "omitted": out["omitted"]}
     active = copy.deepcopy(execution)
     active.update(scope=scope)
@@ -555,8 +572,8 @@ def test_not_in_scope_is_omission_only_and_clone_check_uses_recorded_scope(
         receipt["bootstrap"]["raw"], tmp_path / "results")["stamps"]
     assert receipt["bootstrap"]["executed_families"] == ["model"]
     assert receipts.aggregate_modes(receipt, closures) == [
-        ("act", "skipped(cloud tier is opt-in; local config is absent)"), ("act", "narrative")]
-    monkeypatch.setattr(receipts.cloud_config, "CONFIG_PATH", str(tmp_path / "missing-clone-config.json"))
+        ("act", "skipped(cloud prerequisite explicitly excluded)"), ("act", "narrative")]
+    monkeypatch.setenv(machine_config.ENV, str(tmp_path / "missing-clone-config.json"))
     monkeypatch.setattr(verify_runner, "FAMILY_RECEIPT", str(path))
     monkeypatch.setattr(verify_runner, "receipt_closures", lambda: closures)
     monkeypatch.setattr(receipts, "tool_census", lambda _root: census)
@@ -571,13 +588,22 @@ def test_not_in_scope_is_omission_only_and_clone_check_uses_recorded_scope(
     with pytest.raises(ValueError, match="not full admitted scope"):
         receipts.validate_aggregate(receipt, closures, census, full_scope=True,
                                     evidence_dir=tmp_path / "empty-clone-results")
+    config_path.write_text(json.dumps(full_config), encoding="utf-8")
+    monkeypatch.setenv(machine_config.ENV, str(config_path))
+    full_scope = receipts.declared_scope()
     admitted = copy.deepcopy(execution)
-    admitted.update(run_id="refresh-run", family_run_id="cloud-execution", scope={
-        "cloud_tier": "requested", "cloud_config_hash": "b" * 64,
-        "quarantined": [verify_core.CLOUD_LINK_CRASH_REVIEW]}, omitted=[])
+    admitted.update(run_id="refresh-run", family_run_id="cloud-execution", scope=full_scope, omitted=[])
     refreshed = receipts.make_stamp("cloud", closures["cloud"], admitted, closures["cloud"])
-    aggregate = receipts.write_aggregate(path, {"cloud": refreshed}, closures, census,
-                                         "refresh-run", evidence_dir=tmp_path / "refresh-results")
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="mixes machine/configuration/scope"):
+        receipts.write_aggregate(path, {"cloud": refreshed}, closures, census,
+                                 "refresh-run", evidence_dir=tmp_path / "refresh-results")
+    assert path.read_bytes() == before
+    model_run = copy.deepcopy(admitted)
+    model_run["family_run_id"] = "model-execution"
+    model = receipts.make_stamp("model", closures["model"], model_run, closures["model"])
+    aggregate = receipts.write_aggregate(path, {"cloud": refreshed, "model": model}, closures, census,
+                                         "refresh-run", full=True, evidence_dir=tmp_path / "refresh-results")
     assert "cloud" not in aggregate["not_in_scope"]
     assert aggregate["families"]["cloud"]["run_id"] == "refresh-run"
     assert receipts.validate_aggregate(aggregate, closures, census, full_scope=True,
@@ -745,7 +771,7 @@ def test_reload_coverage_requires_current_lifecycle_and_failed_replacement_keeps
     before = path.read_bytes()
     execution["run_id"], execution["family_run_id"] = "refresh-run", "refresh-family"
     refreshed = receipts.make_stamp("alpha", closures["alpha"], execution, closures["alpha"])
-    with pytest.raises(ValueError, match="lifecycle"):
+    with pytest.raises(ValueError, match="lifecycle|provenance"):
         receipts.write_aggregate(path, {"alpha": refreshed}, closures,
                                  ["sys_reload_addin"], "refresh-run",
                                  lifecycle={"run_id": "refresh-run"})

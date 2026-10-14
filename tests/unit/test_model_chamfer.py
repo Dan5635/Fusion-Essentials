@@ -1,4 +1,6 @@
 """Unit tests for model_chamfer.py - the three chamfer definitions and their read-backs."""
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
 
 import math
 import pytest
@@ -145,7 +147,7 @@ class FakeCountingFeature:
     # feature is reading a constant, not the chamfer's setting.
     FEATURE_FLAG = True
 
-    def __init__(self, name, faces, health=0, message="", tangent=None, cut_edges=None):
+    def __init__(self, name, faces, health=_HEALTHY, message="", tangent=None, cut_edges=None):
         self.name = name
         self.faces = _NamedCollection([None] * faces)
         self.healthState = health

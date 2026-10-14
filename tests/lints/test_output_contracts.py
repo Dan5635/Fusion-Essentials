@@ -3,6 +3,7 @@
 Each declared output's payload KEY appears in the tool's source, its PRODUCES: block appears in the
 description, and each RETURNS entry is an OutputKind. Every tools/*.py with a RETURNS is checked."""
 
+import ast
 import os
 
 import _corpus
@@ -62,3 +63,30 @@ class TestDeclaredOutputs:
                 if f"{o.key}{who}" not in blob:
                     offenders.append(f"{name}: Produces entry for '{o.key}' not in any description")
         assert not offenders, "\n".join(offenders)
+
+
+def _hand_built_error_envelopes():
+    """Return tool-source dict literals that bind the response contract's isError field."""
+    offenders = []
+    checked = 0
+    for fn in sorted(os.listdir(TOOLS_DIR)):
+        if not fn.endswith(".py") or fn == "_common.py":
+            continue
+        path = os.path.join(TOOLS_DIR, fn)
+        for node in ast.walk(_corpus.tree(path)):
+            if not isinstance(node, ast.Dict):
+                continue
+            checked += 1
+            if any(isinstance(key, ast.Constant) and key.value == "isError"
+                   for key in node.keys):
+                offenders.append(f"{fn}:{node.lineno}")
+    return offenders, checked
+
+
+class TestResponseEnvelopeHasOneHome:
+    def test_tools_do_not_hand_build_is_error_dicts(self):
+        offenders, checked = _hand_built_error_envelopes()
+        assert checked, "nothing was checked: no tool dict literal was found"
+        assert not offenders, (
+            "hand-built response envelope - call _common.ok(...) or _common.error(...) so the "
+            "isError/content/message contract stays one home:\n  " + "\n  ".join(offenders))

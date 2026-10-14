@@ -71,9 +71,9 @@ def _census(design, host, kind, label):
 
 def handler(body: str = "", occurrence: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     good_mode, mode_err = _MODE_GUARD.check(design)
     if not good_mode:
         return mode_err

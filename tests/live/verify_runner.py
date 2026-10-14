@@ -36,12 +36,15 @@ if hasattr(sys.stdout, "reconfigure"):
 from verify_core import (
     NOTE_MAX, REFUSAL_NOTE_MAX, REPO_ROOT, SRC_ROOT, STEP_SLEEP_S, VERIFIED, _HERE, _RECALL,
     _Refusal, _leaves_no_row, _unparked, capability_met,
-    capability_skip_reason, facade, gate_allows, gate_skip_reason, parked_reason, predicate_kind,
-    probe_capabilities, step_capability, step_runs_unentitled, independent_targets, independent_witness)
+    facade, gate_allows, gate_skip_reason, parked_reason, predicate_kind,
+    probe_capabilities, step_capability, step_runs_unentitled, independent_targets, independent_witness,
+    step_conditions, gate_decision, Needs, require_machine, step_script_declaration)
 from verify_families import family_names, fixture_steps, ordered_acts
-from verify_acts_cam import MACHINING_EXTENSION, _MX_SETUP, _SW_SETUP, _SW_SETUP2
+from verify_acts_cam import CAM_SETUP, MACHINING_EXTENSION, _MX_SETUP, _SW_SETUP, _SW_SETUP2
 import verify_receipts
 import cloud_config
+import machine_config
+import preflight
 
 
 # tests/live also holds harnesses the sweep never imports - they measure API facts and drive the
@@ -50,7 +53,9 @@ import cloud_config
 _NOT_THE_SWEEP = ("measure_api.py", "drawing_verify.py")
 _ATTESTATION_TCB = ("Fusion-Essentials.py", "lib/loaded_attestation.py")
 _SERVED_ASSETS = ("guidance/parametric_cad_design.json",)
-FAMILY_RECEIPT = os.path.join(_HERE, "VERIFIED_FAMILIES.json")
+_MACHINE = machine_config.current()[0]
+_RECORD_ROOT = machine_config.record_root(_MACHINE) if _MACHINE else _HERE
+FAMILY_RECEIPT = os.path.join(_RECORD_ROOT, "VERIFIED_FAMILIES.json")
 
 
 def receipt_closures():
@@ -108,6 +113,7 @@ _LOADED_RE = re.compile(
 def write_verified(ledger, fusion_version, stamp_date, src_hash, path=None, notes=None,
                    act_modes=None, attestation=None, family_runs=None, aggregate_current=None):
     """Write the tool table with candidate identity, accounting and family run provenance."""
+    scope = machine_config.record_scope(require_machine())
     if not isinstance(attestation, dict) or not all(
             isinstance(attestation.get(key), str) and attestation[key]
             for key in ("implementation_fingerprint", "schema_fingerprint", "load_id",
@@ -159,6 +165,8 @@ def write_verified(ledger, fusion_version, stamp_date, src_hash, path=None, note
             "rejects source changes. Only a run with zero FAIL/blocked/pass* steps rewrites this file."]),
         "",
         "Stamp: source {0} | Fusion {1} | verified {2}".format(src_hash, fusion_version, stamp_date),
+        "Machine: {machine} | OS: {os} | checkout: {checkout}".format(**scope),
+        "Configuration: " + scope["config_hash"] + " | choices: " + json.dumps(scope["asked"], sort_keys=True),
         "Loaded: implementation {0} | schema {1} | load {2} | session {3}".format(
             attestation["implementation_fingerprint"], attestation["schema_fingerprint"],
             attestation["load_id"], attestation["session_id"]),
@@ -189,7 +197,9 @@ def write_verified(ledger, fusion_version, stamp_date, src_hash, path=None, note
     for tool, status in ledger:
         lines.append("| {0} | {1} | {2} |".format(
             tool, status.replace("|", "/"), notes.get(tool, "").replace("|", "/")))
-    with open(path or VERIFIED, "w", encoding="utf-8", newline="\n") as fh:
+    destination = path or VERIFIED
+    os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+    with open(destination, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
     return path or VERIFIED
 
@@ -254,7 +264,7 @@ def check(root=None, verified_path=None, attestation=None, full_scope=False):
     return 0
 
 
-RESULTS_DIR = os.path.join(_HERE, "results")
+RESULTS_DIR = os.path.join(_RECORD_ROOT, "results")
 
 
 def run_state_path(run_id):
@@ -428,7 +438,8 @@ def _home_now(home, allow_inactive=False):
                 "__HOME_TARGET__", "app.documents.item(%d)" % indexed[handle] if inactive
                 else "app.activeDocument")
         bad, native = call("sys_execute_script", {
-            "script": script, "read_only": True, "expect_document": active_handle})
+            "script": script, "read_only": True, "expect_document": active_handle},
+            script_declaration=machine_config.effect_declaration(script, []))
         if bad or not isinstance(native, dict):
             return None, "strict home observer unavailable or refused: " + str(native)[:180]
         bad, payload = call("doc_get", {"max_results": 1000})
@@ -844,6 +855,7 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
             time.sleep(step[1]["seconds"])
             continue
         tool, args, expect, save = step
+        script_declaration = step_script_declaration(expect)
         expect = _unparked(expect)
         deliberate_refusal = isinstance(expect, _Refusal) or expect == "refused"
         try:
@@ -974,7 +986,11 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
             if tool == "data_get_upload_status":
                 is_error, payload, calls = _settle_upload_status(call, arguments)
             else:
-                is_error, payload = call(tool, arguments)
+                if script_declaration is not None:
+                    machine_config.declared_effects(tool, arguments, script_declaration)
+                    is_error, payload = call(tool, arguments, script_declaration=script_declaration)
+                else:
+                    is_error, payload = call(tool, arguments)
                 calls = 1
         except Exception as exc:
             if not stop_on_failure or not document_pin.get("track_continuation"):
@@ -1200,8 +1216,11 @@ def select_acts(acts, spec):
 
 
 def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None,
-        run_id=None, resume=False, families_spec=None, continue_families=False):
+        run_id=None, resume=False, families_spec=None, continue_families=False,
+        accept_open_work=False, batch_records=None):
     """Run owned document families and stamp only an unselected complete candidate."""
+    config = require_machine()
+    chosen_batches = [] if batch_records is None else batch_records
     # The wire reads, the act program and the ledger tables as the FACADE holds them at the moment
     # the run starts - see verify_core.facade for why they are not this module's own globals.
     health_gate, registered_tools = facade("health_gate"), facade("registered_tools")
@@ -1209,6 +1228,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     source_hash, write_verified = facade("source_hash"), facade("write_verified")
     poll_generation, reload_smoke = facade("poll_generation"), facade("reload_smoke")
     family_switch_smoke = facade("family_switch_smoke")
+    poll_render_job = facade("poll_render_job")
     ACTS, POLL_AFTER, STORY, EXCLUDED = (facade("ACTS"), facade("POLL_AFTER"), facade("STORY"),
                                          facade("EXCLUDED"))
     ACT_NEEDS = facade("ACT_NEEDS")
@@ -1289,6 +1309,9 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         return 1
     # This run is bound to one working-tree snapshot; this does not identify loaded Fusion code.
     pinned_source_hash = source_hash()
+    if state is not None and state.get("machine_scope") != machine_config.record_scope(config):
+        print("resume refused: machine, endpoint, destination, tiers or permissions changed")
+        return 1
     # A run id that already holds state is CONTINUED, never restarted over: starting it again
     # would run the acts with an empty ctx (every saved value gone) and rewrite its progress.
     if run_id and not resume and not develop and load_run_state(run_id) is not None:
@@ -1329,6 +1352,145 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             print("resuming run {0}: {1} act(s) already done".format(
                 run_id, len(state.get("acts_done") or [])))
     all_tools, registry_rows = registered_tools(health, include_rows=True)
+    from verify_program import cache_baseline_plan
+    potential_names = []
+    for name, _pre, _narrative, _fallback in ACTS:
+        if selected is not None and name not in selected:
+            continue
+        cap = ACT_NEEDS.get(name)
+        caps = cap if isinstance(cap, tuple) else (cap,) if cap is not None else ()
+        if not any(machine_config.asked(config).get(value) is False
+                   or value == "cloud_link_crash_review_authorization" for value in caps):
+            potential_names.append(name)
+    # Potential support of these selected modes; injected hooks declare their own routes.
+    selected_tools = preflight.required_tools(
+        config, (step for name, _pre, narrative, fallback in ACTS if name in potential_names
+                 for step in list(narrative) + list(fallback or ())), step_conditions)
+    registered_guards = {row["name"] for row in registry_rows
+                         if (row.get("annotations") or {}).get("readOnlyHint") is not True
+                       and "expect_document" in ((row.get("inputSchema") or {}).get("properties") or {})}
+    support_routes = []
+    if family_mode or registered_guards or (run_id and resume):
+        support_routes.append(("document-pin/census", ("doc_get", "design_get"), "ok"))
+    cleanup_families = {families[name] for name in potential_names if name in families}
+    if ((family_mode and (not keep_open or len(cleanup_families) > 1))
+            or (not family_mode and not keep_open and selected_tools & {
+                "doc_new", "doc_open", "doc_activate", "doc_close", "sys_execute_script"})):
+        support_routes.append(("cleanup/home-restore", ("doc_get", "doc_close", "doc_activate"), "ok"))
+    if family_mode:
+        support_routes.append(("strict-home-observer", ("sys_execute_script",),
+                               Needs("native_script")))
+    capabilities = {cap for name, _pre, narrative, fallback in ACTS if name in potential_names
+                    for step in list(narrative) + list(fallback or ())
+                    for cap, _polarity in step_conditions(step[2])}
+    for name in potential_names:
+        cap = ACT_NEEDS.get(name)
+        capabilities.update(cap if isinstance(cap, tuple) else (cap,) if cap is not None else ())
+    if receipt_mode or MACHINING_EXTENSION in capabilities or any(
+            families.get(name) == "part_cam" and name.startswith("ACT 10e")
+            for name in potential_names):
+        support_routes.append(("build/entitlement-observer", ("workspace_orient",), "ok"))
+    generation_requested = (any(name in POLL_AFTER for name in potential_names) or
+                            any(name.startswith(("ACT 10e", "ACT 10c15"))
+                                for name in potential_names))
+    if generation_requested:
+        from verify_acts_cam import poll_generation as baseline_poll_generation
+        if poll_generation is baseline_poll_generation:
+            support_routes.append(("generation-polls", ("cam_get_status",), "ok"))
+            poll_targets = set()
+            for poll_name in potential_names:
+                for lane in ("narrative", "fallback"):
+                    targets = POLL_AFTER.get(poll_name, {}).get(lane, ())
+                    poll_targets.update((targets,) if isinstance(targets, str) else targets)
+            if CAM_SETUP in poll_targets:
+                support_routes.append(("post-generation-folder-workflow",
+                                       ("cam_get", "cam_edit_operation", "cam_edit_folders", "cam_delete",
+                                        "cam_get_status"), "ok"))
+            if poll_targets & {CAM_SETUP, "Setup1"}:
+                support_routes.append(("post-generation-identity",
+                                       ("cam_get", "cam_edit_operation", "cam_generate", "cam_get_status",
+                                        "cam_inspect_toolpaths"), "ok"))
+        else:
+            declared = getattr(poll_generation, "support_routes", None)
+            if declared is None:
+                print("run refused: injected generation hook has no support declaration")
+                return 1
+            support_routes.extend(declared)
+    if any(name.startswith("ACT 15 - RENDER: LOCAL ") for name in potential_names):
+        from verify_acts_render import poll_render_job as baseline_poll_render_job
+        if poll_render_job is baseline_poll_render_job:
+            support_routes.append(("render-polls", ("render_get",), "ok"))
+        else:
+            declared = getattr(poll_render_job, "support_routes", None)
+            if declared is None:
+                print("run refused: injected render hook has no support declaration")
+                return 1
+            support_routes.extend(declared)
+    if cloud_selected:
+        support_routes.append(("cloud-destination/upload", ("data_get", "data_create_folder",
+                                                           "data_get_upload_status"), Needs("cloud_tier")))
+    if shots_dir:
+        support_routes.append(("requested-current-view-shots", ("view_screenshot",), "ok"))
+    if not develop and (selected is None or receipt_selection is not None):
+        from verify_acts_doc import reload_smoke as baseline_reload_smoke
+        from verify_family_switch import family_switch_smoke as baseline_family_switch
+        if reload_smoke is baseline_reload_smoke:
+            support_routes.append((
+                "reload-smoke", ("sys_reload_addin", "doc_get", "doc_new", "doc_close", "doc_activate",
+                                 "param_add", "param_get", "param_delete", "view_switch_workspace",
+                                 "workspace_orient", "sys_find_tool", "sys_capability_map"),
+                Needs("addin_reload")))
+        else:
+            declared = getattr(reload_smoke, "support_routes", None)
+            if declared is None:
+                print("run refused: injected reload hook has no support declaration")
+                return 1
+            support_routes.extend(declared)
+        if family_switch_smoke is baseline_family_switch:
+            support_routes.append(("family-switch", ("sys_reload_addin", "sys_set_preferences",
+                                                       "sys_capability_map"),
+                                   Needs(("addin_reload", "preference_writes"))))
+        else:
+            declared = getattr(family_switch_smoke, "support_routes", None)
+            if declared is None:
+                print("run refused: injected family-switch hook has no support declaration")
+                return 1
+            support_routes.extend(declared)
+    conditional_plan = cache_baseline_plan(
+        ACTS, families, fixture_steps, selected, potential_names, support_routes)
+    ACTS = conditional_plan["acts"]
+    needed = preflight.required_tools(
+        config, conditional_plan["potential_rows"], step_conditions,
+        support_routes=conditional_plan["support_routes"])
+    failed_docs, admission_docs = facade("call")("doc_get", {"max_results": 1000})
+    failed_prefs, admission_prefs = facade("call")("sys_get_preferences", {"include": preflight.PREFERENCE_GROUPS})
+    try:
+        owned_handles = preflight.owned_handles(state)
+    except ValueError as exc:
+        print("resume admission refused: " + str(exc))
+        return 1
+    admission_problems = preflight.problems(
+        config, health, all_tools, needed, None if failed_docs else admission_docs,
+        None if failed_prefs else admission_prefs, accept_open_work, owned_handles,
+        home_observer_required=family_mode)
+    if admission_problems:
+        print("sweep admission refused before its first write: " + "; ".join(admission_problems))
+        return 1
+    extension_observed = None
+    if config["tiers"]["machining_extension"]:
+        extension_observed = probe_capabilities([MACHINING_EXTENSION]).get(MACHINING_EXTENSION)
+        if extension_observed is not True:
+            print("requested machining_extension is unavailable or unreadable before the first write; "
+                  "the existing probe needs an unmodified active document and every sentinel flag true")
+            return 1
+    if config["tiers"]["cloud"]:
+        try:
+            cloud_config.read_destination_project(facade("call"), config["cloud"])
+        except cloud_config.DestinationError as exc:
+            print("requested cloud tier refused before the first write: " + str(exc))
+            return 1
+    for note in preflight.permission_notes(config):
+        print(note)
     read_tools = {row["name"] for row in registry_rows
                   if (row.get("annotations") or {}).get("readOnlyHint") is True}
     guarded_tools = frozenset(
@@ -1345,17 +1507,21 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     # its own probe. An unmet capability routes its acts and steps to the receipt's
     # skipped(<capability> not entitled) bucket rather than running them into the refusal an
     # unentitled installation would answer with.
-    entitlements = {}
+    entitlements = {"native_script": "sys_execute_script" in all_tools}
+    if extension_observed is not None:
+        entitlements[MACHINING_EXTENSION] = extension_observed
 
     def met(capability):
         """capability_met, taking the capability's own probe the first time it is asked for - workspace_orient errors with no document open."""
+        if isinstance(capability, tuple):
+            return all([met(name) for name in capability])
         if capability is not None and capability not in entitlements:
             entitlements.update(probe_capabilities([capability]))
             state = entitlements[capability]
             print("capability {0}: {1}".format(
                 capability, "entitled" if state is True
-                else ("NOT entitled" if state is False else "unreadable (routed as not entitled)")))
-        return capability_met(entitlements, capability)
+                else ("NOT entitled" if state is False else "unreadable")))
+        return gate_allows(entitlements, Needs(capability)) if capability is not None else True
 
     # Everything a later chunk needs is seeded from the saved state, so the acts below cannot tell
     # whether the ones before them ran in this process or the last one.
@@ -1504,7 +1670,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             "family_state_version": 1 if family_mode else None,
             "receipt_run_id": receipt_run_id, "family_executions": executions,
             "cloud_destination": cloud_config.destination_snapshot(),
-            "recorded_scope": recorded_scope,
+            "recorded_scope": recorded_scope, "machine_scope": machine_config.record_scope(config),
             "initial_census": initial_census,
             "family": current_family, "family_events": family_events,
             "failed_families": [family for family, outcome in family_outcomes.items()
@@ -1521,17 +1687,16 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         return True
 
     def omit_work(family, act, kind, capability, reason, tools, expect=None, observed_verdict=None):
-        """Record unavailable or deliberately omitted work without adding execution evidence."""
-        state, declared_reason = verify_receipts.scope_disposition(capability, recorded_scope)
-        row = {
-            "act": act, "kind": kind, "capability": capability,
-            "reason": declared_reason or reason, "tools": sorted(set(tools)), "state": state}
-        if kind in {"step", "fixture"} and state == "held":
-            row["polarity"] = "unless" if step_runs_unentitled(expect) else "needs"
-            row["observed_verdict"] = observed_verdict
-            if row["polarity"] == "unless" and observed_verdict is True:
-                row["state"] = "not-applicable"
-        executions[family]["omitted"].append(row)
+        """Retain every declared/observed gate while assigning no execution credit to omitted work."""
+        decision = gate_decision(entitlements, expect if expect is not None else Needs(capability))
+        executions[family]["omitted"].append(machine_config.omission(
+            act, kind, tools, decision["conditions"]))
+
+    def observe_conditions(expect):
+        """Probe every gate without borrowing another gate's polarity or permission."""
+        for capability, _polarity in step_conditions(expect):
+            if capability not in entitlements:
+                entitlements.update(probe_capabilities([capability]))
 
     def poll_evidence(family, made, poll_values):
         """Credit only predicate values emitted by this family's successful poll rows."""
@@ -1540,17 +1705,60 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         executions[family]["rows"] += [list(row) for row in made]
         valued.update(poll_values)
 
+    potential_row_ids = {id(step) for step in conditional_plan["potential_rows"]}
+
+    def admit_batch(batch, phase, original, planned=False):
+        """Check the concrete chosen row objects before argument resolution, and retain their indices."""
+        batch = tuple(batch)
+        indices, cursor = [], 0
+        for step in batch:
+            while cursor < len(original) and original[cursor] is not step:
+                cursor += 1
+            indices.append(cursor if cursor < len(original) else None)
+            cursor += 1
+        record = {"phase": phase, "tools": [step[0] for step in batch],
+                  "source_indices": indices,
+                  "status": "blocked"}
+        chosen_batches.append(record)
+        if (any(index is None for index in record["source_indices"])
+                or (planned and any(id(step) not in potential_row_ids for step in batch))):
+            record["problem"] = "chosen batch substituted a row outside its cached source"
+            raise ValueError(record["problem"])
+        missing = preflight.required_tools(config, batch, step_conditions) - set(all_tools)
+        if missing:
+            record["problem"] = "chosen batch tools not registered: " + ", ".join(sorted(missing))
+            raise ValueError(record["problem"])
+        record["status"] = "admitted"
+        return batch
+
     def fixture(rows_to_run, family, phase):
         """Run a local producer separately from the original judged-row ledger."""
         nonlocal last_fixture_rows
         phase_started = time.perf_counter()
         for step in judged_steps(rows_to_run):
-            met(step_capability(step[2]))
+            observe_conditions(step[2])
             if receipt_mode and family in executions and not gate_allows(entitlements, step[2]):
                 omit_work(family, name, "fixture", step_capability(step[2]),
                           gate_skip_reason(entitlements, step[2]), [step[0]], step[2],
                           entitlements.get(step_capability(step[2])))
-        allowed = [step for step in rows_to_run if gate_allows(entitlements, step[2])]
+        cached = (conditional_plan["initial"][family] if phase == "setup" else
+                  conditional_plan["opening"][family] if phase == "open" else
+                  conditional_plan["workspace"][family] if phase == "workspace" else
+                  conditional_plan["before"][name][fixture_entitled]
+                  if phase == "before " + name else None)
+        try:
+            if cached is not None and rows_to_run is not cached:
+                chosen_batches.append({"phase": family + " " + phase, "status": "blocked",
+                                       "problem": "producer batch differs from its admitted cache"})
+                raise ValueError("producer batch differs from its admitted cache")
+            allowed = admit_batch(
+                [step for step in rows_to_run if gate_allows(entitlements, step[2])],
+                family + " " + phase, rows_to_run, planned=cached is not None)
+        except ValueError as exc:
+            last_fixture_rows = [("admission", "blocked", str(exc))]
+            family_events.append({"family": family, "phase": phase,
+                                  "steps": [list(row) for row in last_fixture_rows]})
+            return False
         made = run_steps(allowed, ctx, trace=trace, timings=timings, shots_dir=shots_dir,
                          act=family + " " + phase, document_pin=document_pin,
                          guarded_tools=guarded_tools | {"doc_new", "doc_open", "doc_close",
@@ -1860,20 +2068,19 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                 if exercise_started:
                     if family not in ("sketch", "sheet_coupon",
                                       "sheet_positions", "sheet_flange") and not fixture(
-                            [("doc_new", {}, "ok", None)], family, "open"):
+                            conditional_plan["opening"][family], family, "open"):
                         if continue_families and continue_after_failure(name, last_fixture_rows):
                             continue
                         stopped = True
                         break
                     if family not in ("sketch", "sheet_coupon",
                                       "sheet_positions", "sheet_flange"):
-                        if not fixture([("view_switch_workspace", {"workspace": "design"},
-                                         "ok", None)], family, "workspace"):
+                        if not fixture(conditional_plan["workspace"][family], family, "workspace"):
                             if continue_families and continue_after_failure(name, last_fixture_rows):
                                 continue
                             stopped = True
                             break
-                    if not fixture(fixture_steps(family), family, "setup"):
+                    if not fixture(conditional_plan["initial"][family], family, "setup"):
                         if continue_families and continue_after_failure(name, last_fixture_rows):
                             continue
                         stopped = True
@@ -1881,7 +2088,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             fixture_entitled = (met(MACHINING_EXTENSION)
                                 if family == "part_cam" and name.startswith("ACT 10e")
                                 else met(ACT_NEEDS.get(name)))
-            before = fixture_steps(family, before_act=name, entitled=fixture_entitled)
+            before = conditional_plan["before"][name][fixture_entitled]
             if before and met(ACT_NEEDS.get(name)) and not fixture(before, family, "before " + name):
                 if continue_families and continue_after_failure(name, last_fixture_rows):
                     continue
@@ -1895,7 +2102,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         # cost a wire call to decide between two lanes neither of which may run.
         act_cap = ACT_NEEDS.get(name)
         if not met(act_cap):
-            reason = capability_skip_reason(act_cap, entitlements)
+            reason = gate_skip_reason(entitlements, Needs(act_cap))
             act_modes.append((name, "skipped(" + reason + ")"))
             if receipt_mode:
                 executions[current_family]["act_modes"].append([name, "skipped(" + reason + ")"])
@@ -1940,12 +2147,13 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             executions[current_family]["act_modes"].append([name, mode])
         print(f"\n-- {name} [{mode}] --")
         act_started = time.time()
+        selected_lane = steps
         if keep_open and name == "FINALE":
             steps = [s for s in steps if s[0] != "doc_close"]
         # ...then the per-STEP half of the same tier: the unmet rows are dropped BEFORE the step
         # engine, so the by-position pairing between judged_steps and its rows is untouched.
         for step in judged_steps(steps):
-            met(step_capability(step[2]))          # the probe, taken once per capability
+            observe_conditions(step[2])
             if not gate_allows(entitlements, step[2]):
                 gated.setdefault(step[0], gate_skip_reason(entitlements, step[2]))
                 if receipt_mode:
@@ -1955,6 +2163,12 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         steps = [s for s in steps if gate_allows(entitlements, s[2])]
         # judged_steps, not the act's raw list, is what pairs with the rows below - see its
         # docstring for what a dwell does to the pairing.
+        try:
+            steps = admit_batch(steps, name + " " + mode, selected_lane, planned=True)
+        except ValueError as exc:
+            rows.append(("admission", "blocked", str(exc)))
+            stopped = True
+            break
         narrative_started = time.perf_counter()
         act_rows = run_steps(
             steps, ctx, trace=trace, timings=timings, shots_dir=shots_dir, act=name,
@@ -2011,7 +2225,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             render_started = time.perf_counter()
             poll_start = len(rows)
             poll_values = set() if receipt_mode else valued
-            facade("poll_render_job")(rows, notes, ctx.get("render_job"), valued=poll_values)
+            poll_render_job(rows, notes, ctx.get("render_job"), valued=poll_values)
             if receipt_mode:
                 poll_evidence(current_family, rows[poll_start:], poll_values)
             if family_mode:
@@ -2191,13 +2405,19 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     # THE FAMILY SWITCH BEAT first: it reloads twice and ends on a new load of the same build,
     # so the identity it returns is the one the reload beat starts from (family_switch_smoke).
     switched_attestation = None
-    if complete and not pre_reload_failures:
+    lifecycle_evidence = None
+    reload_allowed = config["allow"]["addin_reload"]
+    switch_allowed = reload_allowed and config["allow"]["preference_writes"]
+    if complete and not pre_reload_failures and switch_allowed:
         switched_attestation = family_switch_smoke(
             rows, pinned_attestation, all_tools, valued=valued)
         if switched_attestation is None:
             print("run refused: the family switch beat did not end on the starting tools")
             stopped, complete = True, False
-    if switched_attestation is not None:
+    if complete and not pre_reload_failures and not switch_allowed:
+        switched_attestation = pinned_attestation
+        print("family switch beat not-in-scope: explicit preference/reload permission is off")
+    if switched_attestation is not None and reload_allowed:
         lifecycle_evidence = {} if receipt_mode else None
         reloaded = reload_smoke(rows, notes, valued=valued,
                                 expected_attestation=switched_attestation,
@@ -2212,6 +2432,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         if not develop and source_hash() != pinned_source_hash:
             print("run refused: source changed during reload; no receipt written")
             stopped, complete = True, False
+    if complete and not pre_reload_failures and not reload_allowed:
+        gated["sys_reload_addin"] = "not-in-scope: allow.addin_reload is false; no reload attempted"
     if keep_open:
         print("\n--keep-open: the story document is left open for inspection.")
 
@@ -2237,12 +2459,10 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         elif tool in refused_only:
             ledger.append((tool, "refusals-only: every step is a guard refusal - no effect was "
                                  "produced or read back this run"))
+        elif tool in gated:
+            ledger.append((tool, f"skipped: {gated[tool]}"))
         elif tool in EXCLUDED:
             ledger.append((tool, f"skipped: {EXCLUDED[tool]}"))
-        elif tool in gated:
-            # the CAPABILITY tier's own bucket: every step driving this tool declared an
-            # entitlement the capability probe did not read as granted, so none of them ran.
-            ledger.append((tool, f"skipped: {gated[tool]}"))
         else:
             ledger.append((tool, "PENDING (no step yet)"))
 
@@ -2367,7 +2587,8 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         os.makedirs(RESULTS_DIR, exist_ok=True)
         path = os.path.join(RESULTS_DIR, f"verify-{time.strftime('%Y%m%d-%H%M%S')}.json")
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"steps": rows, "ledger": ledger, "acts": act_modes, "server": health}, fh, indent=2)
+            json.dump({"steps": rows, "ledger": ledger, "acts": act_modes, "server": health,
+                       "admitted_batches": chosen_batches}, fh, indent=2)
         print(f"\nwrote {path}")
     if complete and run_id and not fails:
         # the id is spent: its acts have all run, so a later --resume of it would stamp from the
@@ -2416,7 +2637,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                        "family_events": family_events, "home_document": home_document,
                        "continue_families": continue_families,
                        "family_outcomes": family_outcomes, "blocked_acts": blocked_acts,
-                       "blocked_steps": blocked_steps,
+                       "blocked_steps": blocked_steps, "admitted_batches": chosen_batches,
                        "failures": fails,
                        "transport_uncertain": bool(document_pin.get("transport_uncertain")),
                        "owned_scratch": list(document_pin.get("owned_documents") or []),

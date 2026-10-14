@@ -76,9 +76,9 @@ def handler(document_id: str = "", into_component: str = "",
         return error("Provide 'document_id' - the lineage URN (or web URL) of the saved cloud "
     "document to insert.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open the host document first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     data_file, resolved, candidates = _resolve_data_file(raw)
     if not data_file:

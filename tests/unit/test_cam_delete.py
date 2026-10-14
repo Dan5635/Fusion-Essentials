@@ -7,7 +7,6 @@ name census (never a re-resolve of the address), turning a deleteMe()==False int
 and the guards (no CAM, nothing named that, an ambiguous name).
 """
 
-import json
 
 from conftest import (FakeCAMFolder, FakeOperation, FakeSetup, _AdditiveContainer, _BaseNode,
                       _NamedCollection, load_tool, make_cam)
@@ -123,9 +122,7 @@ def _install(monkeypatch, setups=None, programs=()):
     return cam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────

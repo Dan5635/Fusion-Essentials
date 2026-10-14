@@ -8,6 +8,7 @@ guards (unknown anchor/target/keypoint/units, no active design), the
 coordinate-anchor unit scaling, and the created-origin report (frame_axes,
 name override).
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -300,7 +301,7 @@ def _matrix(deg=0.0, t=(0.0, 0.0, 0.0)):
 
 class TestHandlerGuards:
     def test_no_active_design_errors(self, monkeypatch):
-        monkeypatch.setattr(jo._common, "design", lambda: None)
+        _install_design(jo, None)
         res = jo.handler()
         assert res["isError"] is True and "design" in res["message"].lower()
 

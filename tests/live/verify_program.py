@@ -353,10 +353,15 @@ _HOIST_FRAMES = {
 
 def _checked_sketch_frames(owner, rows, slots, layout):
     """Place hoisted sketches and attach their authored checked camera frames."""
-    out, framed, known = [], set(), set()
+    from verify_core import declared_allows, step_conditions, condition_expect
+    out, framed, known, excluded = [], set(), set(), set()
     specs = _HOIST_FRAMES.get(owner, {})
     for step in _placed(rows, slots):
         out.append(step)
+        if not declared_allows(step[2]):
+            if step[0] == "sketch_create" and isinstance(step[1], dict):
+                excluded.add(step[1]["name"])
+            continue
         if step[0] == "model_create_component" and isinstance(step[1], dict):
             known.update((step[1]["name"], step[1]["name"] + ":1"))
         elif step[0] == "sketch_create" and isinstance(step[1], dict):
@@ -371,15 +376,19 @@ def _checked_sketch_frames(owner, rows, slots, layout):
         if not set(focus) <= known:
             raise ValueError("sketch frame has absent local focus: " + repr(sketch))
         camera = _watch(list(focus), planes=layout["planes"])
-        out.append((camera[0], dict(camera[1], orientation=orientation), camera[2], camera[3]))
+        out.append((camera[0], dict(camera[1], orientation=orientation),
+                    condition_expect(step_conditions(step[2]), camera[2]), camera[3]))
         framed.add(sketch)
-    if framed != set(specs):
+    if framed != set(specs) - excluded:
         raise ValueError("sketch frames missing local rows: " + repr(sorted(set(specs) - framed)))
     return out
 
 
 def compile_program(raw_program):
     """Compile owned acts from independent family geometry and frame inputs."""
+    from verify_core import tiered
+    raw_program = [(name, pre, tiered(narr), tiered(fb) if fb is not None else fb)
+                   for name, pre, narr, fb in raw_program]
     owners = family_names(raw_program)
     phases, kept_by_name, raw_sketches = {}, {}, {}
     for family, _prefixes in FAMILY_GROUPS:
@@ -412,6 +421,51 @@ def compile_program(raw_program):
 
 
 _RAW_ACT_PROGRAM = _ACT_PROGRAM
+
+
+def cache_baseline_plan(acts, families, fixture_provider, selected, potential_names, support_routes=()):
+    """Freeze placed conditional lanes and each fixture branch without evaluating row arguments."""
+    selected = None if selected is None else frozenset(selected)
+    potential_names = frozenset(potential_names)
+    frozen_acts = tuple((name, pre, tuple(narrative),
+                         None if fallback is None else tuple(fallback))
+                        for name, pre, narrative, fallback in acts)
+    initial, before, opening, workspace = {}, {}, {}, {}
+    potential, admitted_families = [], set()
+    bootstrap = frozenset(("sketch", "sheet_coupon", "sheet_positions", "sheet_flange"))
+    for name, pre, narrative, fallback in frozen_acts:
+        if selected is not None and name not in selected:
+            continue
+        family = families.get(name)
+        if family is not None:
+            if family not in initial:
+                initial[family] = tuple(fixture_provider(family))
+                opening[family] = () if family in bootstrap else (("doc_new", {}, "ok", None),)
+                workspace[family] = () if family in bootstrap else (
+                    ("view_switch_workspace", {"workspace": "design"}, "ok", None),)
+            before[name] = {
+                entitled: tuple(fixture_provider(family, before_act=name, entitled=entitled))
+                for entitled in (False, True)}
+        if name not in potential_names:
+            continue
+        potential.extend(narrative)
+        potential.extend(fallback or ())
+        if pre is not None:
+            potential.append((pre[0], pre[1], "ok", None))
+        if family is not None:
+            if family not in admitted_families:
+                potential.extend(opening[family])
+                potential.extend(workspace[family])
+                potential.extend(initial[family])
+                admitted_families.add(family)
+            # Registration is conservative over the two runtime entitlement branches.
+            potential.extend(before[name][False])
+            potential.extend(before[name][True])
+    return {"acts": frozen_acts, "initial": initial, "before": before,
+            "opening": opening, "workspace": workspace, "potential_rows": tuple(potential),
+            "support_routes": tuple(support_routes)}
+
+
 _COMPILED = compile_program(_RAW_ACT_PROGRAM)
 _ACT_PROGRAM = _COMPILED["kept"]
 _SKETCH_PHASE = [step for family, _prefixes in FAMILY_GROUPS
@@ -437,6 +491,8 @@ FAMILY_PROGRAM = family_names(ACTS)
 # thing one row at a time through verify_core.Needs; the probe per capability name lives in
 # verify_core.CAPABILITY_PROBES.
 ACT_NEEDS = {
+    "ACT 14 - LOOKUP TARGETING": ("native_script", "cloud_tier", "library_writes",
+                                   "preference_writes", "addin_reload"),
     "ACT 12c - SHEET METAL DRAWING": CLOUD_TIER,
     "ACT 11a - CLOUD: THE DATA MODEL": CLOUD_TIER,
     "ACT 11b - CLOUD: THE SAVED DOCUMENT": CLOUD_TIER,

@@ -6,6 +6,8 @@
 import json
 import math
 
+from verify_core import scope_unit
+
 from verify_core import (
     _ctx_get, _document_closed, _fg, _home_address, _home_document, _measured, _near, _new_document, _num, _refused)
 from verify_acts_model_combine_revolve import _combine_inspect, _combine_pin
@@ -3199,4 +3201,5 @@ def _finite_num(value):
 def advanced_feature_edit_rows():
     """Return the bounded five-family public edit and independent restoration witness rows."""
     _ADVANCED_STATE.clear()
-    return _advanced_edit_rows()
+    return scope_unit(_advanced_edit_rows(), ["native_script", "cloud_tier", "library_writes",
+                                            "preference_writes", "addin_reload"])

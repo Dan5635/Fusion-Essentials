@@ -320,9 +320,9 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
             bbox_target: str = "", orient_axis: str = "z", flip: bool = False,
             component: str = "", sketch_component: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     anchor = (anchor or "coordinates").strip().lower()
     if anchor not in _ANCHORS:

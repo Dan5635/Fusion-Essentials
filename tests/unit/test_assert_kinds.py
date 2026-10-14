@@ -10,6 +10,10 @@ Document.save() false-success), ReferencesFresh (the lying isUpToDate), FileLand
 nothing), FeatureHealthy (a feature add()ed but computed with an error health state). Every gate is
 proven to BITE (the failure case goes red through the wrapper).
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+from conftest import install as _install_design
 
 import json
 import sys
@@ -43,9 +47,7 @@ def _ok(payload):
     return {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": False}
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class Fixed(kernel.Postcondition):
@@ -614,7 +616,7 @@ class TestSketchCurvesChangedScope:
         seen = []
         import mcpServer.tools._sketch_detail as sd
         import mcpServer.tools._common as common
-        monkeypatch.setattr(common, "design", lambda: object())
+        _install_design(common, object())
 
         def _scoped(d, n, c, input_name="component"):
             seen.append((n, c))
@@ -785,7 +787,7 @@ class TestComputeState:
         return ent
 
     def test_a_failed_entity_answers_broken_and_hands_back_the_failure(self):
-        state, failure = kernel.compute_state(self._paired(own_health=2, own_msg="over-constrained"))
+        state, failure = kernel.compute_state(self._paired(own_health=_ERROR, own_msg="over-constrained"))
         assert state == "broken"
         assert failure == ("error", "over-constrained")
 
@@ -799,26 +801,26 @@ class TestComputeState:
     def test_the_entity_is_read_first_when_both_sources_fail(self):
         # both carry a failure with DIFFERENT text, so the order is what the assertion reads.
         _state, failure = kernel.compute_state(
-            self._paired(own_health=2, own_msg="from the entity",
-                         tl_health=2, tl_msg="from the timeline item"))
+            self._paired(own_health=_ERROR, own_msg="from the entity",
+                         tl_health=_ERROR, tl_msg="from the timeline item"))
         assert failure == ("error", "from the entity")
 
     def test_a_healthy_timeline_item_does_not_mask_a_failed_entity(self):
         state, failure = kernel.compute_state(
-            self._paired(own_health=1, own_msg="iffy", tl_health=0))
+            self._paired(own_health=1, own_msg="iffy", tl_health=_HEALTHY))
         assert state == "broken" and failure == ("warning", "iffy")
 
     # The failing pair is WARNING (1) and ERROR (2); the two states either side of it read and are
     # deliberately not flagged, so both boundaries are pinned rather than the middle alone.
     def test_healthy_is_the_boundary_below_the_failing_pair(self):
-        assert kernel.compute_state(self._paired(own_health=0)) == ("healthy", None)
+        assert kernel.compute_state(self._paired(own_health=_HEALTHY)) == ("healthy", None)
 
     def test_suppressed_is_the_boundary_above_the_failing_pair(self):
         # 3 = SUPPRESSED: a state that READ and is parked on purpose - healthy, never withheld.
         assert kernel.compute_state(self._paired(own_health=3)) == ("healthy", None)
 
     def test_a_state_only_the_timeline_item_answers_reads_healthy(self):
-        assert kernel.compute_state(self._paired(tl_health=0)) == ("healthy", None)
+        assert kernel.compute_state(self._paired(tl_health=_HEALTHY)) == ("healthy", None)
 
     def test_neither_source_answering_is_unknown_not_healthy(self):
         # An unread state is not a clean bill of health: the caller withholds its flag on this.
@@ -1100,7 +1102,7 @@ def _namesake_timeline(monkeypatch, name):
     """A parametric design whose timeline already holds `name` in another component, at index 0."""
     tl = FakeTimeline([_owned_row(name, 0, "Sibling")])
     common = sys.modules[kernel.__package__ + "._common"]
-    monkeypatch.setattr(common, "design", lambda: types.SimpleNamespace(designType=1, timeline=tl))
+    _install_design(common, types.SimpleNamespace(designType=1, timeline=tl))
     return tl
 
 
@@ -1155,7 +1157,7 @@ class TestFreeEdgesChanged:
     def test_a_refused_stitch_names_its_feature_or_undo_in_direct_mode(self, monkeypatch,
                                                                          design_type):
         common = sys.modules[kernel.__package__ + "._common"]
-        monkeypatch.setattr(common, "design", lambda: types.SimpleNamespace(designType=design_type))
+        _install_design(common, types.SimpleNamespace(designType=design_type))
         census = [_sheet("A", free=4)]
         self._wire(monkeypatch, census)
 
@@ -1579,7 +1581,7 @@ class _PoisonHealthyItem(FakeTimelineObject):
     AssemblyConstraint (and a caught adsk error has rollback risk in some contexts), which is
     why the walk reads the message only inside the unhealthy branches."""
     def __init__(self, name):
-        FakeTimelineObject.__init__(self, name=name, health=0)
+        FakeTimelineObject.__init__(self, name=name, health=_HEALTHY)
 
     @property
     def errorOrWarningMessage(self):

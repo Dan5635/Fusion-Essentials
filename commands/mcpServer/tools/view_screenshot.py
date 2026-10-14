@@ -12,7 +12,7 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, safe
+from ._common import ok, error, safe
 from . import _common
 from . import _drawing_common
 from . import _export
@@ -239,7 +239,7 @@ def handler(view: str = "current", width: int = _WIDTH_DEFAULT, height: int = _H
                 if written:
                     content.append({"type": "text", "text": written})
                 content.append({"type": "image", "data": b64, "mimeType": "image/png"})
-                result = {"content": content, "isError": False}
+                result = ok(content=content)
     except Exception as e:
         result = error(f"Screenshot error: {e}")
 

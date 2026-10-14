@@ -14,6 +14,9 @@ where add on an existing group/name updates it in place), attributes built by ``
 (groupName/name/value + deleteMe() -> bool, and a value that can no longer be read once deleted),
 and FakeAttributeVector for what Design.findAttributes hands back - len()/[i] with NO .count.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+from conftest import install as _install_design
 
 import types
 
@@ -33,7 +36,7 @@ class FakeTimelineObject(_SharedTimelineObject):
     marker position is not being computed. So a rollTo that returns true without repositioning the
     marker leaves the item in its previous state, exactly as it would in Fusion."""
 
-    def __init__(self, name, index, health=0, suppressed=False, is_group=False,
+    def __init__(self, name, index, health=_HEALTHY, suppressed=False, is_group=False,
                  roll_returns=True, suppress_takes=True, rename="ok", reports_rolled=True,
                  entity=None):
         self._holder = None                     # the group this item belongs to, once grouped
@@ -353,8 +356,7 @@ def wire(monkeypatch):
         design = make_design()
         design.timeline = timeline
         design.findAttributes = lambda group, name: _find_attributes(timeline, group, name)
-        monkeypatch.setattr(et._common, "design", lambda: design)
-        monkeypatch.setattr(et._inputs._common, "design", lambda: design)
+        _install_design(et, design)
         return timeline
     return _wire
 
@@ -1389,7 +1391,7 @@ class TestDeleteAttribute:
 
 class TestGuards:
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(et._common, "design", lambda: None)
+        _install_design(et, None)
         assert "No active design" in error_message(et.handler(action="roll", to="end"))
 
     def test_direct_modelling_design_has_no_timeline(self, wire):

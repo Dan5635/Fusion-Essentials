@@ -7,11 +7,12 @@ or wrong-kind reference resolving to the wrong entity).
 Pinned: handle resolution + the require-predicate enforcement, the units/Distance scaling chain, the
 schema/contract auto-generation, and resolve_inputs end-to-end.
 """
-
 import json
 import math
 import re
 import types
+
+from conftest import install as _install_design
 
 import pytest
 
@@ -85,7 +86,7 @@ def _install(token_map):
     # _inputs calls _common.design(); patch it. The requirement predicates read surfaceType live on
     # every call, so matching enum values is all they need.
     design = make_design(tokens=token_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
 
 
 # ── GeometryHandle: the guardrail ───────────────────────────────────────────
@@ -152,7 +153,7 @@ def _install_with_bodies(faces, token_map):
     body.edges = _NamedCollection([])
     root = MakeComp(name="Root", bodies=[body])
     design = MakeDesign(comp=root, tokens=token_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
 
 
 class TestIsHandle:
@@ -268,7 +269,7 @@ def token_env(monkeypatch):
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "BRepFace", BRepFace, raising=False)
         design = make_design(tokens=tokens)
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda _d=None: design.rootComponent)
         return design
     return build
@@ -611,7 +612,7 @@ def _install_bodies(named=None, handle_map=None, components=None):
     # allComponents holds the named sub-components only, so a by-name walk over it never falls back
     # to the root's own bodies.
     design = MakeDesign(comp=root, all_components=comp_objs, tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d: root
     return root
 
@@ -633,7 +634,7 @@ class TestBodyRef:
         occ.bRepBodies = _NamedCollection([proxy])
         root = MakeComp(name="Root", occurrences=[occ])
         design = MakeDesign(comp=root, all_components=[frame])
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda d: root)
         monkeypatch.setattr(inp._common, "occurrence_walk",
                             lambda _d, cap=None: types.SimpleNamespace(occurrences=[occ]))
@@ -651,7 +652,7 @@ class TestBodyRef:
         unrelated.bRepBodies = _NamedCollection([body_proxy(native, unrelated)])
         root = MakeComp(name="Root", occurrences=[longer, unrelated])
         design = MakeDesign(comp=root, all_components=[frame])
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda d: root)
         monkeypatch.setattr(inp._common, "occurrence_walk",
                             lambda _d, cap=None: types.SimpleNamespace(
@@ -673,7 +674,7 @@ class TestBodyRef:
         left.bRepBodies, right.bRepBodies = _NamedCollection([left_proxy]), _NamedCollection([right_proxy])
         root = MakeComp(name="Root", occurrences=[left, right])
         design = MakeDesign(comp=root)
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda d: root)
         monkeypatch.setattr(inp._common, "occurrence_walk",
                             lambda _d, cap=None: types.SimpleNamespace(
@@ -835,7 +836,7 @@ def _install_planes(named=None, handle_map=None, subs=(), active=None):
     root.allOccurrences = list(occs)
     root.allOccurrencesByComponent = lambda c: _NamedCollection(
         [o for o in occs if o.component is c])
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d: d.activeComponent
     return design
 
@@ -1083,7 +1084,7 @@ def _install_axis(handle_map=None):
     import adsk.fusion
     adsk.fusion.BRepEdge = BRepEdge
     design = make_design(tokens=handle_map or {})
-    inp._common.design = lambda: design
+    _install_design(inp, design)
 
 
 class TestAxisRef:
@@ -1169,7 +1170,7 @@ def _install_axis_face(handle_map):
     adsk.fusion.BRepEdge = BRepEdge
     adsk.fusion.SketchLine = type("SL", (), {})
     design = make_design(tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
 
 
 class TestAxisRefFace:
@@ -1254,7 +1255,7 @@ def axis_env(monkeypatch):
         design = make_design(comp=root, tokens=dict(tokens or {}))
         placed = {}
         root.allOccurrencesByComponent = lambda c: _NamedCollection(placed.get(id(c), []))
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda _d=None: active)
 
         def place(comp, *full_paths, matrices=None):
@@ -1886,7 +1887,7 @@ def _install_kind_bodies(brep_named=None, mesh_named=None, handle_map=None):
     # found by iterate-and-match.
     comp = MakeComp(bodies=list(brep_named.values()), mesh_bodies=list(mesh_named.values()))
     design = MakeDesign(comp=comp, tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d: comp
     return comp
 
@@ -1927,7 +1928,7 @@ def _install_occurrence_scope(comp_name="MeshComp", brep_name="Body1", mesh_name
     # findEntityByToken answers nothing, so every lookup takes the NAME path.
     design = MakeDesign(comp=root, all_components=[root, comp])
 
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: root
     return occs, brep, mesh
 
@@ -2018,7 +2019,7 @@ class TestBodyKind:
         # findEntityByToken answers nothing, so the lookup takes the NAME path.
         design = MakeDesign(comp=root, all_components=[root, sub])
 
-        inp._common.design = lambda: design
+        _install_design(inp, design)
         # target_component is the root (which has NO matching mesh) -> resolution must reach the
         # sub-component through the component walk, not through the occurrence.
         inp._common.target_component = lambda d: root
@@ -2289,7 +2290,7 @@ def _install_ambiguous_bodies(*, handle_map=None, occ_bodies=()):
             for i, m in enumerate(occ_bodies)]
     root = MakeComp(name="Root", all_occurrences=occs)
     design = MakeDesign(comp=root, tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: root
     return root
 
@@ -2314,7 +2315,7 @@ def _install_native_and_proxy(comp_bodies=(), occ_bodies=(), comp_name="Probe"):
     root = MakeComp(name="Root", all_occurrences=occs)
     # findEntityByToken answers nothing, so every lookup takes the NAME path.
     design = MakeDesign(comp=root, all_components=[root, comp])
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: comp
     return comp
 
@@ -2484,7 +2485,7 @@ class TestBodyNameAmbiguity:
         root = MakeComp(name="Frame")
         root.bRepBodies = _FreshColl()
         design = MakeDesign(comp=root)
-        inp._common.design = lambda: design
+        _install_design(inp, design)
         inp._common.target_component = lambda d=None: root
         val, err = inp.BodyRef("body").resolve("Pin")
         assert err is None and val is not None and val.name == "Pin"
@@ -2737,7 +2738,7 @@ class TestFeatureRefResolve:
         design = MakeDesign(design_type=1)
         design.timeline = FakeTimeline([seat])
         monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         dc = load_tool("_design_common")
         monkeypatch.setattr(dc, "collapsed_group_holding",
                             lambda timeline, want: "Imports" if want == "0" else None)
@@ -2754,7 +2755,7 @@ class TestFeatureRefResolve:
                                       item=lambda i: member)
         design.timeline.timelineGroups = _NamedCollection([group])
         monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         _val, err = inp.FeatureRef("feature").resolve("5")
         assert err and "'5' is inside the collapsed timeline group 'Imports'" in err
         assert "design_edit_timeline(action='ungroup', feature='Imports')" in err
@@ -2762,7 +2763,7 @@ class TestFeatureRefResolve:
 
     def test_a_feature_name_when_the_design_reads_direct_has_no_timeline(self, monkeypatch):
         design = MakeDesign(design_type=0)
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         _val, err = inp.FeatureRef("feature").resolve("Fillet2")
         assert "This design has no timeline" in err and "Act on the bodies" in err
 
@@ -2784,7 +2785,7 @@ def _install_timeline(monkeypatch, rows, groups):
     design.timeline = FakeTimeline(rows)
     design.timeline.timelineGroups = _NamedCollection(groups)
     monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
 
 
 class TestFeatureRefGroups:
@@ -2891,10 +2892,10 @@ def _install_profiles(handle_map=None, sketches=None, monkeypatch=None):
                     sketches=[_profile_sketch_fake(*row) for row in (sketches or [])])
     des = make_design(comp=comp, tokens=dict(handle_map or {}))
     if monkeypatch is not None:
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: comp)
     else:
-        inp._common.design = lambda: des
+        _install_design(inp, des)
         inp._common.target_component = lambda d: comp
     return comp
 
@@ -3192,7 +3193,7 @@ class TestProfileRefComponentScope:
         beta = MakeComp(name="Beta", sketches=[types.SimpleNamespace(
             name="Sketch1", profiles=_NamedCollection([beta_p]))])
         des = make_design(comp=alpha, all_components=[alpha, beta])
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: alpha)
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "Profile", Profile)
@@ -3237,7 +3238,7 @@ class TestProfileRefListComponentScope:
         beta = MakeComp(name="Beta", sketches=[types.SimpleNamespace(
             name="Sketch1", profiles=_NamedCollection([beta_p]))])
         des = make_design(comp=alpha, all_components=[alpha, beta])
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: alpha)
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "Profile", Profile)
@@ -3286,7 +3287,7 @@ class TestProfileLocatorSharedSketchName:
             sk = types.SimpleNamespace(name=sk_name, profiles=_NamedCollection(profs))
             comps.append(MakeComp(name=comp_name, sketches=[sk]))
         des = make_design(comp=comps[0], all_components=comps)
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: comps[0])
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "Profile", Profile)
@@ -3355,7 +3356,7 @@ class TestProfileLocatorTie:
                 sk.name = sk_name
             comps.append(MakeComp(name=comp_name, sketches=[sk]))
         des = make_design(comp=comps[0], all_components=comps)
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: comps[0])
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "Profile", Profile)
@@ -3488,7 +3489,7 @@ class TestProfileSelectorSketchScope:
         sub = MakeComp(name="Frame", sketches=[Sketch(name="FrameSketch", profiles=[p])])
         # findEntityByToken answers nothing, so the selector takes the NAME path.
         design = MakeDesign(comp=root, all_components=[root, sub])
-        inp._common.design = lambda: design
+        _install_design(inp, design)
         inp._common.target_component = lambda d: root
         val, err = inp.ProfileRef("profile").resolve({"sketch": "FrameSketch", "profile_index": 0})
         assert err is None and val is p
@@ -3562,7 +3563,7 @@ def _two_components_one_sketch_name(monkeypatch, name="Plate", shared=True):
                     sketches=[_scope_sketch(name if shared else "Other", [pb])])
     # findEntityByToken answers nothing, so every lookup takes the NAME path.
     design = MakeDesign(comp=alpha, all_components=[alpha, beta])
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda d: alpha)
     return pa, pb
 
@@ -3815,7 +3816,7 @@ def _install_occurrences(*occs, tokens=None):
         if getattr(o, "entityToken", ""):
             by_token.setdefault(o.entityToken, o)
     design = MakeDesign(comp=MakeComp(name="Root", all_occurrences=occs), tokens=by_token)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     return list(occs)
 
 
@@ -4207,7 +4208,7 @@ def _install_target(*, handle_map=None, occurrences=(), components=(), brep_name
     # allComponents lives on the DESIGN in the live API (Component has no such attribute)
     design = MakeDesign(comp=root, all_components=[root] + [MakeComp(name=n) for n in components],
                         tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: root
     return design
 
@@ -4496,7 +4497,7 @@ def _install_target_ext(handle_map):
 
     root = MakeComp(name="Root")
     design = MakeDesign(comp=root, all_components=[], tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: root
 
 
@@ -4593,7 +4594,7 @@ def _install_jo(design):
     explicitly to the _joints walk / _resolve_occurrence, so ONE seam covers it. Returns the ref."""
     import adsk.fusion
     adsk.fusion.JointOrigin = _JO
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     return inp.JointOriginRef("jo")
 
 
@@ -5265,7 +5266,7 @@ class TestSketchRefListRunsTheOneSharedWalk:
 
     def _resolve(self, monkeypatch, comps, raw):
         d = MakeDesign(comp=comps[0], all_components=comps)
-        monkeypatch.setattr(inp._common, "design", lambda: d)
+        _install_design(inp, d)
         return inp.SketchRefList("sketches").resolve(raw)
 
     def test_a_name_exactly_one_sketch_carries_resolves(self, monkeypatch):
@@ -5687,7 +5688,7 @@ def _install_shared_body_name(monkeypatch, name="Body1", placements=("Bracket:1"
                     entity_token="TOKEN:Carrier")
     root_body.parentComponent = root
     design = make_design(comp=root, all_components=[root, sub])
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda _d=None: root)
     return root_body, proxies
 
@@ -5705,7 +5706,7 @@ def _install_cased_bodies(monkeypatch):
     occ.bRepBodies = _NamedCollection(list(proxies))
     root = MakeComp(name="Carrier", occurrences=[occ], entity_token="TOKEN:Carrier")
     design = make_design(comp=root, all_components=[root, sub])
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda _d=None: root)
     return proxies
 
@@ -5721,7 +5722,7 @@ def _install_unplaced_component(monkeypatch, body_names):
         b.parentComponent = sub
     root = MakeComp(name="Carrier", entity_token="TOKEN:Carrier")
     design = make_design(comp=root, all_components=[root, sub])
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda _d=None: root)
     return bodies
 
@@ -5754,7 +5755,7 @@ def _install_unnamed_placement(monkeypatch):
     root = MakeComp(name="Carrier", entity_token="TOKEN:Carrier")
     design = make_design(comp=root, all_components=[root, sub],
                          tokens={"OCCTOK": _UnnamedOcc(sub)})
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda _d=None: root)
     return design
 
@@ -5839,7 +5840,7 @@ class TestBodyRefListComponentScope:
         # sentence has to describe what THIS call was resolving: the vocabularies underneath refuse
         # in their own nouns ("to resolve the occurrence against"), which sends the caller to fix a
         # scope spelling when the design is what is missing.
-        monkeypatch.setattr(inp._common, "design", lambda: None)
+        _install_design(inp, None)
         got, err = self._scoped().resolve(["Body1"], "Bracket")
         assert got is None
         assert err == "No active design to resolve the body names against."
@@ -5926,7 +5927,7 @@ class TestSheetMetalRuleRefOrdinals:
     def test_resolves_the_hash_ordinal_to_the_second_object(self, monkeypatch):
         r1 = types.SimpleNamespace(name="Steel (mm)")
         r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
-        monkeypatch.setattr(inp._common, "design", lambda: self._design(r1, r2))
+        _install_design(inp, self._design(r1, r2))
         got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#2")
         assert err is None
         rule, scope = got
@@ -5935,14 +5936,14 @@ class TestSheetMetalRuleRefOrdinals:
     def test_bare_duplicate_name_is_refused_naming_both_refs(self, monkeypatch):
         r1 = types.SimpleNamespace(name="Steel (mm)")
         r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
-        monkeypatch.setattr(inp._common, "design", lambda: self._design(r1, r2))
+        _install_design(inp, self._design(r1, r2))
         got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)")
         assert got is None
         assert "design:Steel (mm)#1" in err and "design:Steel (mm)#2" in err
 
     def test_a_unique_name_still_resolves_without_a_hash(self, monkeypatch):
         r = types.SimpleNamespace(name="Aluminum (mm)")
-        monkeypatch.setattr(inp._common, "design", lambda: self._design(r))
+        _install_design(inp, self._design(r))
         got, err = inp.SheetMetalRuleRef("rule").resolve("design:Aluminum (mm)")
         assert err is None
         rule, scope = got
@@ -5952,7 +5953,7 @@ class TestSheetMetalRuleRefOrdinals:
         # A unique rule keeps its plain 'scope:name' ref (rule_ref_and_index) even when the name
         # itself ends in '#<digits>' - the literal lookup must win before '#<n>' is read as an ordinal.
         r = types.SimpleNamespace(name="Gauge #16")
-        monkeypatch.setattr(inp._common, "design", lambda: self._design(r))
+        _install_design(inp, self._design(r))
         got, err = inp.SheetMetalRuleRef("rule").resolve("design:Gauge #16")
         assert err is None
         rule, scope = got
@@ -5961,14 +5962,14 @@ class TestSheetMetalRuleRefOrdinals:
     def test_hash_zero_is_refused_not_the_last_hit(self, monkeypatch):
         r1 = types.SimpleNamespace(name="Steel (mm)")
         r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
-        monkeypatch.setattr(inp._common, "design", lambda: self._design(r1, r2))
+        _install_design(inp, self._design(r1, r2))
         got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#0")
         assert got is None and err is not None
 
     def test_hash_out_of_range_is_refused_naming_the_count(self, monkeypatch):
         r1 = types.SimpleNamespace(name="Steel (mm)")
         r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
-        monkeypatch.setattr(inp._common, "design", lambda: self._design(r1, r2))
+        _install_design(inp, self._design(r1, r2))
         got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#3")
         assert got is None
         assert "has 2 rule(s)" in err
@@ -6052,7 +6053,7 @@ def operand_env(monkeypatch):
         design = MakeDesign(comp=root, tokens=tokens or {},
                             all_components=[root, bench, *extra])
         design.activeComponent = comps[active]
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda _d=None: design.activeComponent)
         return types.SimpleNamespace(design=design, root=root, bench=bench, occ=occ, sketch=sk,
                                      pts=pts, line=line, centre=centre, twins=twins)

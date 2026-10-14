@@ -131,9 +131,9 @@ def handler(form: str = "", body: str = "", include=None, max_results: int = 0,
     inc = [str(s).strip().lower() for s in raw if str(s).strip()]
     if any(s != "cage" for s in inc):
         return error(f"Unknown include {inc}. Valid: cage.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     forms = [ff for _comp, ff in _form_common.all_forms(design)]
     if form:
         ff, ferr = _form_common.resolve_form(design, _FORM, form)

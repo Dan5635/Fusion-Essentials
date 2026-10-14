@@ -94,9 +94,9 @@ def _unverified_delete(ref, noun, before):
 def handler(sketch_name: str = "", target: str = "", component: str = "") -> dict:
     # Dispatch '<type>:<index>': curves/points via the shared resolve_entity_ref, constraints via a
     # local index into geometricConstraints; both paths gate on a before/after collection count.
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # Resolve across the whole design, so a sketch in an activated sub-component is reachable.
     wanted = (sketch_name or "").strip()

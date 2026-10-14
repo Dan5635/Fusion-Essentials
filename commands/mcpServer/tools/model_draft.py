@@ -78,9 +78,9 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
         if symmetric:
             return error("'angle_two_deg' cannot be combined with symmetric=true; set both side angles explicitly.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     face_ents, ferr = _FACES.resolve(faces)

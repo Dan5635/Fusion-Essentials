@@ -35,9 +35,9 @@ _FACES = _inputs.GeometryHandleList("faces", require="face", required=True)
 
 def delete_face_handler(faces=None, heal=False) -> dict:
     """Delete faces from their bodies - optionally healing the opening (heal=True) or leaving it open."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     face_ents, ferr = _FACES.resolve(faces)

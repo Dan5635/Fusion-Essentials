@@ -468,9 +468,9 @@ def handler(kind: str = "", name: str = "", action: str = "", occurrences=None,
     if action not in allowed:
         return error(f"action='{action}' does not apply to a {_relations.kind_label(kind)} - it "
                      f"supports: {', '.join(allowed)}.")
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     obj, comp, rerr = _relations.find_relation(design, kind, name)
     if rerr:

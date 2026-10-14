@@ -8,6 +8,7 @@ a vertex uses createByPoint. Plus the motion mapping and the handle-resolution g
 construction is captured on fakes so we assert which JointGeometry factory + keypoint were used,
 without a live design.
 """
+from conftest import install as _install_module_design
 
 from types import SimpleNamespace
 
@@ -671,7 +672,7 @@ class TestHandler:
         component = MakeComp(name='Host', entity_token='root-host')
         native = make_occurrence('Host:1', component=component, transform2=_at((10, 20, 5)))
         root = MakeComp(occurrences_by_component={'Host': [native]})
-        monkeypatch.setattr(jg._common, 'design', lambda: make_design(comp=root))
+        _install_module_design(jg, make_design(comp=root))
         sampler = load_tool('_assembly_common')
         assert sampler._occ_origin(native) == (10, 20, 5)
         assert sampler._constraint_positions({'host': native})['host'][0] == (10, 20, 5)
@@ -1083,7 +1084,7 @@ class TestPendingMoveRefusal:
 
 class TestCreateGuards:
     def test_no_active_design_is_refused(self, monkeypatch):
-        monkeypatch.setattr(jg._common, "design", lambda: None)
+        _install_module_design(jg, None)
         res = jg.handler(handle_one="a", handle_two="b")
         assert res["isError"] is True and "No active design" in res["message"]
 

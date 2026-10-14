@@ -486,9 +486,9 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(f"depth='{depth}' is not a drillable hole - a blind hole needs a "
                          "POSITIVE depth (e.g. '10 mm'), or use extent='through'.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     active = _target_component(design)
     if not active:
         return error("No target component.")

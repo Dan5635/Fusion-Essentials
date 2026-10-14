@@ -1,11 +1,14 @@
 """Checks bounded Loft section edits and their failure evidence."""
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
 import adsk.fusion
 import pytest
+from tests.fakes.design import _injected_roll
 
-from conftest import FakeTimeline, FakeTimelineObject, Sketch, _NamedCollection, error_message, load_tool, payload
+from conftest import (FakeTimeline, FakeTimelineObject, Sketch, _NamedCollection,
+                      error_message, load_tool, payload)
 
 
 mod = load_tool("model_edit_loft")
@@ -94,7 +97,7 @@ def rig(monkeypatch):
     monkeypatch.setattr(mod._inputs, "resolve_inputs", lambda _spec, raw: (
         {"feature": (loft, "Loft1"), "action": raw["action"]}, None))
     monkeypatch.setattr(mod, "_target_error", lambda *_args: None)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod, "_operand_error", lambda *_args: None)
     monkeypatch.setattr(mod._inputs.ProfileRef, "resolve", lambda _self, _raw, _scope: ("X", None))
     monkeypatch.setattr(mod._common, "native_identity", lambda operand: operand)
@@ -583,3 +586,60 @@ def test_new_index_belongs_to_reorder_alone(surface_rig, args, text):
     loft, _timeline = surface_rig
     assert error_message(mod.handler(feature="Loft1", section_index=1, **args)) == text
     assert loft.assignments == 0
+
+
+edit = load_tool("_edit_feature_common")
+
+
+@pytest.mark.parametrize("marker,expected", [(1, False), (2, True), (3, False),
+                                            (True, False), (2.0, False)])
+def test_edit_position_requires_the_exact_integer_row(marker, expected):
+    timeline = FakeTimeline([None] * 4, marker=marker)
+    assert edit.edit_position(True, timeline, 2) is expected
+
+
+
+@pytest.mark.parametrize("returned", [False, None, 1])
+def test_edit_position_requires_literal_true_and_skips_marker_on_refusal(monkeypatch, returned):
+    monkeypatch.setattr(edit, "counted", lambda _getter: pytest.fail("marker read after refusal"))
+    assert edit.edit_position(returned, FakeTimeline(marker=2), 2) is False
+
+
+
+def test_edit_position_refuses_an_unread_marker():
+    timeline = FakeTimeline([None] * 4, marker=2, raises="injected marker failure")
+    assert edit.edit_position(True, timeline, 2) is False
+
+
+
+@pytest.mark.parametrize("returned", [True, False, 1])
+def test_roll_to_edit_calls_before_once_and_preserves_the_result(returned):
+    row = FakeTimelineObject(index=2, roll_ok=returned)
+    assert edit.roll_to_edit(SimpleNamespace(timelineObject=row), FakeTimeline(marker=2), 2) is (
+        returned is True)
+    assert row._rolls == [True]
+
+
+
+def test_roll_to_edit_leaves_the_roll_exception_to_its_caller(monkeypatch):
+    row = FakeTimelineObject(index=2)
+    failure = RuntimeError("injected roll failure")
+    def raised(_before):
+        raise failure
+    monkeypatch.setattr(row, "rollTo", raised)
+    with pytest.raises(RuntimeError, match="injected roll failure") as caught:
+        edit.roll_to_edit(SimpleNamespace(timelineObject=row), FakeTimeline(marker=2), 2)
+    assert caught.value is failure
+
+
+
+@pytest.mark.parametrize("mode", ["false", "truthy", "noop", "raise"])
+def test_loft_roll_refusal_keeps_words_assignments_and_restore(rig, monkeypatch, mode):
+    loft, timeline = rig
+    monkeypatch.setattr(loft.timelineObject, "rollTo", _injected_roll(timeline, 2, mode))
+    text = error_message(mod.handler(feature="Loft1", action="retarget", section_index=1,
+                                          profile="X"))
+    why = "injected roll failure" if mode == "raise" else "Fusion refused the Loft edit position."
+    assert why in text
+    assert (loft.assignments, timeline.markerPosition) == (0, 5)
+    assert tuple(section.entity for section in loft.sections) == ("A", "B", "C")

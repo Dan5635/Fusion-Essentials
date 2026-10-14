@@ -12,6 +12,7 @@ appearance-theme) including:
 
 Fakes are NAMED to match the real adsk classes where the handler reads type(x).__name__.
 """
+from conftest import install as _install_design
 
 import json
 from types import SimpleNamespace
@@ -486,14 +487,12 @@ class _Design(MakeDesign):
 
 
 def _install(monkeypatch, design, saved=True):
-    monkeypatch.setattr(dc._common, "design", lambda: design)
+    _install_design(dc, design)
     monkeypatch.setattr(dc, "_doc_is_saved", lambda: saved)      # default: pretend the doc is saved
     return design
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards / dispatch ────────────────────────────────────────────────────────
@@ -505,7 +504,7 @@ class TestGuards:
         assert res["isError"] is True and "action" in res["message"].lower()
 
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(dc._common, "design", lambda: None)
+        _install_design(dc, None)
         res = dc.handler(action="create")
         assert res["isError"] is True and "design" in res["message"].lower()
 
@@ -1288,7 +1287,7 @@ class _ActDesign(MakeDesign):
 class TestActivate:
     def test_switches_configuration_clean(self, monkeypatch):
         d = _ActDesign(_ActTable(["Default", "Large"]))
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         out = _payload(dc.handler(action="activate", name="Large"))
         assert out["activated"] is True and out["now_active"] == "Large"
         assert out["previous"] == "Default"
@@ -1298,13 +1297,13 @@ class TestActivate:
         # add_configuration publishes the row's id beside its name, so an agent can hold that id;
         # a target matching no NAME has to reach the row whose id it is.
         d = _ActDesign(_ActTable(["Default", "Large"]))
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         out = _payload(dc.handler(action="activate", name="row-Large"))
         assert out["activated"] is True and out["now_active"] == "Large"
 
     def test_unknown_configuration_errors(self, monkeypatch):
         d = _ActDesign(_ActTable(["Default", "Large"]))
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         res = dc.handler(action="activate", name="Ghost")
         assert res["isError"] is True and "Ghost" in res["message"]
 
@@ -1312,7 +1311,7 @@ class TestActivate:
         # the rebuilt configuration over/under-constrains the model: the switch stands, but the new
         # timeline error must be reported rather than a clean success over a broken model.
         d = _ActDesign(_ActTable(["Default", "Large"]), errors_before=0, errors_after=1)
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         out = _payload(dc.handler(action="activate", name="Large"))
         assert out["activated"] is True
         assert "timeline_warning" in out and "new error" in out["timeline_warning"].lower()
@@ -1474,7 +1473,7 @@ class TestCreateRefusals:
     def test_the_saved_gate_reads_the_active_documents_own_flag(self, monkeypatch):
         # the guard is only worth its wording if it reads isSaved off the active document
         d = _Design(configured=False)
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         monkeypatch.setattr(dc, "app",
                             SimpleNamespace(activeDocument=SimpleNamespace(isSaved=False)))
         res = dc.handler(action="create")
@@ -1487,7 +1486,7 @@ class TestCreateRefusals:
 class TestActivateRefusals:
     def _design(self, monkeypatch, table=None):
         d = _ActDesign(_ActTable(["Default", "Large"]) if table is None else table)
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         return d
 
     def test_activate_without_a_name_is_refused(self, monkeypatch):
@@ -1513,7 +1512,7 @@ class TestActivateRefusals:
         # a rebuild that only WARNS still leaves the switch standing, so the warnings ride along in
         # the success payload rather than being reported as a new error
         d = _ActDesign(_ActTable(["Default", "Large"]), warnings_after=2)
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         out = _payload(dc.handler(action="activate", name="Large"))
         assert out["activated"] is True and out["timeline_warnings"] == ["W0", "W1"]
         assert "timeline_warning" not in out
@@ -2126,7 +2125,7 @@ class _CensusTable:
 def _census_design(monkeypatch, names=("A", "B", "C"), active=None):
     table = _CensusTable(list(names), active=active)
     design = _ActDesign(table)
-    monkeypatch.setattr(dc._common, "design", lambda: design)
+    _install_design(dc, design)
     return table
 
 

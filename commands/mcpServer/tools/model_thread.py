@@ -166,9 +166,9 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
     if cerr:
         return error(cerr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
     if not comp:
         return error("No target component.")

@@ -1,18 +1,12 @@
 """Unit tests for ``data_create_project.py`` - the duplicate-name guard and the re-list."""
 
-import json
 
 import pytest
 
-from conftest import FakeApplication, FakeData, FakeDataProject, load_tool
+from conftest import FakeApplication, FakeData, FakeDataProject, load_tool, payload as _payload
 
 dm = load_tool("data_create_project")
 dc = load_tool("_data_common")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 @pytest.fixture

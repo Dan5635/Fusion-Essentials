@@ -5,7 +5,6 @@ exact display name - with more than one distinct match REFUSED and every candida
 carrying the address that reaches it.
 """
 
-import json
 import re
 
 import pytest
@@ -18,9 +17,7 @@ dcl = load_tool("doc_close")
 wg = load_tool("_write_guard")   # the shared one-open-document predicate
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── fakes for the app.documents tree ────────────────────────────────────────

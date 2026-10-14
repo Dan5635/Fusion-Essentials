@@ -338,9 +338,9 @@ def handler(action=None, annotation="", component="", text="", new_name="", text
             leader_point=None, plane="", plane_face="", align="", valign="", perpendicular=None,
             leader_extension=None, flags=None, values=None, display=None, units="mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    d = _common.design()
-    if not d:
-        return error("No active design. Create or open a document first (see doc_new).")
+    d, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     action_v, aerr = _ACTION.resolve(action)
     if aerr:
         return error(aerr)

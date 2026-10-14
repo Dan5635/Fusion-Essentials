@@ -26,9 +26,9 @@ _PLANE = _inputs.PlaneRef("plane", default="xy",
 
 def handler(plane: str = "xy", name: str = "", on_face: str = "") -> dict:
     """Create a new sketch on an origin/construction plane OR on an existing planar face (on_face)."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # on_face (a GeometryHandle input) takes precedence - closes the 'sketch on a face' gap.
     # The input-kind resolves+validates the handle to a PLANAR face (or returns a clear error),

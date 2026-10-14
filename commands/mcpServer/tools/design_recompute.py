@@ -21,9 +21,9 @@ app = adsk.core.Application.get()
 
 def handler() -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     errors_before, _wb, _ = _timeline_health(design)
     joints_before = _driven_joint_snapshot(design)
     try:

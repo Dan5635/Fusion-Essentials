@@ -12,7 +12,7 @@ import json
 import adsk.core
 import adsk.fusion
 
-from ._common import counted, measured, occurrence_world_translation, read_flag, safe
+from ._common import counted, error, measured, occurrence_world_translation, read_flag, safe
 
 app = adsk.core.Application.get()
 
@@ -936,8 +936,7 @@ def _verification_failed(post, ex, payload=None):
                     note=f"The mutation may have succeeded, but its verification could not run ({detail}). "
                          "Nested results are handler-reported, not confirmation. " + reread)
         message = f"{post.name}: verification could not run - {detail}"
-    return {"content": [{"type": "text", "text": json.dumps(
-                body, indent=2)}], "isError": True, "message": message}
+    return error(body["note"], body, message=message)
 
 
 def _check_input_keys(handler, posts):
@@ -1010,13 +1009,11 @@ def wrap(handler, postconditions):
                                                                   "reason": reason}
                     continue
                 reread = f"Re-read with {p.read_tool}." if p.read_tool else "Re-read the affected state."
-                return {"content": [{"type": "text", "text": json.dumps(
-                            {"postcondition": p.name, "note": reason + " " + reread
-                             + " Nested results are handler-reported, not confirmation; inspect before retrying.",
-                             "handler_reported_unverified_result": payload,
-                             "verification_evidence": evidence or {}}, indent=2)}],
-                        "isError": True,
-                        "message": f"{p.name}: {reason}"}
+                body = {"postcondition": p.name, "note": reason + " " + reread
+                        + " Nested results are handler-reported, not confirmation; inspect before retrying.",
+                        "handler_reported_unverified_result": payload,
+                        "verification_evidence": evidence or {}}
+                return error(body["note"], body, message=f"{p.name}: {reason}")
             for k, v in (evidence or {}).items():
                 payload.setdefault(k, v)
         content[0]["text"] = json.dumps(payload, indent=2)

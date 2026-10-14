@@ -7,7 +7,6 @@ fingerprint). include=['tree'|'timeline'|'mode'|'configurations'|'materials'|'ap
 'attributes'|'definition'|'datums'] pulls one deeper slice at a time via _slice_*() helpers. Read-only.
 """
 
-import json
 from itertools import islice
 
 import adsk.core
@@ -17,6 +16,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe, terse
+from ._common import normalize_include as _normalize_include, unwrap as _unwrap
 from . import _common
 from . import _edit_feature_common
 from . import _cam_common
@@ -45,17 +45,6 @@ _DEFAULT_NAMES = ("default",)
 # ── slice helpers - each builds one slice's payload ────────────────────────────────────────────────
 # mode/health delegate to get_mode_handler/health_handler; tree/timeline/configurations read
 # directly. _unwrap decodes a handler's ok() result.
-
-def _unwrap(result):
-    """Decode a handler's result -> (payload_dict, None) on ok, or (None, error_result) on error
-    so the caller can surface a slice's own guard (e.g. timeline raises in direct mode)."""
-    if result.get("isError"):
-        return None, result
-    try:
-        return json.loads(result["content"][0]["text"]), None
-    except Exception:
-        return None, result
-
 
 def _slice_mode(design):
     """The modelling-mode + capability map (via _design_common.get_mode_handler)."""
@@ -1271,9 +1260,9 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
             attribute_group: str = "", attribute_key: str = "", feature: str = "",
             units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     inc = _normalize_include(include)
     bad = [s for s in inc if s not in _SLICES and s not in _DEFAULT_NAMES]
@@ -1404,15 +1393,6 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
         from . import _design_common
         out["note"] = (out.get("note", "") + _design_common.OPEN_EDIT_CAVEAT).strip()
     return ok(out)
-
-
-def _normalize_include(include):
-    """Accept include as a list, a comma-string, or a single slice name; -> a list of slice names."""
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
 
 
 TOOL_DESCRIPTION = (

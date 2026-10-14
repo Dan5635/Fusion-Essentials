@@ -8,16 +8,16 @@ before/after timeline-health guard (a delete that introduces a new error is repo
 still standing). The fake CAPTURES the deleteMe call so a regression to a wrong method name fails
 here.
 """
-
 import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+
 from conftest import (FakeJoint, FakeOccurrence, FakeTimeline, FakeTimelineObject, MakeComp,
                       _NamedCollection, error_message, install, load_tool, make_design, payload)
 
 dd = load_tool("design_delete_occurrence")
 
-_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
 _WARNING = _api_facts.ENUMS["fusion.FeatureHealthStates"]["WarningFeatureHealthState"]
-_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 
 # ── fakes ────────────────────────────────────────────────────────────────────

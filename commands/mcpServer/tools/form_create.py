@@ -253,9 +253,9 @@ def handler(primitive=None, cage=None, origin=None, name: str = "", component: s
             verr = verr and f"in cm, moved by 'origin', {verr}"
         if verr:
             return error(f"The cage was refused before Fusion saw it: {verr}")
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     good, mode_err = _PARAMETRIC_GUARD.check(design)
     if not good:
         return mode_err

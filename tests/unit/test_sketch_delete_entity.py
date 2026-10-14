@@ -11,7 +11,6 @@ collection so the before/after counts genuinely change (a delete that doesn't sh
 collection must FAIL).
 """
 
-import json
 
 import pytest
 
@@ -139,9 +138,7 @@ def _install(sketch):
     return install(sd, make_design(sketches=[sketch]))
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _sketch():

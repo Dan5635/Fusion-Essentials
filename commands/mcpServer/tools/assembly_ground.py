@@ -27,9 +27,9 @@ def handler(occurrence: str = "", ground_to_parent=None) -> dict:
     if ground_to_parent is None:
         return error("Specify 'ground_to_parent' (true/false): true locks the occurrence to its "
                      "parent; false releases it.")
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     # The shared OccurrenceRef logic: an entityToken handle (the exact identity) or a
     # fullPathName/name, REFUSING an ambiguous one instead of grabbing the first instance.
     occ, occ_err = _inputs._resolve_occurrence(occurrence, occurrence)

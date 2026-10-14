@@ -1,4 +1,7 @@
 """Unit tests for model_fillet.py - the fillet shapes, the edge scope and the rule fillet."""
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import math
 import pytest
@@ -182,7 +185,7 @@ class FakeCountingFeature:
     # constant, not the fillet's setting.
     FEATURE_FLAG = True
 
-    def __init__(self, name, faces, health=0, message="", tangent=None, cut_edges=None):
+    def __init__(self, name, faces, health=_HEALTHY, message="", tangent=None, cut_edges=None):
         self.name = name
         self.faces = _NamedCollection([None] * faces)
         self.healthState = health
@@ -1257,7 +1260,7 @@ class TestFilletGuardsBite:
         # A mis-ordered variable chain yields healthState 2 with NO message and 0 faces. Reading
         # only the face count would blame a tangent edge - a cause that observation cannot support.
         ff, _ = _install_edge_handles({"E1": _edge_ent("Bracket")})
-        ff.result = FakeCountingFeature("Fillet1", faces=0, health=2, message="")
+        ff.result = FakeCountingFeature("Fillet1", faces=0, health=_ERROR, message="")
         res = fl.handler(fillet_type="variable", edges=["E1"], radius=2, end_radius=5,
                                  units="mm")
         assert res["isError"] is True
@@ -1267,7 +1270,7 @@ class TestFilletGuardsBite:
 
     def test_a_failed_feature_passes_fusions_own_message_through(self):
         ff, _ = _install_edge_handles({"E1": _edge_ent("Bracket")})
-        ff.result = FakeCountingFeature("Fillet1", faces=0, health=2,
+        ff.result = FakeCountingFeature("Fillet1", faces=0, health=_ERROR,
                                         message="radius too large for the edge")
         res = fl.handler(edges=["E1"], radius=2, units="mm")
         assert res["isError"] is True and "radius too large for the edge" in res["message"]

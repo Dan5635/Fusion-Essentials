@@ -1,4 +1,5 @@
 """Focused design-local sheet-metal rule edit checks."""
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -15,7 +16,7 @@ def rule_design(monkeypatch):
     source = SimpleNamespace(name="Steel (mm)")
     local = SimpleNamespace(count=0)
     design = SimpleNamespace(designSheetMetalRules=local)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((source, "library"), None))
     monkeypatch.setattr(mod._sheet_common, "matching_rules", lambda *args: [])
     return design, source
@@ -39,7 +40,7 @@ def test_update_refuses_library_rule(rule_design):
 def test_real_empty_rule_collection_path_names_initializer_before_copy(monkeypatch, local):
     design = SimpleNamespace(designSheetMetalRules=local)
     source = SimpleNamespace(name="Library source")
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((source, "library"), None))
     result = mod.handler(action="copy", rule="library:Library source", name="Unused copy")
     assert result["isError"] and "model_create_component(sheet_metal=true)" in result["message"]
@@ -52,7 +53,7 @@ def test_unread_slot_is_not_treated_as_an_empty_uninitialized_collection(monkeyp
     writes = []
     local.addByCopy = lambda *args: writes.append(args)
     design = SimpleNamespace(designSheetMetalRules=local)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((SimpleNamespace(name="Source"), "library"), None))
     result = mod.handler(action="copy", rule="library:Source", name="Copy")
     assert result["isError"] and "sheet_get" in result["message"]
@@ -70,7 +71,7 @@ def test_unread_count_names_conditional_initializer_without_attempting_copy(monk
     local = UnreadCount(items=[])
     writes = []
     local.addByCopy = lambda *args: writes.append(args)
-    monkeypatch.setattr(mod._common, "design", lambda: SimpleNamespace(designSheetMetalRules=local))
+    _install_design(mod, SimpleNamespace(designSheetMetalRules=local))
     monkeypatch.setattr(mod._RULE, "resolve", lambda raw: ((SimpleNamespace(name="Source"), "library"), None))
     result = mod.handler(action="copy", rule="library:Source", name="Copy")
     assert result["isError"] and "If uninitialized" in result["message"]
@@ -94,7 +95,7 @@ def test_literal_ordinal_collision_refuses_then_disclosed_refs_edit_only_each_in
              for name, expr, cm in [("Steel (mm)", "1.2 mm", .12),
                                    ("Steel (mm)", "2.50 mm", .25), ("Steel (mm)#1", "3 mm", .3)]]
     design = SimpleNamespace(designSheetMetalRules=_NamedCollection(items=rules))
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     refs = [mod._sheet_common.rule_ref_and_index(design, r, "design")[0] for r in rules]
     assert refs == [{"scope": "design", "index": 0, "name": "Steel (mm)"}, "design:Steel (mm)#2",
                     {"scope": "design", "index": 2, "name": "Steel (mm)#1"}]
@@ -115,8 +116,7 @@ def test_literal_ordinal_collision_refuses_then_disclosed_refs_edit_only_each_in
                                   {"scope": "Design", "index": 0}, {"scope": "design", "index": 0, "extra": 1}])
 def test_rule_index_ref_rejects_invalid_selectors_before_assignment(monkeypatch, raw):
     rule = SimpleNamespace(name="Steel (mm)", kFactor=.44)
-    monkeypatch.setattr(mod._common, "design", lambda: SimpleNamespace(
-        designSheetMetalRules=_NamedCollection(items=[rule])))
+    _install_design(mod, SimpleNamespace(designSheetMetalRules=_NamedCollection(items=[rule])))
     result = mod.handler(action="update", rule=raw, k_factor=.7)
     assert result["isError"] is True and "ref" in result["message"]
     assert rule.kFactor == .44
@@ -126,7 +126,7 @@ def test_unread_native_rule_slot_cannot_shift_a_disclosed_collision_index(monkey
     first = SimpleNamespace(name="Steel (mm)", kFactor=.44)
     literal = SimpleNamespace(name="Steel (mm)#1", kFactor=.44)
     design = SimpleNamespace(designSheetMetalRules=_NamedCollection(items=[first, None, literal]))
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     assert mod._sheet_common.rule_ref_and_index(design, literal, "design") == (None, None)
     result = mod.handler(action="update", rule={"scope": "design", "index": 1, "name": "Steel (mm)#1"},
                          k_factor=.7)
@@ -138,8 +138,7 @@ def test_index_ref_whose_rule_name_changed_is_refused_and_edits_nothing(monkeypa
     # An earlier delete compacts the collection, so the ref's index now holds another rule.
     target = SimpleNamespace(name="FW2 Target", kFactor=.44)
     tail = SimpleNamespace(name="FW3 Tail", kFactor=.44)
-    monkeypatch.setattr(mod._common, "design", lambda: SimpleNamespace(
-        designSheetMetalRules=_NamedCollection(items=[SimpleNamespace(name="Steel (mm)"), target, tail])))
+    _install_design(mod, SimpleNamespace(designSheetMetalRules=_NamedCollection(items=[SimpleNamespace(name='Steel (mm)'), target, tail])))
     stale = mod.handler(action="update", rule={"scope": "design", "index": 2, "name": "FW2 Target"}, k_factor=.31)
     assert stale["isError"] is True
     assert "index 2 is now 'FW3 Tail', not 'FW2 Target'" in stale["message"]
@@ -158,8 +157,7 @@ def relief_rule(monkeypatch):
     collection = _NamedCollection(items=[rule])
     rule.deleteMe = lambda: collection._items.remove(rule) is None
     design = SimpleNamespace(designSheetMetalRules=collection)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
-    monkeypatch.setattr(mod._inputs._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._sheet_common, "relief_enum", lambda field, label: field + ":" + label)
     return design, rule
 

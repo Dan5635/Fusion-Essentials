@@ -16,6 +16,7 @@ The snap-input resolution lives in _joint_inputs.py; here the fakes accept
 opaque tokens so we pin the orchestration (rollTo, which setters fire, value
 conversion) deterministically.
 """
+from conftest import install as _install_design
 
 import json
 import math
@@ -1161,7 +1162,7 @@ class TestEditIsNotPendingGuarded:
 
 class TestEditRotationRedirect:
     def test_rotation_deg_redirects_to_joint_drive(self, monkeypatch):
-        monkeypatch.setattr(jt._common, "design", lambda: SimpleNamespace())
+        _install_design(jt, SimpleNamespace())
         # find_joint answers (jt, ambiguity_error_or_None) - a name several joints share refuses.
         monkeypatch.setattr(jt, "_find_joint", lambda design, name: (FakeJoint(name="J"), None))
         out = jt.handler(joint_name="J", rotation_deg=45)
@@ -1254,7 +1255,7 @@ def _edit_rig(monkeypatch, j, design=None):
 
 class TestEditGuards:
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(jt._common, "design", lambda: None)
+        _install_design(jt, None)
         res = jt.handler(joint_name="J", flip=True)
         assert res["isError"] is True and "No active design" in res["message"]
 

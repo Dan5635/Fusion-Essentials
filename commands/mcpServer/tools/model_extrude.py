@@ -17,6 +17,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, scale, target_component, root_body_advisory
+from ._edge_common import _qualified_body_name
 from . import _common
 from . import _geom
 from . import _inputs
@@ -208,18 +209,6 @@ def _through_all_direction_key(symmetric, distance):
     except (TypeError, ValueError):
         pass
     return "positive"
-
-
-def _qualified_body_name(body):
-    """The body's name qualified with its owning component or occurrence path, so two bodies sharing
-    Fusion's default 'Body1' read distinctly in the 'scoped_to_bodies' echo."""
-    if body is None:
-        return None
-    name = safe(lambda: body.name)
-    ctx = _inputs._body_context(body)
-    if name and ctx and ctx not in ("?", name):
-        return f"{ctx}/{name}"
-    return name
 
 
 def _solo_solid_body(comp):
@@ -566,9 +555,9 @@ def handler(sketch_name: str = "", profile_index=0, distance: float = 0.0,
     if op_key not in _common.OPERATIONS:
         return error(f"Unknown operation '{operation}'. Use: new, join, cut, intersect.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     root = target_component(design)
     selected_profile = None

@@ -127,9 +127,9 @@ def _weld(coords, coord_idx):
 def handler(body: str = "", quality: str = "normal", name: str = "", surface_tolerance=None,
             max_edge_length=None, normal_deviation_deg=None, units: str = "mm") -> dict:
     """Tessellate a BRep solid/surface into a persistent MeshBody in the design. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     src, berr = _SAVE_BODY.resolve(body)
     if berr:

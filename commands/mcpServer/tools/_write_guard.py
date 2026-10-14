@@ -197,9 +197,8 @@ def _refusal(expect, name, urn):
             "letter case; a name must match exactly. Refused WITHOUT writing. Call doc_get and "
             "retry with the target row's document_handle, activating that handle first if it is "
             "not the active document.")
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True, "message": "active_document_changed: expected %r, active is %r"
-            % (expect, name)}
+    return _common.error(payload["note"], payload,
+        message="active_document_changed: expected %r, active is %r" % (expect, name))
 
 
 def _unknown_handle_refusal(expect, name, urn):
@@ -214,9 +213,8 @@ def _unknown_handle_refusal(expect, name, urn):
                  "reload. Refused WITHOUT writing. Call doc_get and retry with the target row's "
                  "current document_handle."),
     }
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True,
-            "message": "unknown_document_handle: %r cannot be resolved; call doc_get" % expect}
+    return _common.error(payload["note"], payload,
+        message="unknown_document_handle: %r cannot be resolved; call doc_get" % expect)
 
 
 def _open_documents():
@@ -273,9 +271,8 @@ def _scan_refusal(expect, name, urn):
         "note": ("Open-document names did not establish a unique target for expect_document %r. "
                  "Refused WITHOUT writing. Call doc_get and retry with the exact document_handle." % expect),
     }
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True,
-            "message": "document_collection_unreadable: pass expect_document as an exact handle"}
+    return _common.error(payload["note"], payload,
+        message="document_collection_unreadable: pass expect_document as an exact handle")
 
 
 def _collision_refusal(expect, candidates):
@@ -303,9 +300,9 @@ def _collision_refusal(expect, candidates):
                  "document_handle from doc_get or the lineage URN. Activate that same address first. "
                  "Session handles expire on close/add-in reload; open_index is positional."),
     }
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True, "message": "ambiguous_document_name: %d open docs named '%s' - pass the URN"
-            % (len(candidates), expect)}
+    return _common.error(payload["note"], payload,
+        message="ambiguous_document_name: %d open docs named '%s' - pass the URN"
+                % (len(candidates), expect))
 
 
 def one_open_document(document_ids):
@@ -404,8 +401,8 @@ def _auto_dimension_command_refusal():
                  "For future drawing_create calls, use auto_dimension='off'. "
                  "Refused WITHOUT writing."),
     }
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True, "message": f"active_command: {command}; finish or cancel it in Fusion"}
+    return _common.error(payload["note"], payload,
+        message=f"active_command: {command}; finish or cancel it in Fusion")
 
 
 def wrap(handler):

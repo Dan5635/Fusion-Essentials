@@ -19,6 +19,13 @@ import time   # noqa: F401 - surface: a consumer stubs tool_verify.time.sleep
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import machine_config  # noqa: E402
+
+if __name__ == "__main__":
+    machine_config.configure_cli(sys.argv[1:])
+    if not ({"--check", "--help", "-h"} & set(sys.argv[1:])):
+        machine_config.require()
+
 import cloud_config  # noqa: E402
 
 if __name__ == "__main__":
@@ -124,10 +131,14 @@ verify_core.bind_facade(globals())
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument("--config", metavar="PATH",
+                    help="required machine configuration; overrides FUSION_ESSENTIALS_SWEEP_CONFIG")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--full-scope", action="store_true",
                     help="with --check: require full admitted recorded scope; quarantine stays excluded")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--accept-open-work", action="store_true",
+                    help="explicitly accept already-modified open documents; owned resume handles alone are exempt")
     ap.add_argument("--keep-open", action="store_true",
                     help="leave only the last requested family's scratch document open for inspection")
     ap.add_argument("--shots", metavar="DIR", default=None,
@@ -164,4 +175,4 @@ if __name__ == "__main__":
                                             shots_dir=shots, acts_spec=args.acts,
                                             run_id=args.run_id, resume=args.resume,
                                             families_spec=args.families,
-                                            continue_families=args.continue_families))
+                                            continue_families=args.continue_families, accept_open_work=args.accept_open_work))

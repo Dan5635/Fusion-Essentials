@@ -7,7 +7,7 @@ import math
 import json
 
 from verify_core import (
-    Independent,
+    Independent, scope_unit,
     _activated, _box, _document_closed, _home_address, _new_document,
     _RECALL, _chamfered, _component_metadata, _ctx_get, _cut_on_its_pivot, _datum, _datum_plane, _drafted, _drafted_on_its_pivot, _drafted_symmetric, _drilled, _extent_measured, _extruded, _face_up_at, _fg, _fgn, _filleted, _gap_measured, _home_document, _joint_origin_at, _lofted, _made_component, _material_assigned, _matched, _measured, _metadata_set, _mirrored, _moved_occurrence, _captured, _near, _needs, _num, _offset_faces, _param_read, _param_traced, _patterned, _prof, _recall, _refused, _relation_measured, _relation_passes, _relation_read, _replaced_on_its_pivot, _sits_on_a_face, _swept, _unless, _watch)
 from verify_acts_cam import (
@@ -3140,7 +3140,8 @@ def _side_disclosure_rows():
         rows.append(("doc_close", lambda c, key=key: {
             "name": _ctx_get(c, key + "_doc", "side scratch"), "save_changes": False,
             "expect_document": _ctx_get(c, home, "home")}, _document_closed, None))
-    return rows
+    return scope_unit(rows, ["native_script", "cloud_tier", "library_writes",
+                             "preference_writes", "addin_reload"])
 
 
 _SOLIDS += _side_disclosure_rows()

@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 import pytest
 from conftest import BRepBody, BRepFace, FakePoint, load_tool
-from _sketch_fakes import FakeSketch, _datum, _payload, draw_installer
+from tests.fakes.sketch_scenarios import FakeSketch, _datum, _payload, draw_installer
 
 sk = load_tool("sketch_create")
 _install_draw = draw_installer(sk)

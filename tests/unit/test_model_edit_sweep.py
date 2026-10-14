@@ -1,4 +1,5 @@
 """Checks sweep operand replacement and its failure evidence."""
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 import os
@@ -6,6 +7,7 @@ import sys
 
 import adsk.fusion
 import pytest
+from tests.fakes.design import _injected_roll
 
 from conftest import (FakeTimeline, FakeTimelineObject, Profile, Sketch, SketchCurves,
                       _NamedCollection, error_message, load_tool, payload)
@@ -144,7 +146,7 @@ def rig(monkeypatch):
         {"feature": (sweep, "Sweep1"), "action": _raw["action"],
          "operation": _raw.get("operation"), "target_bodies": _raw.get("target_bodies")}, None))
     monkeypatch.setattr(mod, "_target_error", lambda *_args: None)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._common, "same_component", lambda *_args: True)
     monkeypatch.setattr(mod, "_operand_error", lambda *_args: None)
     monkeypatch.setattr(mod._sweep_common, "resolve_profile", lambda *_args: (
@@ -1226,3 +1228,13 @@ def test_sweep_operation_witness_requires_participant_result_body_identity(monke
     payload["result_bodies_after"] = [{**participant, "token": "unrelated-body-token"}]
     with pytest.raises(AssertionError, match="public Sweep edit read-back"):
         check(payload)
+
+
+@pytest.mark.parametrize("mode", ["false", "truthy", "noop", "raise"])
+def test_sweep_roll_refusal_keeps_words_assignments_and_restore(rig, monkeypatch, mode):
+    sweep, timeline = rig
+    monkeypatch.setattr(sweep.timelineObject, "rollTo", _injected_roll(timeline, 1, mode))
+    text = error_message(mod.handler(feature="Sweep1", action="profile", profile="X"))
+    why = "injected roll failure" if mode == "raise" else "Fusion refused the Sweep edit position."
+    assert why in text
+    assert (sweep.assignments, timeline.markerPosition, sweep.profile) == (0, 3, "old")

@@ -150,9 +150,9 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
                      f"{round(frac_one + frac_two, 6)} - the two directions together cannot cover "
                      "more than the whole path (1.0).")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     left = []

@@ -8,6 +8,7 @@ depths costs a caller the heavy read they did not ask for, and reads green on a
 'the right one ran' assertion alone). The walk tests pin that the summary reaches sketches in
 SUB-components and tags each row with its owner.
 """
+from conftest import install as _install_design
 
 import json
 import sys
@@ -171,7 +172,7 @@ class TestSketchSummaryWalk:
         frame = self._comp("Frame", ["FrameSketch"])
         ring = self._comp("OuterRing", ["OuterRingSketch"])
         d = make_design(comp=root, all_components=[root, frame, ring])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         res = sketches._list_sketches()
         payload = json.loads(res["content"][0]["text"])
         assert payload["sketch_count"] == 2
@@ -183,7 +184,7 @@ class TestSketchSummaryWalk:
         frame = self._comp("Frame", ["Sketch1"])
         ring = self._comp("OuterRing", ["Sketch1"])
         d = make_design(comp=root, all_components=[root, frame, ring])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
 
     def test_the_component_scope_narrows_the_list_to_that_component(self, monkeypatch):
         # Both components hold a "Sketch1" (Fusion numbers per component from 1), so the OWNER is
@@ -210,7 +211,7 @@ class TestSketchSummaryWalk:
                         entity_token="comp-root")
         d = make_design(comp=comp, all_components=[comp],
                         timeline=make_timeline("OnFace", "OnPlane", marker=2))
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         payload = json.loads(sketches._list_sketches()["content"][0]["text"])
         rows = {r["name"]: r for r in payload["sketches"]}
         # a BOOLEAN under its OWN key: 'on_face' is the RECORD sketch_get(sketch_name=...) returns,
@@ -236,7 +237,7 @@ class TestSketchSummaryWalk:
                         occurrences=[self._occ("Frame:1", frame),
                                      self._occ("OuterRing:1", ring)])
         d = make_design(comp=root, all_components=[root, frame, ring])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         payload = json.loads(sketches._list_sketches("")["content"][0]["text"])
         assert payload["sketch_count"] == 2
         assert all("component_paths" not in r for r in payload["sketches"])
@@ -250,7 +251,7 @@ class TestSketchSummaryWalk:
         small = self._comp("Plate", ["PlateSketch"])
         root = self._comp("Root")
         d = make_design(comp=root, all_components=[root, big, small])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         res = sketches._list_sketches(scope, max_results)
         return json.loads(res["content"][0]["text"])
 
@@ -309,7 +310,7 @@ class TestSketchSummaryWalk:
                         occurrences=[self._occ("P2a-Gimbal:1+Frame:1", a),
                                      self._occ("P3-Gimbal:1+Frame:1", b)])
         d = make_design(comp=root, all_components=[root, a, b])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         assert a.entityToken == b.entityToken        # the fixture models the collision, or it lies
 
     def test_an_ambiguous_scope_publishes_each_placement_exactly_once(self, monkeypatch):
@@ -353,7 +354,7 @@ class TestSketchSummaryWalk:
                                      self._occ("P3-Gimbal:1+Frame:1", frame_b),
                                      self._occ("P3-Gimbal:1+Carrier:1", car_b)])
         d = make_design(comp=root, all_components=[root, frame_a, frame_b, car_a, car_b])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
 
     def test_a_scoped_call_gets_only_ITS_names_placements(self, monkeypatch):
         # MEASURED defect: asking about 'Frame' returned 16 placements - every placement of every
@@ -405,7 +406,7 @@ class TestSketchSummaryWalk:
                                      self._occ("P3-Gimbal:1+Frame:1", b),
                                      self._occ("Bolt:1", bolt)])
         d = make_design(comp=root, all_components=[root, a, b, bolt])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         payload = json.loads(sketches._list_sketches("")["content"][0]["text"])
         assert payload["sketch_count"] == 3
         assert [p["path"] for p in payload["placements"]] == [
@@ -419,7 +420,7 @@ class TestSketchSummaryWalk:
                          profiles=[Profile(), Profile(), Profile()])
         root = MakeComp(name="Root", sketches=[sk], entity_token="comp-root")
         d = make_design(comp=root, all_components=[root])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
 
     def test_a_deferred_row_is_flagged_and_the_note_names_the_remedy(self, monkeypatch):
         # The list is where profile_count is met first, and a stale one reads exactly like a fresh

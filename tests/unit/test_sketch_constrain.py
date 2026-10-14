@@ -11,6 +11,7 @@ method each constraint routes to + what it needs), and the read-back gates on th
 geometry. The actual constraint creation is captured on a fake GeometricConstraints whose add*
 methods refuse the operand kinds the live bindings refuse.
 """
+from conftest import install as _install_design
 
 import ast
 import json
@@ -441,7 +442,7 @@ def _wire_curved_face(monkeypatch, design, handle="CYL"):
     monkeypatch.setattr(adsk.fusion, "BRepFace", _CurvedFace)
     monkeypatch.setattr(design, "findEntityByToken",
                         lambda h, _f=_CURVED_FACE: [_f] if h == handle else [], raising=False)
-    monkeypatch.setattr(sc._inputs._common, "design", lambda: design)
+    _install_design(sc, design)
 
 
 def _two_line_sketch():

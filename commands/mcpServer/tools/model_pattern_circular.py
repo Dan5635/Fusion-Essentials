@@ -30,9 +30,9 @@ def handler(occurrences: str = "", bodies=None, quantity: int = 4, total_angle_d
     """Pattern component occurrences OR bodies evenly around an axis."""
     if int(quantity) < 2:
         return error("quantity must be >= 2 for a circular pattern.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document with components first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies, features, faces)
     if rerr:

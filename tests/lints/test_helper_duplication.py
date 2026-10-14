@@ -1,7 +1,8 @@
 """Lint: a shared helper lives in exactly ONE module - its home (AGENTS.md "Reuse before you write").
 A denylisted symbol (one optional leading underscore allowed) is defined in its home module and
 nowhere else under tools/; a same-named definition doing a different job takes an _ALLOWLIST entry.
-Two shared VALUE shapes are matched by shape below, since a renamed copy slips a name denylist."""
+Two shared VALUE shapes and identical function bodies are matched by shape below, since a renamed
+copy slips a name denylist."""
 
 import ast
 import os
@@ -14,6 +15,9 @@ from conftest import TOOLS_DIR
 # Each entry names the ONE file allowed to define it; every other tool module must import it from
 # there instead of re-implementing it.
 _DENYLIST = {
+    # The read primitive is intentionally tiny, but a local three-line copy under `_safe` is
+    # still a different implementation of the same exception-swallowing contract.
+    "safe": ("_read_primitives", "def"),
     "read_extrude_definition": ("_edit_feature_common", "def"),
     "read_sweep_definition": ("_edit_feature_common", "def"),
     "feature_definition": ("_edit_feature_common", "def"),
@@ -716,3 +720,165 @@ class TestSharedValueMapsAreNotReRolled:
             "a local world-axis x/y/z -> unit-vector map re-rolls _inputs._AXIS_VECS - import and "
             "use it (or the AxisRef kind, which also accepts an edge/face handle):\n  "
             + "\n  ".join(offenders))
+
+
+def _function_body_key(node):
+    """Return a stable AST key for a function body, excluding its name and location."""
+    return ast.dump(ast.Module(body=node.body, type_ignores=[]),
+                    annotate_fields=True, include_attributes=False)
+
+
+def _function_defs(path):
+    """Return module-local function definitions, including nested helper functions."""
+    return [node for node in ast.walk(_corpus.tree(path))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _body_duplicate_groups(min_statements=5):
+    """Return identical function bodies defined in more than one tool module."""
+    groups = {}
+    for fn in _all_tool_files():
+        path = os.path.join(TOOLS_DIR, fn)
+        for node in _function_defs(path):
+            if len(node.body) < min_statements:
+                continue
+            groups.setdefault(_function_body_key(node), []).append(
+                (fn, node.name, node.lineno, len(node.body)))
+    return [sorted(rows) for rows in groups.values()
+            if len({row[0] for row in rows}) > 1]
+
+
+def _cam_product_resolver(node):
+    """True for a direct CAMProductType lookup outside the CAM helper home."""
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "itemByProductType"
+            and any(isinstance(arg, ast.Constant) and arg.value == "CAMProductType"
+                    for arg in node.args))
+
+
+def _xyz_read_tuple(node):
+    """True for a direct tuple/list of x, y and z reads from one parameter."""
+    if not isinstance(node, (ast.Tuple, ast.List)) or len(node.elts) != 3:
+        return False
+    bases = []
+    attrs = []
+    for elt in node.elts:
+        if not isinstance(elt, ast.Attribute) or not isinstance(elt.value, ast.Name):
+            return False
+        bases.append(elt.value.id)
+        attrs.append(elt.attr)
+    return len(set(bases)) == 1 and attrs == ["x", "y", "z"]
+
+
+def _xyz_helper(node):
+    """True for a local `_xyz` whose return directly exposes one point's coordinates."""
+    return (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in {"_xyz", "xyz"}
+            and any(isinstance(stmt, ast.Return) and _xyz_read_tuple(stmt.value)
+                    for stmt in node.body))
+
+
+def _active_design_guard(node):
+    """True for the repeated inline `if not design: return error('...')` guard."""
+    return (isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name)
+            and node.test.operand.id == "design"
+            and len(node.body) == 1
+            and isinstance(node.body[0], ast.Return)
+            and isinstance(node.body[0].value, ast.Call)
+            and isinstance(node.body[0].value.func, ast.Name)
+            and node.body[0].value.func.id == "error"
+            and bool(node.body[0].value.args)
+            and isinstance(node.body[0].value.args[0], ast.Constant)
+            and isinstance(node.body[0].value.args[0].value, str))
+
+
+def _outside_home_offenders(predicate, home_names):
+    """Return `file:line` matches outside the named helper modules."""
+    out = []
+    for fn in _all_tool_files():
+        if fn in {name + ".py" for name in home_names}:
+            continue
+        for node in ast.walk(_corpus.tree(os.path.join(TOOLS_DIR, fn))):
+            if predicate(node):
+                out.append(f"{fn}:{getattr(node, 'lineno', '?')}")
+    return out
+
+
+class TestSharedHelpersHaveOneBody:
+    def test_no_cross_module_function_body_is_copied_under_a_new_name(self):
+        groups = _body_duplicate_groups()
+        checked = sum(1 for fn in _all_tool_files()
+                      for node in _function_defs(os.path.join(TOOLS_DIR, fn))
+                      if len(node.body) >= 5)
+        assert checked, "nothing was checked: no function body has at least five statements"
+        offenders = ["; ".join(f"{fn}:{line} {name} ({count} statements)"
+                               for fn, name, line, count in group)
+                     for group in groups]
+        assert not offenders, (
+            "identical helper body appears in more than one tool module - import the home helper "
+            "instead of copying it under a new name:\n  " + "\n  ".join(offenders))
+
+
+class TestCanonicalHelperShapes:
+    def test_cam_product_lookup_has_one_home(self):
+        checked = sum(1 for fn in _all_tool_files()
+                      for node in ast.walk(_corpus.tree(os.path.join(TOOLS_DIR, fn)))
+                      if _cam_product_resolver(node))
+        offenders = _outside_home_offenders(_cam_product_resolver, {"_cam_common"})
+        assert checked, "nothing was checked: no CAMProductType lookup was found"
+        assert not offenders, (
+            "direct CAMProductType lookup outside _cam_common - use _cam_common.get_cam so the "
+            "product cast and absent-product refusal stay one contract:\n  "
+            + "\n  ".join(offenders))
+
+    def test_xyz_point_reader_has_one_home(self):
+        offenders = []
+        checked = 0
+        for fn in _all_tool_files():
+            if fn in {"_common.py", "_geom.py"}:
+                continue
+            for node in _function_defs(os.path.join(TOOLS_DIR, fn)):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and node.name in {"_xyz", "xyz"}:
+                    checked += 1
+                if _xyz_helper(node):
+                    offenders.append(f"{fn}:{node.lineno} {node.name}")
+        assert checked, "nothing was checked: no xyz helper was found outside its homes"
+        assert not offenders, (
+            "local xyz reader outside _common/_geom - use the measured coordinate helper so an "
+            "unreadable component is null rather than zero:\n  " + "\n  ".join(offenders))
+
+    def test_active_design_refusal_has_one_home(self):
+        checked = sum(1 for fn in _all_tool_files()
+                      for node in ast.walk(_corpus.tree(os.path.join(TOOLS_DIR, fn)))
+                      if isinstance(node, ast.If))
+        offenders = _outside_home_offenders(_active_design_guard, {"_common"})
+        assert checked, "nothing was checked: no conditional was found"
+        assert not offenders, (
+            "inline no-active-design refusal - call _common.require_design so its wording and "
+            "remedy stay one contract:\n  " + "\n  ".join(offenders))
+
+    def test_wait_pump_does_not_reappear_inside_other_loops(self):
+        offenders = []
+        checked = 0
+        for fn in _all_tool_files():
+            if fn == "_export.py":
+                continue
+            for loop in (node for node in ast.walk(_corpus.tree(os.path.join(TOOLS_DIR, fn)))
+                         if isinstance(node, (ast.For, ast.AsyncFor, ast.While))):
+                checked += 1
+                for call in ast.walk(loop):
+                    if not isinstance(call, ast.Call):
+                        continue
+                    name = call.func.attr if isinstance(call.func, ast.Attribute) else \
+                        getattr(call.func, "id", None)
+                    if name in {"doEvents", "sleep"}:
+                        offenders.append(f"{fn}:{call.lineno}: {name} in a loop")
+        assert checked, "nothing was checked: no loop was found outside _export"
+        assert not offenders, (
+            "unbounded wait primitive outside _export.pump_until - route the asynchronous wait "
+            "through the bounded shared pump:\n  " + "\n  ".join(offenders))

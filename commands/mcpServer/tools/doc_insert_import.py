@@ -468,10 +468,10 @@ def handler(file_path: str = "", format: str = "", into_component: str = "", ske
     if new_document:
         return _import_to_new_document(mgr, fmt, path, before_ws)
 
-    design = _common.design()
-    if not design:
-        return error("No active design to import into. Open or create a document first (see "
-                     "doc_new), or pass new_document=true.")
+    design, design_refusal = _common.require_design(
+        remedy="Open or create a document first (see doc_new), or pass new_document=true.")
+    if design_refusal is not None:
+        return design_refusal
     if fmt == "svg":
         return _import_svg(mgr, design, path, sketch, sketch_component, before_ws)
     if fmt == "dxf":

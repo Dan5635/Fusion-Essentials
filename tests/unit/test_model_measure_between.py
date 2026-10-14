@@ -5,8 +5,8 @@ the closest-point payload, degree conversion, and the guards. Target RESOLUTION 
 (tested in test_inputs.TestTargetRef); here the two resolve seams + the measureManager are stubbed.
 The measureMinimumDistance/measureAngle signatures + return shape are confirmed by live validation.
 """
+from conftest import install as _install_design
 
-import json
 import math
 
 import pytest
@@ -25,14 +25,13 @@ _REAL_A, _REAL_B = mb._A.resolve, mb._B.resolve
 @pytest.fixture(autouse=True)
 def _restore(monkeypatch):
     """Each test stubs _A/_B.resolve + the design + measureManager; restore the resolvers after."""
-    monkeypatch.setattr(mb._common, "design", lambda: object())
+    _install_design(mb, object())
+    monkeypatch.setattr(mb.app, "measureManager", None, raising=False)
     yield
     mb._A.resolve, mb._B.resolve = _REAL_A, _REAL_B
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class _Res:
@@ -51,7 +50,7 @@ def _install_mgr(monkeypatch, result):
     class _Mgr:
         measureMinimumDistance = staticmethod(lambda x, y: result)
         measureAngle = staticmethod(lambda x, y: result)
-    monkeypatch.setattr(mb.app, "measureManager", _Mgr())
+    monkeypatch.setattr(mb.app, "measureManager", _Mgr(), raising=False)
 
 
 class TestDistance:
@@ -508,7 +507,7 @@ class TestEdgeTargets:
             def measureMinimumDistance(self, x, y):
                 seen.append((x, y))
                 return _Res(2.0, FakePoint(0, 0, 0), FakePoint(2, 0, 0))
-        monkeypatch.setattr(mb.app, "measureManager", _Mgr())
+        monkeypatch.setattr(mb.app, "measureManager", _Mgr(), raising=False)
         out = _payload(mb.handler(a="h1", b="h2"))
         # call 0 is the entity pair; the label read-backs that follow measure POINTS against the
         # same 'a', so the edge must be what call 0 measured from.
@@ -591,7 +590,7 @@ class TestGuards:
         class _Mgr:
             def measureMinimumDistance(self, x, y): raise RuntimeError("measurement failed")
             measureAngle = staticmethod(lambda x, y: None)
-        monkeypatch.setattr(mb.app, "measureManager", _Mgr())
+        monkeypatch.setattr(mb.app, "measureManager", _Mgr(), raising=False)
         res = mb.handler(a="A", b="B")
         assert "failed" in error_message(res).lower()
 

@@ -1,4 +1,5 @@
 """Rib/Web owner, extent and material-effect refusal checks."""
+from conftest import install as _install_design
 
 import json
 from types import SimpleNamespace
@@ -39,8 +40,7 @@ def rib(monkeypatch):
 
     coll = SimpleNamespace(createInput=create_input, add=add)
     host.features = SimpleNamespace(ribFeatures=coll, webFeatures=coll)
-    monkeypatch.setattr(mod._common, "design", lambda: design)
-    monkeypatch.setattr(mod._inputs._common, "design", lambda: design)
+    _install_design(mod, design)
     monkeypatch.setattr(mod._BODY, "resolve", lambda raw, scope=None: (body, None))
     monkeypatch.setattr(mod._CURVES, "resolve", lambda raw: ([curve] if raw else [], None))
     monkeypatch.setattr(mod._rib_common, "body_census", lambda comp:

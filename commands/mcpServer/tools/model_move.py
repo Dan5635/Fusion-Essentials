@@ -341,9 +341,9 @@ def handler(mode: str = "translate", bodies=None, faces=None, dx=None, dy=None, 
             return error(f"mode 'point_to_point' needs {' and '.join(missing)} - a vertex handle "
                          "from find_geometry.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     ents, eerr = _BODIES.resolve(bodies)

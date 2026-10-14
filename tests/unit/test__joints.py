@@ -9,7 +9,6 @@ Two readings of ONE joint or JO are modelled the way the API hands them over: ea
 OWN wrapper object and the two share an entityToken. One object placed in both scopes is collapsed
 by any key at all, so it pins no de-dup.
 """
-
 import pytest
 
 import adsk.fusion

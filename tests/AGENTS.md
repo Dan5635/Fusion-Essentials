@@ -73,7 +73,8 @@ frame audit; do not assume the compiler translated them. Use `_px(chunk, x)` and
 for independent world-coordinate expectations when the chunk has an authored offset. Local sketch
 coordinates and occurrence transforms are different frames. Show the current subject and its
 control with `_watch`/the existing framing helpers or an explicit focused `view_set`; an overall
-fit of a document full of distant cases is not useful framing. Read back the camera and inspect
+fit of a document full of distant cases is not useful framing. A focus names an occurrence or a
+sketch the case has already created under that exact name; a root body is not a focus target. Read back the camera and inspect
 PNG pixels under a lease when view quality is part of the claim. Do not change a global camera or
 preference without reading, restoring and checking it on a new document.
 
