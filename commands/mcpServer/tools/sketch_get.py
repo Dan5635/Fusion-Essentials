@@ -11,7 +11,8 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe
-from ._sketch_detail import DEFERRED_NOTE, _detail_engine, _sketch_summary
+from ._sketch_detail import (DEFERRED_NOTE, _ENTITY_PAGE_DEFAULT, _XRAY_CAP,
+                             _detail_engine, _sketch_summary)
 from . import _common
 from . import _inputs
 
@@ -43,9 +44,9 @@ def _list_sketches(component: str = "", max_results: int = 0) -> dict:
     'component' narrows the list, taking the same component name / occurrence path / handle the
     by-name read scopes by. Two components can wear one NAME, so the rows they own are identical -
     top-level 'placements' carries the occurrence paths that tell them apart."""
-    design = _common.design()
-    if not design:
-        return error("No active design (open or create a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comps, scope_error = _detail_engine().scope_components(design, component)
     if scope_error:
         return error(scope_error)
@@ -97,31 +98,35 @@ def _list_sketches(component: str = "", max_results: int = 0) -> dict:
 
 
 def handler(sketch_name: str = "", include_entities: bool = False, units: str = "mm",
-            component: str = "", max_results: int = 0) -> dict:
-    """No 'sketch_name': the summary list, max_results rows per read. With one: that sketch's
-    overview (or the full X-ray with include_entities=true) via the _sketch_detail engine, in
-    'units' (mm). 'component' scopes BOTH shapes to one component - the answer to a sketch name two
-    components share, which Fusion produces by default (it numbers sketches per component from 1)."""
+            component: str = "", max_results: int = 0, entity_offset: int = 0) -> dict:
+    """List sketches or read one sketch's overview or entity X-ray."""
+    if type(entity_offset) is not int or entity_offset < 0:
+        return error(f"'entity_offset' must be a nonnegative integer, got {entity_offset!r}.")
+    if entity_offset and (not (sketch_name or "").strip() or not include_entities):
+        return error("'entity_offset' requires sketch_name and include_entities=true.")
     if (sketch_name or "").strip():
+        if include_entities and (type(max_results) is not int or max_results < 0):
+            return error(f"'max_results' must be a nonnegative integer for an entity X-ray, got {max_results!r}.")
         return _detail_engine().handler(sketch_name=sketch_name, component=component,
-                                        include_entities=include_entities, units=units)
+                                        include_entities=include_entities, units=units,
+                                        entity_offset=entity_offset, max_results=max_results)
     return _list_sketches(component, max_results)
 
 
 TOOL_DESCRIPTION = (
-    "Read the design's sketches, or ONE sketch's overview: counts, constrained state, and profile "
-    "handles for model_extrude."
+    "Read sketches, curves, constraints and profile handles for model_extrude."
 )
 tool = (
     Tool.create_simple(name="sketch_get", description=TOOL_DESCRIPTION)
-    .add_input_property("sketch_name", {"type": "string",
-            "description": "Omit for the paged summary list."})
+    .add_input_property("sketch_name", {"type": "string"})
     .add_input_property("max_results", {"type": "integer",
-            "description": f"Summary rows per read (default {_LIST_CAP})."})
+            "description": f"List default {_LIST_CAP}; X-ray default {_ENTITY_PAGE_DEFAULT} per entity collection, cap {_XRAY_CAP}."})
     .add_input_property("component", {"type": "string",
-            "description": "Component to read within: a name or occurrence fullPathName/handle."})
+            "description": "Name, occurrence path or handle."})
     .add_input_property("include_entities", {"type": "boolean",
-            "description": "Adds the full entity X-ray."})
+            "description": "Entity X-ray."})
+    .add_input_property("entity_offset", {"type": "integer", "minimum": 0,
+            "description": "Skip rows per entity collection; named X-ray only."})
     .add_input_property(*_inputs.UNITS.as_property())
     .strict_schema()
 )

@@ -240,11 +240,11 @@ FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)
 tool = (
     Tool.create_simple(name="drawing_insert_image", description=FULL_DESCRIPTION)
     .add_input_property("image_path", {"type": "string",
-            "description": "Local path of the image."})
+            "description": "Local path."})
     .add_input_property("x", {"type": "number",
-            "description": "Sheet x, in the sheet's coordinate unit."})
+            "description": "In the sheet's coordinate unit."})
     .add_input_property("y", {"type": "number",
-            "description": "Sheet y, in the sheet's coordinate unit."})
+            "description": "In the sheet's coordinate unit."})
     .add_input_property("scale", {"type": "number",
             "description": "Multiplies the image's natural size."})
     .add_input_property("rotate_deg", {"type": "number",
@@ -252,6 +252,8 @@ tool = (
     .strict_schema()
 )
 
+# Images has no count/item getter for an inserted-image read-back.
+# Export the sheet to check; a retry can insert a duplicate.
 item = Item.create_tool_item(
     tool=tool, write="write", handler=handler, run_on_main_thread=True,
     verification=Verification(kind="gap", defect_id="DRAW-2"))

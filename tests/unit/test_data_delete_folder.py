@@ -6,19 +6,13 @@ explicit 'recursive_confirm' token AND surfaces a full-SUBTREE preview so the ca
 sees the blast radius.
 """
 
-import json
 
 import pytest
 
-from conftest import FakeApplication, FakeData, FakeDataFolder, load_tool
+from conftest import FakeApplication, FakeData, FakeDataFolder, load_tool, payload as _payload
 
 dm = load_tool("data_delete_folder")
 dc = load_tool("_data_common")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 def _blind(name, folder_id, files=(), blind_files=True, blind_subs=True):
@@ -30,10 +24,13 @@ def _blind(name, folder_id, files=(), blind_files=True, blind_subs=True):
         folders_raise="3 : subfolders could not be enumerated" if blind_subs else None)
 
 
+_GONE = '3 : 404 - HTTP error\n"STORAGE_NODE_DOES_NOT_EXIST"'
+
+
 @pytest.fixture
 def cloud(monkeypatch):
     """Point the shared cloud seam at a hub whose findFolderById walks `root`'s whole subtree."""
-    def _use(root):
+    def _use(root, after_delete=_GONE):
         index = {}
 
         def walk(folder):
@@ -41,7 +38,19 @@ def cloud(monkeypatch):
             for sub in folder._folders:
                 walk(sub)
         walk(root)
-        monkeypatch.setattr(dc, "app", FakeApplication(data=FakeData(folders_by_id=index)))
+        data = FakeData(folders_by_id=index)
+        registered = data._folders.get
+
+        def find(folder_id):
+            # measured: a deleted folder's lookup raises; after_delete=None keeps it resolving
+            found = registered(folder_id)
+            if found is not None and found._deleted and after_delete is not None:
+                if after_delete is False:
+                    return None
+                raise RuntimeError(after_delete)
+            return found
+        data.findFolderById = find
+        monkeypatch.setattr(dc, "app", FakeApplication(data=data))
     return _use
 
 
@@ -124,6 +133,41 @@ class TestDeleteFolderGate:
         res = _del("root", confirm_name="Root", force=True)   # non-empty, no recursive_confirm
         assert res["isError"] is True
         assert "at least" in res["message"]
+
+
+class TestAbsenceAfterDelete:
+    def test_the_measured_404_raise_is_observed_absence(self, cloud):
+        empty = FakeDataFolder("Empty", folder_id="e")
+        cloud(empty)
+        out = _payload(_del("e", confirm_name="Empty"))
+        assert out["absence_observed"] is True and "absence_unreadable" not in out
+
+    def test_a_folder_that_still_resolves_is_an_error(self, cloud):
+        empty = FakeDataFolder("Empty", folder_id="e")
+        cloud(empty, after_delete=None)
+        res = _del("e", confirm_name="Empty")
+        assert res["isError"] is True and empty._deleted is True
+        assert "still resolved 'e'" in res["message"]
+
+    def test_another_raise_is_unreadable_not_absence(self, cloud):
+        empty = FakeDataFolder("Empty", folder_id="e")
+        cloud(empty, after_delete="3 : 500 - HTTP error")
+        out = _payload(_del("e", confirm_name="Empty"))
+        assert out["absence_observed"] is None and "500" in out["absence_unreadable"]
+
+    def test_a_re_read_returning_no_record_is_not_observed_absence(self, cloud):
+        empty = FakeDataFolder("Empty", folder_id="e")
+        cloud(empty, after_delete=False)
+        out = _payload(_del("e", confirm_name="Empty"))
+        assert out["deleted"] is True and out["absence_observed"] is None
+        assert out["absence_unreadable"].startswith("the re-read returned no record;")
+
+    def test_a_second_delete_meets_the_not_found_wording(self, cloud):
+        empty = FakeDataFolder("Empty", folder_id="e")
+        empty._deleted = True
+        cloud(empty)
+        res = _del("e", confirm_name="Empty")
+        assert res["isError"] is True and "No folder found" in res["message"]
 
 
 class TestDeleteFolderPreviewHoles:

@@ -12,7 +12,8 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe, iter_collection
-from ._cam_common import CHILD_COLLECTIONS, get_cam, resolve_cam_node, setup_names, walk_cam_tree
+from ._cam_common import (CHILD_COLLECTIONS, child_row_names, get_cam, resolve_cam_node,
+                          setup_names, walk_cam_tree)
 
 app = adsk.core.Application.get()
 
@@ -48,6 +49,11 @@ def _sibling_row(cam, nodes, ref_node):
     if ref_node.kind == "setup":
         return ([n for n in nodes if n.kind == "setup"], lambda: setup_names(cam),
                 "the document's setups", _SETUP_COLLECTION)
+    if ref_node.parent.kind == "container":
+        # An additive container answers no 'operations'; its 'children' holds the moved order.
+        return (_row_nodes(nodes, ref_node.parent, ref_node.kind),
+                lambda: child_row_names(ref_node.parent.obj, ref_node.kind),
+                f"'{ref_node.parent.path}'", "children")
     return (_row_nodes(nodes, ref_node.parent, ref_node.kind),
             lambda: _row_names(ref_node.parent.obj, ref_node.kind),
             f"'{ref_node.parent.path}'", CHILD_COLLECTIONS[ref_node.kind])

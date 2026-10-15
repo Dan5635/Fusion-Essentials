@@ -27,6 +27,13 @@ def _text_unit_remedy(refusal, unit, expression):
     return f" - a 'Text' parameter holds a QUOTED literal: pass \"'{expr}'\", not {expr}."
 
 
+def _non_string(label, value):
+    """The refusal for a field that must be a JSON string, naming the value received; else None."""
+    if isinstance(value, str):
+        return None
+    return f"{label} must be a string; received {_common.short_ref(ascii(value))}."
+
+
 def _add_one(design, name, expression, unit, comment, favorite):
     """Add a single user parameter, health-guarded. Returns (result_dict, error_str). On success
     error_str is None; on failure result_dict is None and error_str explains why (param rolled back
@@ -66,21 +73,38 @@ def _add_one(design, name, expression, unit, comment, favorite):
 def handler(name: str = "", expression: str = "", unit: str = "mm",
             comment: str = "", favorite: bool = False, params: list = None) -> dict:
     """Add one (name+expression) or many ('params' list) user parameters. WRITES; health-guarded."""
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # batch path
     if params:
         if not isinstance(params, list):
             return error("'params' must be a list of {name, expression, ...} dicts.")
-        results = []
         for i, spec in enumerate(params):
             if not isinstance(spec, dict):
-                return error(f"params[{i}] must be a dict with 'name' and 'expression'.")
+                return error(f"params[{i}] must be a dict with 'name' and 'expression'. "
+                             "No parameters added.")
+            for required in ("name", "expression"):
+                if required not in spec:
+                    return error(f"params[{i}] is missing '{required}'. No parameters added.")
+                if isinstance(spec[required], str) and not spec[required].strip():
+                    return error(f"params[{i}].{required} is empty. No parameters added.")
+            for field in ("name", "expression", "unit", "comment"):
+                refusal = (_non_string(f"params[{i}].{field}", spec[field])
+                           if field in spec else None)
+                if refusal:
+                    return error(f"{refusal} No parameters added.")
+        for i, spec in enumerate(params):
+            if isinstance(spec, dict) and "favorite" in spec and type(spec["favorite"]) is not bool:
+                value = _common.short_ref(ascii(spec["favorite"]))
+                return error(f"params[{i}].favorite={value} must be JSON true or false. "
+                             "No parameters added; omit favorite to keep the default false.")
+        results = []
+        for i, spec in enumerate(params):
             res, err = _add_one(design, spec.get("name", ""), spec.get("expression", ""),
                                 spec.get("unit", "mm"), spec.get("comment", ""),
-                                bool(spec.get("favorite", False)))
+                                spec.get("favorite", False))
             if err:
                 return error(f"params[{i}]: {err} ({len(results)} added before this).")
             results.append(res)
@@ -88,6 +112,11 @@ def handler(name: str = "", expression: str = "", unit: str = "mm",
         "note": f"{len(results)} user parameters added; timeline verified."})
 
     # single path
+    for field, value in (("name", name), ("expression", expression), ("unit", unit),
+                         ("comment", comment)):
+        refusal = _non_string(field, value)
+        if refusal:
+            return error(f"{refusal} No parameter added.")
     res, err = _add_one(design, name, expression, unit, comment, bool(favorite))
     if err:
         return error(err[0].upper() + err[1:])

@@ -49,9 +49,9 @@ def _mesh_names(comp):
 
 def handler(mesh: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     vals, verr = _inputs.resolve_inputs(_SPEC, {"mesh": mesh})
     if verr:

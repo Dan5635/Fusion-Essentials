@@ -9,13 +9,16 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import CM_TO_UNIT, apply_rename, ok, error, safe, read_flag
+from ._common import (CM_TO_UNIT, apply_rename, named_with_remainder, ok, error, safe, read_flag,
+                      short_ref)
 from ._cam_common import (NONFINITE_POST, PARAM_READ, get_cam, enumeration_remedy,
                           expression_error, matched_quoting, op_primary_state, op_settled,
                           op_state_facts, operation_name_clash, owning_setup, parse_parameters,
                           resolve_cam_node, tool_dimensions, tree_nodes, unquote_expression,
-                          validity_basis)
+                          tool_selector_error, validity_basis)
 from ._cam_presets import resolve_operation_preset
+from . import _cam_additive
+from . import _inputs
 from .cam_create_operation import (_NO_INDEX, _doc_tool_at, _names_the_same_tool, _tool_at,
                                    _tool_facts, index_request_error, tool_index_of)
 # The selection spellings themselves, from the one table cam_select_geometry routes them by.
@@ -372,6 +375,9 @@ def _parameter_state_note(op, cam) -> str:
     return ("The operation reads error; cam_get(include=['operations']) carries the fault to fix "
             "before generation.")
 
+_DISABLED_CLAUSE = (" - this row reads isEnabled false after the call's other writes; set the "
+                    "mode first and write the row this mode enables")
+
 _UNCHANGED_NOTE = ("changed[].unchanged means the requested expression already matched.")
 
 _UNLOCKED_NOTE = ("changed[].unlocked_here means another requested row made it editable first.")
@@ -386,37 +392,116 @@ _LOCKED_REFUSAL = (
 # put back, and no read taken here settles that.
 _WROTE_THEN_RESTORED = (
     "This call WROTE {n} parameter(s) on the operation and then restored each one - every restored "
-    "expression reads back what it held. No other state was read, so re-read the operation with "
+    "expression reads back what it held: {rows}. No other state was read, so re-read the operation with "
     "cam_get(include=['operations']) before relying on it.")
 
 _RESTORE_FAILED = (
-    "This call WROTE {n} parameter(s) on the operation and restored each one, but {bad} did NOT "
-    "come back: {rows}. The operation is left holding those values - set each one back by hand.")
+    "This call WROTE {n} parameter(s) on the operation and restored {k} of {n}; the {unconfirmed}"
+    "{reread}")
+
+# True of a row that reads something else and of one that did not read: each row states which.
+_NOT_CONFIRMED = ("restore of {bad} is NOT confirmed: {rows}. Read each with " + PARAM_READ
+                  + " before relying on it.")
 
 
-def _restore(changed, resolved):
-    """Put every parameter this call wrote back to the expression it held and RE-READ each one;
-    returns the rows whose expression did not come back, as '<name> reads <x>, held <y>'. The
-    restore is a MUTATION and is left to raise - only the read-back is guarded."""
-    failed = []
+# A row put back through its value object: the value reads as it did, the expression does not.
+_VALUE_RESTORED = (
+    "Restored the expression of {k} of {n} parameter(s); {v} came back by VALUE only, the "
+    "expression now a literal: {rows}. {failed}Operation.hasError reads {flag}.{reread}")
+
+
+
+def _unconfirmed(failed) -> str:
+    """The sentence tail naming each row whose restore the re-read did not confirm."""
+    return _NOT_CONFIRMED.format(bad=len(failed), rows="; ".join(failed))
+
+# The rows a refusal names as restored: only those whose restored expression was re-read and matched.
+_REREAD_NAMES = 6
+
+
+def _reread_rows(restored) -> str:
+    """The restored rows, each with its re-read expression, capped with the rest counted."""
+    return named_with_remainder(restored, cap=_REREAD_NAMES)
+
+
+def _reread_clause(restored) -> str:
+    """The trailing sentence naming the rows that did come back beside ones that did not."""
+    return f" Restored and re-read: {_reread_rows(restored)}." if restored else ""
+
+# The typed values a prior read is written back as - never an entity list, never an unread value.
+_SCALARS = (str, bool, int, float)
+
+
+def _restore_value(p, rec, prior, refusal):
+    """(came back, sentence) - write the prior typed value to value.value once and re-read the row."""
+    name, before = rec["name"], rec["before"]
+    refused = f"'{name}' refused its prior {before!r} ({refusal}) and reads "
+    try:
+        p.value.value = prior
+    except Exception as e:
+        return False, (refused + f"{safe(lambda: p.expression)!r}, and value.value refused the "
+                       f"prior value {prior!r} ({e})")
+    back = safe(lambda: p.expression)
+    now = safe(lambda: p.value.value)
+    if now != prior:
+        return False, (refused + f"{back!r}; value.value took the prior value {prior!r} and "
+                       f"reads {now!r}")
+    err = expression_error(p)[0]
+    return True, (f"'{name}' reads value {now!r} and expression {back!r}; CAMParameter.expression "
+                  f"refused its prior expression {before!r} ({refusal}), which was NOT restored"
+                  + (f"; its error reads {err!r}" if err else ""))
+
+
+def _value_restored_clause(restored, valued, failed, op) -> str:
+    """The restore sentence when a row came back by value only, with the operation's error flag."""
+    not_back = f"The {_unconfirmed(failed)} " if failed else ""
+    return _VALUE_RESTORED.format(k=len(restored), n=len(restored) + len(valued) + len(failed),
+                                  v=len(valued), rows="; ".join(valued), failed=not_back,
+                                  flag=_flag_word(read_flag(lambda: op.hasError)),
+                                  reread=_reread_clause(restored))
+
+
+def _restore(changed, resolved, priors):
+    """(re-read rows, value-only rows, rows that did not come back) after restoring every row."""
+    restored, valued, failed = [], [], []
     for rec in changed:
         p = resolved[rec["name"]]
-        p.expression = rec["before"]
+        try:
+            p.expression = rec["before"]
+        except Exception as e:
+            if rec["name"] in priors:
+                came_back, row = _restore_value(p, rec, priors[rec["name"]], e)
+                (valued if came_back else failed).append(row)
+                continue
+            back = safe(lambda p=p: p.expression)
+            failed.append(f"'{rec['name']}' refused its prior {rec['before']!r} ({e}) and reads "
+                          f"{back!r}")
+            continue
         back = safe(lambda p=p: p.expression)
-        if back != rec["before"]:
+        if back is None:
+            failed.append(f"'{rec['name']}' did not read back after the restore, held "
+                          f"{rec['before']!r}")
+        elif back != rec["before"]:
             failed.append(f"'{rec['name']}' reads {back!r}, held {rec['before']!r}")
-    return failed
+        else:
+            restored.append(f"'{rec['name']}' reads {short_ref(back)!r}")
+    return restored, valued, failed
 
 
-def _restored_clause(changed, resolved) -> str:
+def _restored_clause(changed, resolved, priors, op) -> str:
     """The 'what this call did to the operation' sentence a refusal after a write carries: the
     restore and its re-read, worded on whether every expression actually came back."""
     if not changed:
         return "Nothing was applied."
-    failed = _restore(changed, resolved)
+    restored, valued, failed = _restore(changed, resolved, priors)
+    if valued:
+        return (f"This call WROTE {len(changed)} parameter(s) on the operation. "
+                + _value_restored_clause(restored, valued, failed, op))
     if failed:
-        return _RESTORE_FAILED.format(n=len(changed), bad=len(failed), rows="; ".join(failed))
-    return _WROTE_THEN_RESTORED.format(n=len(changed))
+        return _RESTORE_FAILED.format(n=len(changed), k=len(restored),
+                                      unconfirmed=_unconfirmed(failed),
+                                      reread=_reread_clause(restored))
+    return _WROTE_THEN_RESTORED.format(n=len(changed), rows=_reread_rows(restored))
 
 
 # The operation's tool IS the document-library entry: a flute count edited there read back on the
@@ -455,10 +540,43 @@ _WAS_GENERATING_NOTE = (
     "(cam_get_status) and relaunch if the toolpath is missing.")
 
 
+_PARTS = _inputs.OccurrenceRefList(
+    "parts", description="Additive: the occurrences an orientation, support or interference "
+                         "operation acts on.")
+_ADDITIVE_NEXT = ("cam_generate runs it; cam_get(include=['additive_results'], operation=...) reads "
+                  "what it produced.")
+
+
+def _additive_edit(cam, op, name, parts, candidate):
+    """The reply for a parts assignment or an orientation choice on an additive operation."""
+    if parts is not None and candidate is not None:
+        return error("'parts' and 'orientation_candidate' are separate steps: set the parts, "
+                     "generate, then choose a candidate.")
+    if candidate is not None:
+        chosen, reason = _cam_additive.choose_orientation(cam, op, candidate)
+        if reason:
+            return error(reason)
+        return ok({"operation": name, "orientation_candidate": chosen["index"],
+                   "candidate": chosen["candidate"], "part": chosen["part"], "pose": chosen["pose"],
+                   "note": "The candidate reads current and the part's Manufacture-side pose is turned "
+                           "to it; the design is unchanged. Later operations of the setup may read "
+                           "out of date."})
+    occurrences, reason = _PARTS.resolve(parts)
+    if reason:
+        return error(reason)
+    landed, reason = _cam_additive.assign_parts(cam, op, occurrences)
+    if reason:
+        return error(reason)
+    return ok({"operation": name, **landed, "note": "The parts read back as asked. " + _ADDITIVE_NEXT})
+
+
 def handler(operation: str = "", parameters=None, suppressed=None, preset: str = "",
             rename: str = "", tool_scope: str = "", tool_library_url: str = "",
-            tool_index: int = -1) -> dict:
+            tool_index: int = -1, parts=None, orientation_candidate=None) -> dict:
     """See TOOL_DESCRIPTION."""
+    selector_error = tool_selector_error(tool_scope, tool_library_url)
+    if selector_error:
+        return error(selector_error)
     if not (operation or "").strip():
         return error("Provide 'operation' - the CAM operation name to edit (see cam_get(include=['operations'])).")
 
@@ -474,7 +592,12 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
     # A PRESENT index runs the tool arm whatever it holds, so an unusable one meets that arm's
     # refusal naming it rather than the 'nothing to do' error.
     want_tool = bool(scope or url) or (tool_index is not None and tool_index != _NO_INDEX)
-    if not wanted and suppressed is None and not want_preset and not want_rename and not want_tool:
+    additive = parts not in (None, "", []) or orientation_candidate is not None
+    if additive and (wanted or suppressed is not None or want_preset or want_rename or want_tool):
+        return error("'parts' and 'orientation_candidate' go in a call of their own, without "
+                     "parameters, preset, tool, rename or suppressed.")
+    if (not wanted and suppressed is None and not want_preset and not want_rename and not want_tool
+            and not additive):
         return error("Provide 'parameters' - at least one name=value to set (e.g. "
     "{'tool_feedCutting': '3000'}) - or 'preset', a preset on this operation's tool, "
     "'tool_index' (with 'tool_scope=document' or 'tool_library_url') to change the cutting tool, "
@@ -488,6 +611,9 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
     if oerr:
         return error(oerr)
     op = node.obj
+    if additive:
+        return _additive_edit(cam, op, safe(lambda: op.name) or operation,
+                              parts if parts not in (None, "", []) else None, orientation_candidate)
     # Read ONCE, before any write below: a write during a generation is accepted and disclosed,
     # never refused.
     was_generating = read_flag(lambda: op.isGenerating) is True
@@ -540,6 +666,10 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
 
     # Tool and preset assignment precede parameter writes so explicit overrides are final.
     op_name = safe(lambda: op.name) or (operation or "").strip()
+    had_error = read_flag(lambda: op.hasError) if wanted else None
+    if wanted and had_error is None:
+        return error(f"Operation '{op_name}' hasError did not read before the edit; no write was "
+                     "attempted. Re-read with cam_get(include=['operations']).")
     pre_landed = []
     pre_notes = []
     pre_records = {}
@@ -588,6 +718,7 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
     unreadable = []
     still_locked = []
     written_of = {}
+    priors = {}
     # A locked row goes LAST: a switch in the same call is what unlocks it, and the flag is re-read
     # once the rest of the request has landed.
     order = [n for n in wanted if n not in locked] + locked
@@ -599,6 +730,11 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
                 still_locked.append(name)
                 continue
         before = safe(lambda p=p: p.expression)
+        # Read BEFORE the write: the evaluated value a refused restore falls back to. Absent from
+        # `priors` = unread or not a scalar, which is not the same as holding '' or False.
+        prior = safe(lambda p=p: p.value.value)
+        if isinstance(prior, _SCALARS):
+            priors[name] = prior
         # A parameter already holding a QUOTED expression stores a string, and Fusion refuses the
         # bare spelling ('3 : Invalid enumeration value.'), so the request is wrapped to match.
         written, quoted = matched_quoting(before, expr)
@@ -645,16 +781,28 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
                         if changed else "")
         return error(_LOCKED_REFUSAL.format(
             operation=operation, names=", ".join(still_locked), after=after_clause,
-            applied=_restored_clause(changed, resolved)) + _LOCKED_REMEDY
+            applied=_restored_clause(changed, resolved, priors, op)) + _LOCKED_REMEDY
                     + _applied_clause(pre_landed))
 
-    # Three ways a write is not a success: it did not evaluate, it did not move, it will not read
-    # back. Restore EVERY parameter set in this call, re-read each one, and name what each one did.
-    if eval_failures or no_takes or unreadable:
-        restore_failed = _restore(changed, resolved)
+    after_error = read_flag(lambda: op.hasError) if changed else had_error
+    new_error = had_error is False and after_error is True
+    unknown_error = bool(changed) and after_error is None
+    # Parameter reads alone do not certify an edit that newly errors the operation.
+    if eval_failures or no_takes or unreadable or new_error or unknown_error:
+        # Read once every write has landed and before the restore: a mode write can disable a row.
+        disabled = {n for n, _e, _why in eval_failures
+                    if read_flag(lambda n=n: resolved[n].isEnabled) is False}
+        restored, valued, restore_failed = _restore(changed, resolved, priors)
         parts = []
+        if new_error:
+            parts.append("the edit introduced an operation error (Operation.hasError changed "
+                         "from False to True)")
+        if unknown_error:
+            parts.append("Operation.hasError did not read after the edit, so the change is "
+                         "UNCONFIRMED")
         if eval_failures:
-            detail = "; ".join(f"'{n}' = '{e}' ({why})" for n, e, why in eval_failures)
+            detail = "; ".join(f"'{n}' = '{e}' ({why})" + (_DISABLED_CLAUSE if n in disabled else "")
+                               for n, e, why in eval_failures)
             parts.append(f"expression did not evaluate - {detail}")
         if no_takes:
             # `before` is never null here: a no-take needs after == before with after readable.
@@ -674,12 +822,19 @@ def handler(operation: str = "", parameters=None, suppressed=None, preset: str =
             remedy = "(" + _TOOL_DIMENSION_REMEDY + ")"
         else:
             remedy = "(Re-read the operation with cam_get(include=['operations']).)"
-        failed_clause = (f" {len(restore_failed)} did NOT come back and the operation is left "
-                         f"holding them: {'; '.join(restore_failed)}."
-                         if restore_failed else "")
-        return error(f"Operation '{operation}': {'; '.join(parts)}. Rolled back all "
-                     f"{len(changed)} parameter(s), each restored expression re-read.{failed_clause}"
-                     f" {remedy}" + _applied_clause(pre_landed))
+        if valued:
+            rolled = _value_restored_clause(restored, valued, restore_failed, op)
+        elif restore_failed:
+            rolled = (f"Restored {len(restored)} of {len(changed)} parameter(s); the "
+                      + _unconfirmed(restore_failed) + _reread_clause(restored))
+        else:
+            rolled = (f"Rolled back all {len(changed)} parameter(s), each restored expression "
+                      f"re-read: {_reread_rows(restored)}.")
+        if (new_error or unknown_error) and not valued:
+            rolled += (" Operation.hasError reads " + _flag_word(read_flag(lambda: op.hasError))
+                       + " after restore.")
+        return error(f"Operation '{operation}': {'; '.join(parts)}. {rolled} {remedy}"
+                     + _applied_clause(pre_landed))
 
     out = {
         "edited": True,
@@ -747,6 +902,9 @@ tool = (
     .add_input_property("tool_scope", {"type": "string", "enum": ["document"]})
     .add_input_property("tool_library_url", {"type": "string"})
     .add_input_property("tool_index", {"type": "integer"})
+    .add_input_property(*_PARTS.as_property(brief=True))
+    .add_input_property("orientation_candidate", {"type": "integer", "minimum": 0,
+            "description": "Additive: an 'index' from cam_get additive_results."})
     .strict_schema()
 )
 

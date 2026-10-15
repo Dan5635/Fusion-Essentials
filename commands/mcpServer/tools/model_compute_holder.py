@@ -34,9 +34,9 @@ _END = _inputs.GeometryHandle("end_datum", require="any", required=True,
 def handler(body: str = "", axis: str = "", end_datum: str = "",
             name: str = "", product_id: str = "", product_link: str = "", vendor: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open the holder model first (see doc_open).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     body_ent, berr = _BODY.resolve(body)
     if berr:

@@ -244,10 +244,16 @@ class FakeData:
         self._active_hub = hub
 
     def findFileById(self, file_id):
-        return self._files.get(file_id)
+        found = self._files.get(file_id)
+        if found is not None and getattr(found, "_deleted", False):
+            raise RuntimeError("3 : file not found")
+        return found
 
     def findFolderById(self, folder_id):
-        return self._folders.get(folder_id)
+        found = self._folders.get(folder_id)
+        if found is not None and getattr(found, "_deleted", False):
+            raise RuntimeError('3 : 404 - HTTP error\n"STORAGE_NODE_DOES_NOT_EXIST"')
+        return found
 
 
 @fusion_fake(live_type="Application", facts=("shape-dump-document-world",))

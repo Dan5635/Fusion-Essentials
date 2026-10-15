@@ -47,6 +47,32 @@ def _open_document(data_file):
     return None, None, "openUsingContext returned no document"
 
 
+def _still_open(document):
+    """Whether the prior active document remains in the session after an open."""
+    if safe(lambda: bool(app.activeDocument == document)) is True:
+        return True
+    documents = safe(lambda: app.documents)
+    count = counted(lambda: documents.count) if documents is not None else None
+    if count is None:
+        return None
+    if count == 0:
+        return False if safe(lambda: document.isValid) is False else None
+    unreadable = False
+    for index in range(count):
+        candidate = safe(lambda index=index: documents.item(index))
+        if candidate is None:
+            unreadable = True
+            continue
+        same = safe(lambda candidate=candidate: bool(candidate == document))
+        if same is True:
+            return True
+        if same is None:
+            unreadable = True
+    if unreadable:
+        return None
+    return False if safe(lambda: document.isValid) is False else None
+
+
 def handler(file_id: str = "", is_cam_template: bool = False,
             force_api_open: bool = False) -> dict:
     """See TOOL_DESCRIPTION."""
@@ -88,11 +114,14 @@ def handler(file_id: str = "", is_cam_template: bool = False,
     "design_get(include=['tree']) / cam_get(include=['references']) (it may not exist or you may "
     "lack access).")
 
-    is_configured = bool(safe(lambda: data_file.isConfiguredDesign, False))
-
     # An assembly's open pulls its whole reference family in, so the cost is counted rather than
     # guessed at: the open documents before and after, and the seconds the call itself took.
     open_before = counted(lambda: app.documents.count)
+    previous = safe(lambda: app.activeDocument)
+    previous_record = ({"name": safe(lambda: previous.name),
+                        "document_handle": _write_guard.document_handle(previous),
+                        "is_modified": read_flag(lambda: previous.isModified)}
+                       if previous is not None else None)
     started = time.monotonic()
     doc, method, err = _open_document(data_file)
     elapsed = round(time.monotonic() - started, 1)
@@ -101,6 +130,28 @@ def handler(file_id: str = "", is_cam_template: bool = False,
     open_after = counted(lambda: app.documents.count)
     loaded = (open_after - open_before
               if open_before is not None and open_after is not None else None)
+    previous_still_open = _still_open(previous) if previous is not None else None
+    previous_closed = (not previous_still_open if previous_still_open is not None else None)
+
+    # The identity and the configured flag are the OPENED document's own, never the request's.
+    asked_id, opened_id = safe(lambda: data_file.id), safe(lambda: doc.dataFile.id)
+    # Compared only as two lineage urns: a version urn on either side is not that file's identity.
+    comparable = all(isinstance(i, str) and ":dm.lineage:" in i for i in (asked_id, opened_id))
+    if comparable and asked_id != opened_id:
+        asked_name = safe(lambda: data_file.name)
+        asked_project = safe(lambda: data_file.parentProject.name)
+        where = (f" The file asked for reads name '{asked_name}' in project '{asked_project}'."
+                 if asked_name and asked_project else "")
+        displaced = (f" Opening also closed the prior active document "
+                     f"'{previous_record['name']}' ({previous_record['document_handle']}); that "
+                     "handle expired. Call doc_get for the current session."
+                     if previous_closed is True else "")
+        return error(
+            f"The document that opened is '{safe(lambda: doc.name)}' ({opened_id}), not the file "
+            f"asked for ({asked_id}).{where} It stays open; discard it with doc_close(name="
+            f"'{_write_guard.document_handle(doc) or safe(lambda: doc.name)}', save_changes=false)."
+            f"{displaced}")
+    is_configured = read_flag(lambda: doc.dataFile.isConfiguredDesign)
 
     info = {
     "opened": True,
@@ -111,6 +162,7 @@ def handler(file_id: str = "", is_cam_template: bool = False,
     "is_configured_design": is_configured,
     "open_method": method,
     "resolved_id": resolved,
+    "document_id": opened_id or None,
     # This document's OWN direct references, the same read workspace_orient publishes - null when
     # the collection did not read. MEASURED: an assembly reading 9 here loaded 27 documents, so
     # this is not the count the open walked; doc_get's open_count is that one.
@@ -119,6 +171,8 @@ def handler(file_id: str = "", is_cam_template: bool = False,
     # than were before it. null where either census did not read - never a coerced 0.
     "open_seconds": elapsed,
     "documents_loaded": loaded,
+    "previous_active_closed": previous_closed,
+    "closed_previous_active": previous_record if previous_closed is True else None,
     "note": None,
     }
     # Publish the opened handle, and name it as acted_on only after active-document equality confirms it.
@@ -143,10 +197,21 @@ def handler(file_id: str = "", is_cam_template: bool = False,
     # loads it - blocking here would stall the load AND freeze the UI, so the status is reported as
     # read and the caller is told how to confirm.
     parts = []
+    if not comparable:
+        parts.append("The opened document's own id was not compared with the file asked for (a "
+                     "lineage urn did not read); resolved_id is the request. Confirm with doc_get.")
     if loaded is not None and loaded > 1:
-        parts.append(f"This open put {loaded} documents in the session in {elapsed}s - "
+        parts.append(f"The session open count grew by {loaded} in {elapsed}s - "
                      "'referenced_documents' counts only the DIRECT ones, so it is not that number. "
                      "doc_get reports the session census as open_count.")
+    if previous_closed is True:
+        parts.append("Opening this file closed the prior active document "
+                     f"'{previous_record['name']}' ({previous_record['document_handle']}); that "
+                     "handle expired. documents_loaded is the net change in open count. Call "
+                     "doc_get for the current session before restoring another document.")
+    elif previous is not None and previous_closed is None:
+        parts.append("Whether the prior active document remains open could not be read. "
+                     "Call doc_get before restoring it.")
     if info["is_active"] is False:
         parts.append(
         "Document is still loading (open is asynchronous). Call workspace_orient after a "

@@ -19,24 +19,24 @@ _SECTION = _inputs.Choice(
 _RECIPE = _inputs.Choice("recipe", loader.RECIPE_IDS)
 
 INDEX_NOTE = (
-    "The one design-guidance document this server packages. Call again with section=<id> for a "
-    "section's rules, or recipe=<id> for one recipe - one per call. 'recipes' maps every recipe it "
-    "carries; 'sha256' is the content hash of what was served, and each rule and recipe declares "
-    "which of 'scenarios' it applies to. 'resource_uri' is where the same guidance is served whole "
-    "over MCP's resource channel.")
+    "Packaged design guidance. 'kernel' gives five rules; 'sections' and 'recipes' index narrower "
+    "reads. Call section=<id> or recipe=<id>. Rules and recipes declare 'scenarios'. 'sha256' "
+    "hashes the current source; 'resource_uri' serves the add-in-load snapshot. Compare its source "
+    "stamp and reload the add-in if hashes differ.")
 
 SECTION_NOTE = (
-    "Each rule is a record: 'when' the condition, 'do' the practice, 'except' where it does not "
-    "apply, 'prove' the tool to read the result back through and what to observe, 'scenarios' the "
-    "cases it declares for. 'kind' marks a safety invariant; a rule without it is strategy. "
-    "'recipe_index' names this section's recipes - recipe=<id> returns one whole. 'next_sections' "
-    "names what is left to ask for.")
+    "The kernel's five habits apply to every step in this section. Each rule has 'when', 'do', "
+    "'except', 'prove', and 'scenarios'; 'kind' marks a safety invariant, while other rules are "
+    "strategy. 'kernel' carries them unless this is the kernel section, where 'rules' has them. "
+    "'recipe_index' names this section's recipes; recipe=<id> returns one "
+    "whole. 'next_sections' names other sections.")
 
 RECIPE_NOTE = (
-    "The steps are ORDERED, and each 'read_back' is the observation to make before the next step - "
-    "a step whose read_back does not answer is where to stop, not to push past. 'bar' is what done "
-    "looks like: the measure that must hold and what a screenshot must show. 'exemplar', when "
-    "present, is a document to open and X-ray.")
+    "The kernel's five habits apply to every step of this recipe. A recipe is one worked "
+    "construction, not a macro: 'use_when' names prerequisites and each step names its tool. "
+    "A 'read_back' may need a companion read; intermediate calls and justified alternatives are "
+    "allowed. An unanswered read_back blocks only the steps that depend on it. 'bar' is done; "
+    "'exemplar' is an optional document to X-ray.")
 
 TRUNCATED_NOTE = (
     " This section holds more rules than one call returns: 'rule_count' of 'rule_total' are in "
@@ -62,6 +62,8 @@ def handler(section=None, recipe=None) -> dict:
         return error(str(exc))
 
     ids = loader.section_ids(doc)
+    kernel = loader.find_section(doc, loader.KERNEL)
+    kernel_rules = list((kernel or {}).get("rules") or [])
     result = {"guidance_id": doc.get("guidance_id"), "title": doc.get("title"), "sha256": sha256,
               "resource_uri": resources.uri_for(doc.get("guidance_id"))}
 
@@ -71,11 +73,12 @@ def handler(section=None, recipe=None) -> dict:
             carried = [r.get("id") for r in loader.recipes(doc)]
             return error(f"The packaged guidance document carries no recipe '{wanted_recipe}'. It "
                          "carries: " + (", ".join(str(i) for i in carried) or "none") + ".")
-        result.update({"recipe": rec, "note": RECIPE_NOTE})
+        result.update({"recipe": rec, "kernel": kernel_rules, "note": RECIPE_NOTE})
         return ok(result)
 
     if not wanted:
         result.update({"section": None,
+                       "kernel": kernel_rules,
                        "sections": loader.section_index(doc),
                        "recipes": loader.recipe_map(doc),
                        "scenarios": list(doc.get("scenarios") or []),
@@ -98,6 +101,8 @@ def handler(section=None, recipe=None) -> dict:
                    "recipe_index": loader.recipe_index(sec),
                    "next_sections": [i for i in ids if i != wanted],
                    "note": SECTION_NOTE})
+    if wanted != loader.KERNEL:
+        result["kernel"] = kernel_rules
     if len(rules) > loader.MAX_SECTION_RULES:
         result["truncated"] = True
         result["rule_total"] = len(rules)
@@ -106,8 +111,8 @@ def handler(section=None, recipe=None) -> dict:
 
 
 TOOL_DESCRIPTION = (
-    "Read this server's packaged CAD DESIGN GUIDANCE: no argument gives the index, 'section' its "
-    "rules, 'recipe' one recipe whole. One per call."
+    "Call with no arguments first for the index and five kernel rules. Use section=<id> for a "
+    "section's rules or recipe=<id> for one recipe; both carry the kernel habits."
 )
 
 tool = (

@@ -3,6 +3,10 @@
 
 """Shared substrate for the drawing (2D document) tool family."""
 
+import json
+import math
+import re
+
 import adsk.core
 import adsk.drawing
 
@@ -10,11 +14,12 @@ from . import _common
 from ._common import safe
 
 MAP_BLURB = (
-    "active_drawing(_document) - the Drawing gate every tool runs; SHEET_SIZE_MAP/"
-    "DIMENSION_STRATEGIES/ORIENTATION_MEMBERS/NO_PORTRAIT - tables + portrait refusals; "
-    "sheet_units/SHEET_EXTENT_UNIT/DOCUMENT_UNIT/coordinate_unit/extent_in_coordinates/"
-    "coordinates_to_extent - 3 units, never mixed; enum_value + *_label decoders; "
-    "resolve_sheet/sheet_listing/sheet_facts - by name, 1-based index, state"
+    "active_drawing(_document); SHEET_SIZE_MAP/DIMENSION_STRATEGIES/ORIENTATION_MEMBERS/"
+    "NO_PORTRAIT; sheet_units/SHEET_EXTENT_UNIT/DOCUMENT_UNIT/coordinate_unit/"
+    "extent_in_coordinates/coordinates_to_extent; enum_value/*_label; "
+    "resolve_sheet/sheet_listing/sheet_facts/view_at; view_curve/typed_curve/curve_point/"
+    "curve_row; listed/as_index/sheet_xy; palette_parts/palette_list; "
+    "revision_rows - its row census"
 )
 
 # Sheet.width/height are MILLIMETRES on every drawing, ISO and ASME alike (an ASME B sheet, 17 x 11
@@ -99,9 +104,8 @@ def standard_label(dwg):
     return None
 
 
-# standard label -> the length unit a drawing's OWN numbers are authored in: DrawingSketch
-# coordinates are millimetres when the standard includes ISO and inches when it is ASME without ISO,
-# and CreateDrawingInput's CustomSheetSize takes the same unit for its width and height.
+# DrawingSketch coordinates follow the standard; custom sheet sizes follow display units.
+# ISO coordinates are millimetres; ASME coordinates are inches.
 DOCUMENT_UNIT = {"iso": "mm", "asme": "in"}
 
 
@@ -114,9 +118,7 @@ def coordinate_unit(dwg):
 
 
 def _length_unit(dwg, standard):
-    """The coordinate length unit dwg's own standard fixes, or DOCUMENT_UNIT[standard] before a
-    drawing exists yet (drawing_create, sizing a sheet it has not created); None when neither
-    resolves one."""
+    """The coordinate length unit from a drawing or standard, or None when neither resolves."""
     return coordinate_unit(dwg) if dwg is not None else DOCUMENT_UNIT.get(standard)
 
 
@@ -169,6 +171,220 @@ def orientation_label(value):
     return None
 
 
+# wire label -> ViewCurveTypes member, read by NAME; a value matching none labels None.
+CURVE_TYPE_MEMBERS = {
+    "line": "LineViewCurveType", "arc": "ArcViewCurveType", "circle": "CircleViewCurveType",
+    "ellipse": "EllipseViewCurveType", "spline": "SplineViewCurveType",
+    "polyline": "PolylineViewCurveType", "unknown": "UnknownViewCurveType",
+}
+
+# point key -> its ViewCurve accessor; midPoint reads null on a circle, centerPoint on a line.
+CURVE_POINTS = {"start": "startPoint", "end": "endPoint", "mid": "midPoint",
+                "center": "centerPoint"}
+
+
+def curve_type_label(value):
+    """'line'/'arc'/... for the ViewCurveTypes value a curve reads, or None."""
+    if value is None:
+        return None
+    for key, member in CURVE_TYPE_MEMBERS.items():
+        if value == enum_value("ViewCurveTypes", member):
+            return key
+    return None
+
+
+def curve_point(curve, key):
+    """The DrawingPoint a curve's `key` accessor reads, or None where it reads null."""
+    return safe(lambda: getattr(curve, CURVE_POINTS[key]))
+
+
+def point_xy(point):
+    """[x, y] of a DrawingPoint in sheet coordinates at its view's scale, or None."""
+    xy = safe(lambda: point.coordinate)
+    x, y = _common.measured(lambda: xy.x, 1.0, 4), _common.measured(lambda: xy.y, 1.0, 4)
+    return None if x is None or y is None else [x, y]
+
+
+def curve_row(index, curve):
+    """One ViewCurve as {index, type, start, end, mid, center}; a point that reads null is null."""
+    row = {"index": index, "type": curve_type_label(safe(lambda: curve.type))}
+    for key in CURVE_POINTS:
+        row[key] = point_xy(curve_point(curve, key))
+    return row
+
+
+def view_curve(view, view_index, index, label):
+    """(ViewCurve, error) for curve `index` of a view; a miss names the view's legal range."""
+    remedy = f"drawing_get(include=['curves'], view={view_index}) lists them."
+    if isinstance(index, bool) or not isinstance(index, int):
+        return None, f"'{label}' must be an integer curve index (got {index!r}); {remedy}"
+    curves = safe(lambda: view.viewCurves)
+    count = _common.counted(lambda: curves.count)
+    if count is None:
+        return None, f"'{label}': the viewCurves of view {view_index} did not read."
+    if not 0 <= index < count:
+        span = f"0 to {count - 1}" if count else "none"
+        return None, (f"'{label}' curve {index} is out of range: view {view_index} has {count} "
+                      f"curve(s) ({span}); {remedy}")
+    curve = safe(lambda: curves.item(index))
+    if curve is None:
+        return None, f"'{label}': curve {index} of view {view_index} did not read; {remedy}"
+    return curve, None
+
+
+def typed_curve(act, view, idx, raw, label, kinds):
+    """(the ViewCurve at index `raw`, error) - refused before any add unless its type is in kinds."""
+    found, err = view_curve(view, idx, raw, label)
+    if err:
+        return None, err
+    kind = curve_type_label(safe(lambda: found.type))
+    if kind not in kinds:
+        return None, (f"'{label}' curve {raw} reads as {kind or 'an unread type'}; "
+                      f"action='{act}' takes {' or '.join(kinds)} curves - "
+                      f"drawing_get(include=['curves'], view={idx}) lists each curve's type.")
+    return found, None
+
+
+def listed(raw):
+    """A list as given, or the list a JSON string spells - a stale client schema sends one."""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return raw
+        return parsed if isinstance(parsed, list) else raw
+    return raw
+
+
+def as_index(raw):
+    """An index as given, or the int a digit string spells - a stale client schema sends one."""
+    if not isinstance(raw, str):
+        return raw
+    from . import _inputs      # _inputs imports this module, so the import waits for the call
+    number = _inputs._ascii_int(raw)
+    return raw if number is None else number
+
+
+def sheet_xy(raw, act, unit, name):
+    """([x, y], error) - input `name` as two finite numbers in the drawing's coordinate unit."""
+    raw = listed(raw)
+    pair = list(raw) if isinstance(raw, (list, tuple)) else []
+    if len(pair) != 2 or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                 and math.isfinite(v) for v in pair):
+        where = f"sheet {unit}" if unit else "the sheet's coordinate unit"
+        return None, (f"action='{act}' needs '{name}' as [x, y] in {where} - the "
+                      f"curve_unit drawing_get(include=['curves']) reports (got {raw!r}).")
+    return [float(pair[0]), float(pair[1])], None
+
+
+def view_at(sheet, view):
+    """(View, index, error) for a 0-based view index of `sheet`; a bool or non-integer is refused."""
+    views = safe(lambda: sheet.views)
+    count = _common.counted(lambda: views.count)
+    name = safe(lambda: sheet.name)
+    if count is None:
+        return None, None, f"The views of sheet '{name}' did not read."
+    if count == 0:
+        return None, None, (f"Sheet '{name}' has no views; drawing_create or the Fusion UI makes "
+                            "them - the API cannot add one.")
+    if view is None:
+        return None, None, (f"Provide 'view' - a view index, 0 to {count - 1} on sheet '{name}' "
+                            f"({count} views).")
+    idx = as_index(view)
+    if isinstance(idx, bool) or not isinstance(idx, int):
+        return None, None, (f"'view' must be an integer view index, 0 to {count - 1} on sheet "
+                            f"'{name}' (got {view!r}).")
+    if not 0 <= idx < count:
+        return None, None, (f"'view' index {idx} is out of range: sheet '{name}' has {count} "
+                            f"view(s), so the legal indices are 0 to {count - 1}.")
+    target = safe(lambda: views.item(idx))
+    if target is None:
+        return None, None, f"View index {idx} could not be read off sheet '{name}'."
+    return target, idx, None
+
+
+# palette token -> SymbolPaletteTypes member: the member name less its suffix in snake_case, or a
+# short alias. The None member appends nothing; the API doc marks centerline, position and
+# counterbore unsupported.
+_PALETTE_NAMES = (
+    "Diameter", "PlusMinus", "Degree", "Square", "Countersink", "Depth", "CircularSection",
+    "CircularProjection", "NotEqual", "LowerDelta", "Section", "UpperLambda", "LowerLambda",
+    "Delta", "Omega", "Number", "Squared", "Cubed", "OneQuarter", "OneHalf", "ThreeQuarters",
+    "EnvelopeRequirement", "FreeStateCondition", "LeastMaterialRequirement",
+    "MaximumMaterialRequirement", "ProjectedToleranceZone", "Between", "CommonZone",
+    "MinorDiameter", "MajorDiameter", "PitchDiameter", "LineElement", "NotConvex",
+    "AnyCrossSection", "MedianFeature", "FromTo", "UnequallyDisposedToleranceZone",
+    "AnyLongitudinalSection", "ContactingFeature", "VariableDistance", "Point", "StraightLine",
+    "Plane", "ForOrientationConstraintOnly", "UnequallyDisposedProfile", "NumberOfRow",
+    "NoModifier", "AllAround", "AllOver", "TransmissionBand",
+)
+PALETTE_ALIASES = {
+    "dia": "Diameter", "M": "MaximumMaterialRequirement", "L": "LeastMaterialRequirement",
+    "P": "ProjectedToleranceZone", "F": "FreeStateCondition", "E": "EnvelopeRequirement",
+    "U": "UnequallyDisposedProfile", "pm": "PlusMinus", "deg": "Degree", "sq": "Square",
+    "csk": "Countersink",
+}
+PALETTE_TOKENS = {**{re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower(): name + "SymbolPaletteType"
+                     for name in _PALETTE_NAMES},
+                  **{alias: name + "SymbolPaletteType" for alias, name in PALETTE_ALIASES.items()}}
+PALETTE_UNSUPPORTED = ("centerline", "position", "counterbore")
+_PALETTE_SHORT = (*PALETTE_ALIASES, "depth", "all_around", "all_over", "between", "common_zone")
+_PALETTE_TOKEN = re.compile(r"\{([^{}]*)\}")
+
+
+def symbol_text(raw, label):
+    """(text, error) - a symbol text field as given; the API doc says a ';' breaks the create."""
+    if not isinstance(raw, str):
+        return None, f"'{label}' must be text (got {raw!r})."
+    if ";" in raw:
+        return None, (f"'{label}' holds a ';' ({raw!r}), which Fusion's symbol API cannot carry - "
+                      "drop it.")
+    return raw, None
+
+
+def palette_parts(raw, label):
+    """([('symbol', SymbolPaletteTypes value) or ('text', str), ...], error) for '{token}' text."""
+    text, err = symbol_text(raw, label)
+    if err:
+        return None, err
+    parts, at = [], 0
+    for match in list(_PALETTE_TOKEN.finditer(text)) + [None]:
+        plain = text[at:match.start() if match else len(text)]
+        if "{" in plain or "}" in plain:
+            return None, (f"'{label}' has an unmatched brace in {text!r}; a symbol is written as "
+                          "{token}, such as {diameter}.")
+        if plain:
+            parts.append(("text", plain))
+        if match is None:
+            return parts, None
+        token, at = match.group(1).strip(), match.end()
+        if token.lower() in PALETTE_UNSUPPORTED:
+            listed = ", ".join("{%s}" % t for t in PALETTE_UNSUPPORTED)
+            return None, (f"'{label}': Fusion's symbol API does not support {listed} "
+                          f"(got {{{token}}}).")
+        member = PALETTE_TOKENS.get(token) or PALETTE_TOKENS.get(token.lower())
+        if member is None:
+            short = " ".join("{%s}" % t for t in _PALETTE_SHORT)
+            return None, (f"'{label}': {{{token}}} is no symbol token. Use {short} or a "
+                          "SymbolPaletteTypes member name in snake_case, such as "
+                          "{least_material_requirement}.")
+        value = enum_value("SymbolPaletteTypes", member)
+        if value is None:
+            return None, f"'{label}': {{{token}}} is not available on this Fusion version."
+        parts.append(("symbol", value))
+
+
+def palette_list(prop, parts):
+    """`prop` (a SymbolPaletteList) cleared and rebuilt from palette_parts, to assign back."""
+    prop.clear()
+    for kind, value in parts:
+        if kind == "symbol":
+            prop.append(value)
+        else:
+            prop.appendText(value)
+    return prop
+
+
 def sheet_listing(dwg):
     """The drawing's sheets in collection order with a 1-based collection index."""
     sheets = safe(lambda: dwg.sheets)
@@ -192,6 +408,7 @@ def sheet_facts(sheet):
         "views": _common.counted(lambda: sheet.views.count),
         "sketches": _common.counted(lambda: sheet.sketches.count),
         "custom_tables": _common.counted(lambda: sheet.customTables.count),
+        "bend_tables": _common.counted(lambda: sheet.bendTables.count),
     }
 
 
@@ -219,3 +436,20 @@ def resolve_sheet(dwg, name):
         return None, ("Sheet name '%s' matches %d sheets (%s) - address one exactly."
                       % (name, len(hits), ", ".join(n for _, n in hits)))
     return hits[0][0], None
+
+
+_REVISION_FIELDS = ("rev", "description", "date", "approved", "zone", "sht")
+
+
+def revision_rows(table):
+    """The revision census read as a sequence: each row's own .index, its texts, isVisible; None if unreadable."""
+    seq = safe(lambda: list(table.revisionTableRows))
+    if seq is None:
+        return None
+    out = []
+    for r in seq:
+        row = {"index": safe(lambda r=r: r.index), "visible": _common.read_flag(lambda r=r: r.isVisible)}
+        for field in _REVISION_FIELDS:
+            row[field] = safe(lambda r=r, f=field: getattr(r, f))
+        out.append(row)
+    return out

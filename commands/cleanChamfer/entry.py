@@ -478,7 +478,7 @@ def patcher(faces: List[adsk.fusion.BRepFace], features: adsk.fusion.Features) -
                     edges_to_place.remove(edge)
                 else:
                     futil.log(f'Failed to find a matching edge for the last edge.')
-    
+
     # if the face is not a loop then we will have remove one edge from each end of the surface
     # first we have to find the edge for each of the ending faces that is the farthest away from the edge shared with the next face
 

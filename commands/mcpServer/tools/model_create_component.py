@@ -13,7 +13,7 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, ok, safe, scale
+from ._common import error, iter_collection, ok, safe, scale
 from . import _common
 from . import _inputs
 
@@ -60,17 +60,58 @@ def _apply_part_number(component, part_number_input, final_name):
     return landed, None
 
 
+def _adopt_existing_rule(design, new_rule, before_rules, occ):
+    """Merge a freshly-copied same-named design rule into the pre-existing one; (flags, error_or_none)."""
+    if before_rules is None:
+        return {"rule_census_unread": True}, None      # unread, not empty - adoption skipped, not guessed
+    name = safe(lambda: new_rule.name)
+    if not name or any(r == new_rule for r in before_rules):
+        return {}, None      # not a fresh copy (or unnamed) - nothing to merge
+    same_name_before = [r for r in before_rules
+                        if (safe(lambda r=r: r.name) or "").lower() == name.lower()]
+    if not same_name_before:
+        return {"rule_added": True}, None
+    if len(same_name_before) > 1:
+        return {"rule_name_ambiguous": name}, None
+    existing = same_name_before[0]
+    before_count = len(before_rules)
+    try:
+        occ.component.activeSheetMetalRule = existing
+    except Exception as e:
+        return {}, (f"Sheet-metal occurrence '{safe(lambda: occ.name)}' was created, but adopting "
+                    f"existing rule '{name}' failed: {e}. It still carries rule "
+                    f"'{safe(lambda: occ.component.activeSheetMetalRule.name)}'; repair with sheet_edit_rule.")
+    readback = safe(lambda: occ.component.activeSheetMetalRule)
+    if readback is None or readback != existing:
+        got = safe(lambda: readback.name) if readback is not None else None
+        return {}, (f"Sheet-metal occurrence '{safe(lambda: occ.name)}' was created, but its active "
+                    f"rule did not adopt '{name}' (reads '{got}'). Repair with sheet_edit_rule.")
+    try:
+        deleted = new_rule.deleteMe()
+    except Exception as e:
+        return {}, (f"Sheet-metal occurrence '{safe(lambda: occ.name)}' now carries existing rule "
+                    f"'{name}', but its duplicate copy did not delete: {e}. Repair with sheet_edit_rule "
+                    "or remove the stray rule.")
+    after = safe(lambda: design.designSheetMetalRules)
+    after_count = safe(lambda: after.count) if after is not None else None
+    if deleted is not True or after_count != before_count:
+        return {}, (f"Sheet-metal occurrence '{safe(lambda: occ.name)}' now carries existing rule "
+                    f"'{name}', but its duplicate copy did not delete (deleteMe={deleted}, design "
+                    f"rule count {after_count}, expected {before_count}). Repair with sheet_edit_rule.")
+    return {"rule_adopted_existing": True, "rule_copy_deleted": True}, None
+
+
 def handler(name: str = "", x: float = 0.0, y: float = 0.0, z: float = 0.0,
             units: str = "mm", activate: bool = False,
             rotate_deg: float = 0.0, rotate_axis: str = "z", parent: str = "",
-            part_number: str = "") -> dict:
+            part_number: str = "", sheet_metal: bool = False) -> dict:
     """See TOOL_DESCRIPTION."""
     k = scale(units)
     if k is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # parent: resolve the occurrence to nest INSIDE (its component receives the new child). Omitted =
     # root. OccurrenceRef refuses an ambiguous name instead of grabbing the wrong instance.
@@ -78,7 +119,13 @@ def handler(name: str = "", x: float = 0.0, y: float = 0.0, z: float = 0.0,
     if (parent or "").strip():
         parent_occ, perr = _PARENT.resolve(parent)
         if perr:
+            # The root is no occurrence, so no value of 'parent' names it; a miss says how to get it.
+            if _inputs.OCCURRENCE_MISS in perr:
+                perr += " To create at the root, omit 'parent'."
             return error(perr)
+
+    if sheet_metal and parent_occ is not None:
+        return error("sheet_metal=true has only been verified at root; omit parent and create a root sheet-metal component.")
 
     import math
     matrix = adsk.core.Matrix3D.create()
@@ -102,12 +149,31 @@ def handler(name: str = "", x: float = 0.0, y: float = 0.0, z: float = 0.0,
                         else safe(lambda: design.rootComponent.occurrences))
     if host_occurrences is None:
         return error("Could not access the target occurrences collection to create the component.")
+    # addNewSheetMetalComponent copies the library rule only when the design's same-named rule no
+    # longer matches the library default; otherwise it hands the existing rule back unchanged - the
+    # before-census tells the two apart. None (not []) marks an UNREAD census, not an empty one.
+    before_rules = []
+    if sheet_metal:
+        before_collection = safe(lambda: design.designSheetMetalRules)
+        before_rules = list(iter_collection(before_collection)) if before_collection is not None else None
     try:
-        occ = host_occurrences.addNewComponent(matrix)
+        occ = (host_occurrences.addNewSheetMetalComponent(matrix) if sheet_metal
+               else host_occurrences.addNewComponent(matrix))
     except Exception as e:
         return error(f"Could not create component: {e}")
     if not occ:
         return error("Component creation returned nothing.")
+
+    rule_flags = {}
+    if sheet_metal:
+        active_rule = safe(lambda: occ.component.activeSheetMetalRule)
+        if active_rule is None:
+            return error(f"Sheet-metal occurrence '{safe(lambda: occ.name)}' was created, but its active "
+                         "rule did not read back. Inspect that occurrence with sheet_get(include=['components']) "
+                         "before modeling into it.")
+        rule_flags, rule_err = _adopt_existing_rule(design, active_rule, before_rules, occ)
+        if rule_err:
+            return error(rule_err)
 
     _final_name, name_warning = _common.apply_rename(occ.component, name)
     part_number_value, part_number_warning = _apply_part_number(occ.component, part_number,
@@ -138,6 +204,9 @@ def handler(name: str = "", x: float = 0.0, y: float = 0.0, z: float = 0.0,
 
     out = {
         "created": True,
+        "sheet_metal": sheet_metal,
+        "active_sheet_metal_rule": (safe(lambda: occ.component.activeSheetMetalRule.name)
+                                    if sheet_metal else None),
         "occurrence": safe(lambda: occ.name),
         "component": safe(lambda: occ.component.name),
         "full_path": full_path,               # nested path shows the parent when 'parent' was given
@@ -149,16 +218,26 @@ def handler(name: str = "", x: float = 0.0, y: float = 0.0, z: float = 0.0,
         "activated": activated,
         "ground_to_parent": ground_to_parent,
         "part_number": part_number_value,
-        "note": ("Empty component created" + (f" nested inside '{safe(lambda: parent_occ.fullPathName)}'"
+        "note": (("Empty sheet-metal component created" if sheet_metal else "Empty component created") + (f" nested inside '{safe(lambda: parent_occ.fullPathName)}'"
                  if parent_occ is not None else " at root")
-                 + ". Activate it (or it is active) then model into it with sketch_create / extrude; "
-                 "ground / joint it as an assembly part."),
+                 + (". Model a constant-thickness solid, then use sheet_convert and verify "
+                    "isSheetMetal." if sheet_metal else
+                    ". Activate it (or it is active) then model into it with sketch_create / extrude; "
+                    "ground / joint it as an assembly part.")),
     }
     if ground_to_parent:
         out["note"] += (" ground_to_parent reads TRUE on this new occurrence - it is locked to its "
                         "parent (the FIRST component of an empty design lands locked; the next one "
                         "does not), so a joint drive displaces the OTHER member instead of this "
                         "one. assembly_ground(ground_to_parent=false) releases it.")
+    if rule_flags.get("rule_name_ambiguous"):
+        out["note"] += (f" Another design rule named '{rule_flags['rule_name_ambiguous']}' now "
+                        "exists; read sheet_get(include=['rules']) for its '#<n>' ref and resolve "
+                        "with sheet_edit_rule.")
+    if rule_flags.get("rule_census_unread"):
+        out["note"] += (" The design's prior sheet-metal rules could not be read, so adoption was "
+                        "skipped; read sheet_get(include=['rules']) to check for a duplicate.")
+    out.update(rule_flags)
     if name_warning:
         out["name_warning"] = name_warning
     if part_number_warning:
@@ -189,6 +268,8 @@ tool = (
             "description": "Orientation about 'rotate_axis'."})
     .add_input_property(*_inputs.frame_axis("rotate_axis", default="z").as_property())
     .add_input_property(*_PARENT.as_property())
+    .add_input_property("sheet_metal", {"type": "boolean",
+            "description": "Sheet-metal component at root; reuses a same-named rule."})
     .strict_schema()
 )
 item = Item.create_tool_item(

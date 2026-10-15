@@ -21,9 +21,9 @@ app = adsk.core.Application.get()
 
 def handler(annotation="", component="") -> dict:
     """See TOOL_DESCRIPTION."""
-    d = _common.design()
-    if not d:
-        return error("No active design. Create or open a document first (see doc_new).")
+    d, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     ann, comp, ferr = _pmi.find_annotation(d, annotation, component)
     if ferr:
         return error(ferr)

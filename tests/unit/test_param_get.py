@@ -5,6 +5,7 @@ with the param write tools; what is proved here is this tool's own logic: the de
 listing, the model-parameter de-dup, the single-name lookup, the _MAX_PARAMS clamp, and the note
 that is only published when a row actually carries owner keys.
 """
+from conftest import install as _install_design
 
 import os
 import sys
@@ -38,7 +39,7 @@ class _DimOwner:
 
 class TestGetHandler:
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(params._common, "design", lambda: None)
+        _install_design(params, None)
         res = params.handler()
         assert res["isError"] is True and "No active design" in res["message"]
 
@@ -46,7 +47,7 @@ class TestGetHandler:
         u1, u2 = _p("PartX"), _p("PartY")
         model_only = _p("d1")
         design = _design(FakeUserParameters([u1, u2]), [u1, u2, model_only])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler())
         assert out["user_parameter_count"] == 2
         assert {p["name"] for p in out["user_parameters"]} == {"PartX", "PartY"}
@@ -57,7 +58,7 @@ class TestGetHandler:
         # off the collection's own count, so it holds no matter how many items the walk yields
         monkeypatch.setattr(params, "_MAX_PARAMS", 3)
         ups = FakeUserParameters([_p("P%d" % i) for i in range(10)])
-        monkeypatch.setattr(params._common, "design", lambda: _design(ups, []))
+        _install_design(params, _design(ups, []))
         out = _payload(params.handler())
         # the design's own total stays honest; 'returned' is what the walk actually read
         assert out["user_parameter_count"] == 10 and out["returned"] == 3
@@ -68,7 +69,7 @@ class TestGetHandler:
         # past the clamp reports tallies about a subset with nothing saying they are one.
         monkeypatch.setattr(params, "_MAX_PARAMS", 3)
         ups = FakeUserParameters([_p("P%d" % i) for i in range(10)])
-        monkeypatch.setattr(params._common, "design", lambda: _design(ups, []))
+        _install_design(params, _design(ups, []))
         out = _payload(params.handler())
         assert out["walk_truncated"] is True
         assert "stopped at 3 of 10" in out["note"]
@@ -76,7 +77,7 @@ class TestGetHandler:
     def test_a_walk_that_reached_every_row_claims_no_gap(self, monkeypatch):
         monkeypatch.setattr(params, "_MAX_PARAMS", 3)
         ups = FakeUserParameters([_p("P%d" % i) for i in range(3)])
-        monkeypatch.setattr(params._common, "design", lambda: _design(ups, []))
+        _install_design(params, _design(ups, []))
         out = _payload(params.handler())
         assert "walk_truncated" not in out and "note" not in out
 
@@ -85,7 +86,7 @@ class TestGetHandler:
         # payload says how to ask for less rather than handing back a place to read the rest.
         monkeypatch.setattr(params, "_ROWS_CAP", 2)
         ups = FakeUserParameters([_p("P%d" % i) for i in range(5)])
-        monkeypatch.setattr(params._common, "design", lambda: _design(ups, []))
+        _install_design(params, _design(ups, []))
         out = _payload(params.handler())
         assert out["returned"] == 2 and out["matched"] == 5 and out["truncated"] is True
         assert "favorites_only" in out["note"] and "name=" in out["note"]
@@ -95,7 +96,7 @@ class TestGetHandler:
         # caller narrowing a list that was never cut.
         monkeypatch.setattr(params, "_ROWS_CAP", 2)
         ups = FakeUserParameters([_p("P0"), _p("P1")])
-        monkeypatch.setattr(params._common, "design", lambda: _design(ups, []))
+        _install_design(params, _design(ups, []))
         out = _payload(params.handler())
         assert out["returned"] == 2 and "truncated" not in out
 
@@ -109,7 +110,7 @@ class TestGeneratedParameters:
                                                     unit="mm", favorite=(n in favorites))
                                   for n in names])
         design = _design(ups, [])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         return design
 
     def test_generated_rows_are_counted_not_listed(self, monkeypatch):
@@ -168,8 +169,7 @@ class TestGeneratedParameters:
             @property
             def count(self):
                 raise RuntimeError("parameter table is locked")
-        monkeypatch.setattr(params._common, "design",
-                            lambda: _design(_Uncountable([_p("PartX")]), []))
+        _install_design(params, _design(_Uncountable([_p('PartX')]), []))
         res = params.handler()
         assert res["isError"] is True
         assert "could not read user parameters" in res["message"].lower()
@@ -179,7 +179,7 @@ class TestGeneratedParameters:
         u1 = _p("PartX")
         model_only = _p("d1")
         design = _design(FakeUserParameters([u1]), [u1, model_only])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(include_model_parameters=True))
         # PartX is already a user param -> not duplicated into model_parameters
         assert out["model_parameter_count"] == 1
@@ -193,7 +193,7 @@ class TestGeneratedParameters:
         model = _p("d1")
         ups = FakeUserParameters([generated, filtered, capped])
         design = _design(ups, [capped, model])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(include_model_parameters=True, favorites_only=True))
         assert out["model_parameter_count"] == 1
         assert [row["name"] for row in out["model_parameters"]] == ["d1"]
@@ -202,7 +202,7 @@ class TestGeneratedParameters:
         monkeypatch.setattr(params, "_MAX_PARAMS", 1)
         first, second = _p("d1"), _p("d2")
         design = _design(FakeUserParameters([]), [first, second])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(include_model_parameters=True))
         assert out["model_parameter_count"] == 1 and out["model_walk_truncated"] is True
         assert "observed subset" in out["note"]
@@ -213,14 +213,14 @@ class TestGeneratedParameters:
                 raise RuntimeError("user parameter table is locked")
 
         design = _design(Unclassifiable([]), [_p("d1")])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         res = params.handler(include_model_parameters=True)
         assert res["isError"] is True and "Could not classify parameter" in res["message"]
 
     def test_single_named_user_param(self, monkeypatch):
         u1 = _p("PartX", expression="50 mm", value=5.0)
         design = _design(FakeUserParameters([u1]), [u1])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(name="PartX"))
         assert out["parameter"]["name"] == "PartX"
         assert out["parameter"]["value"] == 5.0
@@ -228,13 +228,13 @@ class TestGeneratedParameters:
     def test_single_named_model_param_falls_through_to_all(self, monkeypatch):
         model_only = _p("d1", value=2.0)
         design = _design(FakeUserParameters([]), [model_only])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(name="d1"))
         assert out["parameter"]["name"] == "d1"
 
     def test_single_named_missing_errors(self, monkeypatch):
         design = _design(FakeUserParameters([]), [])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         res = params.handler(name="Ghost")
         assert res["isError"] is True and "not found" in res["message"].lower()
 
@@ -244,7 +244,7 @@ class TestOwnerOnTheReadPath:
         u1 = _p("PartX")
         d1 = FakeModelParameter(name="d1", owner=FakeFeature("Extrude1"), role="Distance")
         design = _design(FakeUserParameters([u1]), [u1, d1])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(include_model_parameters=True))
         row = out["model_parameters"][0]
         assert (row["owner"], row["role"]) == ("Extrude1", "Distance")
@@ -253,7 +253,7 @@ class TestOwnerOnTheReadPath:
     def test_user_parameters_gain_no_owner_keys_so_the_default_read_stays_light(self, monkeypatch):
         u1 = _p("PartX")
         design = _design(FakeUserParameters([u1]), [u1])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler())
         assert not [k for k in out["user_parameters"][0] if k.startswith("owner")]
         assert "note" not in out
@@ -264,7 +264,7 @@ class TestOwnerOnTheReadPath:
         # is the one carrying no model row: allParameters holding only the user parameter above it.
         u1 = _p("PartX")
         design = _design(FakeUserParameters([u1]), [u1])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(include_model_parameters=True))
         assert out["model_parameter_count"] == 0
         assert "note" not in out
@@ -273,7 +273,7 @@ class TestOwnerOnTheReadPath:
         # the cheapest form of the read: one parameter, one owner, no list to page through
         d195 = FakeModelParameter(name="d195", owner=_DimOwner(), role="Dimension")
         design = _design(FakeUserParameters([]), [d195])
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(name="d195"))
         assert out["parameter"]["owner_sketch"] == "Sketch2"
         assert out["parameter"]["role"] == "Dimension"
@@ -299,7 +299,7 @@ def _wire(monkeypatch, target, extra_params=(), timeline=()):
     design = MakeDesign(user_parameters=FakeUserParameters([target]),
                         all_parameters=[target, *extra_params],
                         timeline=FakeTimeline(list(timeline)))
-    monkeypatch.setattr(params._common, "design", lambda: design)
+    _install_design(params, design)
     return design
 
 
@@ -569,7 +569,7 @@ class TestTrace:
         design = MakeDesign(user_parameters=FakeUserParameters([]), all_parameters=[dim],
                             timeline=FakeTimeline([FakeTimelineObject(name="Extrude3", index=6,
                                                                       entity=feature)]))
-        monkeypatch.setattr(params._common, "design", lambda: design)
+        _install_design(params, design)
         out = _payload(params.handler(name="d7", trace=True))
         assert out["dependents"] == []                   # nothing follows the dimension itself
         rows = out["sketch_consumers"]
@@ -671,7 +671,7 @@ class TestTrace:
         assert out["dependents"] == [] and out["reach"]["downstream"] == 0
 
     def test_trace_without_a_name_is_refused_naming_both_inputs(self, monkeypatch):
-        monkeypatch.setattr(params._common, "design", lambda: _design(FakeUserParameters([]), []))
+        _install_design(params, _design(FakeUserParameters([]), []))
         msg = error_message(params.handler(trace=True))
         assert "'trace'" in msg and "'name'" in msg
 

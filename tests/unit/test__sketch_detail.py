@@ -1,30 +1,30 @@
-"""Unit tests for ``sketch_detail.py`` — read the full structure of one sketch.
+"""Unit tests for sketch X-ray geometry, references, dimensions and state."""
 
-sketch_get gives only COUNTS; sketch_get X-rays one sketch: every entity (id, type,
-isConstruction, geometry), every constraint (type + the entity IDs it links, mapped via
-entityToken), and every dimension (name/value/expression). This is the read companion that lets the
-agent reason about a constrained sketch (slots/ellipses/rectangles + their construction geometry +
-relationships).
-
-Pinned here (no live Fusion): the entityToken->id map, the constraint describer (maps a
-constraint's referenced entities back to ids by token), the entity/dimension summarizers, and the
-three spline collections - each walked into _entities() with the same per-kind record idiom as
-arcs/ellipses, mapped into the token map, and reported in the 'counts' block - plus the sketch-text
-records (the read half of sketch_set_text: string, height, font, sketch-space bounding box, at the
-'text:<i>' address sketch_delete_entity and sketch_set_text address).
-"""
-
-import json
+import math
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import (BRepBody, BRepFace, FakeBoundingBox3D, FakeOccurrence, FakePoint,
+from conftest import (BRepBody, BRepFace, FakeBoundingBox3D, FakeMatrix3D, FakeOccurrence, FakePoint,
+                      FakeVector3D,
                       FakeSketchPoint as _SharedSketchPoint, FakeTimeline, FakeTimelineObject,
                       MakeComp, Profile, Sketch, SketchCurves, _NamedCollection, install, load_tool,
                       make_design, make_occurrence, make_timeline)
 
 sd = load_tool("_sketch_detail")
+
+
+def test_xyz_translation_preserves_xy_rotation_anchor(monkeypatch):
+    monkeypatch.setattr(sd.adsk.core.Matrix3D, "create", lambda: FakeMatrix3D())
+    monkeypatch.setattr(sd.adsk.core.Vector3D, "create", FakeVector3D)
+    monkeypatch.setattr(sd.adsk.core.Point3D, "create", FakePoint)
+    monkeypatch.setattr(FakeMatrix3D, "getCell",
+                        lambda self, row, col: self.asArray()[4 * row + col], raising=False)
+    matrix, refusal = sd._transform(2, 3, 90, 1, 1, 2, dz_cm=-0.4)
+    assert refusal is None
+    assert (matrix.translation.x, matrix.translation.y, matrix.translation.z) == pytest.approx((5, 4, -0.4))
+    assert sd._requested("mm", 20, 30, 90, 1, dz=-4)["dz"] == -4
+    assert "dz" not in sd._requested("mm", 20, 30, 90, 1)
 
 
 # ── fakes ───────────────────────────────────────────────────────────────────
@@ -88,8 +88,10 @@ class _Vec:
 
 
 class PolygonConstraint:
-    def __init__(self, lines):
-        self.lines = _Vec(lines)
+    """Local double - no live_api_facts.SHAPES entry. It carries `points`, the vertices; the retired
+    `lines` is absent, so a read of it answers nothing."""
+    def __init__(self, points):
+        self.points = _Vec(points)
 
 
 class TangentConstraint:
@@ -119,8 +121,10 @@ class _Coll(_NamedCollection):
 
 # constraint fakes (named to match real adsk class names so the describer maps them)
 class PerpendicularConstraint:
-    def __init__(self, l1, l2):
-        self.lineOne, self.lineTwo = l1, l2
+    """Local double - no live_api_facts.SHAPES entry. It carries `line` and `curve`; the retired
+    lineOne/lineTwo are absent, so a read of either answers nothing."""
+    def __init__(self, line, curve):
+        self.line, self.curve = line, curve
 
 
 class HorizontalConstraint:
@@ -260,9 +264,7 @@ def _install(sketch):
     return install(sd, make_design(sketches=[sketch]))
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── a sketch attached to a FACE, whose support needs the marker rolled back ─────────────────────
@@ -315,7 +317,7 @@ def _install_face_sketch(sketch, marker=2, move_ok=True):
 def _install_subcomponent(sketch):
     """A design whose sketch lives in an ACTIVATED SUB-COMPONENT, with the root component EMPTY - the
     normal assembly workflow (model_create_component(activate=true) + sketch_create). A lookup that
-    only checks rootComponent.sketches cannot resolve this shape; resolve_sketch must find it."""
+    only checks rootComponent.sketches cannot resolve this shape; find_sketch must find it."""
     root, sub = MakeComp(name="Root"), MakeComp(name="Sub", sketches=[sketch])
     # allComponents lives on the DESIGN in the live API (Component has no such attribute)
     design = make_design(comp=root, all_components=[root, sub])
@@ -328,9 +330,12 @@ class TestSubComponentResolution:
     root component (rootComponent.sketches.itemByName returns None for a sub-component sketch)."""
 
     def test_finds_sketch_in_active_sub_component(self):
-        _install_subcomponent(_rich_sketch())
+        sketch = _rich_sketch()
+        design = _install_subcomponent(sketch)
+        sketch.parentComponent = design.activeComponent
         out = _payload(sd.handler(sketch_name="S4", include_entities=True))     # S4 lives ONLY in the sub-component
         assert out["sketch"] == "S4"
+        assert out["component"] == "Sub"
         assert any(e["id"] == "circle:0" for e in out["entities"])
 
     def test_unknown_name_lists_sub_component_sketches(self):
@@ -356,6 +361,15 @@ def _rich_sketch():
 # ── entity ids + construction flag ──────────────────────────────────────────
 
 class TestEntities:
+    @pytest.mark.parametrize("state", [True, False, None])
+    def test_centerline_is_read_independently_and_missing_is_unknown(self, state):
+        line = FakeLine("cl", 0, 0, 10, 0)
+        if state is not None:
+            line.isCenterLine = state
+        _install(FakeSketch("S4", lines=[line]))
+        out = _payload(sd.handler(sketch_name="S4", include_entities=True))
+        assert out["entities"][0]["centerline"] is state
+
     def test_lines_indexed_with_construction_flag(self):
         _install(_rich_sketch())
         out = _payload(sd.handler(sketch_name="S4", include_entities=True))
@@ -383,12 +397,39 @@ class TestEntities:
 
 # ── constraints map to entity ids ───────────────────────────────────────────
 
+@pytest.fixture
+def split_constraint_sketch():
+    first = FakeLine("split", 2.5, 1, 5, 1)
+    second = FakeLine("split", 1, 1, 2.5, 1)
+    foreign = FakeLine("split", 7, 1, 8, 1)
+    sketch = FakeSketch("Split", lines=[first, second], constraints=[
+        HorizontalConstraint(first), HorizontalConstraint(second),
+        TangentConstraint(second, foreign)])
+    _install(sketch)
+    return sketch
+
+
 class TestConstraints:
+    def test_split_constraint_entities_use_identity_not_shared_token(self, split_constraint_sketch):
+        out = _payload(sd.handler(sketch_name=split_constraint_sketch.name, include_entities=True))
+        assert [(c["type"], c["entities"]) for c in out["constraints"]] == [
+            ("horizontal", ["line:0"]), ("horizontal", ["line:1"]),
+            ("tangent", ["line:1", "?"])]
+        assert "'?' has no id in this payload" in out["note"]
+
     def test_perpendicular_links_two_lines(self):
         _install(_rich_sketch())
         out = _payload(sd.handler(sketch_name="S4", include_entities=True))
         perp = next(c for c in out["constraints"] if c["type"] == "perpendicular")
-        assert set(perp["entities"]) == {"line:0", "line:1"}
+        assert perp["entities"] == ["line:0", "line:1"]
+
+    def test_perpendicular_to_a_circle_lists_the_line_then_the_circle(self):
+        line, circle = FakeLine("t0", 0, 0, 10, 0), FakeCircle("tcir", 5, 5, 3)
+        _install(FakeSketch("PC", lines=[line], circles=[circle],
+                            constraints=[PerpendicularConstraint(line, circle)]))
+        out = _payload(sd.handler(sketch_name="PC", include_entities=True))
+        assert out["constraints"][0] == {"type": "perpendicular",
+                                         "entities": ["line:0", "circle:0"]}
 
     def test_horizontal_links_one_line(self):
         _install(_rich_sketch())
@@ -416,6 +457,36 @@ class TestDimensions:
         out = _payload(sd.handler(sketch_name="S4", include_entities=True))
         d = out["dimensions"][0]
         assert d["name"] == "d1" and d["expression"] == "100 mm"
+
+
+class SketchOffsetDimension(FakeDim):
+    """No measured shape; named as the live class so its getters line/entityTwo are read."""
+    def __init__(self, line, other):
+        super().__init__("d2", 1.0, "10 mm")
+        self.line, self.entityTwo = line, other
+
+
+class TestDimensionEntities:
+    def test_split_pieces_sharing_a_token_are_told_apart_by_identity(self):
+        # The two pieces a split returns share one entityToken, so only identity separates them.
+        first, second = FakeLine("split", 0, 0, 1, 0), FakeLine("split", 1, 0, 2, 0)
+        stray = FakeLine("stray", 9, 9, 9, 8)
+        dims = [SketchOffsetDimension(second, first), SketchOffsetDimension(first, stray),
+                FakeDim("d3", 1.0, "1 mm")]
+        _install(FakeSketch("Split", lines=[first, second], dimensions=dims))
+        out = _payload(sd.handler(sketch_name="Split", include_entities=True))
+        assert [d["entities"] for d in out["dimensions"]] == [
+            ["line:1", "line:0"], ["line:0", "?"], None]
+        assert "dimension entity of '?'" in out["note"]
+
+    def test_only_the_rows_the_cap_publishes_are_matched(self, monkeypatch):
+        line = FakeLine("t0", 0, 0, 1, 0)
+        calls = []
+        monkeypatch.setattr(sd, "dimension_entities", lambda *args: calls.append(1) or [])
+        dims = [SketchOffsetDimension(line, line) for _ in range(sd._XRAY_CAP + 1)]
+        _install(FakeSketch("Many", lines=[line], dimensions=dims))
+        out = _payload(sd.handler(sketch_name="Many", include_entities=True))
+        assert len(calls) == sd._XRAY_CAP == len(out["dimensions"])
 
 
 # ── constraint state: is_fully_constrained + per-dim isDriving ──────────────
@@ -450,15 +521,72 @@ class TestConstraintState:
 
 # ── ellipses + list-valued (polygon) constraints ────────────────────────────
 
+def _ring(coords, extra=(), spur=None, spur_ends_on_vertex=False):
+    """(vertex points, lines) of a closed run of lines around `coords`, one shared sketch point per
+    vertex, plus one line per (i, j) vertex pair in `extra` and one joining vertex 0 and the free
+    point `spur`. BINDINGS-SOURCED, not measured: a point lists the lines ending on it as
+    connectedEntities."""
+    points = [FakeSketchPoint(f"v{i}", x, y) for i, (x, y) in enumerate(coords)]
+    ends = [(points[i], points[(i + 1) % len(points)]) for i in range(len(points))]
+    ends += [(points[i], points[j]) for i, j in extra]
+    if spur:
+        pair = (points[0], FakeSketchPoint("free", *spur))
+        ends.append(pair[::-1] if spur_ends_on_vertex else pair)
+    lines = []
+    for n, (a, b) in enumerate(ends):
+        line = FakeLine(f"side{n}", a.geometry.x, a.geometry.y, b.geometry.x, b.geometry.y)
+        line.startSketchPoint, line.endSketchPoint = a, b
+        line.length = math.hypot(b.geometry.x - a.geometry.x, b.geometry.y - a.geometry.y)
+        lines.append(line)
+    for point in points:
+        point.connectedEntities = _Coll([ln for ln in lines if point in (ln.startSketchPoint,
+                                                                        ln.endSketchPoint)])
+    return points, lines
+
+
+_SQUARE = ((0, 0), (1, 0), (1, 1), (0, 1))
+
+
 class TestEllipseAndPolygon:
     def _sketch(self):
-        l0 = FakeLine("p0", 0, 0, 1, 0)
-        l1 = FakeLine("p1", 1, 0, 1, 1)
-        l2 = FakeLine("p2", 1, 1, 0, 1)
+        points, (l0, l1, l2) = _ring(((0, 0), (1, 0), (0.5, math.sqrt(0.75))))
         el = FakeEllipse("tel", 4, 4, 5, 2)
-        # polygon over the 3 lines; tangent referencing the ELLIPSE
-        cons = [PolygonConstraint([l0, l1, l2]), TangentConstraint(el, l0)]
-        return FakeSketch("E", lines=[l0, l1, l2], ellipses=[el], constraints=cons)
+        # polygon over the triangle's 3 vertices; tangent referencing the ELLIPSE
+        cons = [PolygonConstraint(points), TangentConstraint(el, l0)]
+        return FakeSketch("E", lines=[l0, l1, l2], ellipses=[el], points=points,
+                          constraints=cons)
+
+    def _polygon(self, points, lines):
+        _install(FakeSketch("P", lines=lines, points=points,
+                            constraints=[PolygonConstraint(points)]))
+        out = _payload(sd.handler(sketch_name="P", include_entities=True))
+        return out["constraints"][0]["entities"]
+
+    def test_a_line_between_two_vertices_that_is_not_a_side_is_left_out(self):
+        # line:4 is the square's diagonal: both its ends are vertices, and it is not a side
+        points, lines = _ring(_SQUARE, extra=[(0, 2)])
+        assert self._polygon(points, lines) == ["line:0", "line:1", "line:2", "line:3"]
+
+    @pytest.mark.parametrize("ends_on_vertex", [False, True])
+    def test_a_line_joining_a_vertex_and_a_free_point_is_not_a_side(self, ends_on_vertex):
+        # line:4 is as long as a side and has ONE end on a vertex
+        points, lines = _ring(_SQUARE, spur=(-1, 0), spur_ends_on_vertex=ends_on_vertex)
+        assert self._polygon(points, lines) == ["line:0", "line:1", "line:2", "line:3"]
+
+    def test_a_polygon_whose_sides_do_not_read_lists_its_vertex_points(self):
+        points, lines = _ring(_SQUARE)
+        for point in points:
+            del point.connectedEntities
+        assert self._polygon(points, lines) == ["point:0", "point:1", "point:2", "point:3"]
+
+    def test_a_side_at_the_length_band_counts_and_one_past_it_does_not(self):
+        # 1.0 * (1 + band) is the same product the walk forms, so the equal case sits ON the band
+        sides, vertices = [f"line:{i}" for i in range(4)], [f"point:{i}" for i in range(4)]
+        for stretch, want in ((1e-6, sides), (2e-6, vertices)):
+            points, lines = _ring(_SQUARE)
+            lines[3].length = 1.0 * (1.0 + stretch)
+            assert self._polygon(points, lines) == want, stretch
+        assert sd._SIDE_LENGTH_REL == 1e-6
 
     def test_ellipse_enumerated(self):
         # FakeEllipse raw major/minor are cm (5, 2); default units=mm scales x10.
@@ -473,7 +601,7 @@ class TestEllipseAndPolygon:
         _install(self._sketch())
         out = _payload(sd.handler(sketch_name="E", include_entities=True))
         poly = next(c for c in out["constraints"] if c["type"] == "polygon")
-        assert set(poly["entities"]) == {"line:0", "line:1", "line:2"}
+        assert poly["entities"] == ["line:0", "line:1", "line:2"]
 
     def test_constraint_referencing_ellipse_resolves(self):
         # a tangent on an ellipse must map to 'ellipse:0', not '?'
@@ -583,23 +711,77 @@ class TestProjectedCurves:
         out = _payload(sd.handler(sketch_name="Pr", include_entities=True))
         by = {e["id"]: e for e in out["entities"] if e["type"] == "line"}
         assert by["line:0"]["reference"] is True
-        assert "reference" not in by["line:1"]
-        assert "reference:true marks a curve PROJECTED in from model geometry" in out["note"]
+        assert by["line:1"]["reference"] is False
+        assert "reference:true marks reference geometry" in out["note"]
 
     def test_a_sketch_of_drawn_curves_carries_neither_the_flag_nor_its_sentence(self):
         s = FakeSketch("Dr", lines=[_RefLine("d", False)])
         _install(s)
         out = _payload(sd.handler(sketch_name="Dr", include_entities=True))
-        assert all("reference" not in e for e in out["entities"])
+        assert all(e["reference"] is False for e in out["entities"] if e["type"] == "line")
         assert "PROJECTED" not in out["note"]
 
-    def test_an_unreadable_reference_flag_publishes_nothing(self):
-        # read_flag answers None when the property raises; None is not True, so no key is emitted -
-        # a coerced False would claim the curve was drawn here.
+    def test_an_unreadable_reference_flag_publishes_unknown(self):
         s = FakeSketch("Un", lines=[FakeLine("t", 0, 0, 1, 0)])
         _install(s)
         out = _payload(sd.handler(sketch_name="Un", include_entities=True))
-        assert "reference" not in out["entities"][0]
+        assert out["entities"][0]["reference"] is None
+
+
+def test_curve_state_counts_ignore_points_text_and_the_xray_cap():
+    lines = [FakeLine(str(i), i, 0, i, 1) for i in range(201)]
+    splines = [FakeFixedSpline(), FakeFixedSpline(), FakeFixedSpline()]
+    for curve in lines + splines:
+        curve.isFixed, curve.isReference, curve.isLinked = False, False, False
+    for curve in [lines[-1]] + splines:
+        curve.isFixed, curve.isReference, curve.isLinked = True, True, True
+    s = FakeSketch("State", lines=lines, splines=[splines[0]], cv_splines=[splines[1]],
+                   fixed_splines=[splines[2]], points=[FakeSketchPoint("p", 0, 0)],
+                   texts=[_sketch_text()])
+    _install(s)
+    for result in (sd._sketch_summary(s), _payload(sd.handler(sketch_name="State")),
+                   _payload(sd.handler(sketch_name="State", include_entities=True))):
+        assert result["fixed_curve_count"] == 4
+        assert result["reference_curve_count"] == 4
+        assert result["linked_curve_count"] == 4
+        assert result["constraint_count"] == 0
+    result = _payload(sd.handler(sketch_name="State", include_entities=True))
+    assert result["truncated"] is True
+    assert not any(e.get("fixed") for e in result["entities"] if e["type"] == "line")
+    assert sum(e.get("fixed") is True for e in result["entities"]) == 3
+
+
+def test_curve_state_failure_is_independent_per_flag_and_census():
+    class BrokenFixed(FakeLine):
+        @property
+        def isFixed(self):
+            raise RuntimeError("unreadable fixed state")
+
+    curve = BrokenFixed("broken", 0, 0, 1, 0)
+    curve.isReference, curve.isLinked = True, False
+    s = FakeSketch("State", lines=[curve])
+    _install(s)
+    result = _payload(sd.handler(sketch_name="State", include_entities=True))
+    assert {k: result["entities"][0][k] for k in ("fixed", "reference", "linked")} == {
+        "fixed": None, "reference": True, "linked": False}
+    assert result["fixed_curve_count"] is None
+    assert result["reference_curve_count"] == 1
+    assert result["linked_curve_count"] == 0
+
+
+@pytest.mark.parametrize("failure", ["collection", "item"])
+def test_incomplete_curve_census_never_reports_zero(failure):
+    class BrokenCurves:
+        def __iter__(self):
+            if failure == "item":
+                yield SimpleNamespace(isFixed=False, isReference=False, isLinked=False)
+            raise RuntimeError("unreadable curves")
+
+    s = FakeSketch("State")
+    s.sketchCurves = BrokenCurves()
+    result = sd._sketch_summary(s)
+    assert all(result[k] is None for k in
+               ("fixed_curve_count", "reference_curve_count", "linked_curve_count"))
 
 
 # ── arc + point geometry records ────────────────────────────────────────────
@@ -651,6 +833,39 @@ class TestArcAndPoint:
 # ── driving-dimension tally + missing parameter ─────────────────────────────
 
 class TestDimensionTally:
+    def test_dimension_label_position_reads_in_requested_units(self):
+        dim = FakeDim("d1", 2.0, "20 mm", driving=True)
+        dim.textPosition = SimpleNamespace(x=1.0, y=2.0, z=0.0)
+        _install(FakeSketch("D", dimensions=[dim]))
+        out = _payload(sd.handler(sketch_name="D", include_entities=True, units="in"))
+        assert out["dimensions"][0]["text_position"] == {
+            "x": pytest.approx(0.3937), "y": pytest.approx(0.7874), "z": 0.0}
+
+    @pytest.mark.parametrize("driving", [0, 1, "yes"])
+    def test_non_boolean_driving_flag_is_unknown(self, driving):
+        dim = SimpleNamespace(parameter=SimpleNamespace(name="d1", value=1, expression="1 cm"),
+                              isDriving=driving)
+        _install(FakeSketch("D", dimensions=[dim]))
+        out = _payload(sd.handler(sketch_name="D", include_entities=True))
+        assert out["dimensions"][0]["driving"] is None
+        assert out["dimensions"][0]["driving_unread"] == "isDriving did not read a boolean"
+        assert out["driving_dimension_count"] is None
+
+    def test_unread_driving_flag_does_not_become_true_or_a_complete_count(self):
+        class UnreadDimension:
+            parameter = SimpleNamespace(name="d1", value=1, expression="1 cm")
+
+            @property
+            def isDriving(self):
+                raise RuntimeError("dimension flag unavailable")
+
+        _install(FakeSketch("D", dimensions=[UnreadDimension()]))
+        out = _payload(sd.handler(sketch_name="D", include_entities=True))
+        assert out["dimensions"][0]["driving"] is None
+        assert out["dimensions"][0]["driving_unread"] == "dimension flag unavailable"
+        assert out["driving_dimension_count"] is None
+        assert "driving_dimension_count_unread" in out
+
     def test_driving_dimension_count(self):
         s = FakeSketch("D", dimensions=[
             FakeDim("d1", 1.0, "1 mm", driving=True),
@@ -836,7 +1051,7 @@ class TestProgressiveDisclosure:
         assert "profiles" in out                              # the light layer still comes along
 
 
-# ── BOUNDED READS: the opt-in X-ray caps entities/constraints/dimensions (CLAUDE.md "Bound it") ──
+# ── BOUNDED READS: the opt-in X-ray caps entities/constraints/dimensions (AGENTS.md "Bound it") ──
 
 class TestXrayCaps:
     def test_under_cap_untruncated_and_unchanged(self):
@@ -853,9 +1068,66 @@ class TestXrayCaps:
         _install(s)
         out = _payload(sd.handler(sketch_name="Dense", include_entities=True))
         assert out["truncated"] is True
-        assert len(out["entities"]) == sd._XRAY_CAP
+        assert len(out["entities"]) == sd._ENTITY_PAGE_DEFAULT == 50
         # the counts summary stays honest (uncapped) even though the array is capped
         assert out["counts"]["lines"] == sd._XRAY_CAP + 20
+        larger = _payload(sd.handler(sketch_name="Dense", include_entities=True,
+                                     max_results=1000))
+        assert len(larger["entities"]) == sd._XRAY_CAP
+        assert larger["entity_pages"]["lines"]["next_offset"] == 200
+
+    def test_entity_offset_pages_each_collection_without_renumbering(self):
+        lines = [FakeLine(f"l{i}", i, 0, i + 1, 0) for i in range(201)]
+        points = [FakeSketchPoint(f"p{i}", i, 1) for i in range(251)]
+        s = FakeSketch("Paged", lines=lines, points=points,
+                       constraints=[HorizontalConstraint(lines[0])],
+                       dimensions=[FakeDim("d1", 2.0, "20 mm")])
+        s.originPoint = points[0]
+        _install(s)
+        first = _payload(sd.handler(sketch_name="Paged", include_entities=True))
+        second = _payload(sd.handler(sketch_name="Paged", include_entities=True,
+                                     entity_offset=50, max_results=50))
+        later = _payload(sd.handler(sketch_name="Paged", include_entities=True,
+                                    entity_offset=200, max_results=200))
+        first_ids = {row["id"] for row in first["entities"]}
+        second_ids = {row["id"] for row in second["entities"]}
+        later_ids = {row["id"] for row in later["entities"]}
+        assert len(first_ids) == len(second_ids) == 100 and len(later_ids) == 52
+        assert first_ids.isdisjoint(second_ids) and second_ids.isdisjoint(later_ids)
+        assert first_ids.isdisjoint(later_ids)
+        assert {"line:0", "point:0", "line:49", "point:49"} <= first_ids
+        assert {"line:50", "point:50", "line:99", "point:99"} <= second_ids
+        assert {"line:200", "point:200", "point:230", "point:250"} <= later_ids
+        assert first["entity_pages"]["points"] == {
+            "count": 251, "offset": 0, "next_offset": 50}
+        assert second["entity_pages"]["points"] == {
+            "count": 251, "offset": 50, "next_offset": 100}
+        assert later["entity_pages"]["points"] == {
+            "count": 251, "offset": 200, "next_offset": None}
+        assert later["entity_pages"]["lines"] == {
+            "count": 201, "offset": 200, "next_offset": None}
+        assert later["entity_pages"]["arcs"] == {
+            "count": 0, "offset": 200, "next_offset": None}
+        assert next(row for row in later["entities"] if row["id"] == "point:230")[
+            "position"] == {"x": 2300, "y": 10}
+        assert "handle" in next(row for row in later["entities"] if row["id"] == "point:230")
+        assert first["counts"] == second["counts"] == later["counts"]
+        assert first["constraints"] == second["constraints"] == later["constraints"]
+        assert first["dimensions"] == second["dimensions"] == later["dimensions"]
+        assert first["constraint_count"] == later["constraint_count"] == 1
+        assert first["dimension_count"] == later["dimension_count"] == 1
+        assert first["truncated"] is second["truncated"] is later["truncated"] is True
+
+    def test_entity_offset_past_end_returns_empty_pages_with_true_counts(self):
+        s = FakeSketch("PastEnd", points=[FakeSketchPoint(f"p{i}", i, 0)
+                                            for i in range(251)])
+        _install(s)
+        out = _payload(sd.handler(sketch_name="PastEnd", include_entities=True,
+                                  entity_offset=400))
+        assert out["entities"] == []
+        assert out["entity_pages"]["points"] == {
+            "count": 251, "offset": 400, "next_offset": None}
+        assert out["counts"]["points"] == 251 and out["truncated"] is True
 
     def test_constraints_at_cap_truncates_and_flags(self):
         lines = [FakeLine(f"l{i}", 0, 0, 1, 1) for i in range(2)]
@@ -971,7 +1243,7 @@ class TestUnitsScaling:
         assert "banana" in res["message"]
 
     def test_handle_locator_area_stays_raw_cm_regardless_of_units(self):
-        # the handle is a stable re-find locator (CLAUDE.md "Handles/ids unchanged") - it must embed
+        # the handle is a stable re-find locator (AGENTS.md "Handles/ids unchanged") - it must embed
         # the SAME raw-cm area no matter what display 'units' this particular call used, so a caller
         # who reads in 'in' and later resolves the handle from an 'mm' context still finds it.
         _install(_face_sketch())
@@ -1135,14 +1407,14 @@ class TestSplineTokenMap:
 
     def test_fitted_spline_token_mapped(self):
         s = FakeSketch("S", splines=[FakeFittedSpline(tok="TOK-A")])
-        assert sd._build_token_map(s)["TOK-A"] == "spline:0"
+        assert sd.sketch_token_ids(s)["TOK-A"] == ["spline:0"]
 
     def test_control_point_and_fixed_spline_tokens_mapped(self):
         s = FakeSketch("S", cv_splines=[FakeCVSpline(tok="TOK-CV")],
                        fixed_splines=[FakeFixedSpline(tok="TOK-FX")])
-        tok2id = sd._build_token_map(s)
-        assert tok2id["TOK-CV"] == "cv_spline:0"
-        assert tok2id["TOK-FX"] == "fixed_spline:0"
+        tok2id = sd.sketch_token_ids(s)
+        assert tok2id["TOK-CV"] == ["cv_spline:0"]
+        assert tok2id["TOK-FX"] == ["fixed_spline:0"]
 
 
 class TestSplineCounts:
@@ -1192,9 +1464,9 @@ class TestConicFamily:
         assert (arc["major_radius"], arc["minor_radius"]) == (20.0, 10.0)
 
     def test_their_tokens_map_to_those_ids(self):
-        tok2id = sd._build_token_map(self._sketch())
-        assert tok2id["TOK-CN"] == "conic:0"
-        assert tok2id["TOK-EA"] == "elliptical_arc:0"
+        tok2id = sd.sketch_token_ids(self._sketch())
+        assert tok2id["TOK-CN"] == ["conic:0"]
+        assert tok2id["TOK-EA"] == ["elliptical_arc:0"]
 
     def test_the_handler_counts_them(self):
         _install(self._sketch())
@@ -2579,3 +2851,59 @@ class TestFaceAttachedSketchNamesItsFace:
         out = _payload(sd.handler(sketch_name="OnPlane"))
         assert out["plane"] == "XY" and "on_face" not in out
         assert design.timeline._moves == []
+
+    @pytest.mark.parametrize("reads, disclosed", [((False, True), True), ((True, True), False),
+                                                  ((None, True), False), ((False, None), False)])
+    def test_only_a_clean_to_modified_flip_across_the_roll_is_disclosed(
+            self, monkeypatch, reads, disclosed):
+        sketch = FaceAttachedSketch("OnFace", _face_support())
+        _install_face_sketch(sketch)
+        seq = iter(reads)
+        monkeypatch.setattr(sd._view_common, "document_modified", lambda: next(seq))
+        out = _payload(sd.handler(sketch_name="OnFace"))
+        assert out.get("document_modified") is (True if disclosed else None)
+        assert ("reads modified after it" in out["note"]) is disclosed
+
+
+# ── every point/curve row's HANDLE, minted where the sketch's frame is placed ────────────────────
+
+def _placed_sketch(placements):
+    """Sketch 'Placed' (a text, a native point (1, 2)) in 'Blk', placed `placements` times."""
+    root = MakeComp(name="Root", entity_token="TOKEN:Root")
+    blk = MakeComp(name="Blk", entity_token="TOKEN:Blk")
+    occs = [make_occurrence(f"Blk:{i + 1}", component=blk,
+                            transform2=FakeMatrix3D(deg=30.0, t=(10.0, 20.0, 0.0)))
+            for i in range(placements)]
+    root.allOccurrences = occs
+    sk = FakeSketch("Placed", texts=[_sketch_text()])
+    sk.parentComponent, sk.transform = blk, FakeMatrix3D()
+    sk.createForAssemblyContext = lambda occ: SimpleNamespace(
+        origin=FakePoint(10.0, 20.0, 0.0), xDirection=FakePoint(1, 0, 0),
+        yDirection=FakePoint(0, 1, 0), assemblyContext=occ)
+    native = _SharedSketchPoint(FakePoint(1.0, 2.0, 0.0), parent_sketch=sk, entity_token="P")
+    native.createForAssemblyContext = lambda occ: _SharedSketchPoint(
+        native.geometry, parent_sketch=sk, entity_token="P@" + occ.fullPathName,
+        assembly_context=occ, native_object=native)
+    sk.sketchPoints = _Coll([native])
+    blk.sketches = _NamedCollection([sk])
+    install(sd, make_design(comp=root, all_components=[root, blk]))
+
+
+class TestEntityHandles:
+    def test_a_point_row_carries_the_handle_of_its_one_placement_and_text_none(self):
+        _placed_sketch(placements=1)
+        out = _payload(sd.handler(sketch_name="Placed", include_entities=True))
+        point = next(e for e in out["entities"] if e["id"] == "point:0")
+        token, loc = sd._inputs._split_handle(point["handle"])
+        assert token == "P@Blk:1" and loc[0] == "sketch_point" and loc[5] == "Blk:1"
+        assert (loc[1], loc[2]) == (round(math.cos(math.radians(30)) - 1 + 10, 6),
+                                    round(0.5 + 2 * math.cos(math.radians(30)) + 20, 6))
+        assert "handle" not in next(e for e in out["entities"] if e["id"] == "text:0")
+        assert "point row's 'handle' goes in model_construction's 'points'" in out["note"]
+        assert "line row's in its 'axis' and two_edges' 'edges'" in out["note"]
+
+    def test_a_sketch_placed_twice_prints_null_handles_and_says_so(self):
+        _placed_sketch(placements=2)
+        out = _payload(sd.handler(sketch_name="Placed", include_entities=True))
+        assert next(e for e in out["entities"] if e["id"] == "point:0")["handle"] is None
+        assert "'handle' is null on every row" in out["note"]

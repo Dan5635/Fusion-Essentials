@@ -213,9 +213,9 @@ def _foreign_effect(rows):
 
 def handler(surface=None, trim_tool=None, keep=None) -> dict:
     """Trim a surface against a tool that intersects it - remove the unwanted cell(s)."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     surf, serr = _SURFACE.resolve(surface)     # validates isSolid == false, redirecting error otherwise
@@ -252,7 +252,7 @@ def handler(surface=None, trim_tool=None, keep=None) -> dict:
             return error(
                 f"Trim aborted: the kept cells measure {round(kept_area * 100.0, 1)} mm2, more "
                 f"than the target's own {round(area_before * 100.0, 1)} mm2. Other cell owners "
-                f"read: {owners}. The transaction was cancelled." + aborted)
+                f"read: {owners}." + (aborted or " The transaction was cancelled."))
         feature = comp.features.trimFeatures.add(trim_input)
     except Exception as e:
         # abort the open partial-compute transaction so Fusion isn't left in a bad state
@@ -274,11 +274,13 @@ def handler(surface=None, trim_tool=None, keep=None) -> dict:
     if (cell_info and cell_info["cells_removed"] and area_before and area_after is not None
             and area_after >= area_before * (1 - 1e-6)):
         return error(f"Trim committed but the surface area did not decrease "
-                     f"({round(area_before, 4)} cm2 before and after) - no cell was actually removed.")
+                     f"({round(area_before, 4)} cm2 before, {round(area_after, 4)} after) - no cell "
+                     "was actually removed. " + _common.failed_effect_remedy(design, feature))
     unchanged, moved = _foreign_effect(foreign_before)
     if unchanged is False:
         return error("Trim committed but a body the target does not own changed area: "
-                     f"{_common.named_with_remainder(moved)}. Undo in Fusion before continuing.")
+                     f"{_common.named_with_remainder(moved)}. "
+                     + _common.failed_effect_remedy(design, feature))
     owned = len(cell_info["cells_kept"]) + len(cell_info["cells_removed"])
     payload = {
     "trimmed": True,

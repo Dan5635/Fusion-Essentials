@@ -6,6 +6,9 @@ component of the active design - a one-way linked COPY that updates FROM the sou
 never travel back. Requires a PARAMETRIC destination design and an ALREADY-OPEN source: Fusion opens
 documents asynchronously, so createInput returns None for a source that is not open yet."""
 
+import re
+from collections import Counter
+
 import adsk.core
 import adsk.fusion
 
@@ -14,14 +17,16 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe
 from . import _common
+from . import _edit_feature_common
 from . import _inputs
 from . import _outputs
 from ._data_common import _resolve_data_file
+from ._param_common import parameter_census
 
 app = adsk.core.Application.get()
 
 _INTO_COMPONENT = _inputs.OccurrenceRef("into_component",
-        description="Default: the root component.")
+        description="Default root.")
 
 # Insert > Derive (Component.features.deriveFeatures) has no Direct-modeling equivalent - confirmed
 # against the live API surface (deriveFeatures is a parametric feature collection).
@@ -35,13 +40,18 @@ _ERROR_HEALTH = 2  # adsk.fusion.FeatureHealthStates.ErrorFeatureHealthState (se
 _UNREAD = object()      # an activeOccurrence read that RAISED - distinct from one that reads None
 
 
-def _as_names(raw):
-    """A clean list of names from a JSON array or a comma-separated string; [] when empty."""
-    if raw in (None, "", []):
+def _as_names(raw, field):
+    """Return explicit names, refusing blank entries instead of widening the selection."""
+    if raw is None or raw == [] or raw == ():
         return []
-    if isinstance(raw, (list, tuple)):
-        return [str(s).strip() for s in raw if str(s).strip()]
-    return [s.strip() for s in str(raw).split(",") if s.strip()]
+    names = raw.split(",") if isinstance(raw, str) else raw
+    if not isinstance(names, (list, tuple)):
+        raise ValueError(f"{field} {raw!r} must be names. Omit it or use [] for no selection.")
+    for i, name in enumerate(names):
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{field}[{i}] {name!r} is not a nonblank name. Remove that entry; "
+                             "omit the selector or use [] only when no selection is intended.")
+    return [name.strip() for name in names]
 
 
 def _names(values):
@@ -100,10 +110,24 @@ def _resolve_source_components(source_design, names):
 
 
 def _resolve_source_bodies(source_design, specs):
-    """(bodies, error). Each spec is a body NAME (resolved design-wide in the source) or
-    'Component/Body' (scoped to that component's bodies). A NAME that matches bodies in 2+ components
-    is REFUSED (names the holders, asks to qualify); a miss is named. Bodies are a legal sourceEntity
-    (BRepBody/MeshBody), live-verified against DeriveFeatureInput.sourceEntities."""
+    """(bodies, error) for body names or 'Component/Body' specs; see _resolve_source_body_pairs."""
+    pairs, err = _resolve_source_body_pairs(source_design, specs)
+    return (None, err) if err else ([body for _owner, body in pairs], None)
+
+
+def _sub_component_bodies(source_design, specs):
+    """[(spec, owner name)] for resolved specs whose body a source sub-component owns."""
+    pairs, err = _resolve_source_body_pairs(source_design, specs)
+    root = safe(lambda: source_design.rootComponent)
+    return [] if err else [(spec, safe(lambda owner=owner: owner.name) or "?")
+                           for spec, (owner, _body) in zip(specs, pairs)
+                           if _common.same_component(owner, root) is False]
+
+
+def _resolve_source_body_pairs(source_design, specs):
+    """(pairs, error). Each spec is a body NAME (resolved design-wide in the source) or
+    'Component/Body' (scoped to that component's bodies); each pair is (owner, body). A NAME that
+    matches bodies in 2+ components is REFUSED (names the holders, asks to qualify); a miss is named."""
     comps = _source_components(source_design)
     out = []
     for spec in specs:
@@ -123,8 +147,10 @@ def _resolve_source_bodies(source_design, specs):
             return None, (f"Source body '{spec}' is ambiguous - a body named '{body_name}' exists in "
                           f"{holders}. Qualify it as 'Component/Body'.")
         if not matches:
-            return None, f"Source body '{spec}' not found in the source design."
-        out.append(matches[0][1])
+            return None, (f"Source body '{spec}' not found. Use a SOURCE body name or "
+                          "'Component/Body', not a handle; doc_activate the source, then "
+                          "design_get(include=['tree'], tree_bodies=true).")
+        out.append(matches[0])
     return out, None
 
 
@@ -179,6 +205,24 @@ def _collect_source_entities(source_design, component_names, body_names):
 # ── read-back: what ACTUALLY landed. feature.bodies is EMPTY for an occurrence-tree derive (the
 # content lands nested under a derived occurrence), so bodies are counted off those occurrences too ──
 
+def _body_total(design):
+    """Complete design BRep-body total, or None when any census read fails."""
+    components = safe(lambda: design.allComponents)
+    total = _common.counted(lambda: components.count) if components is not None else None
+    if total is None or total < 0:
+        return None
+    body_total = 0
+    for i in range(total):
+        component = safe(lambda i=i: components.item(i))
+        if component is None:
+            return None
+        count = _common.counted(lambda component=component: component.bRepBodies.count)
+        if count is None or count < 0:
+            return None
+        body_total += count
+    return body_total
+
+
 def _occurrence_tokens(comp):
     """entityToken of every occurrence directly in `comp` right now - a before/after snapshot so a
     NEW derived occurrence can be told apart from one that was already there."""
@@ -200,21 +244,591 @@ def _subtree_body_count(occ):
     return total
 
 
-def _new_derived_occurrences(comp, before_tokens):
-    """[{name, body_count}] for occurrences now directly in `comp` that (a) were not there before
-    add() and (b) report isDerived=true - the occurrence-side of the landing, with real body counts."""
+def _new_derived(comp, before_tokens):
+    """Occurrences now directly in `comp` that were not there before add() and read isDerived=true."""
     out = []
     for o in _common.iter_collection(safe(lambda: comp.occurrences)):
         tok = safe(lambda o=o: o.entityToken)
         if tok and tok in before_tokens:
             continue
         if safe(lambda o=o: o.isDerived, False):
-            out.append({"name": safe(lambda o=o: o.name), "body_count": _subtree_body_count(o)})
+            out.append(o)
     return out
 
 
+def _occurrence_rows(occurrences):
+    """[{name, body_count}] per occurrence, counting its whole subtree's bodies."""
+    return [{"name": safe(lambda o=o: o.name), "body_count": _subtree_body_count(o)}
+            for o in occurrences]
+
+
+def _new_derived_occurrences(comp, before_tokens):
+    """[{name, body_count}] for the new derived occurrences in `comp`."""
+    return _occurrence_rows(_new_derived(comp, before_tokens))
+
+
+_CENSUS_CAP = 2000
+
+
+def _subtree_census(occurrences):
+    """[(component name, [body names])] under the derived occurrences, or None when any read fails."""
+    out, stack = [], list(occurrences)
+    while stack:
+        if len(out) >= _CENSUS_CAP:
+            return None
+        occ = stack.pop()
+        name = safe(lambda: occ.component.name)
+        bodies, children = safe(lambda: occ.bRepBodies), safe(lambda: occ.childOccurrences)
+        body_count = _common.counted(lambda: bodies.count)
+        child_count = _common.counted(lambda: children.count)
+        if name is None or body_count is None or child_count is None:
+            return None
+        body_names = [safe(lambda i=i: bodies.item(i).name) for i in range(body_count)]
+        kids = [safe(lambda i=i: children.item(i)) for i in range(child_count)]
+        if any(n is None for n in body_names) or any(k is None for k in kids):
+            return None
+        out.append((name, [n.lower() for n in body_names]))
+        stack.extend(kids)
+    return out
+
+
+def _absent(census, component, body=None):
+    """True when no census component named `component` (holding `body`) landed; None if unread."""
+    if census is None or not component:
+        return None
+    # A source component derived again into the same host lands renamed '<name> (N)'.
+    pattern = re.escape(component) + r"( \(\d+\))?"
+    key = None if body is None else body.lower()
+    return not any(re.fullmatch(pattern, name, re.IGNORECASE)
+                   and (key is None or key in bodies) for name, bodies in census)
+
+
+def _excluded_readback(feature, derived, source_root, comp_names, body_rows):
+    """(excluded, unverified, error): each requested exclusion judged from what landed."""
+    census = _subtree_census(derived) if derived else None
+    excluded, unverified = [], []
+    for name in comp_names:
+        (excluded if _absent(census, name) else unverified).append(name)
+    for spec, owner, body in body_rows:
+        at_root = _common.same_component(owner, source_root)
+        if at_root is False:
+            # getDerivedEntity raises 'invalid argument sourceEntity' on a sub-component body.
+            gone = _absent(census, safe(lambda: owner.name), safe(lambda: body.name))
+            (excluded if gone else unverified).append(spec)
+            continue
+        if at_root is None:
+            unverified.append(spec)
+            continue
+        try:
+            landed = feature.getDerivedEntity(body)
+        except Exception as exc:
+            # A source ROOT body left out of the derive raises 'derived entity not found'.
+            if "derived entity not found" not in str(exc):
+                unverified.append(spec)
+                continue
+            landed = None
+        if landed is not None:
+            return None, None, f"excluded source body '{spec}' has a derived result; exclusion did not take"
+        excluded.append(spec)
+    return excluded, unverified, None
+
+
+def _mapped_bodies(feature, sources, excluded, comp):
+    """Read selected source bodies through the feature's mapping into the requested owner."""
+    bodies = safe(lambda: comp.bRepBodies)
+    count = _common.counted(lambda: bodies.count)
+    if count is None or not 0 <= count <= 1000 or len(sources) > 1000:
+        return None, "selected-body target membership could not be read within 1000 bodies"
+    members = [safe(lambda i=i: bodies.item(i)) for i in range(count)]
+    if any(b is None for b in members):
+        return None, "selected-body target membership did not read completely"
+    rows = []
+    for source in sources:
+        name = safe(lambda: source.name)
+        is_excluded = safe(lambda: any(source == skipped for skipped in excluded))
+        if is_excluded is None:
+            return None, f"exclusion membership for source body '{name}' could not be read"
+        try:
+            body = feature.getDerivedEntity(source)
+            if body is not None and is_excluded:
+                return None, f"excluded source body '{name}' has a derived result; exclusion did not take"
+            if body is None or body.isDerived is not True:
+                return None, f"the mapping for source body '{name}' did not confirm isDerived=true"
+            if not any(body == member for member in members):
+                return None, f"the mapped source body '{name}' was not found in the requested component"
+        except Exception as exc:
+            if is_excluded and "derived entity not found" in str(exc):
+                continue
+            return None, f"the mapping for source body '{name}' could not be verified: {exc}"
+        rows.append({"name": safe(lambda: body.name), "is_derived": True})
+    return rows, None
+
+
+_NAMES_CAP = 50                             # names one reply lists
+
+
+def imported_parameters(before, after):
+    """(names, reason): the parameters new since `before` that read as derived; None with the reason."""
+    if before is None or after is None:
+        return None, "the design's parameters did not read on both sides of the derive"
+    fresh = [n for n in after if n not in before]
+    blind = [n for n in fresh if after[n]["derived"] is None]
+    if blind:
+        return None, f"{len(blind)} new parameter(s) did not read their type"
+    return sorted(n for n in fresh if after[n]["derived"]), None
+
+
+def _capped(details, key, rows):
+    """Store rows under `key`, capped, flagging the reply when any list was cut."""
+    details[key] = rows[:_NAMES_CAP]
+    if len(rows) > _NAMES_CAP:
+        details["lists_truncated"] = True
+
+
+def _favorite_changes(details, before, after):
+    """Fill the parameter lists a favourites toggle is judged by; returns the became-local rows."""
+    _capped(details, "parameters_disappeared", sorted(n for n in before if n not in after))
+    _capped(details, "parameters_appeared",
+            [{"name": n, "derived": after[n]["derived"]} for n in sorted(after) if n not in before])
+    local = []
+    for name in sorted(n for n in after if n in before):
+        if before[name]["derived"] is True and after[name]["derived"] is False:
+            row = {"name": name, "dependents": after[name]["dependents"]}
+            if row["dependents"] is None:
+                row["dependents_unread"] = "dependentParameters did not read"
+            local.append(row)
+    _capped(details, "became_local", local)
+    blind = sorted(n for n in after if n in before
+                   and None in (before[n]["derived"], after[n]["derived"]))
+    if blind:
+        _capped(details, "type_unread", blind)
+    _capped(details, "user_and_derived_parameters",
+            [{"name": n, "kind": r["kind"], "in_user_parameters": r["user"],
+              "dependents": r["dependents"]}
+             for n, r in sorted(after.items()) if r["kind"] != "ModelParameter"])
+    return local
+
+
+def _recompute(design, details):
+    """Recompute the design after a derive write; returns why it did not complete, else None."""
+    # Setting isIncludeFavoriteParameters leaves bodies built after the derive without geometry
+    # until computeAll runs.
+    try:
+        answered = design.computeAll()
+    except Exception as exc:
+        details["recomputed"] = False
+        details["recompute_raised"] = _edit_feature_common.sentence(exc)
+        return f"computeAll raised: {details['recompute_raised']}"
+    details["recomputed"] = answered is True
+    return None if answered is True else f"computeAll answered {answered!r}."
+
+
+def _unverified_bodies(name, what, why, details):
+    """The error for a derive write that landed while the recompute or the body re-read did not."""
+    return _edit_feature_common.failed(
+        f"{what} on derive '{name}', but the bodies are unverified: {why} A body built after "
+        "the derive can read no geometry until the design recomputes. Run design_recompute, then "
+        "read design_get(include=['tree','timeline'], tree_bodies=true).", details)
+
+
+def _bodies_unread_refusal(name):
+    """The refusal for a derive write whose body shapes did not read beforehand."""
+    return error(f"Nothing was written to derive '{name}': the body shapes of the design did not "
+                 "read, so the edit's effect on them could not be judged. Run design_recompute, "
+                 "then retry.")
+
+
+def set_favorite_parameters(design, derive_feature, include):
+    """Set a DeriveFeature's isIncludeFavoriteParameters; the reply lists what the parameters show."""
+    include = bool(include)
+    name = safe(lambda: derive_feature.name) or "(name unreadable)"
+    marker, count = _common.timeline_marker(design)
+    if marker is None or marker != count:
+        return error(f"The timeline marker reads {marker} of {count}; favorite parameters of "
+                     f"derive '{name}' are edited with the marker at the end. Roll to the end "
+                     "with design_edit_timeline, then retry.")
+    was = _common.read_flag(lambda: derive_feature.isIncludeFavoriteParameters)
+    if was is None:
+        return error(f"Derive '{name}' did not read isIncludeFavoriteParameters; nothing was "
+                     "written. Check the feature with design_get(include=['timeline']).")
+    before, problem = parameter_census(design, deep=True)
+    if problem:
+        return error(f"Nothing was written to derive '{name}': {problem}, so the edit could not "
+                     "be judged. Read param_get(include_model_parameters=true).")
+    details = {"feature": name, "requested": include, "favorite_parameters_before": was,
+               "favorite_parameters_after": was}
+    if was is include:
+        details["edited"] = False
+        details["note"] = (f"Derive '{name}' already reads isIncludeFavoriteParameters "
+                           f"{str(include).lower()}; nothing was written.")
+        return ok(details)
+    bodies_before = _body_snapshot(design)
+    if bodies_before is None:
+        return _bodies_unread_refusal(name)
+    health_before = _edit_feature_common.health(design, marker)
+    raised = None
+    try:
+        derive_feature.isIncludeFavoriteParameters = include        # MUTATION
+    except Exception as exc:
+        raised = _edit_feature_common.sentence(exc)
+    now = _common.read_flag(lambda: derive_feature.isIncludeFavoriteParameters)
+    stale = _recompute(design, details)
+    after, problem = parameter_census(design, deep=True)
+    details["favorite_parameters_after"] = now
+    moved = _body_changes(details, bodies_before, _body_snapshot(design))
+    new_errors = _health_changes(details, design, health_before)
+    local = [] if after is None else _favorite_changes(details, before, after)
+    if after is None:
+        details["parameters_unread"] = problem
+    if raised:
+        details["raised"] = raised
+    if raised and now is include:
+        return _edit_feature_common.failed(
+            f"Fusion raised while setting isIncludeFavoriteParameters {str(include).lower()} on "
+            f"derive '{name}': {raised} The flag reads {str(now).lower()} now, and 'details' "
+            "lists the parameters as re-read after the raise. Read "
+            "param_get(include_model_parameters=true) before retrying.", details)
+    if now is not include:
+        return _edit_feature_common.failed(
+            f"Derive '{name}' reads isIncludeFavoriteParameters "
+            f"{'nothing' if now is None else str(now).lower()} after setting "
+            f"{str(include).lower()}. " + (f"Fusion raised: {raised} " if raised else "")
+            + "Read param_get(include_model_parameters=true) for the parameters as they are now.",
+            details)
+    unverified = (stale or ("the bodies did not re-read after the recompute." if moved is None
+                            else f"the timeline has new errors: {_quoted(new_errors)}."
+                            if new_errors else None))
+    if unverified:
+        return _unverified_bodies(
+            name, f"isIncludeFavoriteParameters reads {str(now).lower()} now", unverified, details)
+    details["edited"] = True
+    note = (f"Derive '{name}' now reads isIncludeFavoriteParameters {str(include).lower()}. The "
+            "design was recomputed." + _body_sentences(moved))
+    if local:
+        note += (" Still present but no longer derived: "
+                 + _common.named_with_remainder(
+                     [f"'{r['name']}'" + (f" (used by {', '.join(r['dependents'])})"
+                                          if r["dependents"] else "") for r in local]) + ".")
+    for key, label in (("parameters_disappeared", "Gone"), ("parameters_appeared", "New")):
+        rows = [r["name"] if isinstance(r, dict) else r for r in details.get(key, [])]
+        if rows:
+            note += f" {label}: " + _common.named_with_remainder([f"'{n}'" for n in rows]) + "."
+    if after is None:
+        note += f" The parameters did not re-read ({problem})."
+    details["note"] = note + " Confirm with param_get(include_model_parameters=true)."
+    return ok(details)
+
+
+_DERIVE_KIND = "DeriveFeature"              # the objectType suffix a derive's timeline entity reads
+_SOURCE_BODY_CAP = 1000                     # source root bodies one resolve reads
+
+
+def _end_marker(design, what):
+    """(marker, refusal): the marker when it sits at the timeline end, else the roll-to-end error."""
+    marker, count = _common.timeline_marker(design)
+    if marker is None or marker != count:
+        return None, error(f"The timeline marker reads {marker} of {count}; {what} with the marker "
+                           "at the end. Roll to the end with design_edit_timeline, then retry.")
+    return marker, None
+
+
+def _quoted(names):
+    """Names as a capped, quoted wire list; 'nothing readable' for an unread list."""
+    if names is None:
+        return "nothing readable"
+    return _common.named_with_remainder([f"'{n}'" for n in names], _NAMES_CAP) or "(none)"
+
+
+def _body_snapshot(design):
+    """Sorted (component, body, shape) rows for every body of the design, or None when unread."""
+    shapes = _edit_feature_common.all_shapes(design)
+    if shapes is None:
+        return None
+    return sorted((str(r["component"]), str(r["body"]), repr(r["shape"])) for r in shapes.values())
+
+
+def _body_changes(details, before, after):
+    """Fill the body lists an edit is judged by; returns the arrived, left and changed labels."""
+    label = lambda pairs: [{"component": c, "body": b} for c, b in pairs]
+    for side, rows in (("before", before), ("after", after)):
+        details["body_count_" + side] = None if rows is None else len(rows)
+        details["bodies_" + side] = None
+        if rows is not None:
+            _capped(details, "bodies_" + side, label(r[:2] for r in rows))
+    if before is None or after is None:
+        details["bodies_unread"] = "the bodies did not read on both sides of the write"
+        return None
+    was, now = Counter(r[:2] for r in before), Counter(r[:2] for r in after)
+    shapes = lambda rows, pair: sorted(r[2] for r in rows if r[:2] == pair)
+    moved = (sorted((now - was).elements()), sorted((was - now).elements()),
+             [p for p in sorted(was) if was[p] == now[p] and shapes(before, p) != shapes(after, p)])
+    for key, pairs in zip(("bodies_arrived", "bodies_left", "bodies_changed"), moved):
+        _capped(details, key, label(pairs))
+    return [[f"'{b}'" for _c, b in pairs] for pairs in moved]
+
+
+def _health_changes(details, design, before):
+    """Fill health_after and the new timeline errors and warnings; returns the new errors."""
+    marker, count = _common.timeline_marker(design)
+    after = None if marker is None else _edit_feature_common.health(design, marker)
+    details.update(health_before=before, health_after=after, marker_after=marker,
+                   timeline_count_after=count, new_timeline_errors=None,
+                   new_timeline_warnings=None)
+    if before is None or after is None:
+        details["health_unread"] = "the timeline health did not read on both sides of the write"
+        return None
+    for kind in ("errors", "warnings"):
+        details["new_timeline_" + kind] = [n for n in after[kind] if n not in before[kind]]
+    return details["new_timeline_errors"]
+
+
+def _body_sentences(moved):
+    """What the body lists say, as note sentences."""
+    if moved is None:
+        return " The bodies did not read on both sides of the write."
+    text = "".join(f" {word}: {_common.named_with_remainder(names)}."
+                   for word, names in zip(("Arrived", "Left", "Changed"), moved) if names)
+    return text or " The bodies read the same before and after."
+
+
+def _source_listing(derive_feature):
+    """(entities, sorted names) of a derive's current source entities; each None when unread."""
+    entities = safe(lambda: list(derive_feature.sourceEntities))
+    if entities is None:
+        return None, None
+    names = [safe(lambda e=e: e.name) for e in entities]
+    return entities, None if any(not isinstance(n, str) for n in names) else sorted(names)
+
+
+def _same_entities(listed, wanted):
+    """(TRI-STATE, reason): whether two entity lists hold the same entities by native identity."""
+    if listed is None:
+        return None, "sourceEntities did not read"
+    sides = (("listed", listed), ("requested", wanted))
+    keys = {side: [_common.native_identity(e) for e in entities] for side, entities in sides}
+    blind = [f"{side} " + _quoted([safe(lambda e=e: e.name) or "(name unreadable)"
+                                   for e, key in zip(entities, keys[side]) if key is None])
+             for side, entities in sides if None in keys[side]]
+    if blind:
+        return None, "no identity read for " + " and ".join(blind)
+    return Counter(keys["listed"]) == Counter(keys["requested"]), None
+
+
+def _resolve_in_source(derive_feature, name, wanted):
+    """(bodies, names, problem): each wanted name as the ONE root body of the derive's own source."""
+    source = safe(lambda: derive_feature.sourceDesign)
+    if source is None:
+        return None, None, (f"derive '{name}' did not read its sourceDesign, and the active "
+                            "design's bodies are not its source. Check the feature with "
+                            "design_get(include=['timeline'])")
+    bodies = safe(lambda: source.rootComponent.bRepBodies)
+    count = _common.counted(lambda: bodies.count)
+    if count is None or count > _SOURCE_BODY_CAP:
+        return None, None, (f"the root bodies of derive '{name}' sourceDesign read a count of "
+                            f"{count} (at most {_SOURCE_BODY_CAP} are read here)")
+    rows = [(safe(lambda b=b: b.name), b)
+            for b in (safe(lambda i=i: bodies.item(i)) for i in range(count))]
+    if any(not isinstance(n, str) for n, _b in rows):
+        return None, None, f"a root body of derive '{name}' sourceDesign did not read its name"
+    offered = _quoted(sorted(n for n, _b in rows))
+    found, names = [], []
+    for want in wanted:
+        hits = [(n, b) for n, b in rows if n.lower() == want.lower()]
+        if len(hits) != 1:
+            return None, None, (f"source body '{want}' matches {len(hits)} root bodies in the "
+                                f"source design of derive '{name}', and exactly one is needed. "
+                                f"The source offers: {offered}")
+        names.append(hits[0][0])
+        found.append(hits[0][1])
+    return found, sorted(names), None
+
+
+def set_source_entities(design, derive_feature, body_names):
+    """Set a DeriveFeature's source entities to named SOURCE root bodies; the reply lists the effect."""
+    name = safe(lambda: derive_feature.name) or "(name unreadable)"
+    try:
+        wanted = list(dict.fromkeys(_as_names(body_names, "body_names")))
+    except ValueError as exc:
+        return error(str(exc))
+    if not wanted:
+        return error(f"body_names {body_names!r} names no source body for derive '{name}'. Pass "
+                     "the source design's root body names.")
+    marker, refusal = _end_marker(design, f"the source entities of derive '{name}' are edited")
+    if refusal:
+        return refusal
+    entities, requested, problem = _resolve_in_source(derive_feature, name, wanted)
+    if problem:
+        return error(f"Nothing was written: {problem}.")
+    listed, was = _source_listing(derive_feature)
+    before, _problem = parameter_census(design)
+    bodies_before = _body_snapshot(design)
+    health_before = _edit_feature_common.health(design, marker)
+    details = {"feature": name, "requested": requested, "source_entities_before": was,
+               "source_entities_after": was, "marker_before": marker}
+    if _same_entities(listed, entities)[0] is True:
+        details["edited"] = False
+        details["note"] = (f"Derive '{name}' already reads source entities {_quoted(was)}; "
+                           "nothing was written.")
+        return ok(details)
+    if bodies_before is None:
+        return _bodies_unread_refusal(name)
+    raised = answered = None
+    try:
+        answered = derive_feature.setSourceEntities(entities, [])       # MUTATION
+    except Exception as exc:
+        raised = _edit_feature_common.sentence(exc)
+    stale = _recompute(design, details)
+    listed, now = _source_listing(derive_feature)
+    same, unread = _same_entities(listed, entities)
+    details.update(source_entities_after=now, answered=answered, source_identity_verified=same)
+    if same is None:
+        details["source_identity_unread"] = unread
+    moved = _body_changes(details, bodies_before, _body_snapshot(design))
+    new_errors = _health_changes(details, design, health_before)
+    after, _problem = parameter_census(design)
+    if before is None or after is None:
+        details["parameters_unread"] = "the parameters did not read on both sides of the write"
+    else:
+        _capped(details, "parameters_appeared", sorted(n for n in after if n not in before))
+        _capped(details, "parameters_disappeared", sorted(n for n in before if n not in after))
+    details["out_of_date"] = _common.read_flag(
+        lambda: derive_feature.documentReference.isOutOfDate)
+    if details["out_of_date"] is None:
+        details["out_of_date_unread"] = "documentReference.isOutOfDate did not read"
+    if raised:
+        details["raised"] = raised
+    why = (f"Fusion raised: {raised}" if raised
+           else f"setSourceEntities answered {answered!r}." if answered is not True
+           else "the re-read source entities are not the requested ones." if same is False
+           else "their identities did not read, so the result is unverified." if same is None
+           else stale if stale
+           else "the bodies did not re-read after the recompute." if moved is None
+           else f"the timeline has new errors: {_quoted(new_errors)}." if new_errors else None)
+    if why:
+        return _edit_feature_common.failed(
+            f"Setting the source entities of derive '{name}' to {_quoted(requested)} did not "
+            f"verify: {why} They read {_quoted(now)} now, and 'details' lists the bodies as "
+            "re-read. Read design_get(include=['tree','timeline'], tree_bodies=true) before "
+            "retrying.", details)
+    details["edited"] = True
+    details["note"] = (f"Derive '{name}' now reads source entities {_quoted(now)}. The design "
+                       "was recomputed." + _body_sentences(moved)
+                       + " Confirm with design_get(include=['tree'], tree_bodies=true).")
+    return ok(details)
+
+
+def _timeline_entry(design, index):
+    """(kind, name) of the timeline item at `index`: its entity's objectType suffix and its name."""
+    item = safe(lambda: design.timeline.item(index)) if index is not None else None
+    return safe(lambda: item.entity.objectType.rsplit("::", 1)[-1]), safe(lambda: item.name)
+
+
+def _lost_dependents(before, after):
+    """One row per parameter that used a parameter gone from `after`, with both expressions."""
+    rows = []
+    for lost in sorted(n for n in before if n not in after):
+        dependents = before[lost]["dependents"]
+        if dependents is None:
+            rows.append({"depended_on": lost, "name": None,
+                         "dependents_unread": "dependentParameters did not read"})
+        for dependent in dependents or []:
+            now = after.get(dependent)
+            row = {"name": dependent, "depended_on": lost, "present_after": now is not None,
+                   "expression_before": before.get(dependent, {}).get("expression"),
+                   "expression_after": None if now is None else now["expression"]}
+            if now is not None and now["expression"] is None:
+                row["expression_unread"] = "the expression did not read after the write"
+            rows.append(row)
+    return rows
+
+
+def break_link(design, derive_feature):
+    """Break a DeriveFeature's link; the reply names what replaced it and what went with the link."""
+    name = safe(lambda: derive_feature.name) or "(name unreadable)"
+    marker, refusal = _end_marker(design, f"the link of derive '{name}' is broken")
+    if refusal:
+        return refusal
+    index = _common.counted(lambda: derive_feature.timelineObject.index)
+    kind, _name = _timeline_entry(design, index)
+    if kind != _DERIVE_KIND:
+        return error(f"The timeline item of '{name}' at index {index} reads kind {kind!r}, not "
+                     f"{_DERIVE_KIND}; nothing was written. Pass a derive feature listed by "
+                     "design_get(include=['timeline']).")
+    before, problem = parameter_census(design, deep=True)
+    if problem:
+        return error(f"Nothing was written to derive '{name}': {problem}, so what goes with the "
+                     "link could not be judged. Read param_get(include_model_parameters=true).")
+    bodies_before = _body_snapshot(design)
+    if bodies_before is None:
+        return _bodies_unread_refusal(name)
+    health_before = _edit_feature_common.health(design, marker)
+    details = {"feature": name, "timeline_index": index, "kind_before": kind,
+               "marker_before": marker,
+               "timeline_count_before": _common.counted(lambda: design.timeline.count)}
+    raised = answered = None
+    try:
+        answered = derive_feature.breakLink()                           # MUTATION
+    except Exception as exc:
+        raised = _edit_feature_common.sentence(exc)
+    stale = _recompute(design, details)
+    kind_after, name_after = _timeline_entry(design, index)
+    replaced = kind_after is not None and kind_after != _DERIVE_KIND
+    details.update(answered=answered, kind_after=kind_after, name_after=name_after,
+                   replaced=replaced, same_feature=False if replaced else None)
+    moved = _body_changes(details, bodies_before, _body_snapshot(design))
+    new_errors = _health_changes(details, design, health_before)
+    after, problem = parameter_census(design, deep=True)
+    dependents = []
+    if after is None:
+        details["parameters_unread"] = problem
+    else:
+        _favorite_changes(details, before, after)
+        dependents = _lost_dependents(before, after)
+        _capped(details, "dependents_of_disappeared", dependents)
+    if raised:
+        details["raised"] = raised
+    state = (f"The timeline item at index {index} reads kind {kind_after!r}"
+             + (f", named '{name_after}'," if name_after else "") + " now")
+    why = (f"Fusion raised: {raised}" if raised
+           else f"breakLink answered {answered!r}." if answered is not True
+           else f"a {_DERIVE_KIND} still reads at its timeline index." if kind_after == _DERIVE_KIND
+           else "the item at its timeline index did not re-read a kind." if not replaced
+           else stale if stale
+           else "the bodies did not re-read after the recompute." if moved is None
+           else f"the timeline has new errors: {_quoted(new_errors)}." if new_errors else None)
+    if why:
+        return _edit_feature_common.failed(
+            f"Breaking the link of derive '{name}' did not verify: {why} {state}"
+            + ("; the derive was REPLACED and this function cannot restore the link" if replaced
+               else "") + ". 'details' lists the bodies and parameters as re-read. Read "
+            "design_get(include=['timeline']) and param_get(include_model_parameters=true) "
+            "before retrying.", details)
+    details["edited"] = True
+    note = (f"Derive '{name}' was REPLACED: {state}. This function cannot restore the link. "
+            "The design was recomputed." + _body_sentences(moved))
+    gone = details.get("parameters_disappeared", [])
+    if gone:
+        note += " Parameters gone with the link: " + _quoted(gone) + "."
+    used = [f"'{r['name']}' (used '{r['depended_on']}')" for r in dependents if r["name"]]
+    if used:
+        note += (" Their dependents, with expressions before and after in 'details': "
+                 + _common.named_with_remainder(used) + ".")
+    if after is None:
+        note += f" The parameters did not re-read ({problem})."
+    details["note"] = note + " Confirm with design_get(include=['timeline'])."
+    return ok(details)
+
+
+def _retained(design, feature, why):
+    """The error for a derive whose feature stays in the timeline while `why` holds."""
+    feature_name = _common.feature_address(feature) or "(name unreadable)"
+    return error(f"Derive feature '{feature_name}' remains, but {why}. "
+                 "Inspect design_get(include=['tree','timeline'], tree_bodies=true). "
+                 + _common.failed_effect_remedy(design, feature))
+
+
 def handler(document_id: str = "", into_component: str = "",
-            source_components="", source_bodies="", exclude_components="", exclude_bodies="",
+            source_components=None, source_bodies=None, exclude_components=None, exclude_bodies=None,
             include_parameters: bool = True, include_favorite_parameters: bool = True,
             place_at_origin: bool = True) -> dict:
     """See TOOL_DESCRIPTION."""
@@ -223,9 +837,17 @@ def handler(document_id: str = "", into_component: str = "",
         return error("Provide 'document_id' - the lineage URN (or web URL) of the saved cloud "
     "document to derive.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create the host document first (see doc_new).")
+    try:
+        comp_names = _as_names(source_components, "source_components")
+        body_names = _as_names(source_bodies, "source_bodies")
+        excl_comp_names = _as_names(exclude_components, "exclude_components")
+        excl_body_names = _as_names(exclude_bodies, "exclude_bodies")
+    except ValueError as exc:
+        return error(str(exc))
+
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     good, mode_err = _MODE_GUARD.check(design)
     if not good:
@@ -270,15 +892,18 @@ def handler(document_id: str = "", into_component: str = "",
                       "product to derive from (not a Fusion design file?).")
 
     # Resolve the (optional) named subset in the SOURCE. Empty selectors -> the whole design.
-    comp_names = _as_names(source_components)
-    body_names = _as_names(source_bodies)
-    excl_comp_names = _as_names(exclude_components)
-    excl_body_names = _as_names(exclude_bodies)
     if comp_names or body_names:
         source_entities, scope_labels, sel_err = _collect_source_entities(
             source_design, comp_names, body_names)
         if sel_err:
             return error(sel_err)
+        nested = _sub_component_bodies(source_design, body_names)
+        if nested:
+            spec, owner = nested[0]
+            return error(f"Source body '{spec}' belongs to sub-component '{owner}'; a derive with a "
+                         "sub-component body in source_bodies is refused at configure "
+                         "('3 : invalid argument entities'). Nothing was derived. Derive its "
+                         f"component: source_components=['{owner}'].")
         scope_desc = ", ".join(scope_labels)
     else:
         source_entities = [safe(lambda: source_design.rootComponent)]
@@ -287,6 +912,9 @@ def handler(document_id: str = "", into_component: str = "",
         source_design, excl_comp_names, excl_body_names)
     if excl_err:
         return error(excl_err)
+    excl_pairs = _resolve_source_body_pairs(source_design, excl_body_names)[0] or []
+    excl_body_rows = [(spec, owner, body)
+                      for spec, (owner, body) in zip(excl_body_names, excl_pairs)]
 
     derive_feats = safe(lambda: comp.features.deriveFeatures)
     if derive_feats is None:
@@ -310,12 +938,12 @@ def handler(document_id: str = "", into_component: str = "",
     except Exception as e:
         return error(f"Could not configure the derive: {e}")
 
-    before_params = safe(lambda: design.userParameters.count, 0) or 0
-    # A source value can land as a read-only MODEL parameter the userParameters delta never sees,
-    # and it lands at DESIGN level rather than on the derived component - so the count that sees it
-    # is a design-wide before/after delta.
+    before_params = _common.counted(lambda: design.userParameters.count)
+    # A favourite parameter lands as a DerivedParameter in design.allParameters, outside
+    # userParameters, so the imported ones are the new derived names of a design-wide census.
+    before_census, _problem = parameter_census(design)
     before_all_params = _common.counted(lambda: design.allParameters.count)
-    before_bodies, _ = _common.design_wide_counts(design)
+    before_bodies = _body_total(design)
     before_occ_tokens = _occurrence_tokens(comp)
     root = safe(lambda: design.rootComponent)
     # same_component, not `is`: component wrappers are never identity-stable, so `comp is not root`
@@ -359,20 +987,31 @@ def handler(document_id: str = "", into_component: str = "",
     health = safe(lambda: feature.healthState)
     if health == _ERROR_HEALTH:
         msg = safe(lambda: feature.errorOrWarningMessage) or "(no message)"
-        return error(f"Derive was created but FAILED to compute: {msg}")
+        return error(f"Derive was created but FAILED to compute: {msg}. "
+                     + _common.failed_effect_remedy(design, feature))
 
     doc_ref = safe(lambda: feature.documentReference)
     out_of_date = safe(lambda: doc_ref.isOutOfDate) if doc_ref is not None else None
     if out_of_date:
         return error("Derive was created but its documentReference reads isOutOfDate=true "
-                      "immediately at creation - the link did not land against the resolved version.")
+                      "immediately at creation - the link did not land against the resolved version. "
+                     + _common.failed_effect_remedy(design, feature))
 
-    # feature.bodies holds DIRECT top-level bodies only: an occurrence-tree derive lands them nested
-    # under a derived occurrence and reads empty here, so both are counted plus the design-wide delta.
+    # A named-body derive can leave feature.bodies empty; its source mapping identifies the result.
     direct_bodies = [{"name": safe(lambda b=b: b.name),
-                      "is_derived": bool(safe(lambda b=b: b.isDerived, False))}
+                      "is_derived": safe(lambda b=b: b.isDerived)}
                      for b in _common.result_bodies(feature)]
-    derived_components = _new_derived_occurrences(comp, before_occ_tokens)
+    if not direct_bodies and body_names and not comp_names and not excl_comp_names:
+        direct_bodies, mapping_error = _mapped_bodies(feature, source_entities, excluded_entities, comp)
+        reference_id = safe(lambda: doc_ref.dataFile.id)
+        source_id = safe(lambda: data_file.id)
+        if not mapping_error and (out_of_date is not False or not reference_id or not source_id
+                                  or reference_id != source_id):
+            mapping_error = "the mapped bodies' current source document reference did not read"
+        if mapping_error:
+            return _retained(design, feature, mapping_error)
+    derived = _new_derived(comp, before_occ_tokens)
+    derived_components = _occurrence_rows(derived)
     # `is False` only: the net's error says the nesting FAILED, and run against a target that may
     # itself be the root a successful root derive would trip it. An unproven answer skips the net and
     # DISCLOSES that the landing was not checked.
@@ -389,32 +1028,49 @@ def handler(document_id: str = "", into_component: str = "",
         if strays:
             names = _names([s.get("name") for s in strays])
             return error(f"Derive landed at the ROOT component ({names}), not in {comp_desc} - "
-                         "the target activation did not take, so the nesting failed. The derive "
-                         "EXISTS at root: delete its feature (design_delete_feature) and retry, "
-                         "or keep it and move on.")
-    after_bodies, _ = _common.design_wide_counts(design)
-    bodies_landed = max(0, after_bodies - before_bodies)
-    any_derived_marker = (any(b["is_derived"] for b in direct_bodies) or bool(derived_components))
+                         "the target activation did not take, so the nesting failed. Retry after "
+                         "removing it, or keep it and move on. "
+                         + _common.failed_effect_remedy(design, feature))
+    after_bodies = _body_total(design)
+    bodies_landed = (None if before_bodies is None or after_bodies is None
+                     else max(0, after_bodies - before_bodies))
+    any_derived_marker = (any(b["is_derived"] is True for b in direct_bodies) or bool(derived_components))
 
+    if bodies_landed is None and not direct_bodies and not derived_components:
+        return error("Derive created a feature, but whether bodies appeared is unknown: a body "
+                     "count did not read, and no new derived occurrence appeared. "
+                     + _common.failed_effect_remedy(design, feature))
     if bodies_landed == 0 and not direct_bodies and not derived_components:
         return error("Derive created a feature but nothing landed - no bodies appeared and no new "
-                      "derived occurrence. The link may not have resolved; check the source scope.")
+                      "derived occurrence. The link may not have resolved; check the source scope. "
+                     + _common.failed_effect_remedy(design, feature))
     if not any_derived_marker:
         return error("Derive created a feature and geometry appeared, but nothing reports "
-                      "isDerived=true - the one-way link may not have formed correctly.")
+                      "isDerived=true - the one-way link may not have formed correctly. "
+                     + _common.failed_effect_remedy(design, feature))
 
-    after_params = safe(lambda: design.userParameters.count, 0) or 0
-    parameters_imported = max(0, after_params - before_params)
+    excluded, unverified, excl_error = _excluded_readback(
+        feature, derived, safe(lambda: source_design.rootComponent),
+        excl_comp_names, excl_body_rows)
+    if excl_error:
+        return _retained(design, feature, excl_error)
+
+    after_params = _common.counted(lambda: design.userParameters.count)
+    user_parameters_added = (None if before_params is None or after_params is None
+                             else after_params - before_params)
+    imported_names, parameters_unread = imported_parameters(before_census,
+                                                            parameter_census(design)[0])
+    parameters_imported = None if imported_names is None else len(imported_names)
     after_all_params = _common.counted(lambda: design.allParameters.count)
     model_parameters_added = (None if before_all_params is None or after_all_params is None
                               else after_all_params - before_all_params)
     param_warning = None
-    if (include_parameters or include_favorite_parameters) and parameters_imported == 0:
-        param_warning = ("include_parameters/include_favorite_parameters was requested but 0 new "
-                         "user parameters landed - this Fusion API flag is reported flaky; confirm "
-                         "with param_get (the source design may also simply define none). Source "
-                         "values can land as read-only model parameters instead - read them with "
-                         "param_get(include_model_parameters=true).")
+    if ((include_parameters or include_favorite_parameters) and parameters_imported == 0
+            and not user_parameters_added):
+        param_warning = ("include_parameters/include_favorite_parameters was requested and no "
+                         "new derived or user parameter reads in the design (the source may "
+                         "define none). Source values can land as read-only model parameters - "
+                         "read them with param_get(include_model_parameters=true).")
 
     representative = (derived_components[0]["name"] if derived_components
                       else (direct_bodies[0]["name"] if direct_bodies else None))
@@ -440,13 +1096,23 @@ def handler(document_id: str = "", into_component: str = "",
     }
     if landing_note:
         result["landing_unverified"] = landing_note
+    if imported_names is None:
+        result["parameters_unread"] = parameters_unread
+    else:
+        result["imported_parameter_names"] = imported_names[:_NAMES_CAP]
+        if len(imported_names) > _NAMES_CAP:
+            result["imported_parameter_names_truncated"] = True
+    if user_parameters_added:
+        result["user_parameters_added"] = user_parameters_added
     if model_parameters_added is not None:
-        # Beside parameters_imported (the userParameters delta), because the two count different
-        # things and only the pair shows whether source values arrived at all. Omitted rather than
-        # zeroed when either count was unreadable - an unknown delta is not "nothing arrived".
+        # The allParameters count delta, beside parameters_imported (the new DERIVED names): the
+        # two count different things. Omitted rather than zeroed when either count was unreadable.
         result["model_parameters_added"] = model_parameters_added
-    if excluded_entities:
-        result["excluded"] = ", ".join(excl_comp_names + excl_body_names)
+    if excluded:
+        result["excluded"] = ", ".join(excluded)
+    if unverified:
+        result["exclusion_unverified"] = (f"{', '.join(unverified)}; read design_get("
+                                          "include=['tree'], tree_bodies=true)")
     if param_warning:
         result["parameter_warning"] = param_warning
     if into_occ is not None:
@@ -479,8 +1145,8 @@ RETURNS = [
 
 
 TOOL_DESCRIPTION = (
-    "Insert a one-way linked DERIVE of an OPEN document's design into a component, at its last "
-    "SAVED cloud version.\n"
+    "Derive OPEN source's last SAVED cloud version: one-way linked copy. Source/exclude: "
+    "component names; body names or Component/Body; no handles.\n"
     + _outputs.produces_block(RETURNS)
 )
 
@@ -489,7 +1155,7 @@ tool = (
         name="doc_insert_derive",
         description=TOOL_DESCRIPTION,
         input_param_name="document_id",
-        input_param_description="Lineage URN or web URL, from data_get.",
+        input_param_description="URN/URL.",
     )
     .add_input_property(*_INTO_COMPONENT.as_property())
     .add_input_property("source_components", {"type": "array", "items": {"type": "string"}})

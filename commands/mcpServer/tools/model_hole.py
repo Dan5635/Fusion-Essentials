@@ -33,8 +33,11 @@ _EXTENTS = ("blind", "through")
 _FACE = _inputs.GeometryHandle("face", require="planar_face", required=True,
     description="Drilled into, normal to it.")
 _TARGET_BODIES = _inputs.BodyRefList("target_bodies", required=False)
+_THREAD_EXTENT = _inputs.Choice("thread_extent", ("full", "partial"))
+_THREAD_LENGTH = _inputs.Distance("thread_length", allow_negative=False)
+_THREAD_OFFSET = _inputs.Distance("thread_offset", allow_zero=True, allow_negative=False)
 
-_PLACEMENTS = ("sketch_points", "center", "on_edge", "plane_offsets")
+_PLACEMENTS = ("sketch_points", "center", "on_edge", "plane_offsets", "face_point")
 
 # Which frame 'points' are read in. The placement sketch this tool creates carries its OWN frame,
 # which differs from the face plane's in origin AND in axis sign and is not derivable from the face.
@@ -223,10 +226,10 @@ def _world_lift(design, sketch, context_occ):
                       "from. Take 'face' from find_geometry with 'target' narrowed to the ONE "
                       "occurrence you mean - a face reached through an occurrence names that "
                       "placement. " + _PROFILE_CUT_REMEDY)
-    inverse = safe(lambda: to_world.copy())
-    if inverse is None or not safe(lambda: inverse.invert()):
+    inverse = _joints._finite_inverse(to_world)
+    if inverse is None:
         return None, (f"The placement of the component{whose} the placement sketch landed in did "
-                      "not invert, so a points_space='world' point could not be carried into its "
+                      "not invert to a finite matrix, so a points_space='world' point could not be carried into its "
                       "frame. " + _PROFILE_CUT_REMEDY)
     return inverse, ""
 
@@ -371,7 +374,8 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             point: list = None, offset_edge_one: str = "", offset_one: str = "",
             offset_edge_two: str = "", offset_two: str = "",
             modeled: bool = False, tip_angle: str = "", thread_type: str = "",
-            target_bodies=None) -> dict:
+            target_bodies=None, thread_class: str = "", thread_extent: str = "",
+            thread_length=None, thread_offset=None) -> dict:
     """See TOOL_DESCRIPTION."""
     hole_type = (hole_type or "simple").strip().lower()
     if hole_type not in _TYPES:
@@ -387,7 +391,8 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(cerr)
         # format without a trailing '.0' (9.0 -> '9 mm', 6.6 -> '6.6 mm')
         diameter = f"{cd:g} mm"
-    if not diameter:
+    tap_sizes_hole = not diameter and bool(tap) and hole_type == "simple"
+    if not diameter and not tap_sizes_hole:
         return error("Provide 'diameter' (e.g. '8 mm') or a 'fastener' (e.g. 'M6 Socket Head Cap "
                      "Screw') to size the hole.")
 
@@ -418,6 +423,13 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
         if edge_position not in _EDGE_POSITIONS:
             return error(f"placement='on_edge' needs 'edge_position' - one of: "
                          f"{', '.join(_EDGE_POSITIONS)}.")
+    elif placement == "face_point":
+        if (not isinstance(point, list) or len(point) != 3
+                or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                       or not math.isfinite(v) for v in point)):
+            return error(f"placement='face_point' needs a finite [x,y,z] 'point'; got {point!r}.")
+        if points or edge or edge_position or offset_edge_one or offset_one or offset_edge_two or offset_two:
+            return error("placement='face_point' uses only 'face' and 'point'; remove points, edge and offsets.")
     else:   # plane_offsets
         if not pt:
             return error("placement='plane_offsets' needs 'point' - an approximate [x, y, z] hole "
@@ -436,6 +448,25 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
 
     if modeled and not tap:
         return error("'modeled' (a real helical thread) only applies to a tapped hole; pass 'tap' too.")
+    thread_class = (thread_class or "").strip()
+    thread_extent, terr = _THREAD_EXTENT.resolve(thread_extent or None)
+    if terr:
+        return error(terr)
+    if not tap and (thread_class or thread_extent or thread_length is not None or thread_offset is not None):
+        return error("'thread_class', 'thread_extent', 'thread_length' and 'thread_offset' require 'tap'.")
+    if thread_extent != "partial" and (thread_length is not None or thread_offset is not None):
+        return error("'thread_length' and 'thread_offset' require thread_extent='partial'.")
+    if thread_extent == "partial" and thread_length is None:
+        return error("thread_extent='partial' requires 'thread_length'.")
+    factor, uerr = _inputs.UNITS.resolve(units)
+    if uerr:
+        return error(uerr)
+    length_cm, lerr = _THREAD_LENGTH.resolve_scaled(thread_length, factor)
+    offset_cm, oerr = _THREAD_OFFSET.resolve_scaled(thread_offset, factor)
+    if lerr or oerr:
+        return error(lerr or oerr)
+    if thread_extent == "partial" and offset_cm is None:
+        offset_cm = 0.0
 
     extent = (extent or "blind").strip().lower()
     if extent not in _EXTENTS:
@@ -455,12 +486,35 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(f"depth='{depth}' is not a drillable hole - a blind hole needs a "
                          "POSITIVE depth (e.g. '10 mm'), or use extent='through'.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     active = _target_component(design)
     if not active:
         return error("No target component.")
+
+    dimensions = {} if tap_sizes_hole else {"diameter": diameter}
+    if extent == "blind":
+        dimensions["depth"] = depth
+    if hole_type == "counterbore":
+        dimensions.update(cbore_diameter=cbore_diameter, cbore_depth=cbore_depth)
+    elif hole_type == "countersink":
+        dimensions["csink_diameter"] = csink_diameter
+    if placement == "plane_offsets":
+        dimensions["offset_one"] = offset_one
+        if offset_two:
+            dimensions["offset_two"] = offset_two
+    for field, expression in dimensions.items():
+        # Keep original strings for creation: unitless strings use document units, not 'units'.
+        if _inputs.looks_like_expression(expression):
+            try:
+                _, evaluated, refusal = _inputs.length_value_input(expression, factor, design, field)
+                if refusal or evaluated is None or not math.isfinite(evaluated):
+                    return error(f"Invalid {field}={expression!r}. Use a decimal length such as "
+                                 f"'0.3125 in' or an existing parameter expression. {refusal or 'Value is unreadable.'}")
+            except Exception as exc:
+                return error(f"Could not validate {field}={expression!r}: {exc}. Use a decimal "
+                             "length such as '0.3125 in' or an existing parameter expression.")
 
     # every placement mode below takes this as its planarEntity.
     face_ent, ferr = _resolve_face(design, face)   # _FACE.resolve returns (entity, error)
@@ -473,6 +527,25 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
     comp, host_from_face = _feature_host(face_ent, active)
     host_name = safe(lambda: comp.name)
     host_named = f" '{host_name}'" if host_name else ""
+
+    face_point = face_normal = None
+    position_face = face_ent
+    if placement == "face_point":
+        position_face = _common._native_of(face_ent)
+        if (safe(lambda: position_face.assemblyContext) is not None
+                or _common.same_component(_inputs.entity_component(position_face), comp) is not True):
+            return error("The native owner of 'face' did not read; reacquire it with find_geometry on the intended body.")
+        origin, face_normal = _geom._face_plane(position_face)
+        if origin is None:
+            return error("The owner-space plane of 'face' did not read; reacquire a planar face with find_geometry.")
+        face_point = [v * factor for v in point]
+        off = abs(_geom.dot([face_point[i] - origin[i] for i in range(3)], face_normal))
+        if off > _OFF_PLANE_TOL_CM:
+            return error(f"point={point!r} is {off / factor:g} {units} off the plane of 'face'; use a point on the selected face in its owner's frame.")
+        contained = safe(lambda: position_face.isPointOnFace(adsk.core.Point3D.create(*face_point)))
+        if contained is not True:
+            why = "outside the selected face boundary" if contained is False else "not verified on the selected face"
+            return error(f"point={point!r} is {why}; use an interior owner-frame point on 'face'. No hole was created.")
 
     edge_ent = None
     offset_edge_one_ent = None
@@ -516,9 +589,16 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
     thread_info = None
     if tap:
         thread_info, carried_by, terr = _threads.resolve_thread_info(
-            comp, tap.strip(), internal=True, thread_type=thread_type)
+            tap.strip(), internal=True, thread_type=thread_type, thread_class=thread_class)
         if terr:
             return error(terr)
+        if tap_sizes_hole:
+            major = safe(lambda: thread_info.majorDiameter)
+            if (not isinstance(major, (int, float)) or isinstance(major, bool)
+                    or not math.isfinite(major) or major <= 0):
+                return error(f"Tap '{tap.strip()}' has no readable positive major diameter. "
+                             "Provide an explicit 'diameter' to construct the hole.")
+            diameter = f"{major:.17g} cm"
     clearance_info = None
     if fastener:
         clearance_info, cerr2 = _resolve_clearance(comp, fastener, fit)
@@ -534,10 +614,6 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
                              csink_diameter, csink_angle)
     if berr:
         return error(berr)
-
-    factor = _common.scale(units)
-    if factor is None:
-        return error(f"Unknown units '{units}'. Use mm, cm, or in.")
 
     sketch = None
     sketch_pts = []
@@ -650,6 +726,14 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(f"Fusion refused to place the hole at the '{edge_position}' of that edge, "
                          "so nothing was placed. Check that 'edge' borders 'face'.")
         n_expected = 1
+    elif placement == "face_point":
+        try:
+            placed = hin.setPositionByPoint(position_face, adsk.core.Point3D.create(*face_point))
+        except Exception as exc:
+            return error(f"Could not position the hole at point={point!r}: {exc}")
+        if placed is not True:
+            return error(f"setPositionByPoint returned {placed!r} for point={point!r}; no hole was added.")
+        n_expected = 1
     else:   # plane_offsets
         try:
             pt3d = adsk.core.Point3D.create(float(pt[0]) * factor, float(pt[1]) * factor,
@@ -694,6 +778,16 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
         if hin.setToTappedHole(thread_info) is False:
             return _abandon(f"Fusion refused to tap the hole to '{tap}' (setToTappedHole returned "
                             "false), so nothing was drilled.")
+        try:
+            if thread_extent == "full":
+                hin.isFullLength = True
+            elif thread_extent == "partial":
+                # Hole creation changes real-valued thread inputs; explicit cm expressions retain them.
+                if hin.setLengthAndOffset(adsk.core.ValueInput.createByString(f"{length_cm:.15g} cm"),
+                                          adsk.core.ValueInput.createByString(f"{offset_cm:.15g} cm")) is not True:
+                    return _abandon("Fusion refused thread_length/thread_offset (setLengthAndOffset).")
+        except Exception as e:
+            return _abandon(f"Could not set thread_extent='{thread_extent}': {e}")
         try:
             # isModeled only takes effect after setToTappedHole.
             hin.isModeled = bool(modeled)
@@ -786,6 +880,19 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
                 "For a bolt circle, pass every position in 'points' in ONE call - the pattern tools "
                 "take bodies/occurrences, not hole features.",
     }
+    if placement == "face_point":
+        result.pop("points_space")
+        result.update(point=point, point_space="face-owner", units=units,
+                      drill_axes_owner_cm=[list(axis) for axis in axes],
+                      face_normal_owner=list(face_normal))
+        if (not verified or len(axes) != 1 or not _point_on_axis(*face_point, axes[0])
+                or abs(_geom.dot(axes[0][3:], face_normal)) < 1 - 1e-6):
+            label = (result["feature"] or safe(lambda: _inputs.candidate_address(feature.timelineObject))
+                     or "(name unread)")
+            refusal = error(f"Hole {label!r} landed but its owner-space drill axis did not verify at point={point!r}; inspect design_get(include=['timeline']) and remove it with design_delete_feature.")
+            refusal["details"] = result
+            refusal["content"].extend(ok({"details": result})["content"])
+            return refusal
     if host_name:
         # withheld rather than published as a null - a name that did not read is not a component name
         result["host_component"] = host_name
@@ -820,7 +927,41 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
             return error(f"The hole was tapped '{got_tap}', not the requested '{tap.strip()}'. "
                          f"Remove '{name}' with design_delete_feature.")
         result["tapped"] = got_tap
+        result["note"] += " The tap definition governs bore size"
+        result["note"] += "." if tap_sizes_hole else f"; diameter={diameter!r} is unused."
+        result["note"] += " Measure the bore with find_geometry/model_inspect."
         result["thread_type"] = safe(lambda: feature.tappedHoleInfo.threadType)
+        child = safe(lambda: feature.thread)
+        full = _common.read_flag(lambda: child.isFullLength)
+        actual_class = safe(lambda: child.threadInfo.threadClass)
+        actual_length = (_common.measured(lambda: child.threadLength.value, places=9)
+                         if full is not True else None)
+        actual_offset = (_common.measured(lambda: child.threadOffset.value, places=9)
+                         if full is not True else None)
+        applicable = None if full is None else not full
+        result.update({"thread_class": actual_class, "thread_full_length": full,
+                       "thread_length": _common.measured(lambda: actual_length, 1 / factor),
+                       "thread_offset": _common.measured(lambda: actual_offset, 1 / factor),
+                       "thread_length_applicable": applicable, "thread_offset_applicable": applicable,
+                       "units": units})
+        mismatch = []
+        if thread_class and (not isinstance(actual_class, str)
+                             or actual_class.casefold() != thread_class.casefold()):
+            mismatch.append(f"thread_class='{thread_class}' (read {actual_class!r})")
+        if thread_extent and full is not (thread_extent == "full"):
+            mismatch.append(f"thread_extent='{thread_extent}' (full_length read {full!r})")
+        if thread_extent == "partial":
+            for label, actual, wanted in (("thread_length", actual_length, length_cm),
+                                           ("thread_offset", actual_offset, offset_cm)):
+                if actual is None or abs(actual - wanted) > _common.EXTENT_MATCH_TOL_CM:
+                    mismatch.append(f"{label} (expected {wanted:g} cm, read {actual!r})")
+        if mismatch:
+            refusal = error(f"Hole '{name}' landed, but thread controls did not verify: "
+                            f"{'; '.join(mismatch)}. Inspect design_get(include=['definition']); "
+                            "remove the feature with design_delete_feature if unwanted.")
+            refusal["details"] = result
+            refusal["content"].extend(ok({"details": result})["content"])
+            return refusal
         if len(carried_by) > 1:
             result["thread_type_alternatives"] = carried_by
         got_modeled = safe(lambda: feature.thread.isModeled)
@@ -850,32 +991,35 @@ def handler(hole_type: str = "simple", diameter: str = "", face: str = "", point
 
 
 TOOL_DESCRIPTION = (
-    "Drill holes with the Hole feature, so it carries hole and thread metadata; several 'points' "
-    "make ONE patterned feature."
+    "Drill a Hole feature; multiple points share one feature."
 )
 
 tool = (
     Tool.create_simple(name="model_hole", description=TOOL_DESCRIPTION)
     .add_input_property("hole_type", {"type": "string", "enum": list(_TYPES)})
-    .add_input_property("diameter", {"type": "string", "description": "e.g. '8 mm'."})
+    .add_input_property("diameter", {"type": "string"})
     .add_input_property("face", _FACE.schema())
     .add_input_property("points", {"type": "array", "items": {"type": "array", "items": {"type": "number"}},
-            "description": "Positions in 'units', in the frame 'points_space' names."})
+            "description": "In 'units' and 'points_space'."})
     .add_input_property(*_POINTS_SPACE.as_property())
     .add_input_property(*_inputs.UNITS.as_property())
     .add_input_property("extent", {"type": "string", "enum": list(_EXTENTS),
             "description": "'blind' needs 'depth'."})
-    .add_input_property("depth", {"type": "string", "description": "e.g. '10 mm'."})
+    .add_input_property("depth", {"type": "string"})
     .add_input_property("cbore_diameter", {"type": "string"})
     .add_input_property("cbore_depth", {"type": "string"})
     .add_input_property("csink_diameter", {"type": "string"})
-    .add_input_property("csink_angle", {"type": "string", "description": "e.g. '90 deg'."})
-    .add_input_property("tap", {"type": "string", "description": "e.g. 'M5x0.8'."})
+    .add_input_property("csink_angle", {"type": "string"})
+    .add_input_property("tap", {"type": "string", "description": "e.g. 'M5x0.8'; sizes simple holes."})
     .add_input_property("thread_type", {"type": "string",
             "description": "When several standards carry 'tap'."})
+    .add_input_property("thread_class", {"type": "string"})
+    .add_input_property(*_THREAD_EXTENT.as_property())
+    .add_input_property(*_THREAD_LENGTH.as_property())
+    .add_input_property(*_THREAD_OFFSET.as_property())
     .add_input_property("modeled", {"type": "boolean",
             "description": "Default cosmetic; true cuts the helix."})
-    .add_input_property("tip_angle", {"type": "string", "description": "e.g. '118 deg'."})
+    .add_input_property("tip_angle", {"type": "string"})
     .add_input_property("fastener", {"type": "string",
             "description": "e.g. 'M6 Socket Head Cap Screw'; overrides 'diameter'."})
     .add_input_property("fit", {"type": "string", "enum": list(_FITS)})
@@ -885,11 +1029,11 @@ tool = (
     .add_input_property("edge_position", {"type": "string", "enum": list(_EDGE_POSITIONS),
             "description": "For placement=on_edge."})
     .add_input_property("point", {"type": "array", "items": {"type": "number"},
-            "description": "Approximate [x,y,z] in the frame of the component owning 'face'."})
+            "description": "Owner-frame [x,y,z] in 'units'; exact for face_point, hint for plane_offsets."})
     .add_input_property(*_OFFSET_EDGE_ONE.as_property())
-    .add_input_property("offset_one", {"type": "string", "description": "e.g. '10 mm'."})
+    .add_input_property("offset_one", {"type": "string"})
     .add_input_property(*_OFFSET_EDGE_TWO.as_property(brief=True))
-    .add_input_property("offset_two", {"type": "string", "description": "e.g. '10 mm'."})
+    .add_input_property("offset_two", {"type": "string"})
     .strict_schema()
 )
 item = Item.create_tool_item(tool=tool, write="write", handler=handler, run_on_main_thread=True,

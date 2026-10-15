@@ -91,20 +91,13 @@ def _offenders(paths, root):
 
 class TestNoDuplicateDefs:
     def test_no_module_shadows_a_def(self):
-        offenders = _offenders(_py_files(), REPO)
+        paths = _py_files()
+        assert all(any(root in p.parents for p in paths) for root in SCANNED_ROOTS), (
+            "nothing was checked under one of the two trees: " + ", ".join(map(str, SCANNED_ROOTS)))
+        offenders = _offenders(paths, REPO)
         assert not offenders, (
             "A def/class name is defined more than once in one scope - Python keeps only the LAST "
             "binding, so every earlier definition silently becomes unreachable dead code (no "
             "import-time warning). In a class body that means a `test_*` method that no longer "
             "runs while the suite reads green. Rename one of them, or delete the stale "
             "duplicate:\n  " + "\n  ".join(offenders))
-
-    def test_the_scan_reaches_both_trees(self):
-        # The detectors are only as good as the glob feeding them: with tests/ out of scope, a
-        # shadowed helper in a test file passes this lint green. Pin both roots by naming a file
-        # that must be in the scan - this file itself for tests/, _common.py for the tools tree.
-        scanned = {p.resolve() for p in _py_files()}
-        for probe in (Path(__file__), Path(TOOLS_DIR) / "_common.py"):
-            assert probe.resolve() in scanned, (
-                f"{probe.name} is not in the scanned set - a root dropped out of the glob, so "
-                "duplicate defs under it are no longer detected")

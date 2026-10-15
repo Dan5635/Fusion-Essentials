@@ -15,6 +15,7 @@ Pinned (the DoD):
     an honest error.
   - a smooth that ate most of the enclosed volume is reported as a collapse, not as a clean relax.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -170,7 +171,7 @@ class TestSmoothnessInput:
 
 class TestInputGuards:
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(msm._common, "design", lambda: None)
+        _install_design(msm, None)
         assert "No active design" in error_message(msm.handler(mesh="H"))
 
     def test_a_missing_smooth_features_collection_is_an_error(self, monkeypatch):

@@ -95,9 +95,9 @@ def handler(file_path: str = "", sketch_name: str = "", x=None, y=None, units: s
     if factor <= 0:
         return error(f"'scale' must be greater than 0, got {factor}.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     sketch, requested, refusal = _sketch_detail.scoped_or_recent_sketch(
         design, sketch_name, component)

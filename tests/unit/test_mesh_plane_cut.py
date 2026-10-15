@@ -613,7 +613,8 @@ class TestPlaneCut:
         assert "REMAINS in the model" in msg
         assert "still re-reads 3 item(s)" in msg
         assert "rolled back" not in msg
-        assert "design_delete_feature" in msg          # the remedy for what is still there
+        # this fake design reads DIRECT, where the remedy for what is still there is Fusion's undo
+        assert "undo in Fusion" in msg
 
     def test_refusal_reports_a_verified_rollback_when_the_mesh_comes_back(self):
         plane = ConstructionPlane("CP")

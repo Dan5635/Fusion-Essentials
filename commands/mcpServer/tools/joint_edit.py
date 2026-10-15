@@ -21,6 +21,9 @@ from ._joints import (
     current_axis as _current_axis,
     current_joint_type as _current_joint_type,
     current_slide_index as _current_slide_index,
+    driven_joint_snapshot as _driven_joint_snapshot,
+    driven_joints_reset as _driven_joints_reset,
+    driven_reset_note as _driven_reset_note,
     find_joint as _find_joint,
     is_as_built_joint as _is_as_built_joint,
     is_joint_origin as _is_joint_origin,
@@ -28,7 +31,7 @@ from ._joints import (
 )
 from ._joint_inputs import (
     MOVED_NOTE as _MOVED_NOTE, MOVED_UNREAD_NOTE as _MOVED_UNREAD_NOTE, _DEG_PER_RAD,
-    _JOINT_TYPES, _LIMIT_BAND, _MOTIONS, _REST_LIMIT_NOTE, _apply_limits, _resolve_input,
+    _JOINT_TYPES, _LIMIT_BAND, _MOTIONS, _REST_LIMIT_NOTE, _apply_limits, _parse_snap, _resolve_input,
     _slide_index, _slide_name, _unverified_limits_note, input_occurrence as _input_occurrence,
     pose_before as _pose_before, pose_moved as _pose_moved,
 )
@@ -59,6 +62,15 @@ def _applied_so_far(changed):
     """The edits recorded before a failing one, for the partial-success disclosure a bare error
     would hide."""
     return ", ".join(f"{k}={v}" for k, v in changed.items()) if changed else "none"
+
+
+def _input_source(spec, resolved):
+    """The occurrence a resolved joint input is reached through: read off it, else off its snap."""
+    occ = _input_occurrence(resolved)
+    if occ is None:
+        name, snap = _parse_snap(spec)
+        occ = _inputs._resolve_occurrence(name, name)[0] if snap else None
+    return occ
 
 
 def _same_direction(current, entity, wanted_dir, wanted_entity):
@@ -128,15 +140,50 @@ def _set_one_parameter(param, key, wanted, expression, unit_scale):
     return landed, None
 
 
+def _retained_limit_error(joint, joint_types, *, min_deg, max_deg, min_mm, max_mm, units="mm"):
+    """Refuse a single bound crossing an enabled opposite bound of a kind every type here carries."""
+    checks = []
+    if (all(t in ("revolute", "cylindrical", "pin_slot", "planar") for t in joint_types)
+            and (min_deg is None) != (max_deg is None)):
+        checks.append(("rotationLimits", "max_deg" if min_deg is None else "min_deg",
+                       max_deg if min_deg is None else min_deg,
+                       "min_deg" if min_deg is None else "max_deg",
+                       "isMinimumValueEnabled" if min_deg is None else "isMaximumValueEnabled",
+                       "minimumValue" if min_deg is None else "maximumValue", _DEG_PER_RAD))
+    if (all(t in ("slider", "cylindrical", "pin_slot") for t in joint_types)
+            and (min_mm is None) != (max_mm is None)):
+        cm_scale = _common.scale(units) or 0.1
+        checks.append(("slideLimits", "max_mm" if min_mm is None else "min_mm",
+                       max_mm if min_mm is None else min_mm,
+                       "min_mm" if min_mm is None else "max_mm",
+                       "isMinimumValueEnabled" if min_mm is None else "isMaximumValueEnabled",
+                       "minimumValue" if min_mm is None else "maximumValue", 1.0 / cm_scale))
+    for attr, key, value, opposite, flag, member, scale in checks:
+        limits = safe(lambda attr=attr: getattr(joint.jointMotion, attr))
+        enabled = _common.read_flag(lambda: getattr(limits, flag))
+        retained = (_common.measured(lambda: getattr(limits, member), scale=scale, places=9)
+                    if enabled else None)
+        if enabled is None or enabled and retained is None:
+            return (f"Cannot check {key}={value}: the retained {opposite} enable flag/value did "
+                    "not read. No edits applied. Read assembly_get before retrying.")
+        if enabled and (float(value) < retained if key.startswith("max_")
+                        else float(value) > retained):
+            unit = "deg" if key.endswith("deg") else units
+            return (f"Refused {key}={value}: it conflicts with retained enabled "
+                    f"{opposite}={retained} {unit}. No edits applied. Read assembly_get; "
+                    f"choose a nonconflicting value or provide both {unit} bounds.")
+    return None
+
+
 def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
             joint_type: str = "", axis: str = "", slide_axis: str = "", world_axis: str = "",
             flip=None, offset=None, angle=None, units: str = "mm",
             rotation_deg=None, min_deg=None, max_deg=None, rest_deg=None,
             min_mm=None, max_mm=None, rest_mm=None) -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     joint, ambiguous = _find_joint(design, joint_name)
     if ambiguous:
         return error(ambiguous)
@@ -176,6 +223,21 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                       "axis, world_axis, flip, offset (+units), angle, "
                       "min_deg/max_deg/rest_deg (rotation), min_mm/max_mm/rest_mm (linear).")
 
+    if wa_name and _is_as_built_joint(joint):
+        return error(
+            f"'{joint_name}' is an AS-BUILT joint; world_axis={wa_name} is refused on it - an "
+            "as-built slider edited with world_axis=x read back sliding along Z. No edits applied. "
+            "Use axis=x|y|z (frame-relative), or delete it with design_delete_feature and rebuild "
+            "it with joint_create on explicit Joint Origins.")
+
+    if (want_offset or want_angle) and _is_as_built_joint(joint):
+        key, value = ("offset", offset) if want_offset else ("angle", angle)
+        return error(
+            f"'{joint_name}' is an AS-BUILT joint with no offset/angle ModelParameter; "
+            f"{key}={value} cannot be set. No edits applied. Read assembly_get, then remove "
+            "the joint with design_delete_feature(feature=...) and recreate the pair with "
+            "joint_create for parameter-driven positioning.")
+
     # Validate motion type up front (before touching the timeline). With only a direction given,
     # the joint's CURRENT motion type is what gets re-applied at it.
     jtype = (joint_type or "").strip().lower()
@@ -195,8 +257,15 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                      "world_axis, or name an axis-based joint_type (revolute, slider, cylindrical, "
                      "planar, pin_slot).")
 
-    # An omitted axis KEEPS the direction the joint is already aimed at, read off its own motion -
-    # re-aiming a joint nobody asked to re-aim also drops the rotation limits it carried.
+    # A same-axis motion re-set keeps the enabled limits (measured), so a motion edit is checked
+    # too: against the limits the joint holds now, of the kinds its current and new type share.
+    held = _current_joint_type(joint)
+    conflict = _retained_limit_error(joint, {held, jtype or held}, min_deg=min_deg,
+                                     max_deg=max_deg, min_mm=min_mm, max_mm=max_mm, units=units)
+    if conflict:
+        return error(conflict)
+
+    # An omitted axis KEEPS the direction the joint is already aimed at, read off its own motion.
     ax_name, kept_custom, axis_kept = given_axis or "z", None, False
     if want_motion and not wa_name and not given_axis and _JOINT_TYPES[jtype][1]:
         cur_dir, cur_entity = _current_axis(joint)
@@ -214,12 +283,13 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
         else:
             kept_custom = cur_entity
 
-    # pin_slot slide direction (validated up front, before touching the timeline). An omitted one
-    # keeps the direction the joint already slides along, for the same reason the rotation axis is
-    # kept - the next-frame-axis default would silently re-aim the slot.
+    # pin_slot slide, checked before the roll: an omitted one keeps the joint's own slide, and a
+    # custom rotation (kept or world_axis) has no frame axis, so ax_name's 'z' placeholder is not
+    # compared against it.
     slide_idx = None
+    rot_frame = ax_name if kept_custom is None and not wa_name else None
     if jtype == "pin_slot":
-        slide_idx, slide_err = _slide_index(slide_axis, ax_name if ax_name in _AXES else "z")
+        slide_idx, slide_err = _slide_index(slide_axis, rot_frame)
         if slide_err:
             return error(slide_err)
         if slide_idx is None:
@@ -230,7 +300,7 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                     "which is not a frame x/y/z this tool can re-apply, and 'slide_axis' was not "
                     "given - re-setting pin_slot motion would aim the slot at a frame axis "
                     "instead. Name it: slide_axis=x|y|z (FRAME-relative).")
-            if kept_slide is not None and kept_slide != _AXES.get(ax_name):
+            if kept_slide is not None and kept_slide != _AXES.get(rot_frame):
                 slide_idx = kept_slide
 
     # An axis CHANGE leaves every motion link this joint belongs to compute-failed and cannot be
@@ -269,6 +339,18 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                     "Editing a joint rolls the timeline to just before it, where a later feature does "
                     "not exist yet. Create the Joint Origin before the joint, or delete the joint and "
                     "recreate it after the Joint Origin with joint_create.")
+        # Geometry reached through an occurrence cannot predate that occurrence's own row.
+        spec = (input_one if lbl == "input_one" else input_two).strip()
+        occ = (_input_source(spec, newx) if newx is not None and not _is_joint_origin(newx)
+               else None)
+        occ_tl = safe(lambda o=occ: o.timelineObject.index) if occ is not None else None
+        if isinstance(occ_tl, int) and joint_tl is not None and occ_tl >= joint_tl:
+            path = safe(lambda o=occ: o.fullPathName) or "?"
+            return error(
+                f"Cannot rewire '{joint_name}' {lbl}: that geometry is on '{path}', created at "
+                f"timeline position {occ_tl}, not before the joint (position {joint_tl}). No edits "
+                "applied. Pick geometry that exists before the joint, or delete the joint and "
+                "recreate it with joint_create.")
 
     changed = {}
     limits_unverified = []
@@ -278,6 +360,8 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                                    safe(lambda: joint.occurrenceTwo),
                                    _input_occurrence(new1) if new1 is not None else None,
                                    _input_occurrence(new2) if new2 is not None else None])
+    drives_before = _driven_joint_snapshot(design)
+    raised = None
     try:
         # The marker MUST be before the joint to edit geometry/flip/motion.
         safe(lambda: joint.timelineObject.rollTo(True))
@@ -295,8 +379,7 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                                      slide_axis_idx=slide_idx)
             if not did:
                 return error(f"Could not set {jtype} motion: {err or 'setter returned false'}. "
-                             f"Edits already applied before the failure: "
-                             f"{_applied_so_far(changed)}.")
+                             f"Edits already applied before the failure: {_applied_so_far(changed)}.")
             changed["joint_type"] = jtype
             if wa_name:
                 changed["world_axis"] = wa_name
@@ -319,17 +402,8 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
         if want_offset:
             op = safe(lambda: joint.offset)
             if op is None:
-                if _is_as_built_joint(joint):
-                    # An AsBuiltJoint carries no offset/angle ModelParameter of any kind, whatever
-                    # its motion - so no expression can position it and rest_mm only sets a motion
-                    # -study equilibrium (see the note below). The parametric path is a real Joint.
-                    return error(
-                        f"'{joint_name}' is an AS-BUILT joint, which exposes no offset parameter "
-                        "for ANY motion type - its position cannot be driven by a parameter or an "
-                        "expression. Delete it (design_delete_feature) and build the pair with "
-                        "joint_create instead: that joint's offset is a ModelParameter, moving "
-                        "along the joint frame's Z axis.")
-                return error("This joint has no offset parameter (rigid/inferred or already 0-DOF).")
+                return error("This joint has no offset parameter (rigid/inferred or already 0-DOF). "
+                             f"Edits already applied before the failure: {_applied_so_far(changed)}.")
             u = (units or "mm").strip().lower()
             u = "in" if u == "inch" else u
             # `u` passed the units guard above, so it is a key of the shared cm-to-unit table -
@@ -348,12 +422,8 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
         if want_angle:
             ap = safe(lambda: joint.angle)
             if ap is None:
-                if _is_as_built_joint(joint):
-                    return error(
-                        f"'{joint_name}' is an AS-BUILT joint, which exposes no offset/angle "
-                        "ModelParameter for ANY motion type - no expression can drive it. Delete "
-                        "it (design_delete_feature) and build the pair with joint_create instead.")
-                return error("This joint has no angle parameter.")
+                return error("This joint has no angle parameter. "
+                             f"Edits already applied before the failure: {_applied_so_far(changed)}.")
             published, aerr = _set_one_parameter(ap, "angle", float(angle),
                                                  f"{_fmt_num(angle)} deg", _DEG_PER_RAD)
             if aerr:
@@ -379,16 +449,13 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                 return error(f"{lim_err} Edits already applied before the failure: "
                              f"{_applied_so_far(changed)}.")
     except Exception as e:
-        msg = f"Edit failed: {e}"
+        raised = f"Edit failed: {e}"
         if "findObjectPath" in str(e) or "InternalValidationError" in str(e):
             # A referenced input (geometry or origin) is later in the timeline than the joint, so it
             # does not exist at the rolled-back marker. Name the cause rather than ship the raw error.
-            msg += (" - a re-selected input likely appears LATER in the timeline than the joint; a "
-                    "joint can only reference geometry/origins created before it. Recreate the joint "
-                    "after that input with joint_create.")
-        if changed:
-            msg += f" Edits already applied before the failure: {_applied_so_far(changed)}."
-        return error(msg)
+            raised += (" - a re-selected input likely appears LATER in the timeline than the joint; "
+                       "a joint can only reference geometry/origins created before it. Recreate the "
+                       "joint after that input with joint_create.")
     finally:
         if rolled:
             # Roll the marker to the TRUE END of the timeline: rollTo(False) stops immediately after
@@ -400,6 +467,12 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
                 safe(lambda: setattr(tl, "markerPosition", n))
             else:
                 safe(lambda: joint.timelineObject.rollTo(False))
+    if raised:
+        moved = _pose_moved(targets, poses)
+        msg = f"{raised} Edits already applied before the failure: {_applied_so_far(changed)}."
+        if moved:
+            msg += " Moved: " + ", ".join(str(m.get("occurrence")) for m in moved) + "."
+        return error(msg, {"note": msg, "edits_applied": changed, "moved": moved})
 
     # Editing a joint rolls the timeline marker, which can leave DOWNSTREAM features in a stale
     # compute-failed state until a full recompute. A computeAll that RAISES is not a failure of the
@@ -412,6 +485,32 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
         recompute_errors, _, _ = _common.timeline_health(design)
     except Exception:
         pass
+    reset = _driven_joints_reset(drives_before, _driven_joint_snapshot(design))
+
+    if (want_motion and kept_custom is None and _JOINT_TYPES[jtype][1]
+            and _is_as_built_joint(joint)):
+        landed, _ = _current_axis(joint)
+        if isinstance(landed, int) and landed != _AXES[ax_name]:
+            return error(
+                f"'{joint_name}' WAS EDITED ({_applied_so_far(changed)}) but its motion reads "
+                f"JointDirections {landed}, not the requested frame {ax_name} "
+                f"({_AXES[ax_name]}). Delete it with design_delete_feature and rebuild it with "
+                "joint_create on explicit Joint Origins.")
+
+    if want_motion and jtype == "pin_slot":
+        # A custom rotation entity takes a frame-z slide request as frame x, the setter answering true.
+        slide_now = _current_slide_index(joint)
+        landed_slide = (_AXIS_NAMES[slide_now] if isinstance(slide_now, int)
+                        and 0 <= slide_now < len(_AXIS_NAMES) else None)
+        asked_slide = (slide_axis or "").strip().lower()
+        changed["slide_axis"] = landed_slide
+        if landed_slide is None:
+            edits_unverified.append("slide_axis")
+        elif asked_slide and landed_slide != asked_slide:
+            return error(
+                f"'{joint_name}' WAS EDITED ({_applied_so_far(changed)}) but its slide direction "
+                f"reads back '{landed_slide}', not the requested slide_axis '{asked_slide}'. Read "
+                "its heading with assembly_get, then name another slide_axis.")
 
     state, failure = _assert.compute_state(joint)
     out = {"edited": True, "healthy": {"healthy": True, "broken": False}.get(state),
@@ -478,11 +577,14 @@ def handler(joint_name: str = "", input_one: str = "", input_two: str = "",
         out["note"] += (" WARNING: this joint is SUPPRESSED - the edit landed on the definition but "
                         "the joint is INERT and positions nothing until it is unsuppressed "
                         "(design_edit_timeline action='suppress', suppressed=false).")
+    if reset:
+        out["driven_joints_reset"] = reset
+        out["note"] += " " + _driven_reset_note(reset)
     return ok(out)
 
 
 TOOL_DESCRIPTION = (
-"Edit an existing joint's DEFINITION in place; joint_drive poses it to a value instead."
+"Edit joint; joint_drive poses it. Linear limits use units."
 )
 tool = (
     Tool.create_simple(name="joint_edit", description=TOOL_DESCRIPTION)
@@ -495,18 +597,16 @@ tool = (
     .add_input_property(*_inputs.joint_motion(default="", options=_MOTIONS,
             description="").as_property())
     .add_input_property(*_inputs.frame_axis("axis", default="",
-            description="FRAME-relative, not world; on its own it re-aims the current motion, and "
-                        "omitted it KEEPS the joint's own direction. pin_slot: the rotation axis."
+            description="FRAME-relative; omitted keeps direction; pin_slot uses rotation axis."
             ).as_property())
     .add_input_property(*_inputs.frame_axis("slide_axis", default="",
             description="pin_slot only.").as_property())
     .add_input_property(*_inputs.frame_axis("world_axis", default="",
-            description="Re-point the motion to a TRUE WORLD axis.").as_property())
+            description="World axis.").as_property())
     .add_input_property("flip", {"type": "boolean",
             "description": "Sets the flag - not a toggle."})
     .add_input_property("offset", {"type": "number",
-            "description": "In 'units'; the anchor offset along the joint frame's Z, not a slide "
-                           "value (joint_drive poses that)."})
+            "description": "Joint-frame Z offset, in units."})
     .add_input_property("angle", {"type": "number", "description": "In degrees."})
     .add_input_property(*_inputs.UNITS.as_property())
     # rotation_deg is intentionally NOT exposed: the handler still accepts the kwarg and returns a
@@ -515,9 +615,9 @@ tool = (
     .add_input_property("min_deg", {"type": "number"})
     .add_input_property("max_deg", {"type": "number"})
     .add_input_property("rest_deg", {"type": "number"})
-    .add_input_property("min_mm", {"type": "number", "description": "In 'units'."})
-    .add_input_property("max_mm", {"type": "number", "description": "In 'units'."})
-    .add_input_property("rest_mm", {"type": "number", "description": "In 'units'."})
+    .add_input_property("min_mm", {"type": "number"})
+    .add_input_property("max_mm", {"type": "number"})
+    .add_input_property("rest_mm", {"type": "number"})
     .strict_schema()
 )
 item = Item.create_tool_item(

@@ -290,7 +290,7 @@ class TestRecognizerRouting:
         monkeypatch.setattr(adsk.cam.RecognizedPocket, "recognizePockets", boom, raising=False)
         pockets, err = cfp._recognize(BRepBody(name="Solid1"), object(), False)
         assert pockets is None
-        assert "Manufacturing Extension" in err and "entitlement" in err
+        assert "Manufacturing Extension" in err and "This operation requires" in err
         assert "find_geometry(kind='planar_face')" in err and "selection='pocket'" in err
 
     def test_an_unentitled_boss_route_names_the_extension_not_the_plain_route(self, monkeypatch):
@@ -304,7 +304,7 @@ class TestRecognizerRouting:
                             raising=False)
         pockets, err = cfp._recognize(object(), object(), True)
         assert pockets is None
-        assert "entitlement" in err and "include_bosses=false" not in err
+        assert "This operation requires" in err and "include_bosses=false" not in err
 
     def test_a_recognizer_error_fails_the_call(self, scene, monkeypatch):
         scene([_Pocket()])

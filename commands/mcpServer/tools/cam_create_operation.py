@@ -16,8 +16,9 @@ from ..mcp_primitives.registry import register
 from ._common import apply_rename, counted, named_with_remainder, ok, error, read_flag, safe
 from ._cam_common import (CREATE_DEDUPE, _MANUAL_NC_STRATEGY, _length_capped, capability_entitled,
                           choice_expressions, get_cam, find_setup, operation_nodes,
-                          operation_name_clash, register_future, setups, setups_sharing_models,
-                          unquote_expression, walk_cam_tree)
+                          operation_name_clash, refresh_flat_setup_models, register_future, setups, setups_sharing_models,
+                          sync_validity,
+                          tool_selector_error, unquote_expression, walk_cam_tree)
 # _read_tool_number is the one tool_number read; _tp is the one tool-parameter value read.
 from .cam_edit_tools import _read_tool_number, _tp
 
@@ -404,6 +405,9 @@ def handler(setup: str = "", strategy: str = "", tool_library_url: str = "",
             tool_index: int = -1, tool_scope: str = "", generate: bool = False,
             name: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
+    selector_error = tool_selector_error(tool_scope, tool_library_url)
+    if selector_error:
+        return error(selector_error)
     cam, cerr = get_cam()
     if not cam:
         return error(cerr)
@@ -481,6 +485,14 @@ def handler(setup: str = "", strategy: str = "", tool_library_url: str = "",
     # the vocabulary never read, which is not a verdict either.
     if chosen is not None and chosen["allowed"] is False:
         return error(_blocked_strategy_message(strategy, setup, rows))
+
+    flat_refreshed = 0
+    if generate:
+        if not sync_validity(cam):
+            return error("CAM.checkValidity failed before operation creation; nothing was created.")
+        flat_refreshed, ferr = refresh_flat_setup_models(target)
+        if ferr:
+            return error(f"Setup '{setup}': {ferr}")
 
     # createInput can raise on an invalid strategy despite the check (be safe), so guard the mutation.
     try:
@@ -589,6 +601,8 @@ def handler(setup: str = "", strategy: str = "", tool_library_url: str = "",
                 _CORNER_NEXT if strategy == _CORNER else
                 "No toolpath yet: cam_select_geometry for its geometry, then cam_generate."),
     }
+    if flat_refreshed:
+        result["flat_models_refreshed"] = flat_refreshed
     if mode_note:
         # The read-back is published only when it DISAGREED: absent = generationMode read back
         # SkipGeneration; present = what it read back instead, or why the assignment raised.
@@ -596,7 +610,6 @@ def handler(setup: str = "", strategy: str = "", tool_library_url: str = "",
     if named is None and not toolless:
         # absent = both descriptions read and the read-back names the requested tool
         result["tool_identity_checked"] = False
-
     if generate:
         # The Future MUST be registered, not discarded: if it is garbage-collected Fusion ABANDONS
         # the in-progress generation. _cam_common.register_future is the one registration path, and

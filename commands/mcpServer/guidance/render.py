@@ -1,13 +1,10 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Render the packaged guidance document as Markdown - one authored render, every consumer.
+"""Render authored guidance as Markdown for resources and generated artifacts.
 
-``resources/read`` serves this text to a client that reads MCP resources, and ``gen_guidance.py``
-writes the same functions' output into the checked-in Claude skill package: ``map_text`` as the
-SKILL.md map, ``section_text`` as one playbook file per section. The render lives here, beside the
-document it renders, so no two channels can say different things. Whether the DATA is fit to render
-at all - the size caps, the registry check behind every step - stays with the generator.
+body renders the readable document; map_text and section_text build optional skill packages.
+The generator validates the data and its caps before export.
 """
 
 from . import loader
@@ -102,8 +99,9 @@ def map_text(doc):
             continue
         parts.append(f"- `{sec['id']}` - {sec['use_when']}")
     parts += ["", "## Recipes", "",
-              "A recipe `<id>` is `sys_get_guidance(recipe=\"<id>\")` - ordered steps, a read-back "
-              "per step, a bar for done. Its prefix names the playbook it belongs to.", ""]
+              "A recipe `<id>` is `sys_get_guidance(recipe=\"<id>\")` - one worked construction: its "
+              "prerequisites, steps each with a read-back, a bar for done. Its prefix names the "
+              "playbook it belongs to.", ""]
     for rec in loader.recipes(doc):
         parts.append(f"- `{rec['id']}` - {rec['use_when']}")
     return "\n".join(parts).rstrip() + "\n"

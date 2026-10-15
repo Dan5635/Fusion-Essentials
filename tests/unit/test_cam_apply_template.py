@@ -6,20 +6,14 @@ the call is the read the claim rests on, and the per-operation tool status is re
 own walk.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
 
 from conftest import (FakeCAMFolder, FakeOperation, FakeSetup, FakeTool, _NamedCollection,
-                      load_tool, make_cam, make_cam_parameters)
+                      load_tool, make_cam, make_cam_parameters, payload as _payload)
 
 ct = load_tool("cam_apply_template")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 class _FakeTemplate:
@@ -437,6 +431,14 @@ def mode_apply(monkeypatch):
 
 
 class TestApplyTemplateGenerationMode:
+    def test_failed_validity_sync_refuses_before_template_apply(self, monkeypatch):
+        setup = _ApplySetup("Setup1", adds=1)
+        _wire_apply(monkeypatch, setup)
+        monkeypatch.setattr(ct, "sync_validity", lambda cam: False)
+        res = ct.handler(setup="Setup1", template_name="T", generate="generate")
+        assert res["isError"] is True and "checkValidity" in res["message"]
+        assert setup.applied == []
+
     @pytest.mark.parametrize("generate,member", [("skip", "SkipGeneration"),
                                                ("generate", "ForceGeneration")])
     def test_missing_selected_mode_is_rejected_before_apply(self, mode_apply, generate, member):

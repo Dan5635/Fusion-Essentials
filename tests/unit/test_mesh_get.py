@@ -1,4 +1,5 @@
 """Unit tests for mesh_get.py - the MESH body listing, and the shared mesh reads it publishes."""
+from conftest import install as _install_design
 
 import adsk.fusion
 import pytest
@@ -45,7 +46,7 @@ class TestMeshGet:
 
     def test_no_design_errors(self, monkeypatch):
         _wire(MakeComp("Comp", mesh_bodies=[]))
-        monkeypatch.setattr(mo._common, "design", lambda: None)
+        _install_design(mo, None)
         res = mo.handler(target="")
         assert res["isError"] is True and "No active design" in res["message"]
 

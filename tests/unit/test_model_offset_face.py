@@ -8,6 +8,9 @@ the no-active-design guard, resolution-error propagation, the health-error hones
 volume-diff honesty gate - an offset the API reports as success but that leaves every affected body's
 volume unchanged must surface as an error, not a false ok.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 from conftest import (load_tool, make_design, install, BRepBody, BRepFace, FakeVector3D, MakeComp,
                       Plane, go_stale, payload, error_message, assert_no_active_design,
@@ -36,7 +39,7 @@ class FakeOffsetInput:
 
 
 class FakeOffsetFeature:
-    def __init__(self, name="OffsetFaces1", health=0):
+    def __init__(self, name="OffsetFaces1", health=_HEALTHY):
         self.name = name
         self.healthState = health
         self.errorOrWarningMessage = "geometry self-intersects"
@@ -50,7 +53,7 @@ class FakeOffsetFacesFeatures:
     `return_feature` False models the MEASURED direct-mode shape: no feature object comes back while
     the offset LANDS. `volume_unreadable` additionally drops the volume read, leaving the call with
     no evidence at all."""
-    def __init__(self, bodies, volume_delta=10.0, return_feature=True, health=0,
+    def __init__(self, bodies, volume_delta=10.0, return_feature=True, health=_HEALTHY,
                  volume_unreadable=False):
         self.bodies = list(bodies)
         self.volume_delta = volume_delta
@@ -202,7 +205,7 @@ class TestHonesty:
     def test_health_error_reported_not_false_ok(self, monkeypatch):
         body = BRepBody(volume=100.0)
         face = _face(body)
-        feats = FakeOffsetFacesFeatures([body], volume_delta=8.0, health=2)
+        feats = FakeOffsetFacesFeatures([body], volume_delta=8.0, health=_ERROR)
         _wire(monkeypatch, feats, [face])
         res = of.handler(faces=["h"], distance=2, units="mm")
         assert res["isError"] is True

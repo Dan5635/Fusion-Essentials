@@ -1,6 +1,6 @@
 """Tests for `cam_get` — the CAM rich read (setups default + include= deeper slices).
 
-Same fixture-based pattern as test_design_get.py (CLAUDE.md "Tests"): stub
+Same fixture-based pattern as test_design_get.py (AGENTS.md "Tests"): stub
 the _slice_* SEAMS and assert the ROUTER's composition (default = setups orientation only; an include=
 returns that slice INSTEAD of the orientation unless 'default'/'setups' is named beside it; the note
 advertises the rest; unknown include + no-CAM guards). The slice→source-handler
@@ -25,9 +25,7 @@ def test_cam_read_core_is_loaded_with_the_router():
     assert sys.modules[cg._cr.__name__] is cg._cr
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _named_op(name):
@@ -62,6 +60,10 @@ def stub_slices(monkeypatch):
                             {"count": 0, "print_settings": []}, None))
     monkeypatch.setattr(cg, "_slice_templates",
                         lambda cam, loc, url, depth: ({"node_count": 0, "tree": {}}, None))
+    monkeypatch.setattr(cg, "_slice_print_setting", lambda cam, setup, units: ({"name": "PLA"}, None))
+    monkeypatch.setattr(cg, "_slice_placement", lambda cam, setup, units: ({"parts": []}, None))
+    monkeypatch.setattr(cg, "_slice_additive_results",
+                        lambda cam, operation, setup: ({"parts": []}, None))
     monkeypatch.setattr(cg, "_slice_inspection",
                         lambda cam, measure, max_results, units: (
                             {"available": False, "measure_count": 0, "measures": []}, None))
@@ -78,7 +80,7 @@ class TestDefaultSlice:
 
     def test_default_note_advertises_remaining(self, stub_slices):
         out = _payload(cg.handler())
-        assert "other slices are the 'include' enum" in out["note"]
+        assert "'include' adds slices" in out["note"]
 
     def test_the_worst_composed_router_note_fits_the_wire_budget(self, monkeypatch):
         # the true worst case: _cam_read's rest-stock note (a setup at stock_mode 'previous_setup')
@@ -716,13 +718,18 @@ class TestBounding:
         return {"isError": False, "content": [{"type": "text", "text": json.dumps(payload)}]}
 
     def test_operations_capped_and_flagged(self, monkeypatch):
+        summary = {"readiness": "300 of 300 active ops have valid toolpaths - ready to post.",
+                   "observed_operation_count": cg._OPERATIONS_CAP + 50,
+                   "scan_complete": True}
         big = {"setups": [{"setup": "S", "operations": [
-            {"name": f"Op{i}", "state": "valid"} for i in range(cg._OPERATIONS_CAP + 50)]}]}
+            {"name": f"Op{i}", "state": "valid"} for i in range(cg._OPERATIONS_CAP + 50)],
+            "summary": summary}]}
         self._fake_cam_read(monkeypatch,
                             get_cam_operations_handler=lambda setup="": self._ok(big))
         out, err = cg._slice_operations(object(), "")
         assert err is None
         assert len(out["setups"][0]["operations"]) == cg._OPERATIONS_CAP and out["truncated"] is True
+        assert out["setups"][0]["summary"] == summary
 
     def test_the_worst_composed_note_fits_the_wire_budget(self, monkeypatch):
         # the truncated-cap prefix plus _cam_read's own operations note - both pieces armed at
@@ -782,6 +789,39 @@ class TestBounding:
         prog = out["nc_programs"][0]
         assert prog["post_parameter_count"] == 65 and "post_parameters" not in prog
 
+    def test_nc_programs_reads_the_stored_emitted_number(self, monkeypatch):
+        crd = load_tool("_cam_read")
+        number = FakeCAMParameter("nc_program_name")
+        number.expression = "'C3_BAD_NUMBER'"
+        params = FakeCAMParameters([number])
+        program = SimpleNamespace(name="C3_NONNUMERIC_PROBE", machine=None,
+                                  postConfiguration=None, operations=[], filteredOperations=[],
+                                  parameters=params, postParameters=[])
+        programs = SimpleNamespace(count=1, item=lambda index: program if index == 0 else None)
+        monkeypatch.setattr(crd, "get_cam", lambda **_kwargs:
+                            (SimpleNamespace(ncPrograms=programs), None))
+
+        out = _payload(crd.get_nc_programs_handler())
+
+        assert out["nc_programs"][0]["name"] == "C3_NONNUMERIC_PROBE"
+        assert out["nc_programs"][0]["program_number"] == "C3_BAD_NUMBER"
+        assert out["nc_programs"][0]["program_number_readable"] is True
+
+    def test_nc_programs_marks_an_unread_emitted_number_as_unknown(self, monkeypatch):
+        crd = load_tool("_cam_read")
+        program = SimpleNamespace(name="NoNumber", machine=None, postConfiguration=None,
+                                  operations=[], filteredOperations=[],
+                                  parameters=FakeCAMParameters([]), postParameters=[])
+        programs = SimpleNamespace(count=1, item=lambda index: program if index == 0 else None)
+        monkeypatch.setattr(crd, "get_cam", lambda **_kwargs:
+                            (SimpleNamespace(ncPrograms=programs), None))
+
+        out = _payload(crd.get_nc_programs_handler())
+
+        assert out["nc_programs"][0]["program_number"] is None
+        assert out["nc_programs"][0]["program_number_readable"] is False
+        assert len(out["note"]) <= 400
+
 
 class TestAdditiveOperationRows:
     """An ADDITIVE setup's operations never carry tool_unselected or a spindle_check key, and are
@@ -829,6 +869,7 @@ class TestAdditiveOperationRows:
         assert "assigns a tool" in rows_by_setup["Mill"]["summary"]["readiness"]
 
     def test_an_additive_setup_is_held_out_of_the_time_slice_entirely(self):
+        # valid=True models the platform-seeded preset node of a fresh additive setup
         import adsk.cam
         additive_op = FakeOperation("AutoOrient", has_toolpath=False, valid=True,
                                     operation_state=0, tool=None,
@@ -844,6 +885,25 @@ class TestAdditiveOperationRows:
         assert row["operations"] == []
         assert row["total_excludes_operations"] == ["AutoOrient"]
         assert "setup_total_unavailable" not in row and "error" not in row
+
+    @pytest.mark.parametrize("by_operation", [False, True])
+    def test_an_ungenerated_additive_op_reads_additive_not_the_generate_remedy(self, by_operation):
+        # valid=False is a created additive op; the valid=True test above is the seeded preset node
+        import adsk.cam
+        additive_op = FakeOperation("AutoOrient", has_toolpath=False, valid=False,
+                                    operation_state=3, tool=None,
+                                    strategy="automatic_orientation")
+        additive_setup = FakeSetup("Build", [additive_op],
+                                   operation_type=adsk.cam.OperationTypes.AdditiveOperation)
+        additive_op.parentSetup = additive_setup
+        self._install(additive_setup, machining_times={})
+        out = _payload(cg._cr.get_machining_time_handler(
+            operation=additive_op if by_operation else None))
+        row = out["setups"][0]
+        assert row["additive"] is True and row["machining_time_seconds"] is None
+        assert "error" not in row and "cam_generate" not in json.dumps(out)
+        assert "getMachiningTime is not called" in out["note"]
+        assert row.get("operation") == ("AutoOrient" if by_operation else None)
 
     def test_nc_program_held_ops_excludes_additive_ops_by_their_own_setup(self):
         # A held list can draw from several setups (Setup.parentSetup, not the program), so an
@@ -872,6 +932,18 @@ class TestAdditiveOperationRows:
         assert "ready to post" not in summary["readiness"]
         assert "1 operation(s) still generating" in summary["readiness"]
 
+    def test_readiness_describes_valid_manual_operation_without_claiming_a_toolpath(self):
+        manual = FakeOperation("OperatorNote", has_toolpath=False, valid=True,
+                               operation_state=0, tool=None, strategy="manual")
+        self._install(FakeSetup("ManualSetup", [manual]))
+        summary = _payload(cg._cr.get_cam_operations_handler())["setups"][0]["summary"]
+        readiness = summary["readiness"]
+        assert "1 of 1 active operations pass the validity check" in readiness
+        assert "valid toolpaths" not in readiness
+        assert summary["setups_blocked"] == [
+            {"name": "ManualSetup", "blocked_by": ["no_machine_selected"]}]
+        assert "ready to post" in readiness and "NOT established" in readiness
+
 
 class TestLibrarySlice:
     """include=['library'] = a tool-library catalog (the tools you can ADD), delegated to
@@ -887,6 +959,54 @@ class TestLibrarySlice:
         out = _payload(cg.handler(include=["library"], scope="cloud", library="Shop", tool_type="ball"))
         assert out["library"]["tool_count"] == 1
         assert seen == {"scope": "cloud", "library": "Shop", "tool_type": "ball"}
+
+    def test_router_scopes_preset_read_to_one_library_tool(self, monkeypatch, stub_slices):
+        seen = {}
+        monkeypatch.setattr(cg, "_slice_library",
+                            lambda cam, scope, library, tool_type, tool_index, preset: (
+                                seen.update(index=tool_index, preset=preset)
+                                or ({"preset_names": ["Finish"]}, None)))
+        out = _payload(cg.handler(include=["library"], library_tool=4,
+                                  preset="Finish"))["library"]
+        assert out["preset_names"] == ["Finish"] and seen == {"index": 4, "preset": "Finish"}
+        assert "needs include=['library']" in cg.handler(library_tool=4)["message"]
+
+    def test_preset_cannot_silently_target_two_tool_slices(self, stub_slices):
+        res = cg.handler(include=["tool", "library"], operation="Rough", library_tool=4,
+                         preset="Finish")
+        assert res["isError"] is True
+        assert "separately" in error_message(res)
+
+    @pytest.mark.parametrize("asked, returned, truncated", [
+        (6, 6, True), (11, 11, True), (12, 12, False), (0, 12, False), (-3, 1, True)])
+    def test_max_results_caps_the_library_rows_and_keeps_the_matching_total(
+            self, monkeypatch, stub_slices, asked, returned, truncated):
+        rows = [{"index": i} for i in range(12)]
+        monkeypatch.setattr(cg, "_slice_library", lambda cam, scope, library, tool_type: (
+            {"tool_count": 12, "tools": list(rows), "filtered_by_type": "ball"}, None))
+        lib = _payload(cg.handler(include=["library"], tool_type="ball",
+                                  max_results=asked))["library"]
+        assert lib["tools"] == rows[:returned]
+        assert (lib["tool_count"], lib["returned"], lib["truncated"]) == (12, returned, truncated)
+
+    def test_the_cap_reaches_the_library_listing_the_used_tools_and_the_types(
+            self, monkeypatch, stub_slices):
+        monkeypatch.setattr(cg, "_slice_library", lambda cam, scope, library, tool_type: (
+            {"library_count": 3, "libraries": ["a", "b", "c"], "truncated": True}, None))
+        monkeypatch.setattr(cg, "_slice_tools", lambda cam: (
+            {"distinct_tool_count": 3, "tools": [{"tool": t} for t in "abc"]}, None))
+        monkeypatch.setattr(cg, "_slice_library_types", lambda cam: (
+            {"type_count": 3, "types": ["a", "b", "c"]}, None))
+        out = _payload(cg.handler(include=["library", "tools", "library_types"], scope="cloud",
+                                  max_results=2))
+        assert out["library"]["libraries"] == ["a", "b"] and out["library"]["library_count"] == 3
+        assert [t["tool"] for t in out["tools"]["tools"]] == ["a", "b"]
+        assert out["library_types"]["types"] == ["a", "b"]
+        assert [out[k]["returned"] for k in ("library", "tools", "library_types")] == [2, 2, 2]
+        assert all(out[k]["truncated"] is True for k in ("library", "tools", "library_types"))
+        # the library walk's own bound survives a cap that cut nothing
+        whole = _payload(cg.handler(include=["library"], scope="cloud", max_results=3))
+        assert whole["library"]["returned"] == 3 and whole["library"]["truncated"] is True
 
     def test_the_scope_enum_matches_the_scopes_read_library_accepts(self):
         # The enum is spelled here and the vocabulary lives in cam_edit_tools, whose read_library
@@ -1390,9 +1510,8 @@ class TestOnePoolForResolveAndRemedy:
         assert "TopOnly" not in msg
 
     def test_cam_get_holds_exactly_one_operation_resolving_seam(self):
-        # the structural guard: a second by-name operation lookup imported here is a second pool.
+        # the structural guard: cam_get resolves an operation by name through the shared seam.
         assert hasattr(cg, "resolve_operation")
-        assert not hasattr(cg, "find_operation")
 
 
 class TestOperationScopedBySetup:
@@ -2124,17 +2243,20 @@ class TestParameterDiscovery:
         assert err is None and out["requested_parameter_count"] == 1
 
     def test_unavailable_scan_expands_only_rows_on_the_returned_page(self, monkeypatch):
-        class Tracked:
-            isVisible = False
-            isEnabled = False
-            isEditable = False
-            isDeprecated = False
-            value = SimpleNamespace(value=None)
-            error = ""
-            warning = ""
+        class Tracked(FakeCAMParameter):
+            """A shared CAMParameter that counts expanded field reads."""
 
             def __init__(self, name):
                 self._name = name
+                self._title = name.title()
+                self._expression = "1"
+                self.value = SimpleNamespace(value=None)
+                self.isVisible = False
+                self.isEnabled = False
+                self.isEditable = False
+                self.isDeprecated = False
+                self._error = ""
+                self.warning = ""
                 self.expanded_reads = 0
 
             @property
@@ -2142,15 +2264,27 @@ class TestParameterDiscovery:
                 self.expanded_reads += 1
                 return self._name
 
+            @name.setter
+            def name(self, value):
+                self._name = value
+
             @property
             def title(self):
                 self.expanded_reads += 1
-                return self._name.title()
+                return self._title
+
+            @title.setter
+            def title(self, value):
+                self._title = value
 
             @property
             def expression(self):
                 self.expanded_reads += 1
-                return "1"
+                return self._expression
+
+            @expression.setter
+            def expression(self, value):
+                self._expression = value
 
         first, second = Tracked("first"), Tracked("second")
         coll = SimpleNamespace(count=2, item=lambda index: (first, second)[index])
@@ -2160,19 +2294,26 @@ class TestParameterDiscovery:
         assert first.expanded_reads > 0 and second.expanded_reads == 0
 
     def test_expanded_flags_stay_separate_and_unread_flags_are_null(self):
-        class PartialFlags:
-            name = "dependent"
-            title = "Dependent"
-            expression = "1"
-            value = SimpleNamespace(value=1)
-            error = ""
-            warning = ""
-            isEnabled = False
-            isEditable = True
+        class PartialFlags(FakeCAMParameter):
+            """A shared CAMParameter whose visibility flags refuse to read."""
+
+            def __init__(self):
+                self._initializing = True
+                try:
+                    super().__init__("dependent", expression="1", value=1,
+                                     title="Dependent", editable=True, enabled=False)
+                finally:
+                    self._initializing = False
 
             @property
             def isVisible(self):
                 raise RuntimeError("unread visible")
+
+            @isVisible.setter
+            def isVisible(self, value):
+                if not self._initializing:
+                    raise RuntimeError("unread visible")
+                self._visible = value
 
             @property
             def isDeprecated(self):
@@ -2438,3 +2579,58 @@ class TestNormalizeInclude:
 
     def test_none_empty(self):
         assert cg._normalize_include(None) == [] and cg._normalize_include("") == []
+
+
+class TestAdditiveSlices:
+    def _rig(self, monkeypatch, additive=True):
+        setup = type("S", (), {"name": "Print"})()
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (object(), None))
+        monkeypatch.setattr(cg, "_slice_setups", lambda cam, s, units: ({"setups": []}, None))
+        monkeypatch.setattr(cg._cc, "find_setup", lambda cam, name: (
+            (setup, ["Print"], None) if name == "Print" else (None, ["Print"], f"No setup '{name}'.")))
+        monkeypatch.setattr(cg._cc, "is_additive_setup", lambda s: additive)
+        monkeypatch.setattr(cg._cam_additive, "print_setting_row", lambda s: {"name": "PLA"})
+        monkeypatch.setattr(cg._cam_additive, "printer_row", lambda s, k: {"scale": k})
+        monkeypatch.setattr(cg._cam_additive, "placement_rows", lambda cam, s, k: ([{"scale": k}], None))
+        return setup
+
+    def test_the_print_setting_slice_carries_the_setting_and_the_printer_in_the_units_asked(self, monkeypatch):
+        self._rig(monkeypatch)
+        out = _payload(cg.handler(include=["print_setting"], setup="Print", units="in"))["print_setting"]
+        assert out["name"] == "PLA" and out["setup"] == "Print" and out["units"] == "in"
+        assert out["printer"]["scale"] == pytest.approx(1 / 2.54)
+
+    def test_placement_names_its_frame_and_scales_by_the_units_asked(self, monkeypatch):
+        self._rig(monkeypatch)
+        out = _payload(cg.handler(include=["placement"], setup="Print"))["placement"]
+        assert out["frame"] == "manufacture" and out["parts"] == [{"scale": 10.0}]
+
+    @pytest.mark.parametrize("kw,said", [
+        ({"setup": ""}, "pass 'setup'"), ({"setup": "Nope"}, "No setup 'Nope'"),
+        ({"setup": "Print", "units": "furlong"}, "Unknown units 'furlong'")])
+    def test_a_setup_slice_refuses_a_missing_or_unknown_setup_and_unknown_units(self, monkeypatch, kw, said):
+        self._rig(monkeypatch)
+        for name in ("print_setting", "placement"):
+            assert said in error_message(cg.handler(include=[name], **kw))
+
+    def test_a_setup_that_is_not_additive_has_neither_slice(self, monkeypatch):
+        self._rig(monkeypatch, additive=False)
+        assert "is not additive" in error_message(cg.handler(include=["placement"], setup="Print"))
+
+    def test_additive_results_reads_one_operation_and_explains_the_candidate_index(self, monkeypatch):
+        self._rig(monkeypatch)
+        op = object()
+        monkeypatch.setattr(cg, "_resolve_op_in_scope", lambda cam, operation, setup: (op, None))
+        monkeypatch.setattr(cg._cam_additive, "additive_results", lambda cam, target: {
+            "parts": ["PartA:1"], "orientation": {"count": 9}} if target is op else {})
+        out = _payload(cg.handler(include=["additive_results"], operation="Orient1"))["additive_results"]
+        assert out["orientation"]["count"] == 9 and "orientation_candidate" in out["note"]
+        assert "pass 'operation'" in error_message(cg.handler(include=["additive_results"]))
+
+    def test_additive_results_keeps_the_note_of_an_operation_without_orientation_rows(self, monkeypatch):
+        self._rig(monkeypatch)
+        monkeypatch.setattr(cg, "_resolve_op_in_scope", lambda cam, operation, setup: (object(), None))
+        monkeypatch.setattr(cg._cam_additive, "additive_results", lambda cam, target: {
+            "generated_result_count": 0, "note": "zero is not an absence"})
+        out = _payload(cg.handler(include=["additive_results"], operation="Support1"))["additive_results"]
+        assert out == {"generated_result_count": 0, "note": "zero is not an absence"}

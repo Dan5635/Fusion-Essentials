@@ -35,19 +35,56 @@ def _moved(before, after):
     return any(abs(bv - av) > _MOVE_EPS_CM for b, a in pairs for bv, av in zip(b, a))
 
 
+def _lifted(position):
+    """True when any read sample of a position fingerprint sits off the sketch plane."""
+    return any(mark is not None and abs(mark[2]) > _MOVE_EPS_CM for mark in position)
+
+
+# This tool's own bound on the curves it re-reads for motion nobody asked for.
+_FOLLOW_SCAN = 400
+
+
+def _bystanders(sketch, ents):
+    """([(curve, position)], complete) for the curves not asked to move; False on an unread one."""
+    rows, complete = [], True
+    count = _common.counted(lambda: sketch.sketchCurves.count)
+    if count is None or count > _FOLLOW_SCAN:
+        return rows, False
+    for i in range(count):
+        curve = safe(lambda i=i: sketch.sketchCurves.item(i))
+        if curve is None:
+            complete = False
+            continue
+        # Entity equality, never a token string: two tokens of one entity need not match.
+        same = [safe(lambda e=e: e == curve) for e in ents]
+        if any(s is True for s in same):
+            continue
+        if any(s is not False for s in same):
+            complete = False
+        rows.append((curve, _assert.entity_position(curve)))
+    return rows, complete
+
+
 def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=None, dy=None,
             rotation_deg=None, center_x=None, center_y=None, scale_factor=None,
-            component: str = "") -> dict:
+            component: str = "", dz=None, rotation_axis=None, center_z=None) -> dict:
     """See TOOL_DESCRIPTION."""
     design, sketch, ents, refs, coll, matrix, unit, err = _prepare(
         sketch_name, entities, units, dx, dy, rotation_deg, center_x, center_y, scale_factor,
-        component)
+        component, dz=dz, rotation_axis=rotation_axis, center_z=center_z)
     if err:
         return err
 
     name = safe(lambda: sketch.name)
+    profiles_before = (_common.counted(lambda: sketch.profiles.count)
+                       if dz or rotation_axis is not None or center_z is not None else None)
     errors_before, _warn, _total = _common.timeline_health(design)
     before = [_assert.entity_position(e) for e in ents]
+    if (rotation_axis is not None or center_z is not None) and any(
+            not _sketch_detail.transform_points_readable(p) for p in before):
+        return error("The selected entity has no readable XYZ point for rotation verification. "
+                     "Choose an entity with points from sketch_get(include_entities=true).")
+    others, others_read = _bystanders(sketch, ents)
     try:
         did = sketch.move(coll, matrix)
     except Exception as e:
@@ -74,6 +111,19 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
     moved = [r for r, v in zip(refs, verdicts) if v is True]
     stayed = [r for r, v in zip(refs, verdicts) if v is False]
     unread = [r for r, v in zip(refs, verdicts) if v is None]
+
+    if rotation_axis is not None or center_z is not None:
+        exact = [_sketch_detail.transform_points_match(b, a, matrix)
+                 for b, a in zip(before, after)]
+        if any(v is False for v in exact):
+            wrong = [r for r, v in zip(refs, exact) if v is False]
+            return error(f"The requested XYZ transform did not verify for {', '.join(wrong)} in "
+                         f"sketch '{name}'. Entities may have moved. Read "
+                         "sketch_get(include_entities=true) before another edit.")
+        if any(v is None for v in exact):
+            return error(f"The move of sketch '{name}' could not verify endpoint XYZ coordinates. "
+                         "Entities may have moved. Read sketch_get(include_entities=true) "
+                         "before another edit.")
 
     if not did and not moved:
         return error(f"Fusion declined the move in sketch '{name}' (Sketch.move returned false) and "
@@ -104,7 +154,42 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
                  "downstream of this sketch no longer compute.")
 
     out = {"moved": True, "sketch": name, "entities": refs, "moved_entities": moved,
-           "requested": _requested(unit, dx, dy, rotation_deg, scale_factor), "note": note}
+           "requested": _requested(unit, dx, dy, rotation_deg, scale_factor, dz,
+                                   rotation_axis, center_z), "note": note}
+    if rotation_axis is not None or center_z is not None:
+        out["coordinates_verified"] = True
+        out["note"] += " Endpoint XYZ coordinates were verified; curve interiors were not checked."
+    # A shared point or a constraint carries the move to curves nobody named; they are told apart
+    # from the request.
+    verdicts_other = [(curve, _moved(was, _assert.entity_position(curve))) for curve, was in others]
+    followed = [curve for curve, verdict in verdicts_other if verdict is True]
+    if any(verdict is None for _curve, verdict in verdicts_other):
+        others_read = False
+    if followed:
+        named = [_sketch_detail.curve_id(sketch, c) or "an unnamed curve" for c in followed]
+        out["followed_entities"] = named
+        out["note"] += (f" {len(named)} entit{'y' if len(named) == 1 else 'ies'} not asked for "
+                        "moved too, through shared points or constraints.")
+    if not others_read:
+        out["followed_entities_read"] = False
+    if dz or rotation_axis is not None or center_z is not None:
+        # A loop moved off its plane as a whole keeps its profile; one that stops being planar
+        # loses it, so the count is published on both sides of the move.
+        down = [pos is not None and not _lifted(pos) for pos in after]
+        was_up = [pos is not None and _lifted(pos) for pos in before]
+        flat = [r for r, d, u in zip(refs, down, was_up) if d and not u]
+        back = [r for r, d, u in zip(refs, down, was_up) if d and u]
+        profiles_after = _common.counted(lambda: sketch.profiles.count)
+        out.update(profile_count_before=profiles_before, profile_count_after=profiles_after)
+        if back:
+            out["returned_to_plane"] = back
+        if flat:
+            out["note"] = (f"{', '.join(flat)} still read z = 0 on every point after a dz move. "
+                           + out["note"])
+            out["on_plane_entities"] = flat
+        if None not in (profiles_before, profiles_after) and profiles_after < profiles_before:
+            out["note"] += (f" The sketch went from {profiles_before} to {profiles_after} "
+                            "profile(s): a loop that is no longer planar bounds none.")
     if stayed:
         out["unmoved_entities"] = stayed
     if unread:
@@ -115,7 +200,8 @@ def handler(sketch_name: str = "", entities: str = "", units: str = "mm", dx=Non
 
 
 TOOL_DESCRIPTION = (
-    "MOVE existing sketch entities by one transform."
+    "MOVE existing sketch entities by one transform. Selected entities may propagate motion "
+    "through constraints."
 )
 
 tool = _transform_wire(

@@ -157,6 +157,8 @@ def capture():
     """
     def _make(pending=False, occurrences=(), snapshot_items=(), snapshots=True, **snapshot_kwargs):
         snaps = FakeSnapshots(pending=pending, items=snapshot_items, **snapshot_kwargs)
+        for index, occ in enumerate(occurrences):
+            occ.component.entityToken = f"capture-component-{index}"
         design = make_design(occurrences=list(occurrences),
                              snapshots=snaps if snapshots else None)
         install(ja, design)
@@ -242,6 +244,7 @@ class TestCapturePosition:
         return ja.handler(action="capture")
 
     def test_a_snap_back_of_exactly_the_tolerance_is_not_a_revert(self, capture):
+        assert acom._MOVE_TOL_CM == 0.005
         res = self._capture_after_shift(capture, acom._MOVE_TOL_CM)
         assert payload(res)["captured"] is True
 
@@ -537,9 +540,8 @@ class TestStatusPublishesTheFlagTriState:
         assert res["isError"] is True and "no pending" in res["message"].lower()
 
     def test_the_status_note_names_both_exceptions(self, capture):
-        # neither a placement nor a constraint sets this flag - a caller told otherwise chases a
-        # capture that refuses
         capture(pending=True)
         note = payload(ja.handler(action="status"))["note"]
-        assert ("a design_add_instance placement and an assembly_constrain relationship do NOT"
+        assert ("a shared design_add_instance placement and an assembly_constrain relationship do NOT"
                 in note)
+        assert "Independent copies can capture their placement." in note

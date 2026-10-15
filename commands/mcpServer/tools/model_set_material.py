@@ -26,7 +26,7 @@ from . import _outputs
 _TARGET = _inputs.TargetRef("target", allow=("body", "mesh", "occurrence", "component", "design"))
 
 RETURNS = [
-    _outputs.ReturnsName("material", of="material", consumers=["model_inspect"]),
+    _outputs.ReturnsName("material", of="material"),
     _outputs.ReturnsValue("density_kg_per_m3", "the assigned material's density - makes model_inspect mass trustworthy"),
 ]
 
@@ -134,9 +134,9 @@ def handler(target: str = "", material: str = "", library: str = "",
             material_id: str = "") -> dict:
     """Assign a physical material to the resolved target, then read back each body's material + density
     to prove it took. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design with geometry.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     mat, scope, merr = _find_material(design, material, library, material_id)
     if merr:

@@ -21,8 +21,9 @@ class enters the tree.
 
 import types
 
-from conftest import (BRepBody, MakeComp, MakeDesign, _NamedCollection, assert_no_active_design,
-                      assert_unknown_units, error_message, install, load_tool, payload)
+from conftest import (BRepBody, MakeComp, MakeDesign, _NamedCollection, assert_names_retained,
+                      assert_no_active_design, assert_unknown_units, error_message, install,
+                      load_tool, payload)
 
 sf = load_tool("surface_fill")
 
@@ -479,7 +480,7 @@ class TestHonesty:
         fx = _fill_features(inp, feature=feat)
         _wire(monkeypatch, fx, comp_bodies=[BRepBody("Block", volume=50.0)])
         msg = error_message(sf.handler(tools=["h"]))
-        assert "nothing was sealed" in msg and "rolled back" in msg
+        assert "nothing was sealed" in msg and "Deleting it returned True." in msg
         assert feat.deletes == [True], "an empty feature must be deleted, not left in the timeline"
 
     def test_a_consumed_tool_is_proof_of_effect_and_blocks_the_rollback(self, monkeypatch):
@@ -528,8 +529,8 @@ class TestHonesty:
         feat = _feature(bodies=[], delete_ok=False)
         fx = _fill_features(inp, feature=feat)
         _wire(monkeypatch, fx, comp_bodies=[BRepBody("Block", volume=50.0)])
-        msg = error_message(sf.handler(tools=["h"]))
-        assert "could NOT be deleted" in msg and "design_delete_feature" in msg
+        msg = assert_names_retained(sf.handler(tools=["h"]), "BoundaryFill1")
+        assert "Deleting it returned False" in msg
 
     def test_material_moving_in_another_component_is_not_rolled_back(self, monkeypatch):
         # the pre-image must span the whole design: a cut whose target lives in a different

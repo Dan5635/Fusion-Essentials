@@ -169,7 +169,7 @@ def _nothing_to_launch(target_desc, parked, already_valid, stranded=0) -> dict:
 
 
 def _launch_around_blocked(cam, keep, blocked, skip_valid, scope, target_desc, resolved_name,
-                           unread):
+                           unread, flat_refreshed=0):
     """The launch for a scope holding entitlement-blocked operations: the whole-scope sweep
     regenerates NOTHING over such a scope, so every operation that did not read false is launched on
     its own, all under one handle."""
@@ -198,6 +198,8 @@ def _launch_around_blocked(cam, keep, blocked, skip_valid, scope, target_desc, r
                 names=named_with_remainder([r["name"] for r in blocked])))
         skipped = _nothing_to_launch(target_desc, parked, already_valid)
         skipped.update({"entitlement_blocked": blocked, "note": _blocked_clause(blocked)})
+        if flat_refreshed:
+            skipped["flat_models_refreshed"] = flat_refreshed
         return ok(skipped)
 
     handle, _total = register_future(futures[0], target_desc, scope, skip_valid,
@@ -209,6 +211,7 @@ def _launch_around_blocked(cam, keep, blocked, skip_valid, scope, target_desc, r
         "skip_valid": bool(skip_valid),
         "operations_to_generate": len(futures),
         "entitlement_blocked": blocked,
+        "flat_models_refreshed": flat_refreshed,
         "note": _SPLIT_LAUNCH_NOTE + _REASONS_NOTE + _blocked_clause(blocked),
     }
     _launch_rows(payload, launched)
@@ -219,6 +222,40 @@ def _launch_around_blocked(cam, keep, blocked, skip_valid, scope, target_desc, r
         payload["note"] += _UNREAD_ENTITLEMENT.format(n=unread)
     return ok(payload)
 
+
+
+def _refresh_scope_models(cam, node):
+    """Refresh flat models only in setups reached by this generation scope."""
+    if node is None:
+        raw = safe(lambda: cam.setups)
+        setups = list(_cam_common.iter_collection(raw)) if raw is not None else None
+        count = _cam_common.counted(lambda: raw.count) if raw is not None else None
+        if setups is None or count is None or len(setups) != count:
+            return 0, "CAM setups could not be read completely before flat refresh."
+    else:
+        owner = _cam_common.owning_setup(node)
+        if owner is None:
+            return 0, "The target's owning setup could not be read before flat refresh."
+        setups = [owner]
+    refreshed = 0
+    for setup in setups:
+        previously_valid = [op for op in _cam_common.operations_under(setup)
+                            if safe(lambda op=op: op.operationState) == 0
+                            and safe(lambda op=op: op.hasToolpath) is True
+                            and safe(lambda op=op: op.isSuppressed) is not True
+                            and safe(lambda op=op: op.strategy) != "manual"]
+        n, why = _cam_common.refresh_flat_setup_models(setup)
+        if why:
+            return refreshed, (f"Setup '{safe(lambda: setup.name)}': {why} "
+                               f"{refreshed} flat model(s) were already refreshed; "
+                               "inspect CAM before retrying.")
+        refreshed += n
+        if n and any(safe(lambda op=op: op.operationState) in (None, 0)
+                     for op in previously_valid):
+            return refreshed, (f"Setup '{safe(lambda: setup.name)}' flat models were refreshed, "
+                               "but a generated path still reads valid or unreadable. "
+                               "Inspect CAM before retrying.")
+    return refreshed, None
 
 def handler(target: str = "", skip_valid: bool = True) -> dict:
     """Launch toolpath (re)generation over `target` and return a poll handle immediately."""
@@ -233,11 +270,16 @@ def handler(target: str = "", skip_valid: bool = True) -> dict:
             cam, want, kinds=("setup", "folder", "operation"), label="setup/folder/operation")
         if rerr:
             return error(rerr + " Omit 'target' to generate the whole document.")
+    flat_refreshed, ferr = _refresh_scope_models(cam, node)
+    if ferr:
+        return error(ferr)
+
+    if node is not None:
         # generateToolpath has no skip_valid flag; it regenerates the given target. When the
         # caller asked to skip valid and this single target is already valid+current, short out -
         # but a path whose own motion is not a number reads that state and is not current at all.
         facts = _cam_common.op_state_facts(node.obj, cam) if node.kind == "operation" else {}
-        if (skip_valid and facts.get("operation_state") == 0
+        if (skip_valid and not flat_refreshed and facts.get("operation_state") == 0
                 and not facts.get("nonfinite_toolpath")):
             return ok({"launched": False, "skipped": True, "target": want,
         "reason": "operation already valid and up to date (skip_valid=true).",
@@ -257,8 +299,8 @@ def handler(target: str = "", skip_valid: bool = True) -> dict:
     unread = sum(1 for flag in flags if flag is None)
     if blocked:
         keep = [(label, n) for label, n, flag in zip(labels, nodes, flags) if flag is not False]
-        return _launch_around_blocked(cam, keep, blocked, skip_valid, scope, target_desc,
-                                      resolved_name, unread)
+        return _launch_around_blocked(cam, keep, blocked, bool(skip_valid),
+                                      scope, target_desc, resolved_name, unread, flat_refreshed)
 
     # generateToolpath regenerates its whole target whatever skip_valid says; only the document
     # sweep is handed the flag, so only there does it narrow what this launch covers.
@@ -274,17 +316,22 @@ def handler(target: str = "", skip_valid: bool = True) -> dict:
     if stranded:
         covered = [row for row in covered if row[2] != "nonfinite"]
     if not covered:
-        return ok(_stranded_keys(
-            _nothing_to_launch(target_desc, parked, already_valid, len(stranded)), stranded))
+        empty = _stranded_keys(
+            _nothing_to_launch(target_desc, parked, already_valid, len(stranded)), stranded)
+        if flat_refreshed:
+            empty["flat_models_refreshed"] = flat_refreshed
+        return ok(empty)
 
     try:
-        future = (cam.generateAllToolpaths(bool(skip_valid)) if node is None
+        future = (cam.generateAllToolpaths(narrowing) if node is None
                   else cam.generateToolpath(node.obj))
     except Exception as e:
-        return error(f"Failed to launch generation for {scope}: {e}")
+        return error(f"Failed to launch generation for {scope}: {e}. "
+                     f"{flat_refreshed} flat model(s) were already refreshed.")
 
     if not future:
-        return error("Generation launch returned no future (nothing to generate?).")
+        return error(f"Generation launch returned no future (nothing to generate?). "
+                     f"{flat_refreshed} flat model(s) were already refreshed.")
 
     handle, _total = register_future(future, target_desc, scope, skip_valid,
                                      target_name=resolved_name)
@@ -295,12 +342,13 @@ def handler(target: str = "", skip_valid: bool = True) -> dict:
         "target": target_desc,
         "skip_valid": bool(skip_valid),
         "operations_to_generate": len(covered),
+        "flat_models_refreshed": flat_refreshed,
         "note": _LAUNCH_NOTE + _REASONS_NOTE,
     }
     _launch_rows(payload, covered)
     _stranded_keys(payload, stranded)
     if skip_valid and node is not None:
-        payload["skip_valid_applied"] = False    # absent = the flag narrowed this launch
+        payload["skip_valid_applied"] = False
         payload["note"] += _SKIP_VALID_UNUSED
     if unread:
         payload["entitlement_unread"] = unread

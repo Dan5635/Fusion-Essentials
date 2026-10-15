@@ -64,7 +64,8 @@ _EXTENSION_METHOD = _spellings(
 
 # The object-set parameters: the direct family's own spellings plus every surface role.
 _OBJECT_SET_PARAMS = tuple(dict.fromkeys(
-    [nm for names in _DIRECT_PARAM.values() for nm in names] + list(_SURFACE_TARGET_PARAM.values())))
+    [nm for names in _DIRECT_PARAM.values() for nm in names]
+    + [nm for names in _SURFACE_TARGET_PARAM.values() for nm in names]))
 
 # The enum-valued properties, decoded so a row states a spelling rather than an ordinal.
 _ENUM_PROPS = ("loopType", "sideType", "extensionType", "extensionMethod")

@@ -17,7 +17,64 @@ from ._common import ok, error, safe
 _API_MODULES = ("adsk.core", "adsk.fusion", "adsk.cam", "adsk.drawing",
                 "adsk.sim", "adsk.electron", "adsk.volume")
 _MAX_RESULTS = 40
+_MAX_PATTERN_CHARS = 256
 _DOC_CHARS = 1200
+_SAFE_ESCAPES = frozenset("dDsSwWbBAZfnrtv\\.^$*+?{}[]|()-")
+
+
+def _pattern_problem(pattern):
+    """Return why a pattern exceeds the bounded fixed-width regex subset, or None."""
+    if not isinstance(pattern, str):
+        return "searchPattern must be a string."
+    if len(pattern) > _MAX_PATTERN_CHARS:
+        return f"searchPattern has {len(pattern)} characters; the limit is {_MAX_PATTERN_CHARS}. Shorten it."
+    in_class, class_first, class_negation_allowed = False, False, False
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\":
+            if i + 1 == len(pattern):
+                return None
+            escaped = pattern[i + 1]
+            if escaped in "123456789":
+                return f"searchPattern uses unsupported backreference '\\{escaped}'; use literals, classes, anchors, alternation, or safe escapes."
+            if escaped in ("x", "u", "U"):
+                width = {"x": 2, "u": 4, "U": 8}[escaped]
+                digits = pattern[i + 2:i + 2 + width]
+                if len(digits) == width and all(c in "0123456789abcdefABCDEF" for c in digits):
+                    i += 2 + width
+                    if in_class:
+                        class_first = False
+                        class_negation_allowed = False
+                    continue
+            if escaped not in _SAFE_ESCAPES:
+                return f"searchPattern uses unsupported escape '\\{escaped}'."
+            i += 2
+            if in_class:
+                class_first = False
+                class_negation_allowed = False
+            continue
+        if in_class:
+            if char == "]":
+                if class_first:
+                    class_first = False
+                    class_negation_allowed = False
+                else:
+                    in_class = False
+            elif char == "^" and class_negation_allowed:
+                class_negation_allowed = False
+            else:
+                class_first = False
+                class_negation_allowed = False
+            i += 1
+            continue
+        if char == "[":
+            in_class, class_first, class_negation_allowed = True, True, True
+        elif char in "()*+?{}":
+            kind = "grouping" if char in "()" else "repetition"
+            return f"searchPattern uses unsupported {kind} '{char}'; use literals, ., classes, anchors, alternation, or safe escapes."
+        i += 1
+    return None
 
 
 def _load_modules(namespace_filter, unavailable=None):
@@ -142,6 +199,9 @@ def handler(searchPattern: str = "", apiCategory: str = "all", filter: str = "",
     """Return matching API declarations with result and docstring continuation offsets."""
     if not searchPattern:
         return error("Provide 'searchPattern' (a regex matched against API names/docs).")
+    problem = _pattern_problem(searchPattern)
+    if problem:
+        return error(problem)
     try:
         regex = re.compile(searchPattern, re.IGNORECASE)
     except re.error as exc:
@@ -188,7 +248,7 @@ TOOL_DESCRIPTION = (
 tool = (
     Tool.create_simple(name="sys_get_api_doc", description=TOOL_DESCRIPTION)
     .add_input_property("searchPattern", {"type": "string",
-                        "description": "Case-insensitive regex; description/all include docstrings."})
+                        "description": f"Case-insensitive, max {_MAX_PATTERN_CHARS} chars; no groups or quantifiers."})
     .add_input_property("apiCategory", {"type": "string",
                         "enum": ["class", "member", "description", "all"]})
     .add_input_property("filter", {"type": "string",

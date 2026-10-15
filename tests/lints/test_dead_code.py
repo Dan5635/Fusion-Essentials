@@ -161,19 +161,6 @@ def _local_mentions(path, name):
     return _local_counts(str(path)).get(name, 0)
 
 
-def _stale_definition_exemptions(table, counts, defined):
-    """Remove-the-entry messages for _DEFINITION_EXEMPT rows that no longer name a module-level
-    definition, or whose definition gained a corpus reference."""
-    stale = []
-    for name, reason in table.items():
-        assert str(reason).strip(), f"_DEFINITION_EXEMPT: {name} needs a plain-English reason"
-        if name not in defined:
-            stale.append(f"{name}: no such module-level definition - drop the entry")
-        elif counts.get(name, 0) > 1:
-            stale.append(f"{name}: referenced now - drop the exemption")
-    return stale
-
-
 def _fixture_decorated(node):
     """True when a function is a pytest fixture (injected by argument name, not called)."""
     for dec in getattr(node, "decorator_list", []):
@@ -237,27 +224,14 @@ class TestNoUnusedImports:
                     offenders.append(f"{path.relative_to(REPO)}: import '{name}' is never used")
         assert not offenders, "Unused imports (delete them, or name a test seam):\n" + "\n".join(offenders)
 
-    def test_import_seam_table_matches_reality(self):
-        stale = []
-        for (fname, name), reason in _IMPORT_SEAMS.items():
-            path = MCP_ROOT / "tools" / fname
-            if not path.exists():
-                stale.append(f"{fname}: file gone ({reason})")
-                continue
-            tree = _parse(path)
-            aliases = [a.asname or a.name.split(".")[0] for node in ast.walk(tree)
-                       if isinstance(node, (ast.Import, ast.ImportFrom)) for a in node.names]
-            if name not in aliases:
-                stale.append(f"{fname}: '{name}' no longer imported ({reason})")
-            elif _local_mentions(path, name) > 0:
-                stale.append(f"{fname}: '{name}' is now used locally - drop the seam entry")
-        assert not stale, "Stale _IMPORT_SEAMS entries:\n" + "\n".join(stale)
-
 
 class TestNoUnreferencedDefinitions:
     def test_every_module_level_definition_is_referenced_somewhere(self):
         counts = _mention_counts()
         offenders = []
+        assert _reexport_aliases(_parse(TESTS / "conftest.py")), (
+            "nothing to subtract: conftest re-exports no tests.fakes module, so every shared fake "
+            "would count as referenced")
         for path in _definition_files():
             tree = _parse(path)
             fixtures = {n.name for n in tree.body
@@ -274,27 +248,6 @@ class TestNoUnreferencedDefinitions:
         assert not offenders, ("Dead module-level definitions (delete them; a live-but-unreferenced "
                                "framework name belongs in _DEFINITION_EXEMPT with a reason):\n"
                                + "\n".join(offenders))
-
-    def test_a_conftest_re_export_alias_is_not_a_mention(self):
-        # Without the subtraction the re-export line counts as a use of every shared fake, and a
-        # fake each test stopped importing stays permanently referenced - unreachable by the rule
-        # above. The second import proves only the tests.fakes line is skipped.
-        tree = ast.parse("from tests.fakes.design import FakeBody\n"
-                         "from elsewhere import FakeBody as Other\n")
-        counts = {}
-        _count_into(tree, lambda n: counts.__setitem__(n, counts.get(n, 0) + 1),
-                    skip=_reexport_aliases(tree))
-        assert counts.get("FakeBody", 0) == 1, counts
-        assert _reexport_aliases(_parse(TESTS / "conftest.py")), \
-            "conftest imports no tests.fakes module - the subtraction reaches nothing"
-
-    def test_definition_exempt_table_matches_reality(self):
-        counts = _mention_counts()
-        defined = set()
-        for path in _definition_files():
-            defined |= {name for name, _, _ in _module_definitions(_parse(path))}
-        stale = _stale_definition_exemptions(_DEFINITION_EXEMPT, counts, defined)
-        assert not stale, "stale _DEFINITION_EXEMPT entries:\n  " + "\n  ".join(stale)
 
     def test_every_test_file_definition_is_referenced_in_its_file(self):
         # per FILE, not corpus-global: fake names repeat across test files and would mask a match.

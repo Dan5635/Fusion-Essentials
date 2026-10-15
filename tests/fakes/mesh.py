@@ -17,7 +17,8 @@ class _FakeTriangleMesh:
 
     The three flat arrays a tessellation hands to addByTriangleMeshData are set only when given, so
     a display mesh whose geometry does not read stays a testable state."""
-    def __init__(self, tri, nodes, coords=None, node_indices=None, normals=None):
+    def __init__(self, tri, nodes, coords=None, node_indices=None, normals=None,
+                 points=None):
         self.triangleCount = tri
         self.nodeCount = nodes
         if coords is not None:
@@ -26,6 +27,8 @@ class _FakeTriangleMesh:
             self.nodeIndices = list(node_indices)
         if normals is not None:
             self.normalVectorsAsDouble = list(normals)
+        if points is not None:
+            self.nodeCoordinates = list(points)
 
 
 @fusion_fake(factory_for="_NamedCollection")
@@ -40,13 +43,19 @@ def make_face_groups(spec):
 class _FakePolygonMesh:
     """MeshBody.mesh - the flat x,y,z node coordinates a smooth moves and the flat normal
     components a reverse negates, plus the polygon/node census a mesh record publishes."""
-    def __init__(self, coords, normals, polygons=None, nodes=None):
+    def __init__(self, coords, normals, polygons=None, nodes=None,
+                 triangle_indices=None, quads=None):
         self.nodeCoordinatesAsDouble = list(coords)
         self.normalVectorsAsDouble = list(normals)
         if polygons is not None:
             self.polygonCount = polygons
         if nodes is not None:
             self.nodeCount = nodes
+        if quads is not None:
+            self.quadCount = quads
+        if triangle_indices is not None:
+            self.triangleNodeIndices = list(triangle_indices)
+            self.triangleCount = len(triangle_indices) // 3
 
 
 @fusion_fake(live_type="MeshBody",
@@ -86,11 +95,14 @@ class MeshBody:
     def __init__(self, name="Scan1", tri=12, nodes=8, is_closed=True, volume=1.0, coords=(),
                  normals=(), token=None, parent=None, counts_readable=True, volume_readable=True,
                  closed_readable=True, mesh_readable=True, lifts=True, area=None, bbox=None,
-                 face_groups=(0,), polygons=None, mesh_nodes=None, deletes=True):
+                 face_groups=(0,), polygons=None, mesh_nodes=None, deletes=True,
+                 display_points=None, display_indices=None, triangle_indices=None, quads=None):
         self.name = name
         self.isValid = True
         self._polygons = polygons
         self._mesh_nodes = mesh_nodes
+        self._triangle_indices = triangle_indices
+        self._quads = quads
         self._deletes = deletes
         if area is not None:
             self.area = area
@@ -103,8 +115,10 @@ class MeshBody:
         self.assemblyContext = None
         self.nativeObject = None
         self._lifts = lifts
+        self._organization = None
         self._dead = False
-        self._display = _FakeTriangleMesh(tri, nodes)
+        self._display = _FakeTriangleMesh(tri, nodes, node_indices=display_indices,
+                                          points=display_points)
         self._is_closed = is_closed
         self._volume_cm3 = volume
         self._coords = list(coords)
@@ -132,7 +146,8 @@ class MeshBody:
         self._live()
         if not self._mesh_readable:
             raise RuntimeError("3 : the polygon mesh is unavailable")
-        return _FakePolygonMesh(self._coords, self._normals, self._polygons, self._mesh_nodes)
+        return _FakePolygonMesh(self._coords, self._normals, self._polygons, self._mesh_nodes,
+                                self._triangle_indices, self._quads)
 
     @property
     def isClosed(self):
@@ -166,6 +181,24 @@ class MeshBody:
         meshbody-assembly-context-proxy / meshbody-proxy-token-differs), or None when `lifts`
         is off."""
         return _MeshProxy(self, occurrence) if self._lifts else None
+
+    def copyToComponent(self, target):
+        """Delegate the scene's modeled copy."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("copy", target)
+
+    def moveToComponent(self, target):
+        """Delegate the scene's modeled move."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("move", target)
+
+    def createComponent(self):
+        """Delegate the scene's modeled component creation."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("create_component", None)
 
     def deleteMe(self):
         """Drop this body from its parent component's meshBodies, answering the bool live returns.

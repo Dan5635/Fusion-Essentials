@@ -6,7 +6,6 @@ destination guard (this tool creates nothing), the already-there no-op, and the 
 arriving from the shared resolver.
 """
 
-import json
 
 import pytest
 
@@ -15,9 +14,7 @@ from conftest import FakeDataFile, FakeDataFolder, FakeDataProject, error_messag
 dmv = load_tool("data_move_file")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _folder(name, subs=(), is_root=False, folders_raise=None):

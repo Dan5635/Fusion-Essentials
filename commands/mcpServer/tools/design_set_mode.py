@@ -8,28 +8,44 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import ok, error
+from ._common import ok, error, safe
 from . import _common
-from . import _inputs
 from . import _design_common
+from . import _form_common
+from . import _inputs
 
 _TARGETS = (_inputs.MODE_PARAMETRIC, _inputs.MODE_DIRECT)
+
+
+def _touch_counts(design):
+    """(Form count, timeline.count, timelineGroups.count) - what a not-taken assignment can move.
+    The latter two are safe()-read since the timeline raises while direct."""
+    return (len(_form_common.all_forms(design)), safe(lambda: design.timeline.count),
+            safe(lambda: design.timeline.timelineGroups.count))
+
+
+def _moved_sentence(before, after):
+    """What changed between two _touch_counts() reads, or that nothing readable did."""
+    labels = ("Form(s)", "timeline item(s)", "group(s)")
+    moved = [f"{a - b} {label}" for b, a, label in zip(before, after, labels)
+             if b is not None and a is not None and a != b]
+    if not moved:
+        return "nothing it can read changed."
+    return "it added " + " / ".join(moved) + "; inspect them with design_get(include=['timeline'])."
 
 
 def handler(target: str = "", confirm_history_loss: bool = False) -> dict:
     """Convert the active design between parametric and direct - idempotent, and refusing the
     timeline-destroying direction without confirm_history_loss=true. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     tgt = (target or "").strip().lower()
     if tgt not in _TARGETS:
         return error(f"'target' must be one of: {', '.join(_TARGETS)} (got "
                      f"'{target}').")
 
-    if _inputs.in_form_edit(design):
-        return error(_design_common.FORM_EDIT_OPEN_MODE)
     current = _inputs.current_design_type(design)
     if current == tgt:
         # idempotent no-op, NOT an error
@@ -41,6 +57,9 @@ def handler(target: str = "", confirm_history_loss: bool = False) -> dict:
     if going_to_direct and confirm_history_loss is not True:
         return error("Converting to DIRECT destroys the timeline and all design history "
     "(irreversible). Re-call with confirm_history_loss=true to proceed.")
+
+    # What a not-taken assignment can still touch, read before it runs.
+    before = _touch_counts(design)
 
     # Resolve the target enum value. Do NOT safe()-wrap the assignment - let a real failure surface.
     types = adsk.fusion.DesignTypes
@@ -62,9 +81,15 @@ def handler(target: str = "", confirm_history_loss: bool = False) -> dict:
         converted, discarded = True, going_to_direct
         note = "Re-run design_get(include=['mode']) to see the updated capability map."
     else:
-        converted, discarded = False, False
-        note = (f"Assignment did not take - design is still {now}. Nothing was converted and no "
-                "history was discarded.")
+        # A failed mutation reporting ok() would be the cardinal sin - this is a refusal, not a
+        # settled state. designType still reading direct is the one signal an open Form or
+        # base-feature edit gives (both read direct and neither exposes an isEditing flag).
+        moved = _moved_sentence(before, _touch_counts(design))
+        if now == _inputs.MODE_DIRECT:
+            return error("The assignment did not take: the design still reads direct, so a Form "
+                         "or base-feature edit is open." + _design_common.OPEN_EDIT_CAVEAT + " "
+                         + moved)
+        return error(f"The assignment did not take - the design still reads {now}. {moved}")
     return ok({
         "converted": converted,
         "from": current,

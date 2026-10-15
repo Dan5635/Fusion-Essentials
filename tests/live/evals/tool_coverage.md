@@ -24,40 +24,14 @@ advances it with the CAM layer). S9 forks the template (RING-CAM) and leaves it 
 | `S6_Vise` | parametric mechanism design | model + sketch + param families (incl. the SLOT kinds and sketch_set_text with font_name - the tee-slot and the named-font vise nameplate), joint_motion_link + joint_drive (ratio -1 on real sliders), assembly_inspect_interference, the volumetric audit habit (per-body volume reads + body census), doc_save_as | a self-centering vise where ONE parameter drives BOTH jaw OCCURRENCES symmetric about center (midpoint math read fresh at two openings) plus the kinematic proof (drive one slider, both jaws mirror); ONE CONNECTED SOLID per part graded by a volumetric digest the grader re-issues |
 | `S7_Template-Skeleton` | template architecture + xref lifecycle | model_create_component (components), param + joint_create_origin (offset-EXPRESSION self-centering stock origin), doc_insert_occurrence (fixture x-ref), doc_open/activate (async, by URN), doc_get(xref_tree), doc_update_xref, design_edit_timeline (feature ATTRIBUTE tags, written then QUERIED back incl. the re: pattern form), joint tools, doc_save_as | component architecture; the stock origin FOLLOWS parametric resizes (two sizes read); the FULL xref lifecycle graded live (insert -> stale after source edit -> update -> current, versions read each step); stock gripped by the jaws |
 | `S8_CAM-Tooling` | CAM tools + setups + operations | cam_edit_tools (4 tools with holders/presets), cam_create_setup (COMPONENT selection, WCS on the stock origin), cam_create_operation (4 tool types), cam_generate + cam_get_status, cam_activate_setup, cam_save_template, doc_save | the manufacturing layer: tools built through the wire; setups select COMPONENTS (implicit consumption); all operations compute healthy; setup activation round-trip; persisted as document AND template artifact |
-| `S10_Drawing-Package` | the 2D deliverable tier | drawing_create (standard/units/strategies + the CREATE-time custom size), drawing_get (the tier's READ: sheets by export_index, sizes incl. custom_size, per-view rows), drawing_edit_sheet (add/rename), drawing_dimension (read-back honesty - values are unreadable on this platform), drawing_insert_image (scale + bounds-check + the graded off-sheet REFUSAL), drawing_export (all sheets; a sheet_range export must run FIRST, never after another export - NEW-12), view_screenshot (the artwork source) | the shop drawing package graded from drawing_get reads, tool READ-BACKS and file evidence; custom sheet 320x200 proven by read-back; off-sheet insert refused naming the extent; the package PDF lands with size evidence; respecting a tool's own hazard warning is itself graded |
+| `S10_Drawing-Package` | the 2D deliverable tier | drawing_create (standard/units/strategies + the CREATE-time custom size), drawing_get (the tier's READ: sheets by 1-based collection_index; export_index is unknown, sizes incl. custom_size, per-view rows), drawing_edit_sheet (add/rename), drawing_dimension (read-back honesty - values are unreadable on this platform), drawing_insert_image (scale + bounds-check + the graded off-sheet REFUSAL), drawing_export (all sheets; a sheet_range export must run FIRST, never after another export - NEW-12), view_screenshot (the artwork source) | the shop drawing package graded from drawing_get reads, tool READ-BACKS and file evidence; custom sheet 320x200 proven by read-back; off-sheet insert refused naming the extent; the package PDF lands with size evidence; respecting a tool's own hazard warning is itself graded |
 | `S11_Gimbal-Ring-Job` | the gyroscope's final component: a mill-turn job sequenced like a machinist's, cold and skill-less | sketch/model_revolve + bosses + holes (the outer gimbal ring), cam_create_setup x2, cam_edit_setup (mill-turn machine; the milling setup's stock from the PREVIOUS setup), cam_edit_tools (cutters by type), cam_create_operation (turning face / bore or profile; drill + boss milling), cam_select_geometry, cam_generate + cam_get_status, cam_get(include=['setups','time']), cam_reorder, cam_show_toolpath one at a time + view_screenshot, cam_post x2 (shipped turning post, numeric program; haas local) | turning FIRST and milling SECOND in the tree; the milling stock reads as rest from the previous setup; every operation cuts (non-zero time, none in the empty census), warnings listed by operation; two NC files landing with exclusions reported; the machinist's product bar in the grader notes; whether sys_get_guidance is called (diagnostic; the A/B is GUIDANCE-AB-1) |
 | `S9_Consume` | the insert-into-template dataset | doc_save_as (fork), design_delete_occurrence (placeholder), doc_insert_occurrence (model x-ref into the component), joint to a named JO across references, model_inspect (POST-SEATING), param_set (stock), assembly_inspect_interference (the saved-state validity gate), cam_generate/cam_get_status, cam_post, sim start (bonus) | the finale: template fork isolates P7; the real model seats at the stock center; STOCK SIZED FROM POST-SEATING MEASUREMENT (the reorientation trap: pre-join numbers in the arithmetic = FAIL); workholding feasibility measured, an honest UNCLAMPABLE disclosure passes; THE SAVE IS QUARANTINED (zero overlapping pairs in the saved artifact, whatever the verdict); regeneration healthy; NC posted with file evidence |
 
 Fuzzy variants: deferred; reintroduce as terse-goal controls per territory once the pipeline is
 stable.
 
-## Tools whose behavior is guaranteed by the mock suite rather than a live scenario
-
-Some paths are impractical to force in an outcome-graded cold-agent task (they need a specific
-object graph, or they are a rare branch). These are pinned by the mock unit suite instead:
-
-- **result-body read-back on the mesh + offset/trim/untrim/reverse-normal surface tools** - the
-  shared read-back the surface/mesh tools use; the mesh path needs an imported mesh fixture.
-  Pinned by `test_common.py` (the shared reader) + each tool's unit test.
-- **joint-health over a broken SUB-COMPONENT joint** - needs a nested assembly with a
-  deliberately faulted joint; grading it would use the very tools under test. Pinned by
-  `test_joint_motion_link.py` (the full joint walk).
-- **the design_export ambiguity REFUSAL and the design_get ambiguous-occurrence REFUSAL** -
-  pinned by `test_design_export.py` / `test_design_get.py`.
-- **the template-generation-mode and library-location enums** - pinned by `test__cam_templates.py` / `test_cam_apply_template.py`.
-- **the CAM setup COMPONENT-selection kind** (ambiguity refusal) - pinned by
-  `test_inputs.py::TestTargetRefList`; S8 exercises the happy path live.
-- **the design-intent auto-promote** - pinned by
-  `test_model_create_component.py::TestDesignIntentPromotion`; every multi-component scenario
-  exercises it live.
-- **derive staleness + refresh-refusal** - staging it in the pipeline would re-version the
-  immutable P4 artifact; live-verified at the tool level (doc_get derive rows, doc_update_xref's
-  honest per-reference refusal + delete-and-re-derive fallback) and pinned by the doc_get /
-  doc_update_xref unit tests.
-- **sys_request_selection** - interactive by design: it holds for a HUMAN pick, and an eval never
-  puts a human in the loop (proctor.py hard-denies it; that affordance belongs to skills a human
-  invoked). Its guards (nothing-to-select, wait bounds, single-pending) are pinned by
-  test_sys_request_selection.py; the pick path is verified owner-present at the tool level.
+Unit tests check handler logic; they do not establish Fusion behavior. Use live results for claims about behavior in Fusion.
 
 ## Running
 

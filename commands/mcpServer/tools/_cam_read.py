@@ -14,10 +14,11 @@ from ._cam_common import (EMPTY_TOOLPATH_REMEDY, _MANUAL_NC_STRATEGY, _SETUP_BLO
                           _segment, _setup_node, _walk_children, blocked_setup_records, clamp_rows,
                           counts_as_warning, first_line, get_cam, is_additive_setup,
                           is_empty_toolpath, machine_label, machine_limits, machine_spindle_max,
-                          op_primary_state, op_state_facts, operations_under, ready_verdict,
-                          resolve_cam_node, setup_blockers, setups, spindle_check, stock_mode_name,
-                          time_reading, toolpath_present_tally, validity_basis,
-                          validity_sync_miss, with_validity_clause)
+                          op_is_suppressed, op_primary_state, op_state_facts, operations_under,
+                          ready_verdict, resolve_cam_node, setup_blockers, setups, spindle_check,
+                          stock_mode_name, time_reading, toolpath_present_tally, unquote_expression,
+                          validity_basis,
+                          validity_sync_miss, validity_synced, with_validity_clause)
 
 MAP_BLURB = (
     "the per-slice READ cores behind cam_get(include=[...]) - get_cam_setups_handler, "
@@ -240,7 +241,8 @@ def get_cam_setups_handler(setup: str = "", units: str = "mm") -> dict:
     except Exception as e:
         return error(f"Could not read setups: {e}")
 
-    out = {"setup_count": len(setups), "setups": setups, "truncated": setups_truncated}
+    out = {"setup_count": len(setups), "setups": setups, "truncated": setups_truncated,
+           "validity_basis": validity_basis(), "validity_synced": validity_synced()}
     if any(r.get("stock_mode") == _PREVIOUS_SETUP_MODE for r in setups):
         out["note"] = _REST_STOCK_NOTE
     return ok(out)
@@ -254,9 +256,9 @@ _PREVIOUS_SETUP_MODE = "previous_setup"
 _REST_STOCK_UNREADABLE = "the relative box, NOT the rest stock this mode cuts from"
 
 _REST_STOCK_NOTE = (
-    "A setup at stock_mode 'previous_setup' cuts what the setup before it left - stockSolids and "
-    "stock extents do NOT describe that (see stock_extents_describe); size a clearing strategy from "
-    "the preceding setup's own operations.")
+    "A setup at stock_mode 'previous_setup' cuts what its predecessor left; stockSolids and extents "
+    "do NOT describe that (see stock_extents_describe). Size clearing strategies from the predecessor's "
+    "operations.")
 
 _GENERATE_REQUIRES = {"tool": "cam_generate", "workspace": "Manufacture"}
 # A state that never answered is not stale work: the remedy is another READ, in the workspace op
@@ -329,10 +331,10 @@ def _attach_setup_invalidation(rec, setup, cam=None):
 _SUPPRESSED_NOT_COMPARED = "suppressed_not_compared"
 
 _OPERATIONS_NOTE = (
-    "'unread' state: re-read in Manufacture, not cam_generate. 'other_nodes': base nodes with no "
-    "operation, no toolpath. 'spindle_over_machine_max': tool_spindleSpeed vs "
-    "machine_spindle_max_rpm (null if unread); a suppressed row reads spindle_check "
-    "'suppressed_not_compared'.")
+    "'unread': re-read in Manufacture, not cam_generate. 'other_nodes': base nodes, no op/toolpath. "
+    "'spindle_over_machine_max': tool_spindleSpeed vs machine_spindle_max_rpm (null = unread); "
+    "suppressed rows say spindle_check='suppressed_not_compared'. Incomplete scans withhold "
+    "readiness; cam_get_status gives uncapped op counts.")
 
 
 def get_cam_operations_handler(setup: str = "") -> dict:
@@ -359,7 +361,7 @@ def get_cam_operations_handler(setup: str = "") -> dict:
             blocked = blocked_setup_records([s])
             rec = {
             "setup": safe(lambda s=s: s.name),
-            "summary": _operations_summary(ops, blocked),   # exception-first rollup BEFORE the list
+            "summary": _operations_summary(ops, blocked, scan_complete=not ops_truncated),
             "operations": ops,
             "operations_truncated": ops_truncated,
             }
@@ -410,10 +412,8 @@ def _exception_remedies(exceptions, setup_blocked) -> str:
     return f" ({'; '.join(remedies)})" if remedies else ""
 
 
-def _operations_summary(op_records, setup_blocked=None) -> dict:
-    """Exception-first rollup of an operations list: the per-state tally, the active census, the
-    ACTIVE ops that block, and a readiness verdict gated by validity_basis and by the setup's own
-    blocked_by (`setup_blocked`, from blocked_setup_records)."""
+def _operations_summary(op_records, setup_blocked=None, scan_complete=True) -> dict:
+    """Summarize observed operation rows and gate readiness on scan and workspace validity."""
     states = {}
     exceptions = []
     active_total = 0
@@ -454,29 +454,41 @@ def _operations_summary(op_records, setup_blocked=None) -> dict:
             exceptions.append({"name": r.get("name"), "blocked_by": blocked})
 
     basis = validity_basis()
+    synced = validity_synced()
+    reported_basis = "checked" if basis == "manufacture_verified" and synced else basis
     summary = {"states": states, "active_count": active_total, "exceptions": exceptions,
-               "validity_basis": basis}
+               "observed_operation_count": len(op_records), "scan_complete": bool(scan_complete),
+               "validity_basis": reported_basis, "validity_synced": synced}
+    if setup_blocked:
+        summary["setups_blocked"] = setup_blocked
     if over_spindle:
         summary["spindle_over_machine_max_count"] = over_spindle   # active rows only; absent = none
     if empty_toolpaths:
         summary["empty_toolpath_count"] = empty_toolpaths          # active rows only; absent = none
-    if basis == "manufacture_verified":
+    if not scan_complete:
+        summary["readiness"] = (
+            f"Readiness not established: operation scan incomplete "
+            f"({len(op_records)} operation row(s) observed); use cam_get_status(target=<setup>) "
+            "for uncapped operation counts and re-read cam_get when the collection is readable. "
+            "Any setup blockers are in 'setups_blocked'.")
+    elif basis == "manufacture_verified":
         if generating:
-            summary["readiness"] = (f"{valid_active} of {active_total} active ops have valid "
-                                    f"toolpaths - {generating} operation(s) still generating; poll "
+            summary["readiness"] = (f"{valid_active} of {active_total} active operations pass "
+                                    f"the validity check - {generating} operation(s) still generating; poll "
                                     "cam_get_status before posting.")
         elif active_total and valid_active == active_total and not exceptions:
             summary["readiness"] = ready_verdict(
-                f"{active_total} of {active_total} active ops have valid toolpaths",
+                f"{active_total} of {active_total} active operations pass the validity check",
                 warned, warning_sample, setup_blocked)
         else:
-            summary["readiness"] = (f"{valid_active} of {active_total} active ops have valid "
-                                    "toolpaths - resolve the exceptions"
+            summary["readiness"] = (f"{valid_active} of {active_total} active operations pass "
+                                    "the validity check - resolve the exceptions"
                                     + _exception_remedies(exceptions, setup_blocked)
                                     + " before posting.")
     else:
         summary["readiness"] = ("op validity is only trustworthy after entering the Manufacture "
-                                "workspace - enter it (and run cam_generate) to assess post-readiness.")
+                                "workspace - enter it and re-read with cam_get; run cam_generate "
+                                "only for operations that read out_of_date or no_toolpath.")
     summary["readiness"] = with_validity_clause(summary["readiness"])
     miss = validity_sync_miss()
     if miss:
@@ -510,7 +522,7 @@ def _operations_in(setup_obj, machine_max=None, cam=None) -> tuple:
     # counted against the setup's own flat total.
     expected = counted(lambda: setup_obj.allOperations.count)
     walked = sum(1 for n in nodes if n.kind == "operation")
-    if expected is not None and walked < expected:
+    if expected is None or walked != expected:
         truncated = True
     try:
         for i, node in enumerate(n for n in nodes if n.kind == "operation"):
@@ -519,6 +531,7 @@ def _operations_in(setup_obj, machine_max=None, cam=None) -> tuple:
                 break
             operation = adsk.cam.Operation.cast(node.obj)
             if not operation:
+                truncated = True
                 continue
             ops.append(_operation_summary(operation, machine_max, node, cam))
     except Exception:
@@ -570,7 +583,7 @@ def _operation_summary(op, machine_max=None, node=None, cam=None) -> dict:
     "has_error": has_err,
     }
     # An op that generated EMPTY still reads state 'valid' beside has_toolpath true. An additive
-    # build op carries no toolpath by construction and joins the manual-NC exclusion instead.
+    # op joins the manual-NC exclusion instead: only its slice ever reads a toolpath.
     if is_empty_toolpath(facts):
         summary["empty_toolpath"] = True
     if has_warn:
@@ -790,15 +803,11 @@ _TIME_NOTE = (
     "operations_time_summed rows.")
 
 
-def _op_time_rows(cam, ops, args, factor, additive=False) -> tuple:
+def _op_time_rows(cam, ops, args, factor) -> tuple:
     """(rows, truncated, held-out ops) - one getMachiningTime call per operation carrying a valid
-    toolpath; EMPTY is named rather than timed, NONFINITE is marked rather than published, and an
-    ADDITIVE setup's ops are held out entirely - has_toolpath reads false by construction and
-    getMachiningTime raises on such an operation."""
+    toolpath; EMPTY is named rather than timed, NONFINITE is marked rather than published."""
     rows = []
     unreadable = []
-    if additive:
-        return rows, False, list(ops)
     for op in ops:
         facts = op_state_facts(op)
         if not (is_empty_toolpath(facts) or safe(lambda op=op: op.isToolpathValid, False)):
@@ -837,13 +846,16 @@ _TOTAL_UNAVAILABLE_NOTE = (
     " setup_total_unavailable is the platform's message from a whole-collection call that RAISED; "
     "that setup is out of total_machining_time_seconds, and total_excludes_setups names it.")
 
+# Said only where a row carries 'additive'.
+_ADDITIVE_TIME_NOTE = (
+    " An additive setup's operations are not timed: getMachiningTime is not called on them.")
 
-def _op_time_block(cam, ops, args, factor, additive=False) -> tuple:
+
+def _op_time_block(cam, ops, args, factor) -> tuple:
     """(the per-operation half of a setup row, the operations held out of the collection): the
     rows, their sum and how many were summed. This sum is NOT the setup total - that is one call
-    over the whole collection - and a nonfinite or additive op carries no figure, so it enters
-    neither."""
-    rows, truncated, unreadable = _op_time_rows(cam, ops, args, factor, additive=additive)
+    over the whole collection - and a nonfinite op carries no figure, so it enters neither."""
+    rows, truncated, unreadable = _op_time_rows(cam, ops, args, factor)
     timed = [r["machining_time_seconds"] for r in rows
              if isinstance(r.get("machining_time_seconds"), (int, float))]
     block = {"operations": rows, "operations_time_sum_seconds": round(sum(timed), 1),
@@ -854,8 +866,14 @@ def _op_time_block(cam, ops, args, factor, additive=False) -> tuple:
 
 
 def _errored_op_names(ops) -> list:
-    """The operations of a setup reading hasError true - present-and-empty when none do."""
-    return [safe(lambda o=o: o.name) for o in ops if safe(lambda o=o: o.hasError, False)]
+    """The names of a setup's operations reading hasError true and not suppressed."""
+    names = []
+    for o in ops or []:
+        facts = {"is_suppressed": safe(lambda o=o: o.isSuppressed, False),
+                 "operation_state": safe(lambda o=o: o.operationState)}
+        if safe(lambda o=o: o.hasError, False) and not op_is_suppressed(facts):
+            names.append(safe(lambda o=o: o.name))
+    return names
 
 
 def _per_operation_only(label, ops, suppressed, block, exc) -> dict:
@@ -918,7 +936,14 @@ def get_machining_time_handler(setup: str = "", units: str = "mm", operation=Non
             ops, suppressed = ([], 1) if is_supp else (ops_override, 0)
         else:
             ops, suppressed = _timeable_ops(obj)
-        additive = is_additive_setup(obj)
+        if is_additive_setup(obj):
+            # Classified before the toolpath gate: generating an additive op adds no figure here.
+            results.append(_tag_operation({"setup": label, "excluded_suppressed": suppressed,
+                "machining_time_seconds": None, "additive": True,
+                "total_excludes_operations": [safe(lambda o=o: o.name) for o in ops],
+                "operations": [], "operations_time_sum_seconds": 0,
+                "operations_time_summed": 0}, op_name))
+            continue
         # getMachiningTime needs at least one VALID toolpath in the target. The failure raises
         # catchably here, but through sys_execute_script it takes the whole invocation down, so
         # the precondition is checked before the call.
@@ -929,9 +954,8 @@ def get_machining_time_handler(setup: str = "", units: str = "mm", operation=Non
                          "workspace), then retry."}, op_name))
             continue
         # The per-operation pass runs FIRST: a NaN reading saturates the whole-collection figure
-        # too (measured), so it is held out and named instead - an ADDITIVE setup's ops the same
-        # way, never reaching either getMachiningTime call.
-        block, unreadable = _op_time_block(cam, ops, args, factor, additive=additive)
+        # too (measured), so it is held out and named instead.
+        block, unreadable = _op_time_block(cam, ops, args, factor)
         timed_ops = [op for op in ops if not any(op is bad for bad in unreadable)]
         held_out = [safe(lambda o=o: o.name) for o in unreadable]
         if not timed_ops:
@@ -988,13 +1012,16 @@ def get_machining_time_handler(setup: str = "", units: str = "mm", operation=Non
     # The clause rides the KEY it describes, never the exclusion list: a setup can be left out of
     # the total for three different reasons, and its own row says which.
     unavailable = any("setup_total_unavailable" in r for r in results)
+    additive_rows = any(r.get("additive") for r in results)
     payload = {
             "setup_count": len(results),
         "total_machining_time_seconds": round(grand, 1),
         "total_machining_time_hms": _hms(grand),
         "setups": results,
         "units": unit,
-    "note": _TIME_NOTE + (_TOTAL_UNAVAILABLE_NOTE if unavailable else ""),
+        "validity_synced": validity_synced(),
+    "note": (_TIME_NOTE + (_TOTAL_UNAVAILABLE_NOTE if unavailable else "")
+             + (_ADDITIVE_TIME_NOTE if additive_rows else "")),
     "assumptions": {"feed_scale_percent": feed_scale,
             "rapid_feed_cm_per_s": rapid_feed,
             "tool_change_seconds": tool_change},
@@ -1099,6 +1126,8 @@ def get_nc_programs_handler() -> dict:
             nc = ncs.item(i)
             entry = {
             "name": safe(lambda: nc.name),
+            "program_number": None,
+            "program_number_readable": False,
             "operation_count": None,
             "machine": machine_label(safe(lambda: nc.machine)),
             "post": safe(lambda: nc.postConfiguration.description) if safe(lambda: nc.postConfiguration) else None,
@@ -1114,6 +1143,9 @@ def get_nc_programs_handler() -> dict:
             unit_record = _nc_program_unit_record(safe(lambda: nc.parameters))
             if unit_record is not None:
                 entry["nc_program_unit"] = unit_record
+            number_param = safe(lambda: nc.parameters.itemByName("nc_program_name"))
+            entry["program_number"] = unquote_expression(safe(lambda: number_param.expression))
+            entry["program_number_readable"] = entry["program_number"] is not None
             params = safe(lambda: nc.postParameters)
             if params is not None:
                 try:

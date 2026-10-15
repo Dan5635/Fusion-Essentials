@@ -12,7 +12,8 @@ import adsk.fusion
 import pytest
 
 from conftest import (load_tool, make_design, install, entity_proxy, go_stale, payload,
-                      error_message, MakeComp, BRepBody, BRepFace, FakeFeature)
+                      error_message, assert_names_retained, MakeComp, BRepBody, BRepFace,
+                      FakeFeature)
 
 sdf = load_tool("surface_delete_face")
 
@@ -119,6 +120,26 @@ def test_plain_delete_reports_face_count_delta():
     assert out["bodies_consumed"] == 0
     assert feats.surfaceDeleteFaceFeatures.calls == 1
     assert feats.deleteFaceFeatures.calls == 0        # non-heal path only
+
+
+def test_an_unread_result_body_count_is_unknown_never_a_consumed_body():
+    # result_bodies reads [] off a collection that does not answer; counted as 0 that is a false
+    # "fully consumed" success, so the unread count is an error naming the feature instead.
+    body = _body("Srf1", face_count=6)
+    result = _Feature(bodies=[_body("Srf1", face_count=5)])
+    result.bodies = None
+    _wire({"F1": body.faces.item(0)}, surface_delete=_DelFeatures(result), design_type=1)
+    msg = assert_names_retained(sdf.delete_face_handler(faces=["F1"], heal=False), "DeleteFace1")
+    assert "consumed is unknown" in msg and "fully consumed" not in msg
+
+
+def test_a_result_body_that_reads_none_makes_the_consumed_count_unknown():
+    # the count reads 2 but one item reads None, so result_bodies holds 1: not one consumed body
+    body = _body("Srf1", face_count=6)
+    result = _Feature(bodies=[_body("Srf1", face_count=5), None])
+    _wire({"F1": body.faces.item(0)}, surface_delete=_DelFeatures(result), design_type=1)
+    msg = assert_names_retained(sdf.delete_face_handler(faces=["F1"], heal=False), "DeleteFace1")
+    assert "consumed is unknown" in msg
 
 
 def test_heal_routes_to_deleteFaceFeatures():

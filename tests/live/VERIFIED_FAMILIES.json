@@ -1,0 +1,4295 @@
+{
+  "bootstrap": {
+    "complete": true,
+    "executed_families": [
+      "cloud",
+      "details",
+      "fff_export",
+      "finale",
+      "hub_cam",
+      "lookup",
+      "mesh",
+      "motion",
+      "nesting",
+      "part_cam",
+      "render",
+      "resize",
+      "sheet_coupon",
+      "sheet_flange",
+      "sheet_positions",
+      "sheet_selected",
+      "showcase",
+      "sketch",
+      "small_edits",
+      "solids",
+      "surfaces",
+      "swarf_cam",
+      "vise"
+    ],
+    "families": [
+      "cloud",
+      "details",
+      "fff_export",
+      "finale",
+      "hub_cam",
+      "lookup",
+      "mesh",
+      "motion",
+      "nesting",
+      "part_cam",
+      "render",
+      "resize",
+      "sheet_coupon",
+      "sheet_flange",
+      "sheet_positions",
+      "sheet_selected",
+      "showcase",
+      "sketch",
+      "small_edits",
+      "solids",
+      "surfaces",
+      "swarf_cam",
+      "vise"
+    ],
+    "fusion_version": "2706.1.2",
+    "raw": {
+      "file": "family-evidence-5fea3d0cc80a7337eedb04aa4a35ca864b632804cadeba182d684101c0818cd1.json",
+      "sha256": "5fea3d0cc80a7337eedb04aa4a35ca864b632804cadeba182d684101c0818cd1"
+    },
+    "run_id": "nearfull1013a"
+  },
+  "bootstrap_run_id": "nearfull1013a",
+  "families": {
+    "cloud": {
+      "act_modes": [
+        [
+          "ACT 11a - CLOUD: THE DATA MODEL",
+          "narrative"
+        ],
+        [
+          "ACT 11b - CLOUD: THE SAVED DOCUMENT",
+          "narrative"
+        ],
+        [
+          "ACT 11b2 - CLOUD: LINK GUARD REVIEW",
+          "skipped(not-in-scope: cloud_link_crash_review_authorization needs asked=None measured=False)"
+        ],
+        [
+          "ACT 11c - CLOUD: THE DRAWING",
+          "narrative"
+        ],
+        [
+          "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE",
+          "narrative"
+        ],
+        [
+          "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS",
+          "narrative"
+        ],
+        [
+          "ACT 11f - CLOUD: DERIVE EDITS",
+          "narrative"
+        ],
+        [
+          "ACT 11h - CLOUD: COMPONENT COPY",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 11a - CLOUD: THE DATA MODEL",
+        "ACT 11b - CLOUD: THE SAVED DOCUMENT",
+        "ACT 11b2 - CLOUD: LINK GUARD REVIEW",
+        "ACT 11c - CLOUD: THE DRAWING",
+        "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE",
+        "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS",
+        "ACT 11f - CLOUD: DERIVE EDITS",
+        "ACT 11h - CLOUD: COMPONENT COPY"
+      ],
+      "acts_hash": "2729a343032f2ed9677500eb6cf6d8d147c2b6e11f71287dc644fe70baecf3d4",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "b2a2c0198095dbc66b049992a3d88c86aece212088f62a1728ea5c79c1e9f6aa",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "design_delete_feature",
+            "joint_create_as_built",
+            "view_switch_workspace"
+          ],
+          "covered": [
+            "doc_insert_occurrence"
+          ],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_get",
+            "cam_apply_template",
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete_template",
+            "cam_edit_operation",
+            "cam_edit_tools",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_inspect_toolpaths",
+            "cam_save_template",
+            "data_create_folder",
+            "data_delete_file",
+            "data_delete_folder",
+            "data_download_file",
+            "data_get",
+            "data_get_upload_status",
+            "data_move_file",
+            "data_upload_file",
+            "design_add_instance",
+            "design_configure",
+            "design_edit_timeline",
+            "design_get",
+            "doc_activate",
+            "doc_close",
+            "doc_copy",
+            "doc_get",
+            "doc_insert_derive",
+            "doc_new",
+            "doc_open",
+            "doc_restore_version",
+            "doc_save",
+            "doc_save_as",
+            "doc_save_milestone",
+            "doc_update_xref",
+            "drawing_add_sketch",
+            "drawing_add_symbol",
+            "drawing_create",
+            "drawing_delete_sketch",
+            "drawing_dimension",
+            "drawing_edit_revisions",
+            "drawing_edit_sheet",
+            "drawing_export",
+            "drawing_get",
+            "drawing_get_status",
+            "drawing_insert_image",
+            "drawing_update",
+            "find_geometry",
+            "model_create_component",
+            "model_edit_feature",
+            "model_extrude",
+            "model_inspect",
+            "param_add",
+            "param_get",
+            "param_set",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_get",
+            "sys_execute_script",
+            "view_screenshot",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 4,
+          "covered": 1,
+          "refusals-only": 0,
+          "self-reported": 63
+        }
+      },
+      "family": "cloud",
+      "family_run_id": "f9caaea92b62488fa8c155b4eb34e4e0",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [
+        {
+          "act": "ACT 11b2 - CLOUD: LINK GUARD REVIEW",
+          "capability": "cloud_link_crash_review_authorization",
+          "conditions": [
+            {
+              "asked": null,
+              "capability": "cloud_link_crash_review_authorization",
+              "measured": false,
+              "polarity": "needs",
+              "reason": "quarantined capability is outside admitted scope",
+              "state": "not-in-scope"
+            }
+          ],
+          "kind": "act",
+          "reason": "quarantined capability is outside admitted scope",
+          "state": "not-in-scope",
+          "tools": [
+            "data_delete_file",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_insert_occurrence",
+            "doc_new",
+            "doc_save_as",
+            "find_geometry",
+            "joint_create",
+            "joint_drive",
+            "joint_motion_link"
+          ]
+        }
+      ],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-eba786bde2b8a9d79937aa77f12377fb15a67f9f38ff8000698dd61efb71e5ae.json",
+        "sha256": "eba786bde2b8a9d79937aa77f12377fb15a67f9f38ff8000698dd61efb71e5ae"
+      },
+      "row_count": 1001,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": [
+        {
+          "reader_is_read": true,
+          "row_index": 912,
+          "targets": [
+            "doc_insert_occurrence"
+          ],
+          "tool": "assembly_get",
+          "witness": "tool:assembly_get"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 913,
+          "targets": [
+            "doc_insert_occurrence"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 915,
+          "targets": [
+            "doc_insert_occurrence"
+          ],
+          "tool": "assembly_get",
+          "witness": "tool:assembly_get"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 916,
+          "targets": [
+            "doc_insert_occurrence"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        }
+      ]
+    },
+    "details": {
+      "act_modes": [
+        [
+          "ACT 5 - DETAILS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 5 - DETAILS"
+      ],
+      "acts_hash": "2ce9cb9f35363cc8ab870b7d7b0cb3428ae315f44a4b7f814e5651b86fdaf4d1",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "ea4f5c9ef0ecb96c38d965846dd0e815aa00be3d52b0c1d16756e6add4f1f7d8",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "sketch_edit_curve",
+            "view_screenshot_multi",
+            "view_switch_workspace"
+          ],
+          "covered": [
+            "model_edit_feature"
+          ],
+          "refusals-only": [
+            "sketch_set_text"
+          ],
+          "self-reported": [
+            "assembly_capture_position",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_move",
+            "cam_find_holes",
+            "cam_find_pockets",
+            "design_activate_component",
+            "design_add_instance",
+            "design_delete_feature",
+            "design_delete_occurrence",
+            "design_edit_timeline",
+            "design_get",
+            "design_recompute",
+            "design_remove_feature",
+            "design_set_mode",
+            "design_set_name",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_create",
+            "joint_create_origin",
+            "mesh_get",
+            "mesh_to_brep",
+            "model_chamfer",
+            "model_combine",
+            "model_construction",
+            "model_create_component",
+            "model_create_rib",
+            "model_draft",
+            "model_edit_body",
+            "model_edit_extrude",
+            "model_emboss",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_measure_continuity",
+            "model_mirror",
+            "model_move",
+            "model_offset_face",
+            "model_pattern_circular",
+            "model_pattern_path",
+            "model_pattern_rectangular",
+            "model_pipe",
+            "model_replace_face",
+            "model_revolve",
+            "model_scale",
+            "model_shell",
+            "model_split",
+            "model_sweep",
+            "model_thread",
+            "param_add",
+            "param_delete",
+            "param_get",
+            "param_set",
+            "param_set_favorite",
+            "save_as_mesh",
+            "sketch_add_3d_spline",
+            "sketch_add_geometry",
+            "sketch_constrain",
+            "sketch_create",
+            "sketch_dimension",
+            "sketch_get",
+            "sketch_project",
+            "surface_extrude",
+            "surface_offset",
+            "surface_patch",
+            "sys_execute_script",
+            "view_screenshot",
+            "view_section",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 3,
+          "covered": 1,
+          "refusals-only": 1,
+          "self-reported": 74
+        }
+      },
+      "family": "details",
+      "family_run_id": "4b60f548646b4177b842af6f030c5601",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [
+        {
+          "act": "ACT 5 - DETAILS",
+          "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
+          "kind": "step",
+          "reason": "conditional control requires measured absence",
+          "state": "not-applicable",
+          "tools": [
+            "cam_find_holes"
+          ]
+        }
+      ],
+      "producer_run_ids": [
+        "1e9e6e6a770644218f0559e310282d65"
+      ],
+      "producers": [
+        {
+          "closure_hash": "ea4f5c9ef0ecb96c38d965846dd0e815aa00be3d52b0c1d16756e6add4f1f7d8",
+          "family_run_id": "4b60f548646b4177b842af6f030c5601",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 74,
+          "rows_hash": "829694266d28606f0230aaf1e99206df089c32b074ea3130d1bc8de850c7abf2",
+          "run_id": "1e9e6e6a770644218f0559e310282d65"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-c70ecdaf1d881da54cb4dc117992f527ab53c42de0f2218a07350ec848c8e8c5.json",
+        "sha256": "c70ecdaf1d881da54cb4dc117992f527ab53c42de0f2218a07350ec848c8e8c5"
+      },
+      "row_count": 3338,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": [
+        {
+          "reader_is_read": true,
+          "row_index": 1723,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1760,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1798,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1837,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1874,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1895,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1928,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1966,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 1990,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 2026,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 2069,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 2093,
+          "targets": [
+            "model_edit_feature"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        }
+      ]
+    },
+    "fff_export": {
+      "act_modes": [
+        [
+          "ACT 10c16 - CAM: FFF EXPORT",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 10c16 - CAM: FFF EXPORT"
+      ],
+      "acts_hash": "fd0d2a4c8d80b11203e240a938d3fb0b454c57ab55ddff7c344b19e441663977",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "4f416463600479344c456efc84906f4c986d37b50fc8adc6becf1bff610850e1",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "model_extrude",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "cam_create_setup",
+            "cam_export_setup",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_post",
+            "cam_show_toolpath",
+            "doc_get",
+            "sys_execute_script"
+          ]
+        },
+        "counts": {
+          "called": 8,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 9
+        }
+      },
+      "family": "fff_export",
+      "family_run_id": "6357a5121b0c4711a7489a26a5403579",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-eebf51680861066e9561860571543edd9be7546820aeebfa2b8d65baa603bbb9.json",
+        "sha256": "eebf51680861066e9561860571543edd9be7546820aeebfa2b8d65baa603bbb9"
+      },
+      "row_count": 28,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "finale": {
+      "act_modes": [
+        [
+          "FINALE",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "FINALE"
+      ],
+      "acts_hash": "b1a690b3085bd1693bd31bb122cf29906a78879338aa3a8d783a94e8d60f4562",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "9d024debe3bb706b5256195236a465033d48432cc0424f5bc555e7a9dbfcd6ec",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "doc_new"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "doc_close",
+            "doc_get",
+            "view_set",
+            "view_switch_workspace"
+          ]
+        },
+        "counts": {
+          "called": 2,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 4
+        }
+      },
+      "family": "finale",
+      "family_run_id": "b205b2bdbfe5471f9dfb825f1bb675b7",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "bc67e4e3c2534c57926f0d41f9a73086"
+      ],
+      "producers": [
+        {
+          "closure_hash": "9d024debe3bb706b5256195236a465033d48432cc0424f5bc555e7a9dbfcd6ec",
+          "family_run_id": "b205b2bdbfe5471f9dfb825f1bb675b7",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 2,
+          "rows_hash": "135710d54dbf27d35b38a59af8cdb24812b022c198baac0cb83a30f2268d1dbd",
+          "run_id": "bc67e4e3c2534c57926f0d41f9a73086"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-91c6b94d2571e3818e5e565189839b90e7b78f0ed81135f508128b863ce268a0.json",
+        "sha256": "91c6b94d2571e3818e5e565189839b90e7b78f0ed81135f508128b863ce268a0"
+      },
+      "row_count": 10,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "hub_cam": {
+      "act_modes": [
+        [
+          "ACT 8b - THE HUB",
+          "narrative"
+        ],
+        [
+          "ACT 10c4 - CAM: THE HUB JOB",
+          "narrative"
+        ],
+        [
+          "ACT 10c4b - CAM: THE TURNED PART",
+          "narrative"
+        ],
+        [
+          "ACT 10c5 - CAM: THE HUB CONTOUR",
+          "narrative"
+        ],
+        [
+          "ACT 10c6 - CAM: THE DUMP ORACLE",
+          "narrative"
+        ],
+        [
+          "ACT 10c7 - CAM: THE MILLING CENSUS",
+          "narrative"
+        ],
+        [
+          "ACT 10c8 - CAM: THE MILLING CENSUS READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c8b - CAM: THE LONG FAMILIES",
+          "narrative"
+        ],
+        [
+          "ACT 10c8c - CAM: THE LONG FAMILIES READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c8d - CAM: POCKET CLEARING FIRST",
+          "narrative"
+        ],
+        [
+          "ACT 10c8e - CAM: POCKET CLEARING READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c9 - CAM: THE TURNING CENSUS",
+          "narrative"
+        ],
+        [
+          "ACT 10c10 - CAM: THE TURNING CENSUS READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c11 - CAM: THE EXTENSION FAMILIES",
+          "narrative"
+        ],
+        [
+          "ACT 10c12 - CAM: THE EXTENSION FAMILIES READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c13 - CAM: THE ROTARY FAMILIES",
+          "narrative"
+        ],
+        [
+          "ACT 10c14 - CAM: THE ROTARY FAMILIES READ",
+          "narrative"
+        ],
+        [
+          "ACT 10c15 - CAM: THE ADDITIVE BUILD",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 8b - THE HUB",
+        "ACT 10c4 - CAM: THE HUB JOB",
+        "ACT 10c4b - CAM: THE TURNED PART",
+        "ACT 10c5 - CAM: THE HUB CONTOUR",
+        "ACT 10c6 - CAM: THE DUMP ORACLE",
+        "ACT 10c7 - CAM: THE MILLING CENSUS",
+        "ACT 10c8 - CAM: THE MILLING CENSUS READ",
+        "ACT 10c8b - CAM: THE LONG FAMILIES",
+        "ACT 10c8c - CAM: THE LONG FAMILIES READ",
+        "ACT 10c8d - CAM: POCKET CLEARING FIRST",
+        "ACT 10c8e - CAM: POCKET CLEARING READ",
+        "ACT 10c9 - CAM: THE TURNING CENSUS",
+        "ACT 10c10 - CAM: THE TURNING CENSUS READ",
+        "ACT 10c11 - CAM: THE EXTENSION FAMILIES",
+        "ACT 10c12 - CAM: THE EXTENSION FAMILIES READ",
+        "ACT 10c13 - CAM: THE ROTARY FAMILIES",
+        "ACT 10c14 - CAM: THE ROTARY FAMILIES READ",
+        "ACT 10c15 - CAM: THE ADDITIVE BUILD"
+      ],
+      "acts_hash": "505cd3149a18f7b6bdccf80c86b23216daa6023b8c73037422ac72e7090312a4",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "sketch_constrain",
+            "sketch_dimension",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "cam_compare_operations",
+            "cam_create_machine",
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete",
+            "cam_delete_machine",
+            "cam_edit_operation",
+            "cam_edit_setup",
+            "cam_edit_tools",
+            "cam_export_setup",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_inspect_toolpaths",
+            "cam_post",
+            "cam_reorder",
+            "cam_select_geometry",
+            "cam_show_toolpath",
+            "design_get",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_create_origin",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_revolve",
+            "model_thread",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_get",
+            "sketch_set_text",
+            "sys_execute_script",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 4,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 40
+        }
+      },
+      "family": "hub_cam",
+      "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [
+        {
+          "act": "ACT 10c7 - CAM: THE MILLING CENSUS",
+          "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
+          "kind": "step",
+          "reason": "conditional control requires measured absence",
+          "state": "not-applicable",
+          "tools": [
+            "cam_create_operation"
+          ]
+        },
+        {
+          "act": "ACT 10c8 - CAM: THE MILLING CENSUS READ",
+          "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
+          "kind": "step",
+          "reason": "conditional control requires measured absence",
+          "state": "not-applicable",
+          "tools": [
+            "cam_get"
+          ]
+        }
+      ],
+      "producer_run_ids": [
+        "0fc3e7d8845b42c49f079e64c3c3e278",
+        "5feab5cde41c4c65a77766e723092a8d",
+        "8aa3776a2769467b98355c962494437f",
+        "a2b6248f023344eebabbb85b38cc8602"
+      ],
+      "producers": [
+        {
+          "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+          "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 3,
+          "rows_hash": "e01b4c6e1d00ad0437394fabe2203af8feb9f3d9cd9f1cb07be060aa12520d19",
+          "run_id": "0fc3e7d8845b42c49f079e64c3c3e278"
+        },
+        {
+          "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+          "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
+          "fusion_version": "2706.1.2",
+          "phase": "before ACT 10c4 - CAM: THE HUB JOB",
+          "row_count": 1,
+          "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
+          "run_id": "5feab5cde41c4c65a77766e723092a8d"
+        },
+        {
+          "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+          "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
+          "fusion_version": "2706.1.2",
+          "phase": "before ACT 10c4b - CAM: THE TURNED PART",
+          "row_count": 1,
+          "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
+          "run_id": "8aa3776a2769467b98355c962494437f"
+        },
+        {
+          "closure_hash": "483abb0d116c9b72934afd1dcdfa0541e4b25cbfbdd2f947b449aaab8f9f619b",
+          "family_run_id": "245e332f657f4885a5e60ea02cadb4a5",
+          "fusion_version": "2706.1.2",
+          "phase": "before ACT 10c15 - CAM: THE ADDITIVE BUILD",
+          "row_count": 95,
+          "rows_hash": "299d79060cd7ed565c018fd875da13b84d76328e17886d60e01a8bc55ee69be2",
+          "run_id": "a2b6248f023344eebabbb85b38cc8602"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-b66bb756129c9bdf729f788644ed7ba4776a254c5b4030e68d2faf51d1305a82.json",
+        "sha256": "b66bb756129c9bdf729f788644ed7ba4776a254c5b4030e68d2faf51d1305a82"
+      },
+      "row_count": 590,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "lookup": {
+      "act_modes": [
+        [
+          "ACT 14 - LOOKUP TARGETING",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 14 - LOOKUP TARGETING"
+      ],
+      "acts_hash": "7483473e6685571c4c1c2b013972d96dabc23ab585f313d307b08c2b02e09491",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "c6c45f5d3ba6581250d923f64c5131714f2de763976fa8d3505b1512681e9442",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_edit_tools",
+            "doc_get",
+            "model_create_component",
+            "model_extrude",
+            "sys_execute_script"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 7
+        }
+      },
+      "family": "lookup",
+      "family_run_id": "14173d41d60c4dc28b9f9809a56e00b0",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "4b4f9c9ed402475aaa573b3694fd8941"
+      ],
+      "producers": [
+        {
+          "closure_hash": "c6c45f5d3ba6581250d923f64c5131714f2de763976fa8d3505b1512681e9442",
+          "family_run_id": "14173d41d60c4dc28b9f9809a56e00b0",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 4,
+          "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
+          "run_id": "4b4f9c9ed402475aaa573b3694fd8941"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-8d9cc3fcc8ba19eedfbc73e50c54b8581434369a19b3f028f77e555c77887c84.json",
+        "sha256": "8d9cc3fcc8ba19eedfbc73e50c54b8581434369a19b3f028f77e555c77887c84"
+      },
+      "row_count": 28,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "mesh": {
+      "act_modes": [
+        [
+          "ACT 4 - MESH",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 4 - MESH"
+      ],
+      "acts_hash": "1d5f65c07ad27e8944a33978b1a7b8904db90186f76b0fde0f21f5d6ab48ab77",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "9a13a7c2df4a43d17868bbe9fc47dcd35411a979c2b2b205ca765baeb26b9e5a",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [
+            "model_base_feature"
+          ],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_capture_position",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_move",
+            "design_add_instance",
+            "design_edit_reference_image",
+            "design_get",
+            "design_set_name",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "form_create",
+            "form_edit",
+            "form_get",
+            "mesh_combine",
+            "mesh_delete",
+            "mesh_export",
+            "mesh_find",
+            "mesh_generate_face_groups",
+            "mesh_get",
+            "mesh_insert",
+            "mesh_plane_cut",
+            "mesh_reduce",
+            "mesh_remesh",
+            "mesh_repair",
+            "mesh_reverse_normal",
+            "mesh_separate",
+            "mesh_shell",
+            "mesh_smooth",
+            "mesh_to_brep",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "model_move",
+            "save_as_mesh",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 5,
+          "covered": 1,
+          "refusals-only": 0,
+          "self-reported": 40
+        }
+      },
+      "family": "mesh",
+      "family_run_id": "6afcfccf52f548c4b3ade602663127ed",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-072fd0b5129f4dfc75de318d0fde0c38f37d45415d20efcb45e87ce00f3ac24f.json",
+        "sha256": "072fd0b5129f4dfc75de318d0fde0c38f37d45415d20efcb45e87ce00f3ac24f"
+      },
+      "row_count": 399,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": [
+        {
+          "reader_is_read": true,
+          "row_index": 388,
+          "targets": [
+            "model_base_feature"
+          ],
+          "tool": "design_get",
+          "witness": "tool:design_get"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 390,
+          "targets": [
+            "model_base_feature"
+          ],
+          "tool": "design_get",
+          "witness": "tool:design_get"
+        },
+        {
+          "reader_is_read": true,
+          "row_index": 392,
+          "targets": [
+            "model_base_feature"
+          ],
+          "tool": "design_get",
+          "witness": "tool:design_get"
+        }
+      ]
+    },
+    "motion": {
+      "act_modes": [
+        [
+          "ACT 7b - MOTION BENCH",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 7b - MOTION BENCH"
+      ],
+      "acts_hash": "3e82942108d2b7f93e4022b07527557463d21b6fe0006fe24404ca445ad6390d",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "8c85fb171d236121568495730ef243cb487c31e916183af4b8833e6ce0629731",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "appearance_set",
+            "design_activate_component",
+            "design_delete_feature",
+            "design_delete_occurrence",
+            "doc_activate",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_get",
+            "surface_revolve",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_capture_position",
+            "assembly_constrain",
+            "assembly_edit_contacts",
+            "assembly_edit_relations",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_inspect_interference",
+            "assembly_move",
+            "assembly_rigid_group",
+            "design_add_instance",
+            "design_edit_timeline",
+            "design_get",
+            "design_move_occurrence",
+            "design_recompute",
+            "design_set_mode",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_at_geometry",
+            "joint_create",
+            "joint_create_as_built",
+            "joint_create_origin",
+            "joint_drive",
+            "joint_edit",
+            "joint_motion_link",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "model_pattern_circular",
+            "model_pattern_path",
+            "model_revolve",
+            "param_add",
+            "param_set",
+            "surface_fill",
+            "sys_execute_script",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 11,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 39
+        }
+      },
+      "family": "motion",
+      "family_run_id": "fd3f6705428140ab865da8db3807547e",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-43df1049c73892976f4bb0d74b71469d1350a1e89f7532986468803f6c18c810.json",
+        "sha256": "43df1049c73892976f4bb0d74b71469d1350a1e89f7532986468803f6c18c810"
+      },
+      "row_count": 1005,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "nesting": {
+      "act_modes": [
+        [
+          "ACT 6b - NESTING",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 6b - NESTING"
+      ],
+      "acts_hash": "0edc120cdf62352554c6fdc1b2830ab0eaec26ca086094b46663fb79bcf440b9",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "8fd684c3a62ac0bf11ee6acab9773d77fdb79638b6b4884aa05612f36fcde766",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "design_delete_feature",
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_ground",
+            "design_add_instance",
+            "doc_get",
+            "model_arrange",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "sketch_add_geometry",
+            "sketch_move",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 7,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 10
+        }
+      },
+      "family": "nesting",
+      "family_run_id": "23bbdcc2284149f398b6bbe919748092",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [
+        {
+          "act": "ACT 6b - NESTING",
+          "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
+          "kind": "step",
+          "reason": "conditional control requires measured absence",
+          "state": "not-applicable",
+          "tools": [
+            "model_arrange"
+          ]
+        }
+      ],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-4794431b44f39542bb602e637abe252be9706c9fcb435480a0d249da215be64b.json",
+        "sha256": "4794431b44f39542bb602e637abe252be9706c9fcb435480a0d249da215be64b"
+      },
+      "row_count": 45,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "part_cam": {
+      "act_modes": [
+        [
+          "ACT 10a - CAM: JOB + GENERATE",
+          "narrative"
+        ],
+        [
+          "ACT 10b - CAM: DELIVERABLES",
+          "narrative"
+        ],
+        [
+          "ACT 10b1 - CAM: TEMPLATE MODES",
+          "narrative"
+        ],
+        [
+          "ACT 10b1b - CAM: TEMPLATE CLEANUP",
+          "narrative"
+        ],
+        [
+          "ACT 10d - CAM: THE SECOND SETUP",
+          "narrative"
+        ],
+        [
+          "ACT 10e - CAM: MULTI-SETUP POST",
+          "narrative"
+        ],
+        [
+          "ACT 10f - CAM: THE TREE LEFT BEHIND",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 10a - CAM: JOB + GENERATE",
+        "ACT 10b - CAM: DELIVERABLES",
+        "ACT 10b1 - CAM: TEMPLATE MODES",
+        "ACT 10b1b - CAM: TEMPLATE CLEANUP",
+        "ACT 10d - CAM: THE SECOND SETUP",
+        "ACT 10e - CAM: MULTI-SETUP POST",
+        "ACT 10f - CAM: THE TREE LEFT BEHIND"
+      ],
+      "acts_hash": "6a505c3eee398a258b0e8f3f45b137f22f7b099314c6a8a7bec721c3965d0cee",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "e90317ae240301924b9b28b4c0d0d1ca58b13296513a4dcc7a76c162b53daeb2",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "sketch_create",
+            "sketch_dimension",
+            "view_screenshot"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "appearance_set",
+            "cam_activate_setup",
+            "cam_apply_template",
+            "cam_compare_operations",
+            "cam_create_machine",
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete",
+            "cam_delete_machine",
+            "cam_delete_template",
+            "cam_edit_folders",
+            "cam_edit_operation",
+            "cam_edit_setup",
+            "cam_edit_tools",
+            "cam_find_holes",
+            "cam_find_pockets",
+            "cam_generate",
+            "cam_generate_setup_sheet",
+            "cam_get",
+            "cam_get_status",
+            "cam_inspect_toolpaths",
+            "cam_post",
+            "cam_reorder",
+            "cam_save_template",
+            "cam_select_geometry",
+            "cam_set_nc_comment",
+            "cam_show_toolpath",
+            "design_activate_component",
+            "design_export",
+            "design_get",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_insert_import",
+            "doc_new",
+            "find_geometry",
+            "joint_create_origin",
+            "model_chamfer",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "param_add",
+            "param_get",
+            "param_set",
+            "param_set_favorite",
+            "sketch_add_geometry",
+            "sketch_get",
+            "sys_execute_script",
+            "view_set",
+            "view_switch_workspace",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 3,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 54
+        }
+      },
+      "family": "part_cam",
+      "family_run_id": "926ba4442a0545de9d9b319fad3c2097",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [
+        {
+          "act": "ACT 10a - CAM: JOB + GENERATE",
+          "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
+          "kind": "fixture",
+          "reason": "conditional control requires measured absence",
+          "state": "not-applicable",
+          "tools": [
+            "cam_find_holes"
+          ]
+        }
+      ],
+      "producer_run_ids": [
+        "938966e4a5884624b8ae3bee0ad2fd65",
+        "46dca404717e4bf299108b02ee6d05ee"
+      ],
+      "producers": [
+        {
+          "closure_hash": "e90317ae240301924b9b28b4c0d0d1ca58b13296513a4dcc7a76c162b53daeb2",
+          "family_run_id": "926ba4442a0545de9d9b319fad3c2097",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 104,
+          "rows_hash": "ad51edfe6ccf5501e469a80b7106f44a1813330b41e0803b487c799b7b9dd61f",
+          "run_id": "938966e4a5884624b8ae3bee0ad2fd65"
+        },
+        {
+          "closure_hash": "e90317ae240301924b9b28b4c0d0d1ca58b13296513a4dcc7a76c162b53daeb2",
+          "family_run_id": "926ba4442a0545de9d9b319fad3c2097",
+          "fusion_version": "2706.1.2",
+          "phase": "before ACT 10e - CAM: MULTI-SETUP POST",
+          "row_count": 108,
+          "rows_hash": "dc629f079651d7b024a545ee65f0533e377bddd53eb2e62d385971622ebe9146",
+          "run_id": "46dca404717e4bf299108b02ee6d05ee"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-4edcb870a22e8d572117adfc1587a2ef688cf1dad93c485b8886e7f0f5882a73.json",
+        "sha256": "4edcb870a22e8d572117adfc1587a2ef688cf1dad93c485b8886e7f0f5882a73"
+      },
+      "row_count": 856,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "render": {
+      "act_modes": [
+        [
+          "ACT 15 - RENDER: LOCAL START",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: LOCAL JPEG",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: LOCAL TIFF",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: LOCAL NAMED",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: LOCAL TRANSPARENT",
+          "narrative"
+        ],
+        [
+          "ACT 15 - RENDER: SCENE + CANVAS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 15 - RENDER: LOCAL START",
+        "ACT 15 - RENDER: LOCAL JPEG",
+        "ACT 15 - RENDER: LOCAL TIFF",
+        "ACT 15 - RENDER: LOCAL NAMED",
+        "ACT 15 - RENDER: LOCAL TRANSPARENT",
+        "ACT 15 - RENDER: SCENE + CANVAS"
+      ],
+      "acts_hash": "4c7b9e6cd088efeaf03fde0ee6823bf9e3e4fab2d8dd3d4899a8e6796dc7c576",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "360d81509df5a96cfe28f534467e1d4117ebf12e3568b5cc61b8e1d1ab9f69e9",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_set"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "model_create_component",
+            "model_extrude",
+            "render_create",
+            "render_edit",
+            "render_get",
+            "view_switch_workspace"
+          ]
+        },
+        "counts": {
+          "called": 3,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 10
+        }
+      },
+      "family": "render",
+      "family_run_id": "267456c3f7fc4d29a315e6b27ecfc1bc",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "dbac56e052c2474bb44de68afe2ef5a2"
+      ],
+      "producers": [
+        {
+          "closure_hash": "360d81509df5a96cfe28f534467e1d4117ebf12e3568b5cc61b8e1d1ab9f69e9",
+          "family_run_id": "267456c3f7fc4d29a315e6b27ecfc1bc",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 4,
+          "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
+          "run_id": "dbac56e052c2474bb44de68afe2ef5a2"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-a0e52680e524ab8e4e05525b63d8050d23b11187b87e406e138a006493c80d78.json",
+        "sha256": "a0e52680e524ab8e4e05525b63d8050d23b11187b87e406e138a006493c80d78"
+      },
+      "row_count": 96,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "resize": {
+      "act_modes": [
+        [
+          "ACT 6 - RESIZE",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 6 - RESIZE"
+      ],
+      "acts_hash": "fa2682462d01b9f6970ab6167881c5d3d34d58b7b6647264bbb8bba168bb4590",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "7c1cc71639ec066f61eff7aa1876495af95f19343d2025829c19f961b43aa196",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "sketch_create",
+            "sketch_dimension",
+            "sketch_get",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_get",
+            "assembly_inspect_interference",
+            "design_activate_component",
+            "design_add_instance",
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_get",
+            "design_recompute",
+            "design_set_name",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_create_origin",
+            "model_chamfer",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_pattern_rectangular",
+            "model_pipe",
+            "param_add",
+            "param_delete",
+            "param_get",
+            "param_set",
+            "param_set_favorite",
+            "sketch_add_3d_spline",
+            "sketch_add_geometry",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 31
+        }
+      },
+      "family": "resize",
+      "family_run_id": "385e36aaf45e4dd6b24654f7930b2987",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "65ae33b4a13545bd83417214ea9ecb0b"
+      ],
+      "producers": [
+        {
+          "closure_hash": "7c1cc71639ec066f61eff7aa1876495af95f19343d2025829c19f961b43aa196",
+          "family_run_id": "385e36aaf45e4dd6b24654f7930b2987",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 71,
+          "rows_hash": "ded6ed4d6ba8c07c3af9dbd12fbafa5414bd39d09554e840ebe71ff09cfa92c7",
+          "run_id": "65ae33b4a13545bd83417214ea9ecb0b"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-e720734e22bfa8837a1b482364aac714c156650f18783d8bb804d4ac3ecf58c4.json",
+        "sha256": "e720734e22bfa8837a1b482364aac714c156650f18783d8bb804d4ac3ecf58c4"
+      },
+      "row_count": 226,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sheet_coupon": {
+      "act_modes": [
+        [
+          "ACT 12 - SHEET METAL COUPON",
+          "narrative"
+        ],
+        [
+          "ACT 12b - SHEET METAL LASER OUTPUT",
+          "narrative"
+        ],
+        [
+          "ACT 12b1 - SHEET METAL SOURCE UPDATE",
+          "narrative"
+        ],
+        [
+          "ACT 12b2 - SHEET METAL CAM RESTORE",
+          "narrative"
+        ],
+        [
+          "ACT 12c - SHEET METAL DRAWING",
+          "narrative"
+        ],
+        [
+          "ACT 12d - SHEET METAL CLEANUP",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 12 - SHEET METAL COUPON",
+        "ACT 12b - SHEET METAL LASER OUTPUT",
+        "ACT 12b1 - SHEET METAL SOURCE UPDATE",
+        "ACT 12b2 - SHEET METAL CAM RESTORE",
+        "ACT 12c - SHEET METAL DRAWING",
+        "ACT 12d - SHEET METAL CLEANUP"
+      ],
+      "acts_hash": "227bd099b5142075e0493bece3334f72f3732603d555fc5ca48f3ceeec4faa9f",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "7278f79f337d5c197f00a9a26aabed93368bdfa6be08b1470f96c360f8cb8ac1",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "sheet_create_flange",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [
+            "view_screenshot"
+          ],
+          "self-reported": [
+            "cam_apply_template",
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete",
+            "cam_delete_template",
+            "cam_edit_setup",
+            "cam_edit_tools",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_inspect_toolpaths",
+            "cam_post",
+            "cam_save_template",
+            "cam_select_geometry",
+            "cam_show_toolpath",
+            "data_get",
+            "design_delete_occurrence",
+            "design_export",
+            "design_get",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "doc_open",
+            "doc_save",
+            "doc_save_as",
+            "drawing_create",
+            "drawing_edit_sheet",
+            "drawing_export",
+            "drawing_get",
+            "drawing_get_status",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "param_set",
+            "sheet_convert",
+            "sheet_create_flat_pattern",
+            "sheet_create_fold",
+            "sheet_create_refold",
+            "sheet_create_unfold",
+            "sheet_edit_rule",
+            "sheet_get",
+            "sketch_dimension",
+            "sketch_get",
+            "sys_execute_script",
+            "sys_get_guidance",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 5,
+          "covered": 0,
+          "refusals-only": 1,
+          "self-reported": 47
+        }
+      },
+      "family": "sheet_coupon",
+      "family_run_id": "a7fc42e247194445996120a7e4a8ad82",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-ea429e94d458e76020f2bffae9f1aeb3c447c0b8d706c0f1d4644b30cf3d48d0.json",
+        "sha256": "ea429e94d458e76020f2bffae9f1aeb3c447c0b8d706c0f1d4644b30cf3d48d0"
+      },
+      "row_count": 224,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sheet_flange": {
+      "act_modes": [
+        [
+          "ACT 12g - SHEET METAL FLANGE FAMILY",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 12g - SHEET METAL FLANGE FAMILY"
+      ],
+      "acts_hash": "555befef6644d0f9e6d6071ba43417c73f57479277af96e36307dbda92bbc088",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "95102ebdd5c80063ef1aaf03dd0b08fd0fe41ab47ef4116a0bf4d4ad4b23750e",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "model_construction",
+            "model_fillet",
+            "model_shell",
+            "param_set",
+            "sketch_add_geometry",
+            "sketch_create"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "design_edit_plastic_rule",
+            "design_edit_timeline",
+            "design_get",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "model_create_component",
+            "model_edit_feature",
+            "model_extrude",
+            "model_inspect",
+            "param_add",
+            "sheet_convert",
+            "sheet_create_flange",
+            "sheet_create_flat_pattern",
+            "sheet_create_hem",
+            "sheet_create_join_by_bend",
+            "sheet_create_refold",
+            "sheet_create_rip",
+            "sheet_create_unfold",
+            "sheet_edit_rule",
+            "sheet_get",
+            "sketch_get",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 7,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 26
+        }
+      },
+      "family": "sheet_flange",
+      "family_run_id": "5df2549700544d7aa4918f687296b178",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-24f04aa088864fd4d2e1aeec461df1ba47df8e1655e514dccf89a98ba4904a29.json",
+        "sha256": "24f04aa088864fd4d2e1aeec461df1ba47df8e1655e514dccf89a98ba4904a29"
+      },
+      "row_count": 423,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sheet_positions": {
+      "act_modes": [
+        [
+          "ACT 12f - SHEET METAL FOLD POSITIONS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 12f - SHEET METAL FOLD POSITIONS"
+      ],
+      "acts_hash": "a531e30034585f68ddb6fea98bed08a1225b4c3430910b3ad932221f5521243f",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "5f5ef696119bf599abb4c8449ce0612934fe65cded65d8ff5aa71edc1aa4de0e",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "doc_activate",
+            "model_fillet",
+            "sheet_edit_rule",
+            "sketch_add_geometry",
+            "sketch_create"
+          ],
+          "covered": [],
+          "refusals-only": [
+            "sheet_create_hem"
+          ],
+          "self-reported": [
+            "design_get",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "sheet_convert",
+            "sheet_create_flat_pattern",
+            "sheet_create_fold",
+            "sheet_get",
+            "sketch_get",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 0,
+          "refusals-only": 1,
+          "self-reported": 15
+        }
+      },
+      "family": "sheet_positions",
+      "family_run_id": "4471a5b0b2694c55b7967988bc4e5f9a",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-dd2b0c54f18846dda9fbf82ba5fe072560f42708322de748edf9911f97027274.json",
+        "sha256": "dd2b0c54f18846dda9fbf82ba5fe072560f42708322de748edf9911f97027274"
+      },
+      "row_count": 132,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sheet_selected": {
+      "act_modes": [
+        [
+          "ACT 12e - SHEET METAL SELECTED BEND",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 12e - SHEET METAL SELECTED BEND"
+      ],
+      "acts_hash": "d4b575460bdca8b239e01e261cc849e86d9936e6d35a231fbbad3c60b1dccca7",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "f38d594f7835f36d5a9940c9ded79d830c62bf7cfc2b5c17ac8ad38d8756b2c9",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "doc_activate",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "assembly_get",
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_get",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "sheet_convert",
+            "sheet_create_flange",
+            "sheet_create_flat_pattern",
+            "sheet_create_fold",
+            "sheet_create_refold",
+            "sheet_create_unfold",
+            "sheet_edit_rule",
+            "sheet_get",
+            "sketch_get",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 5,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 22
+        }
+      },
+      "family": "sheet_selected",
+      "family_run_id": "cce9405ad08349bd8b5213b2207034fb",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-b2cd587109342d8a1c37fb57fe811049476a48f9665d9b87b1f94f89768d1bb6.json",
+        "sha256": "b2cd587109342d8a1c37fb57fe811049476a48f9665d9b87b1f94f89768d1bb6"
+      },
+      "row_count": 241,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "showcase": {
+      "act_modes": [
+        [
+          "ACT 9 - THE SHOWCASE",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 9 - THE SHOWCASE"
+      ],
+      "acts_hash": "e030e582feb410b8632256bb424679a6b800c39103b4a6c5e428f3f73fe0d0cb",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "7d2635f32f5b2ed01e07e87fe7f5dc0784474232c98761388e9f33ada2ea8ee7",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_recompute",
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_create",
+            "sketch_dimension",
+            "surface_revolve",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [
+            "drawing_create",
+            "param_set"
+          ],
+          "self-reported": [
+            "appearance_set",
+            "assembly_capture_position",
+            "assembly_constrain",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_rigid_group",
+            "design_activate_component",
+            "design_export",
+            "design_get",
+            "design_set_name",
+            "doc_get",
+            "doc_insert_import",
+            "find_geometry",
+            "joint_at_geometry",
+            "joint_create",
+            "joint_create_as_built",
+            "joint_create_origin",
+            "joint_drive",
+            "joint_edit",
+            "joint_motion_link",
+            "model_chamfer",
+            "model_construction",
+            "model_create_component",
+            "model_draft",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_measure_between",
+            "model_mirror",
+            "model_pattern_circular",
+            "model_pattern_rectangular",
+            "model_revolve",
+            "param_add",
+            "param_get",
+            "param_set_favorite",
+            "sketch_add_geometry",
+            "sketch_get",
+            "surface_fill",
+            "view_screenshot",
+            "view_screenshot_multi",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 8,
+          "covered": 0,
+          "refusals-only": 2,
+          "self-reported": 43
+        }
+      },
+      "family": "showcase",
+      "family_run_id": "6e679ec0b9784c18a8e8d57956343681",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "2be19faa36084f789c351810ec088a39"
+      ],
+      "producers": [
+        {
+          "closure_hash": "7d2635f32f5b2ed01e07e87fe7f5dc0784474232c98761388e9f33ada2ea8ee7",
+          "family_run_id": "6e679ec0b9784c18a8e8d57956343681",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 197,
+          "rows_hash": "75531d880d52978a04fe20a6f4a6318f47f46a4a94ffc863624d186a290560db",
+          "run_id": "2be19faa36084f789c351810ec088a39"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-f9d321041807c60b83d911335403cdebe2aae387fc0aeb75a9dd67d632dd8757.json",
+        "sha256": "f9d321041807c60b83d911335403cdebe2aae387fc0aeb75a9dd67d632dd8757"
+      },
+      "row_count": 341,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "sketch": {
+      "act_modes": [
+        [
+          "ACT 0 - OVERTURE",
+          "narrative"
+        ],
+        [
+          "ACT 1 - SKETCH + PARAMETERS",
+          "narrative"
+        ],
+        [
+          "ACT 1b - SKETCH TOOLS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 0 - OVERTURE",
+        "ACT 1 - SKETCH + PARAMETERS",
+        "ACT 1b - SKETCH TOOLS"
+      ],
+      "acts_hash": "0ba81069df81f573b84c36f01ee76492129681d800a25652109391747e0b3e15",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "ca599f2b7fa834bf023bda7804ac0d17b009eca5bd90afd3adcde7b72dd222f5",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_recompute",
+            "view_screenshot"
+          ],
+          "covered": [],
+          "refusals-only": [
+            "assembly_constrain",
+            "cam_post",
+            "form_create",
+            "form_get",
+            "pmi_create",
+            "sys_get_selection"
+          ],
+          "self-reported": [
+            "assembly_get",
+            "design_activate_component",
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_export",
+            "design_get",
+            "design_set_mode",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_insert_import",
+            "doc_new",
+            "find_geometry",
+            "model_base_feature",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "param_add",
+            "param_delete",
+            "param_get",
+            "param_set",
+            "param_set_favorite",
+            "sheet_create_flange",
+            "sketch_add_3d_line",
+            "sketch_add_geometry",
+            "sketch_constrain",
+            "sketch_copy",
+            "sketch_create",
+            "sketch_delete_entity",
+            "sketch_dimension",
+            "sketch_edit",
+            "sketch_edit_curve",
+            "sketch_get",
+            "sketch_insert_svg",
+            "sketch_move",
+            "sketch_project",
+            "sketch_set_text",
+            "sys_capability_map",
+            "sys_execute_script",
+            "sys_find_tool",
+            "sys_get_api_doc",
+            "sys_get_guidance",
+            "sys_get_preferences",
+            "sys_set_preferences",
+            "view_list_workspaces",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 2,
+          "covered": 0,
+          "refusals-only": 6,
+          "self-reported": 48
+        }
+      },
+      "family": "sketch",
+      "family_run_id": "bf43b7dc67a94c15871cee600c7c02cc",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-baf5ff5071025ab0868f3ef8a6d914dbee777be27f591c654f2794876a73dce9.json",
+        "sha256": "baf5ff5071025ab0868f3ef8a6d914dbee777be27f591c654f2794876a73dce9"
+      },
+      "row_count": 1826,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "small_edits": {
+      "act_modes": [
+        [
+          "ACT 13 - SMALL EDIT SAFETY",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 13 - SMALL EDIT SAFETY"
+      ],
+      "acts_hash": "e06417db4f7164a2315c13a57a88283781dafa5dc6dae3aa31bbd6416fe3c828",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "7d7c55b603036b3268366761fa4db14395a20ab2a786853e56575ae1de5e1de1",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_set",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "appearance_set",
+            "design_get",
+            "design_set_metadata",
+            "doc_get",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_inspect",
+            "param_add",
+            "param_delete",
+            "param_get",
+            "sys_execute_script"
+          ]
+        },
+        "counts": {
+          "called": 8,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 12
+        }
+      },
+      "family": "small_edits",
+      "family_run_id": "39c598721f344b1fbae110f35bd72533",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "b8485fdd5070487cb24366961b249511"
+      ],
+      "producers": [
+        {
+          "closure_hash": "7d7c55b603036b3268366761fa4db14395a20ab2a786853e56575ae1de5e1de1",
+          "family_run_id": "39c598721f344b1fbae110f35bd72533",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 4,
+          "rows_hash": "e6f8c5642822b6a19a2e3c0ffb57cd1aa8d415bf4ec7111d2bcbd0fd3402b6dd",
+          "run_id": "b8485fdd5070487cb24366961b249511"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-24b0befa2ae1ecbf9c8c1836b192bc2d3ba3ed1c04707b1902621e6c7044fe90.json",
+        "sha256": "24b0befa2ae1ecbf9c8c1836b192bc2d3ba3ed1c04707b1902621e6c7044fe90"
+      },
+      "row_count": 70,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "solids": {
+      "act_modes": [
+        [
+          "ACT 2 - SOLIDS",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 2 - SOLIDS"
+      ],
+      "acts_hash": "803f3f3ea52399d0201652dde73e4012834109630c711f3c29142fab6baf831e",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "35bd9401a052fb813da0bce66c7ee53ce723250f494a3b89df5bb1e185775cb0",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "appearance_set",
+            "param_set",
+            "sketch_add_3d_line",
+            "sketch_dimension",
+            "surface_offset",
+            "view_switch_workspace"
+          ],
+          "covered": [
+            "model_pattern_rectangular"
+          ],
+          "refusals-only": [
+            "sketch_edit_curve"
+          ],
+          "self-reported": [
+            "assembly_capture_position",
+            "assembly_get",
+            "assembly_move",
+            "cam_get",
+            "design_activate_component",
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_get",
+            "design_set_metadata",
+            "design_set_name",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "joint_create_origin",
+            "model_chamfer",
+            "model_combine",
+            "model_construction",
+            "model_create_component",
+            "model_draft",
+            "model_edit_extrude",
+            "model_edit_loft",
+            "model_edit_sweep",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_loft",
+            "model_measure_between",
+            "model_measure_continuity",
+            "model_measure_relation",
+            "model_mirror",
+            "model_move",
+            "model_offset_face",
+            "model_pattern_circular",
+            "model_pattern_path",
+            "model_replace_face",
+            "model_revolve",
+            "model_set_material",
+            "model_sweep",
+            "param_add",
+            "param_get",
+            "param_set_favorite",
+            "pmi_create",
+            "pmi_delete",
+            "pmi_edit",
+            "pmi_get",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_get",
+            "sketch_project",
+            "surface_extrude",
+            "sys_execute_script",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 6,
+          "covered": 1,
+          "refusals-only": 1,
+          "self-reported": 56
+        }
+      },
+      "family": "solids",
+      "family_run_id": "6c2275c842b14bcf8eeeef492ca51abc",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [
+        {
+          "act": "ACT 2 - SOLIDS",
+          "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
+          "kind": "step",
+          "reason": "conditional control requires measured absence",
+          "state": "not-applicable",
+          "tools": [
+            "pmi_create"
+          ]
+        },
+        {
+          "act": "ACT 2 - SOLIDS",
+          "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
+          "kind": "step",
+          "reason": "conditional control requires measured absence",
+          "state": "not-applicable",
+          "tools": [
+            "pmi_create"
+          ]
+        },
+        {
+          "act": "ACT 2 - SOLIDS",
+          "capability": "machining_extension",
+          "conditions": [
+            {
+              "asked": true,
+              "capability": "machining_extension",
+              "measured": true,
+              "polarity": "unless",
+              "reason": "conditional control requires measured absence",
+              "state": "not-applicable"
+            }
+          ],
+          "kind": "step",
+          "reason": "conditional control requires measured absence",
+          "state": "not-applicable",
+          "tools": [
+            "pmi_create"
+          ]
+        }
+      ],
+      "producer_run_ids": [
+        "7f514e8eedf24f3083bd05ad85dce8ce"
+      ],
+      "producers": [
+        {
+          "closure_hash": "35bd9401a052fb813da0bce66c7ee53ce723250f494a3b89df5bb1e185775cb0",
+          "family_run_id": "6c2275c842b14bcf8eeeef492ca51abc",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 39,
+          "rows_hash": "8ca30e5cd38605eeed15710abdeb367294629f0522ad0e4e418c5409afb3345f",
+          "run_id": "7f514e8eedf24f3083bd05ad85dce8ce"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-14cefada6a03808099bb167dacef5d40463a555d153252c31699f75cda4a7453.json",
+        "sha256": "14cefada6a03808099bb167dacef5d40463a555d153252c31699f75cda4a7453"
+      },
+      "row_count": 2439,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": [
+        {
+          "reader_is_read": true,
+          "row_index": 1637,
+          "targets": [
+            "model_pattern_rectangular"
+          ],
+          "tool": "model_inspect",
+          "witness": "tool:model_inspect"
+        }
+      ]
+    },
+    "surfaces": {
+      "act_modes": [
+        [
+          "ACT 3 - SURFACES",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 3 - SURFACES"
+      ],
+      "acts_hash": "9c097678938dee44bd0427f54ebdef59846ab1030fcc129a6a98aef7434fb25c",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "f21445239f984ca1f1ef336a3d9aaae71792cbddd666dae220bb763077832ac8",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "model_move",
+            "model_revolve",
+            "sketch_add_geometry",
+            "sketch_create",
+            "sketch_project",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "design_delete_feature",
+            "design_edit_timeline",
+            "design_get",
+            "design_recompute",
+            "doc_activate",
+            "doc_close",
+            "doc_get",
+            "doc_new",
+            "find_geometry",
+            "form_create",
+            "form_get",
+            "model_base_feature",
+            "model_compute_holder",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_loft",
+            "model_measure_continuity",
+            "model_shell",
+            "model_split",
+            "model_stitch",
+            "model_unstitch",
+            "param_set",
+            "sketch_get",
+            "surface_create_ruled",
+            "surface_delete_face",
+            "surface_extend",
+            "surface_extrude",
+            "surface_fill",
+            "surface_offset",
+            "surface_patch",
+            "surface_reverse_normal",
+            "surface_revolve",
+            "surface_thicken",
+            "surface_trim",
+            "surface_untrim",
+            "sys_execute_script",
+            "view_set",
+            "workspace_orient"
+          ]
+        },
+        "counts": {
+          "called": 8,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 42
+        }
+      },
+      "family": "surfaces",
+      "family_run_id": "08777f60fd0f4e989552d83755c7022b",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [],
+      "producers": [],
+      "raw": {
+        "file": "family-evidence-14dbb3aa7855b13d55697c143ed3bd4a8a5e33c6a1bd298ca8c65c22f28352a1.json",
+        "sha256": "14dbb3aa7855b13d55697c143ed3bd4a8a5e33c6a1bd298ca8c65c22f28352a1"
+      },
+      "row_count": 557,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "swarf_cam": {
+      "act_modes": [
+        [
+          "ACT 8 - SWARF CAMEO",
+          "narrative"
+        ],
+        [
+          "ACT 10b2 - CAM: COMPONENT SCOPE",
+          "narrative"
+        ],
+        [
+          "ACT 10c - CAM: EXTENSION STRATEGIES",
+          "narrative"
+        ],
+        [
+          "ACT 10c6b - CAM: THE 5-AXIS DUMP",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 8 - SWARF CAMEO",
+        "ACT 10b2 - CAM: COMPONENT SCOPE",
+        "ACT 10c - CAM: EXTENSION STRATEGIES",
+        "ACT 10c6b - CAM: THE 5-AXIS DUMP"
+      ],
+      "acts_hash": "70d424a921a00b23dd029106b74b1fe85d3a9175abe72f7e117c5659f42cc05b",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "18edf5ea84e7e189a192a2318554697f7fd7371a3be717f86a0e1701a4b42450",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "design_activate_component",
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_add_geometry",
+            "sketch_create",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "cam_create_operation",
+            "cam_create_setup",
+            "cam_delete",
+            "cam_edit_operation",
+            "cam_edit_setup",
+            "cam_edit_tools",
+            "cam_generate",
+            "cam_get",
+            "cam_get_status",
+            "cam_post",
+            "cam_select_geometry",
+            "doc_get",
+            "find_geometry",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_inspect",
+            "sys_execute_script",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 7,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 19
+        }
+      },
+      "family": "swarf_cam",
+      "family_run_id": "c500c886b9614f7c8acf2fd695634208",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "32f8e83337c346aaa0bc4af35adbcac0",
+        "b59f984ea768482ab46022f10877cba7"
+      ],
+      "producers": [
+        {
+          "closure_hash": "18edf5ea84e7e189a192a2318554697f7fd7371a3be717f86a0e1701a4b42450",
+          "family_run_id": "c500c886b9614f7c8acf2fd695634208",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 3,
+          "rows_hash": "e01b4c6e1d00ad0437394fabe2203af8feb9f3d9cd9f1cb07be060aa12520d19",
+          "run_id": "32f8e83337c346aaa0bc4af35adbcac0"
+        },
+        {
+          "closure_hash": "18edf5ea84e7e189a192a2318554697f7fd7371a3be717f86a0e1701a4b42450",
+          "family_run_id": "c500c886b9614f7c8acf2fd695634208",
+          "fusion_version": "2706.1.2",
+          "phase": "before ACT 10b2 - CAM: COMPONENT SCOPE",
+          "row_count": 1,
+          "rows_hash": "760ca7ded8e9f7ce8c10677a7c250a3bbaa08e69e646d928c735f09301c1c3fe",
+          "run_id": "b59f984ea768482ab46022f10877cba7"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-ec9253230f801b69c66a75164ca44a024a9a8115fcb3989dbeaa898b58e31832.json",
+        "sha256": "ec9253230f801b69c66a75164ca44a024a9a8115fcb3989dbeaa898b58e31832"
+      },
+      "row_count": 131,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    },
+    "vise": {
+      "act_modes": [
+        [
+          "ACT 7 - THE VISE",
+          "narrative"
+        ]
+      ],
+      "acts": [
+        "ACT 7 - THE VISE"
+      ],
+      "acts_hash": "82ed5efb5c03223830fb8ee88624ae8b146cd4d1dcfc920f389225f04727b664",
+      "census": {
+        "end": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121",
+        "start": "7015184317a4973e96e5f4de479daf464759ed2190accee35e656ca45c4d7121"
+      },
+      "closure_hash": "7fc306393b44533bba0427dbafae974d5f570f9d8a668b14d5fd8207ccf68c70",
+      "evidence": {
+        "buckets": {
+          "called": [
+            "doc_activate",
+            "doc_close",
+            "doc_new",
+            "sketch_create",
+            "sketch_dimension",
+            "view_screenshot",
+            "view_switch_workspace"
+          ],
+          "covered": [],
+          "refusals-only": [],
+          "self-reported": [
+            "appearance_set",
+            "assembly_capture_position",
+            "assembly_get",
+            "assembly_ground",
+            "assembly_inspect_interference",
+            "assembly_rigid_group",
+            "design_activate_component",
+            "doc_get",
+            "find_geometry",
+            "joint_create",
+            "joint_create_as_built",
+            "joint_create_origin",
+            "joint_drive",
+            "joint_edit",
+            "joint_motion_link",
+            "model_chamfer",
+            "model_construction",
+            "model_create_component",
+            "model_extrude",
+            "model_fillet",
+            "model_hole",
+            "model_inspect",
+            "model_measure_between",
+            "param_add",
+            "param_get",
+            "param_set_favorite",
+            "sketch_add_geometry",
+            "view_set"
+          ]
+        },
+        "counts": {
+          "called": 7,
+          "covered": 0,
+          "refusals-only": 0,
+          "self-reported": 28
+        }
+      },
+      "family": "vise",
+      "family_run_id": "ead4d056720b43b7927e36ae158368ed",
+      "fusion_version": "2706.1.2",
+      "identity": {
+        "complete": true,
+        "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+        "load_id": "8d108b4fbe024eeab65edb4e28cec07d",
+        "loaded_matches_source": true,
+        "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+        "session_id": "1ab898ccdb484916bfc7d46ae4c0d8fd"
+      },
+      "omitted": [],
+      "producer_run_ids": [
+        "2e7e4ede1ded475d9916c0abbfb2c388"
+      ],
+      "producers": [
+        {
+          "closure_hash": "7fc306393b44533bba0427dbafae974d5f570f9d8a668b14d5fd8207ccf68c70",
+          "family_run_id": "ead4d056720b43b7927e36ae158368ed",
+          "fusion_version": "2706.1.2",
+          "phase": "setup",
+          "row_count": 66,
+          "rows_hash": "2ed853303c49aa298917bf6e11c1575d221edd47124ad1dbf672dbf2c69c225d",
+          "run_id": "2e7e4ede1ded475d9916c0abbfb2c388"
+        }
+      ],
+      "raw": {
+        "file": "family-evidence-b961fd0e68ef1e126c169eb53d5c4f9374fcb4feb88ed31988c868c6fb1f262c.json",
+        "sha256": "b961fd0e68ef1e126c169eb53d5c4f9374fcb4feb88ed31988c868c6fb1f262c"
+      },
+      "row_count": 130,
+      "run_id": "nearfull1013a",
+      "scope": {
+        "asked": {
+          "addin_reload": true,
+          "cloud_tier": true,
+          "library_writes": true,
+          "machining_extension": true,
+          "native_script": true,
+          "preference_writes": true
+        },
+        "checkout": "c:\\source\\fusion-essentials",
+        "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+        "machine": "reference",
+        "os": "Windows",
+        "quarantined": [
+          "cloud_link_crash_review_authorization"
+        ],
+        "version": 2
+      },
+      "state": "executed",
+      "witnesses": []
+    }
+  },
+  "format": 2,
+  "lifecycle": {
+    "after": {
+      "bootstrap_exclusions": [
+        "Fusion-Essentials.py",
+        "lib/loaded_attestation.py"
+      ],
+      "complete": true,
+      "executed_module_count": 297,
+      "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+      "load_id": "b478e2ddc8c14471b1722887c63fc5ff",
+      "loaded_matches_source": true,
+      "problems": [],
+      "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+      "scope": "commands/mcpServer import closure",
+      "session_id": "299afe8eb16c4a5687ac91dd02ef1d3a"
+    },
+    "after_fusion_version": "2706.1.2",
+    "after_mcp_session": "299afe8eb16c4a5687ac91dd02ef1d3a.b3058525813e40f5af08dca9b9b38793.c38041d9402434677f015316a8a91daa6983b18c5ffe4289e97503dee99e40d3",
+    "after_tool_census": [
+      "appearance_set",
+      "assembly_capture_position",
+      "assembly_constrain",
+      "assembly_edit_contacts",
+      "assembly_edit_relations",
+      "assembly_get",
+      "assembly_ground",
+      "assembly_inspect_interference",
+      "assembly_move",
+      "assembly_rigid_group",
+      "cam_activate_setup",
+      "cam_apply_template",
+      "cam_compare_operations",
+      "cam_create_machine",
+      "cam_create_operation",
+      "cam_create_setup",
+      "cam_delete",
+      "cam_delete_machine",
+      "cam_delete_template",
+      "cam_edit_folders",
+      "cam_edit_operation",
+      "cam_edit_setup",
+      "cam_edit_tools",
+      "cam_export_setup",
+      "cam_find_holes",
+      "cam_find_pockets",
+      "cam_generate",
+      "cam_generate_setup_sheet",
+      "cam_get",
+      "cam_get_status",
+      "cam_inspect_toolpaths",
+      "cam_post",
+      "cam_reorder",
+      "cam_save_template",
+      "cam_select_geometry",
+      "cam_set_nc_comment",
+      "cam_show_toolpath",
+      "data_create_folder",
+      "data_create_project",
+      "data_delete_file",
+      "data_delete_folder",
+      "data_download_file",
+      "data_get",
+      "data_get_upload_status",
+      "data_move_file",
+      "data_switch_hub",
+      "data_upload_file",
+      "design_activate_component",
+      "design_add_instance",
+      "design_configure",
+      "design_delete_feature",
+      "design_delete_occurrence",
+      "design_edit_plastic_rule",
+      "design_edit_reference_image",
+      "design_edit_timeline",
+      "design_export",
+      "design_get",
+      "design_move_occurrence",
+      "design_recompute",
+      "design_remove_feature",
+      "design_set_metadata",
+      "design_set_mode",
+      "design_set_name",
+      "doc_activate",
+      "doc_close",
+      "doc_copy",
+      "doc_get",
+      "doc_insert_derive",
+      "doc_insert_import",
+      "doc_insert_occurrence",
+      "doc_new",
+      "doc_open",
+      "doc_restore_version",
+      "doc_save",
+      "doc_save_as",
+      "doc_save_milestone",
+      "doc_update_xref",
+      "drawing_add_sketch",
+      "drawing_add_symbol",
+      "drawing_create",
+      "drawing_delete_sketch",
+      "drawing_dimension",
+      "drawing_edit_revisions",
+      "drawing_edit_sheet",
+      "drawing_export",
+      "drawing_get",
+      "drawing_get_status",
+      "drawing_insert_image",
+      "drawing_update",
+      "find_geometry",
+      "form_create",
+      "form_edit",
+      "form_get",
+      "joint_at_geometry",
+      "joint_create",
+      "joint_create_as_built",
+      "joint_create_origin",
+      "joint_drive",
+      "joint_edit",
+      "joint_motion_link",
+      "mesh_combine",
+      "mesh_delete",
+      "mesh_export",
+      "mesh_find",
+      "mesh_generate_face_groups",
+      "mesh_get",
+      "mesh_insert",
+      "mesh_plane_cut",
+      "mesh_reduce",
+      "mesh_remesh",
+      "mesh_repair",
+      "mesh_reverse_normal",
+      "mesh_separate",
+      "mesh_shell",
+      "mesh_smooth",
+      "mesh_to_brep",
+      "model_arrange",
+      "model_base_feature",
+      "model_chamfer",
+      "model_combine",
+      "model_compute_holder",
+      "model_construction",
+      "model_create_component",
+      "model_create_rib",
+      "model_draft",
+      "model_edit_body",
+      "model_edit_extrude",
+      "model_edit_feature",
+      "model_edit_loft",
+      "model_edit_sweep",
+      "model_emboss",
+      "model_extrude",
+      "model_fillet",
+      "model_hole",
+      "model_inspect",
+      "model_loft",
+      "model_measure_between",
+      "model_measure_continuity",
+      "model_measure_relation",
+      "model_mirror",
+      "model_move",
+      "model_offset_face",
+      "model_pattern_circular",
+      "model_pattern_path",
+      "model_pattern_rectangular",
+      "model_pipe",
+      "model_replace_face",
+      "model_revolve",
+      "model_scale",
+      "model_set_material",
+      "model_shell",
+      "model_split",
+      "model_stitch",
+      "model_sweep",
+      "model_thread",
+      "model_unstitch",
+      "param_add",
+      "param_delete",
+      "param_get",
+      "param_set",
+      "param_set_favorite",
+      "pmi_create",
+      "pmi_delete",
+      "pmi_edit",
+      "pmi_get",
+      "render_create",
+      "render_edit",
+      "render_get",
+      "save_as_mesh",
+      "sheet_convert",
+      "sheet_create_flange",
+      "sheet_create_flat_pattern",
+      "sheet_create_fold",
+      "sheet_create_hem",
+      "sheet_create_join_by_bend",
+      "sheet_create_refold",
+      "sheet_create_rip",
+      "sheet_create_unfold",
+      "sheet_edit_rule",
+      "sheet_get",
+      "sketch_add_3d_line",
+      "sketch_add_3d_spline",
+      "sketch_add_geometry",
+      "sketch_constrain",
+      "sketch_copy",
+      "sketch_create",
+      "sketch_delete_entity",
+      "sketch_dimension",
+      "sketch_edit",
+      "sketch_edit_curve",
+      "sketch_get",
+      "sketch_insert_svg",
+      "sketch_move",
+      "sketch_project",
+      "sketch_set_text",
+      "surface_create_ruled",
+      "surface_delete_face",
+      "surface_extend",
+      "surface_extrude",
+      "surface_fill",
+      "surface_offset",
+      "surface_patch",
+      "surface_reverse_normal",
+      "surface_revolve",
+      "surface_thicken",
+      "surface_trim",
+      "surface_untrim",
+      "sys_capability_map",
+      "sys_execute_script",
+      "sys_find_tool",
+      "sys_get_api_doc",
+      "sys_get_guidance",
+      "sys_get_preferences",
+      "sys_get_selection",
+      "sys_reload_addin",
+      "sys_request_selection",
+      "sys_set_preferences",
+      "view_list_workspaces",
+      "view_screenshot",
+      "view_screenshot_multi",
+      "view_section",
+      "view_set",
+      "view_switch_workspace",
+      "workspace_orient"
+    ],
+    "before": {
+      "bootstrap_exclusions": [
+        "Fusion-Essentials.py",
+        "lib/loaded_attestation.py"
+      ],
+      "complete": true,
+      "executed_module_count": 297,
+      "implementation_fingerprint": "acf28070e322e58ab22f559ec762a55c06b603b5f624c73c110df69b456b9152",
+      "load_id": "3dcec496164a4494aea7c2599dab7475",
+      "loaded_matches_source": true,
+      "problems": [],
+      "schema_fingerprint": "871e82f7bb6a14b0db3621a580b24f7f97d902e105bbad4b099abc8db9ceab42",
+      "scope": "commands/mcpServer import closure",
+      "session_id": "43d1358b74a740f294a9d912fcb04b74"
+    },
+    "before_mcp_session": "43d1358b74a740f294a9d912fcb04b74.75321d1b9b7842e48066545ad4bcd35b.9b2f04a63503b7dcac3484f122d43e596981ec4abcf2fd202176a682b7a95507",
+    "before_tool_census": [
+      "appearance_set",
+      "assembly_capture_position",
+      "assembly_constrain",
+      "assembly_edit_contacts",
+      "assembly_edit_relations",
+      "assembly_get",
+      "assembly_ground",
+      "assembly_inspect_interference",
+      "assembly_move",
+      "assembly_rigid_group",
+      "cam_activate_setup",
+      "cam_apply_template",
+      "cam_compare_operations",
+      "cam_create_machine",
+      "cam_create_operation",
+      "cam_create_setup",
+      "cam_delete",
+      "cam_delete_machine",
+      "cam_delete_template",
+      "cam_edit_folders",
+      "cam_edit_operation",
+      "cam_edit_setup",
+      "cam_edit_tools",
+      "cam_export_setup",
+      "cam_find_holes",
+      "cam_find_pockets",
+      "cam_generate",
+      "cam_generate_setup_sheet",
+      "cam_get",
+      "cam_get_status",
+      "cam_inspect_toolpaths",
+      "cam_post",
+      "cam_reorder",
+      "cam_save_template",
+      "cam_select_geometry",
+      "cam_set_nc_comment",
+      "cam_show_toolpath",
+      "data_create_folder",
+      "data_create_project",
+      "data_delete_file",
+      "data_delete_folder",
+      "data_download_file",
+      "data_get",
+      "data_get_upload_status",
+      "data_move_file",
+      "data_switch_hub",
+      "data_upload_file",
+      "design_activate_component",
+      "design_add_instance",
+      "design_configure",
+      "design_delete_feature",
+      "design_delete_occurrence",
+      "design_edit_plastic_rule",
+      "design_edit_reference_image",
+      "design_edit_timeline",
+      "design_export",
+      "design_get",
+      "design_move_occurrence",
+      "design_recompute",
+      "design_remove_feature",
+      "design_set_metadata",
+      "design_set_mode",
+      "design_set_name",
+      "doc_activate",
+      "doc_close",
+      "doc_copy",
+      "doc_get",
+      "doc_insert_derive",
+      "doc_insert_import",
+      "doc_insert_occurrence",
+      "doc_new",
+      "doc_open",
+      "doc_restore_version",
+      "doc_save",
+      "doc_save_as",
+      "doc_save_milestone",
+      "doc_update_xref",
+      "drawing_add_sketch",
+      "drawing_add_symbol",
+      "drawing_create",
+      "drawing_delete_sketch",
+      "drawing_dimension",
+      "drawing_edit_revisions",
+      "drawing_edit_sheet",
+      "drawing_export",
+      "drawing_get",
+      "drawing_get_status",
+      "drawing_insert_image",
+      "drawing_update",
+      "find_geometry",
+      "form_create",
+      "form_edit",
+      "form_get",
+      "joint_at_geometry",
+      "joint_create",
+      "joint_create_as_built",
+      "joint_create_origin",
+      "joint_drive",
+      "joint_edit",
+      "joint_motion_link",
+      "mesh_combine",
+      "mesh_delete",
+      "mesh_export",
+      "mesh_find",
+      "mesh_generate_face_groups",
+      "mesh_get",
+      "mesh_insert",
+      "mesh_plane_cut",
+      "mesh_reduce",
+      "mesh_remesh",
+      "mesh_repair",
+      "mesh_reverse_normal",
+      "mesh_separate",
+      "mesh_shell",
+      "mesh_smooth",
+      "mesh_to_brep",
+      "model_arrange",
+      "model_base_feature",
+      "model_chamfer",
+      "model_combine",
+      "model_compute_holder",
+      "model_construction",
+      "model_create_component",
+      "model_create_rib",
+      "model_draft",
+      "model_edit_body",
+      "model_edit_extrude",
+      "model_edit_feature",
+      "model_edit_loft",
+      "model_edit_sweep",
+      "model_emboss",
+      "model_extrude",
+      "model_fillet",
+      "model_hole",
+      "model_inspect",
+      "model_loft",
+      "model_measure_between",
+      "model_measure_continuity",
+      "model_measure_relation",
+      "model_mirror",
+      "model_move",
+      "model_offset_face",
+      "model_pattern_circular",
+      "model_pattern_path",
+      "model_pattern_rectangular",
+      "model_pipe",
+      "model_replace_face",
+      "model_revolve",
+      "model_scale",
+      "model_set_material",
+      "model_shell",
+      "model_split",
+      "model_stitch",
+      "model_sweep",
+      "model_thread",
+      "model_unstitch",
+      "param_add",
+      "param_delete",
+      "param_get",
+      "param_set",
+      "param_set_favorite",
+      "pmi_create",
+      "pmi_delete",
+      "pmi_edit",
+      "pmi_get",
+      "render_create",
+      "render_edit",
+      "render_get",
+      "save_as_mesh",
+      "sheet_convert",
+      "sheet_create_flange",
+      "sheet_create_flat_pattern",
+      "sheet_create_fold",
+      "sheet_create_hem",
+      "sheet_create_join_by_bend",
+      "sheet_create_refold",
+      "sheet_create_rip",
+      "sheet_create_unfold",
+      "sheet_edit_rule",
+      "sheet_get",
+      "sketch_add_3d_line",
+      "sketch_add_3d_spline",
+      "sketch_add_geometry",
+      "sketch_constrain",
+      "sketch_copy",
+      "sketch_create",
+      "sketch_delete_entity",
+      "sketch_dimension",
+      "sketch_edit",
+      "sketch_edit_curve",
+      "sketch_get",
+      "sketch_insert_svg",
+      "sketch_move",
+      "sketch_project",
+      "sketch_set_text",
+      "surface_create_ruled",
+      "surface_delete_face",
+      "surface_extend",
+      "surface_extrude",
+      "surface_fill",
+      "surface_offset",
+      "surface_patch",
+      "surface_reverse_normal",
+      "surface_revolve",
+      "surface_thicken",
+      "surface_trim",
+      "surface_untrim",
+      "sys_capability_map",
+      "sys_execute_script",
+      "sys_find_tool",
+      "sys_get_api_doc",
+      "sys_get_guidance",
+      "sys_get_preferences",
+      "sys_get_selection",
+      "sys_reload_addin",
+      "sys_request_selection",
+      "sys_set_preferences",
+      "view_list_workspaces",
+      "view_screenshot",
+      "view_screenshot_multi",
+      "view_section",
+      "view_set",
+      "view_switch_workspace",
+      "workspace_orient"
+    ],
+    "checks": {
+      "fresh_handle_write_readback": true,
+      "fresh_session_changed": true,
+      "fresh_session_read_new_handle": true,
+      "new_load_and_session": true,
+      "nonce_read_back_before_reload": true,
+      "nonce_survived_reload": true,
+      "old_handle_refused": true,
+      "old_transport_refused_empty_404": true,
+      "recovery_parameter_removed": true,
+      "reload_scheduled": true,
+      "same_implementation_and_schema": true,
+      "scratch_closed_and_home_restored": true,
+      "stale_write_absent": true,
+      "tool_census_matches": true
+    },
+    "cleanup_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:669925cf76a643e08ef4d43e854d4d0a",
+      "name": "Untitled",
+      "open_count": 2,
+      "rows": [
+        {
+          "document_handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        },
+        {
+          "document_handle": "session:669925cf76a643e08ef4d43e854d4d0a",
+          "is_active": true,
+          "is_modified": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 1
+        }
+      ]
+    },
+    "fresh_transport_document_handle": "session:669925cf76a643e08ef4d43e854d4d0a",
+    "fusion_version": "2706.1.2",
+    "nonce_name": "ReloadNonceac2e685a",
+    "nonce_value_mm": 17,
+    "omitted": {},
+    "post_reload_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:669925cf76a643e08ef4d43e854d4d0a",
+      "name": "Untitled",
+      "open_count": 2,
+      "rows": [
+        {
+          "document_handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        },
+        {
+          "document_handle": "session:669925cf76a643e08ef4d43e854d4d0a",
+          "is_active": true,
+          "is_modified": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 1
+        }
+      ]
+    },
+    "pre_reload_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:0a390df344ef4baa91a346e7ba66bf3b",
+      "name": "Untitled",
+      "open_count": 1,
+      "rows": [
+        {
+          "document_handle": "session:0a390df344ef4baa91a346e7ba66bf3b",
+          "is_active": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        }
+      ]
+    },
+    "raw": {
+      "file": "family-evidence-0cd597d3922cb06507453f6008cd9da548824e1f340ba89f64fb4ff1f937b8e6.json",
+      "sha256": "0cd597d3922cb06507453f6008cd9da548824e1f340ba89f64fb4ff1f937b8e6"
+    },
+    "restored_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
+      "name": "Untitled",
+      "open_count": 1,
+      "rows": [
+        {
+          "document_handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
+          "is_active": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        }
+      ]
+    },
+    "run_id": "nearfull1013a",
+    "scope": {
+      "asked": {
+        "addin_reload": true,
+        "cloud_tier": true,
+        "library_writes": true,
+        "machining_extension": true,
+        "native_script": true,
+        "preference_writes": true
+      },
+      "checkout": "c:\\source\\fusion-essentials",
+      "config_hash": "115a4068cba8027a8618fbfe58d5c5237ec6fdc18cf665ce417bdd3f44d7e1aa",
+      "machine": "reference",
+      "os": "Windows",
+      "quarantined": [
+        "cloud_link_crash_review_authorization"
+      ],
+      "version": 2
+    },
+    "scratch_cleanup_census": {
+      "complete": true,
+      "document_id": null,
+      "handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
+      "name": "Untitled",
+      "open_count": 1,
+      "rows": [
+        {
+          "document_handle": "session:7c130d70443a4d1e814fd7f6f1bac210",
+          "is_active": true,
+          "is_saved": false,
+          "name": "Untitled",
+          "open_index": 0
+        }
+      ]
+    },
+    "scratch_handle_before_reload": "session:ac2e685af7a04c628a8ca30e78e4c9dc",
+    "source_hash": "4b003070f7bde43bd4793aed95bbc58fafd6c359f4abd882f5b512ca2ccc77b2",
+    "state": "executed"
+  },
+  "lifecycle_history": [],
+  "not_in_scope": {},
+  "tool_census": [
+    "appearance_set",
+    "assembly_capture_position",
+    "assembly_constrain",
+    "assembly_edit_contacts",
+    "assembly_edit_relations",
+    "assembly_get",
+    "assembly_ground",
+    "assembly_inspect_interference",
+    "assembly_move",
+    "assembly_rigid_group",
+    "cam_activate_setup",
+    "cam_apply_template",
+    "cam_compare_operations",
+    "cam_create_machine",
+    "cam_create_operation",
+    "cam_create_setup",
+    "cam_delete",
+    "cam_delete_machine",
+    "cam_delete_template",
+    "cam_edit_folders",
+    "cam_edit_operation",
+    "cam_edit_setup",
+    "cam_edit_tools",
+    "cam_export_setup",
+    "cam_find_holes",
+    "cam_find_pockets",
+    "cam_generate",
+    "cam_generate_setup_sheet",
+    "cam_get",
+    "cam_get_status",
+    "cam_inspect_toolpaths",
+    "cam_post",
+    "cam_reorder",
+    "cam_save_template",
+    "cam_select_geometry",
+    "cam_set_nc_comment",
+    "cam_show_toolpath",
+    "data_create_folder",
+    "data_create_project",
+    "data_delete_file",
+    "data_delete_folder",
+    "data_download_file",
+    "data_get",
+    "data_get_upload_status",
+    "data_move_file",
+    "data_switch_hub",
+    "data_upload_file",
+    "design_activate_component",
+    "design_add_instance",
+    "design_configure",
+    "design_delete_feature",
+    "design_delete_occurrence",
+    "design_edit_plastic_rule",
+    "design_edit_reference_image",
+    "design_edit_timeline",
+    "design_export",
+    "design_get",
+    "design_move_occurrence",
+    "design_recompute",
+    "design_remove_feature",
+    "design_set_metadata",
+    "design_set_mode",
+    "design_set_name",
+    "doc_activate",
+    "doc_close",
+    "doc_copy",
+    "doc_get",
+    "doc_insert_derive",
+    "doc_insert_import",
+    "doc_insert_occurrence",
+    "doc_new",
+    "doc_open",
+    "doc_restore_version",
+    "doc_save",
+    "doc_save_as",
+    "doc_save_milestone",
+    "doc_update_xref",
+    "drawing_add_sketch",
+    "drawing_add_symbol",
+    "drawing_create",
+    "drawing_delete_sketch",
+    "drawing_dimension",
+    "drawing_edit_revisions",
+    "drawing_edit_sheet",
+    "drawing_export",
+    "drawing_get",
+    "drawing_get_status",
+    "drawing_insert_image",
+    "drawing_update",
+    "find_geometry",
+    "form_create",
+    "form_edit",
+    "form_get",
+    "joint_at_geometry",
+    "joint_create",
+    "joint_create_as_built",
+    "joint_create_origin",
+    "joint_drive",
+    "joint_edit",
+    "joint_motion_link",
+    "mesh_combine",
+    "mesh_delete",
+    "mesh_export",
+    "mesh_find",
+    "mesh_generate_face_groups",
+    "mesh_get",
+    "mesh_insert",
+    "mesh_plane_cut",
+    "mesh_reduce",
+    "mesh_remesh",
+    "mesh_repair",
+    "mesh_reverse_normal",
+    "mesh_separate",
+    "mesh_shell",
+    "mesh_smooth",
+    "mesh_to_brep",
+    "model_arrange",
+    "model_base_feature",
+    "model_chamfer",
+    "model_combine",
+    "model_compute_holder",
+    "model_construction",
+    "model_create_component",
+    "model_create_rib",
+    "model_draft",
+    "model_edit_body",
+    "model_edit_extrude",
+    "model_edit_feature",
+    "model_edit_loft",
+    "model_edit_sweep",
+    "model_emboss",
+    "model_extrude",
+    "model_fillet",
+    "model_hole",
+    "model_inspect",
+    "model_loft",
+    "model_measure_between",
+    "model_measure_continuity",
+    "model_measure_relation",
+    "model_mirror",
+    "model_move",
+    "model_offset_face",
+    "model_pattern_circular",
+    "model_pattern_path",
+    "model_pattern_rectangular",
+    "model_pipe",
+    "model_replace_face",
+    "model_revolve",
+    "model_scale",
+    "model_set_material",
+    "model_shell",
+    "model_split",
+    "model_stitch",
+    "model_sweep",
+    "model_thread",
+    "model_unstitch",
+    "param_add",
+    "param_delete",
+    "param_get",
+    "param_set",
+    "param_set_favorite",
+    "pmi_create",
+    "pmi_delete",
+    "pmi_edit",
+    "pmi_get",
+    "render_create",
+    "render_edit",
+    "render_get",
+    "save_as_mesh",
+    "sheet_convert",
+    "sheet_create_flange",
+    "sheet_create_flat_pattern",
+    "sheet_create_fold",
+    "sheet_create_hem",
+    "sheet_create_join_by_bend",
+    "sheet_create_refold",
+    "sheet_create_rip",
+    "sheet_create_unfold",
+    "sheet_edit_rule",
+    "sheet_get",
+    "sketch_add_3d_line",
+    "sketch_add_3d_spline",
+    "sketch_add_geometry",
+    "sketch_constrain",
+    "sketch_copy",
+    "sketch_create",
+    "sketch_delete_entity",
+    "sketch_dimension",
+    "sketch_edit",
+    "sketch_edit_curve",
+    "sketch_get",
+    "sketch_insert_svg",
+    "sketch_move",
+    "sketch_project",
+    "sketch_set_text",
+    "surface_create_ruled",
+    "surface_delete_face",
+    "surface_extend",
+    "surface_extrude",
+    "surface_fill",
+    "surface_offset",
+    "surface_patch",
+    "surface_reverse_normal",
+    "surface_revolve",
+    "surface_thicken",
+    "surface_trim",
+    "surface_untrim",
+    "sys_capability_map",
+    "sys_execute_script",
+    "sys_find_tool",
+    "sys_get_api_doc",
+    "sys_get_guidance",
+    "sys_get_preferences",
+    "sys_get_selection",
+    "sys_reload_addin",
+    "sys_request_selection",
+    "sys_set_preferences",
+    "view_list_workspaces",
+    "view_screenshot",
+    "view_screenshot_multi",
+    "view_section",
+    "view_set",
+    "view_switch_workspace",
+    "workspace_orient"
+  ]
+}

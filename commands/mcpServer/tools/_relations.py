@@ -7,9 +7,9 @@ constraints, plus the resolve-one-by-name every lifecycle op targets through.
 PROBE NEEDED - which relations answer an entityToken, and whether two wrappers of one relation
 answer the same value. The walk reads nothing that tells the two de-dup survivor cases apart."""
 
-from ._common import all_components, safe
+from ._common import all_components, named_with_remainder, safe
 
-# One-line "what to reuse from here" for the generated CLAUDE.md helper map (see tests/gen_manifest.py).
+# One-line "what to reuse from here" for the generated AGENTS.md helper map (see tests/gen_manifest.py).
 MAP_BLURB = ("the substrate assembly_get's relations slice and assembly_edit_relations share. "
              "all_relations - the ONE walk over a design's rigid groups / motion links / assembly "
              "constraints; relation_names/find_relation - the names for an error message and the "
@@ -66,22 +66,38 @@ def relation_names(design, kind):
             if nm]
 
 
+def _qualified(obj, comp):
+    """A relation's '<component>/<name>' address, or None when either part does not read."""
+    name, owner = (safe(lambda: obj.name) or "").strip(), (safe(lambda: comp.name) or "").strip()
+    return f"{owner}/{name}" if name and owner else None
+
+
+def _answers(obj, comp, low):
+    """Whether lower-cased `low` is this relation's exact name or its '<component>/<name>' address."""
+    return low in ((safe(lambda: obj.name) or "").strip().lower(), (_qualified(obj, comp) or "").lower())
+
+
 def find_relation(design, kind, name):
-    """Resolve ONE relation of `kind` by case-insensitive exact name; returns (object,
-    owning_component, error). A name is not unique across components, so several hits are REFUSED
-    with the owning component of each."""
+    """(object, owning component, error) for the ONE relation of `kind` that `name` - an exact
+    case-insensitive name or '<component>/<name>' - answers to; several hits are REFUSED."""
     want = (name or "").strip()
     if not want:
         return None, None, (f"'name' is required - the {kind_label(kind)} to act on "
                             "(assembly_get(include=['relations']) lists them).")
     pairs = all_relations(design, kind)
-    hits = [(obj, c) for obj, c in pairs if (safe(lambda obj=obj: obj.name) or "").lower() == want.lower()]
+    hits = [(obj, c) for obj, c in pairs if _answers(obj, c, want.lower())]
     if not hits:
         names = [nm for nm in (safe(lambda obj=obj: obj.name) for obj, _c in pairs) if nm]
         return None, None, (f"No {kind_label(kind)} named '{want}'. This design holds: "
                             f"{', '.join(names) or '(none)'}. Full list: "
                             "assembly_get(include=['relations']).")
     if len(hits) > 1:
+        listed = [_qualified(obj, c) for obj, c in hits]
+        # An address is offered only when it answers to exactly one relation of this kind.
+        if all(a and sum(_answers(o, c, a.lower()) for o, c in pairs) == 1 for a in listed):
+            return None, None, (f"'{want}' names {len(hits)} {kind_label(kind)}s - refusing to "
+                                "guess which one. Pass one as listed: "
+                                + named_with_remainder([f"'{a}'" for a in listed]) + ".")
         where = ", ".join(f"'{want}' in {safe(lambda c=c: c.name) or '?'}" for _o, c in hits[:8])
         return None, None, (f"'{want}' names {len(hits)} {kind_label(kind)}s ({where}) - refusing to "
                             "guess which one. Rename one in Fusion so the target is unambiguous.")

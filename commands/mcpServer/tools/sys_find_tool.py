@@ -84,9 +84,8 @@ def handler(query: str = "", include_kinds: bool = True) -> dict:
         kinds = _kind_matches(terms)
         result["kinds"] = kinds[:15]
         if kinds:
-            result["note"] = ("Before adding a tool input that REFERENCES existing geometry/profile/"
-                              "body/etc., use one of these _inputs.py kinds (extend the kind if it's "
-                              "close); don't hand-roll a name/index. See CLAUDE.md 'Input kinds'.")
+            result["note"] = ("Kinds describe the references accepted by tool inputs. Use the "
+                              "selected tool's schema to choose a handle, name or index.")
     if not tools and not result.get("kinds"):
         result["note"] = ("No tool or input-kind matched. Try broader/different keywords, or see "
                           "sys_capability_map for the family overview (breadth) to pick a branch to search.")

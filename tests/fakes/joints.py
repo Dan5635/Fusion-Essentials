@@ -206,7 +206,8 @@ class PinSlotJointMotion:
                           if joint_type is None else joint_type)
 
 
-@fusion_fake(live_type="Joint", facts=("shape-dump-assembly-world",))
+@fusion_fake(live_type="Joint", facts=("shape-dump-assembly-world",
+                                        "pinslot-custom-rotation-z-slide-reads-back-x"))
 class FakeJoint:
     """One joint: the jointMotion whose SUBCLASS says what it drives, the two occurrences it
     couples, the suppress/flip flags a joint edit writes back, its entityToken and timelineObject,
@@ -221,7 +222,8 @@ class FakeJoint:
 
     ``health_readable`` False makes the healthState read RAISE - the state a compute verdict has to
     publish as null rather than read as healthy. ``motion_set_ok`` is what every setAs*JointMotion
-    answers, and the calls land in ``_motion_calls``."""
+    answers, and the calls land in ``_motion_calls``. A pin-slot set also replaces ``jointMotion``
+    with the heading the platform stores, which is what a read-back then answers."""
 
     _UNSET = object()
 
@@ -296,6 +298,15 @@ class FakeJoint:
         return self._set_motion("ball", args)
 
     def setAsPinSlotJointMotion(self, *args):
+        # Measured: beside a custom rotation entity a frame-Z slide request reads back frame X.
+        directions = _api_facts.ENUMS["fusion.JointDirections"]
+        rotation, slide = args[0], args[1]
+        if rotation == directions["CustomJointDirection"] and slide == directions["ZAxisJointDirection"]:
+            slide = directions["XAxisJointDirection"]
+        if self._motion_set_ok:
+            self.jointMotion = PinSlotJointMotion(
+                axis=rotation, custom_axis_entity=args[2] if len(args) > 2 else None,
+                direction=slide)
         return self._set_motion("pin_slot", args)
 
     def deleteMe(self):

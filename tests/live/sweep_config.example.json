@@ -1,0 +1,19 @@
+{
+  "machine": "my-machine",
+  "port": 37182,
+  "tiers": {
+    "native_script": false,
+    "machining_extension": false,
+    "cloud": false
+  },
+  "cloud": {
+    "hub": "",
+    "project": "",
+    "folder": ""
+  },
+  "allow": {
+    "library_writes": false,
+    "preference_writes": false,
+    "addin_reload": false
+  }
+}

@@ -30,11 +30,10 @@ _CONVERT_OP = _inputs.Choice("operation", ["parametric", "base_feature"], defaul
 
 
 def _organic_available():
-    """True only if the Product Design Extension method is actually present. We don't pretend: if we
-    can't confirm OrganicMeshConvertMethodType exists, organic is treated as unavailable."""
+    """Whether this session's Fusion API exposes OrganicMeshConvertMethodType."""
     mct = safe(lambda: adsk.fusion.MeshConvertMethodTypes)
     if mct is None:
-        return True
+        return False
     return safe(lambda: mct.OrganicMeshConvertMethodType) is not None
 
 
@@ -45,13 +44,24 @@ def _body_row(b):
             "face_count": _common.counted(lambda: b.faces.count)}
 
 
+def _failed_scope_clause(base_feature):
+    """A failed scoped convert may leave the opened base feature in timeline history."""
+    if base_feature is None:
+        return ""
+    name = safe(lambda: base_feature.name)
+    scope = f"base feature '{name}'" if name else "a base feature"
+    return (f" This failed conversion may leave {scope} in the timeline; inspect "
+            "design_get(include=['timeline']) and mesh_get before continuing. Inspect its contents "
+            "before removing it with design_delete_feature.")
+
+
 def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_accuracy",
             accuracy: str = "medium", face_count: int = 0,
             operation: str = "parametric") -> dict:
     """Convert a MeshBody into a BRep solid/surface (the bridge back to the BRep tools). WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mb, merr = _CONVERT_MESH.resolve(mesh)
     if merr:
         return error(merr)
@@ -67,13 +77,11 @@ def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_acc
     "convert to a solid. Close the holes with mesh_repair(repair_type='close_holes') and retry, or "
     "convert it as a surface with method='faceted'.")
 
-    # ORGANIC is gated behind the Product Design Extension - be honest, do NOT silently fall back.
+    # The enum establishes API availability only; it does not establish extension access.
     if meth == "organic" and not _organic_available():
         return error(
-    "method='organic' requires the Product Design Extension to be active - it is not available "
-    "in this session. Use method='prismatic' (best for machined/scanned parts) or 'faceted' "
-    "(exact, one BRep face per triangle, heavy), or enable the extension. Not silently falling "
-    "back to a different method.")
+    "OrganicMeshConvertMethodType is absent or unreadable in this Fusion API session. Check API "
+    "availability, or use method='prismatic' or 'faceted'.")
 
     comp = _common.census_host(mb, _target_component(design))
     feats = safe(lambda: comp.features.meshConvertFeatures)
@@ -142,7 +150,8 @@ def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_acc
                                      ot.BaseFeatureMeshConvertOperationType if op == "base_feature"
                                      else ot.ParametricFeatureMeshConvertOperationType))
         except Exception as e:
-            return error(f"Could not configure the mesh-convert input: {e}")
+            return error(f"Could not configure the mesh-convert input: {e}"
+                         + _failed_scope_clause(base_feature))
 
         before_keys = {k for (k, _b) in _brep_snapshot() if k is not None}
 
@@ -151,7 +160,8 @@ def handler(mesh: str = "", method: str = "prismatic", resolution: str = "by_acc
             feat = feats.add(inp)
         except Exception as e:
             return error(f"Mesh->BRep conversion failed (meshConvertFeatures.add raised): {e}. "
-    "A common cause is a non-watertight or very dense mesh." + _face_groups_hint)
+    "A common cause is a non-watertight or very dense mesh." + _face_groups_hint
+                         + _failed_scope_clause(base_feature))
         # The open BaseFeature can never be re-found once the scope closes, so its name is captured
         # HERE - it is what explains a null feature to the caller.
         return {"feat": feat, "before_keys": before_keys,

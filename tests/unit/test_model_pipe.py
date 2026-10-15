@@ -15,9 +15,11 @@ import adsk.core
 import adsk.fusion
 import pytest
 
-from conftest import (BRepBody, MakeComp, assert_no_active_design, body_proxy, error_message,
+from conftest import (BRepBody, MakeComp, assert_names_retained, assert_no_active_design,
+                      body_proxy, error_message,
                       install, load_tool, make_design, make_sketch, make_sketch_curve,
-                      make_source_document, payload, _NamedCollection)
+                      make_source_document, payload, _NamedCollection, FakePoint,
+                      FakeTimeline, FakeTimelineObject, make_bbox)
 
 mp = load_tool("model_pipe")
 
@@ -43,6 +45,10 @@ class _Path:
 class _UnreadablePath:
     """A Path whose isClosed read RAISES - what a proxy that stops answering looks like. The reverse
     extent cannot be shown to apply against it, so it must be refused, not set."""
+    def __init__(self, count=None):
+        if count is not None:
+            self.count = count
+
     @property
     def isClosed(self):
         raise RuntimeError("isClosed unavailable")
@@ -151,12 +157,22 @@ class _PipeFeatures:
 def _wire(bodies=(), path_closed=False, design_type=1, sketch_curves=1, path_unreadable=False,
           tokens=None, all_components=None, **kw):
     """A design whose root component owns the pipe feature collection and the path factory."""
+    class _PathSketch:
+        def __init__(self):
+            self.name = "Spine"
+            self.sketchCurves = _NamedCollection([make_sketch_curve(f"c{i}")
+                                                  for i in range(sketch_curves)])
+            self.isLightBulbOn = True
+
+        @property
+        def isVisible(self):
+            return self.isLightBulbOn
+
     comp = MakeComp(bodies=bodies,
-                    sketches=[make_sketch(name="Spine",
-                                          lines=[make_sketch_curve(f"c{i}")
-                                                 for i in range(sketch_curves)])])
+                    sketches=[_PathSketch()])
     pf = _PipeFeatures(comp, **kw)
-    made_path = _UnreadablePath() if path_unreadable else _Path(path_closed, sketch_curves)
+    made_path = (_UnreadablePath(sketch_curves) if path_unreadable
+                 else _Path(path_closed, sketch_curves))
     comp.features = types.SimpleNamespace(
         pipeFeatures=pf, createPath=lambda seed, is_chain=True: made_path)
     design = make_design(comp=comp, tokens=tokens, all_components=all_components)
@@ -167,7 +183,94 @@ def _wire(bodies=(), path_closed=False, design_type=1, sketch_curves=1, path_unr
 
 # ── the solid happy path ────────────────────────────────────────────────────
 
+@pytest.fixture
+def empty_pipe_create(monkeypatch):
+    def make(fault=None):
+        face = types.SimpleNamespace(area=6.0, centroid=FakePoint(.5, .5, .5))
+        stock = BRepBody("Stock", volume=1.0, area=6.0, faces=[face], bbox=make_bbox((0, 0, 0), (1, 1, 1)))
+        pf = _wire(bodies=[stock])
+        stock.parentComponent = pf.comp
+        design = mp._common.design()
+        prior = types.SimpleNamespace(entityToken="prior", name="Source", parentComponent=pf.comp)
+        timeline = FakeTimeline([FakeTimelineObject("Source", 0, prior)])
+        design.timeline = timeline
+        feature = _PipeFeature("EmptyPipe", [stock], .6, 0, True)
+        feature.parentComponent, feature.entityToken = pf.comp, "empty-pipe"
+        feature.timelineObject = FakeTimelineObject(feature.name, 1, feature)
+        calls = []
+
+        def add(inp):
+            timeline._items.append(feature.timelineObject)
+            timeline._marker += 1
+            if fault == "hidden_path":
+                pf.comp.sketches.itemByName("Spine").isLightBulbOn = False
+            if fault == "new_body":
+                pf.comp.bRepBodies._items.append(BRepBody("Orphan", volume=2))
+            if fault == "unread_shape":
+                stock.area = None
+            return feature
+
+        def delete():
+            calls.append(feature)
+            timeline._items.pop()
+            timeline._marker -= 1
+            return True
+
+        feature.deleteMe = delete
+        monkeypatch.setattr(pf, "add", add)
+        return timeline, calls, feature
+    return make
+
+
+class TestEmptyScopedCutRetirement:
+    def test_scoped_no_effect_cut_removes_only_its_new_feature(self, empty_pipe_create):
+        timeline, calls, feature = empty_pipe_create()
+        res = mp.handler(path="sketch:Spine", section_size=6, operation="cut", target_bodies=["Stock"])
+        assert res["isError"] is True and "was removed" in error_message(res)
+        assert calls == [feature] and timeline.count == timeline.markerPosition == 1
+        assert timeline.item(0).name == "Source"
+
+    def test_retirement_restores_the_named_path_sketch_visibility(self, empty_pipe_create):
+        _timeline, _calls, _feature = empty_pipe_create("hidden_path")
+        sketch = mp._common.design().rootComponent.sketches.itemByName("Spine")
+        res = mp.handler(path="sketch:Spine", section_size=6, operation="cut", target_bodies=["Stock"])
+        message = error_message(res)
+        assert "path sketch visibility was restored" in message
+        assert sketch.isLightBulbOn is True and sketch.isVisible is True
+
+    @pytest.mark.parametrize("fault", ["new_body", "unread_shape"])
+    def test_zero_volume_delta_does_not_authorize_deleting_unknown_or_new_material(self, empty_pipe_create, fault):
+        timeline, calls, _ = empty_pipe_create(fault)
+        res = mp.handler(path="sketch:Spine", section_size=6, operation="cut", target_bodies=["Stock"])
+        assert res["isError"] is True and "EmptyPipe@1' was retained" in error_message(res)
+        assert calls == [] and timeline.count == 2
+
+    def test_the_retained_feature_address_resolves_through_feature_ref(self, empty_pipe_create):
+        _timeline, _calls, feature = empty_pipe_create("new_body")
+        message = error_message(mp.handler(path="sketch:Spine", section_size=6, operation="cut",
+                                           target_bodies=["Stock"]))
+        assert "Feature 'Root/EmptyPipe@1' was retained" in message
+        address = message.split("Feature '", 1)[1].split("'", 1)[0]
+        resolved, err = mp._inputs.FeatureRef("feature").resolve(address)
+        assert err is None and resolved[0] is feature
+
+
 class TestSolidPipe:
+    @pytest.mark.parametrize("unread", [False, True])
+    def test_a_pipe_without_a_result_body_names_the_feature_left(self, unread):
+        pf = _wire(body_names=())
+        add = pf.add
+
+        def landed(inp):
+            feature = add(inp)
+            if unread:
+                feature.bodies = None
+            return feature
+        pf.add = landed
+        msg = assert_names_retained(mp.handler(path="sketch:Spine", section_size=20), "Pipe1")
+        assert ("result bodies did not read" in msg) is unread
+        assert ("created no body" in msg) is not unread
+
     def test_circular_pipe_on_a_path_sketch(self):
         pf = _wire()
         out = payload(mp.handler(path="sketch:Spine", section_size=20))
@@ -648,7 +751,18 @@ class TestPathCurves:
         out = payload(mp.handler(path="sketch:Spine", section_size=20))
         assert out["path_curves"] == 1 and out["path_sketch_curves"] == 5
         assert "chained 1 of the sketch's 5 curves" in out["note"]
-        assert "tangent continuity" in out["note"]
+        assert "sketch_get" in out["note"] and "sharp corner" not in out["note"]
+
+    def test_a_two_of_three_chain_names_the_left_out_curve_beside_a_bare_label(self):
+        pf = _wire(sketch_curves=3)
+        curves = [make_sketch_curve(f"spine-{i}") for i in range(3)]
+        pf.comp.sketches = _NamedCollection([make_sketch("Spine", lines=curves)])
+        chain = _Path(False, 2)
+        chain.item = lambda i: types.SimpleNamespace(entity=(curves[0], curves[2])[i])
+        pf.comp.features.createPath = lambda seed, is_chain=True: chain
+        out = payload(mp.handler(path="sketch:Spine", section_size=20))
+        assert out["path"] == "sketch:Spine" and out["path_curves"] == 2
+        assert "Not in the path: line:1." in out["note"]
 
     def test_a_construction_curve_is_not_counted(self):
         pf = _wire(sketch_curves=3)

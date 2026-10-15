@@ -3,18 +3,20 @@
 The Fusion API is mocked; what we pin is the tool's OWN logic: the type dispatch (simple / counterbore /
 countersink) and which create*Input builder + value args each uses, placement by sketch points created
 on the target face, the extent choice (blind => setDistanceExtent, through => setAllExtent with the
-PositiveExtentDirection that is required, live-verified), optional tapping (createThreadInfo +
+PositiveExtentDirection that is required, live-verified), optional tapping (ThreadInfo.create +
 setToTappedHole), and the guards (unknown type, missing diameters, no face/points, bad extent).
 
 The HoleFeatureInput fake RECORDS the calls so we can assert the exact builder path.
 """
+from conftest import install as _install_design
 
 import pytest
+from types import SimpleNamespace
 
-from conftest import (load_tool, FakeFeatures, FakePoint, FakeSketchPoint, FakeVector3D, BRepBody, BRepEdge,
+from conftest import (load_tool, FakeFeatures, FakePoint, FakeSketchPoint, FakeVector3D, BRepBody, BRepEdge, BRepFace, Plane,
                       Circle3D, Cylinder, Line3D, FakeMatrix3D, MakeComp, Sketch,
                       _NamedCollection, _make_object_collection, install, make_design,
-                      make_occurrence, payload as _payload)
+                      make_occurrence, FakeUnitsManager, payload as _payload)
 
 mh = load_tool("model_hole")
 
@@ -22,6 +24,57 @@ mh = load_tool("model_hole")
 # the unknown-fastener test drives it directly so the asserted error text is the PRODUCT's, not the
 # stub's echo.
 _REAL_RESOLVE_CLEARANCE = mh._resolve_clearance
+_REAL_LENGTH_VALUE_INPUT = mh._inputs.length_value_input
+
+
+@pytest.fixture(autouse=True)
+def valid_length_validation(monkeypatch):
+    monkeypatch.setattr(mh._inputs, "length_value_input", lambda *args: (None, 1.0, None))
+
+
+class TestLengthExpressionFeedback:
+    @pytest.fixture
+    def expression_scene(self, monkeypatch):
+        design = _install()
+        manager = FakeUnitsManager(valid=("5 mm", "12 mm", "0.3125 in", "StockZ/2"), value=1.2)
+        monkeypatch.setattr(design, "unitsManager", manager, raising=False)
+        monkeypatch.setattr(mh._inputs, "length_value_input", _REAL_LENGTH_VALUE_INPUT)
+        return design
+
+    @pytest.mark.parametrize("field, extra", [
+        ("diameter", {}), ("depth", {}),
+        ("cbore_diameter", {"hole_type": "counterbore", "cbore_depth": "5 mm"}),
+        ("cbore_depth", {"hole_type": "counterbore", "cbore_diameter": "5 mm"}),
+        ("csink_diameter", {"hole_type": "countersink", "csink_angle": "90 deg"}),
+        ("offset_one", {"placement": "plane_offsets", "point": [0, 0, 0], "offset_edge_one": "e"}),
+        ("offset_two", {"placement": "plane_offsets", "point": [0, 0, 0], "offset_edge_one": "e",
+                        "offset_one": "5 mm", "offset_edge_two": "e2"}),
+    ])
+    def test_invalid_length_names_field_and_value_before_placement(self, expression_scene, field, extra):
+        args = dict(diameter="5 mm", depth="12 mm", extent="blind", face="h", points=[[1, 2, 0]])
+        args.update(extra)
+        args[field] = "MissingHoleLength/2"
+        result = mh.handler(**args)
+        assert result["isError"] is True
+        assert field in result["message"] and "MissingHoleLength/2" in result["message"]
+        assert "0.3125 in" in result["message"]
+        assert expression_scene.rootComponent.sketches.created_on == []
+        assert expression_scene.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_valid_parameter_and_unitless_strings_reach_creation_unchanged(self, expression_scene, monkeypatch):
+        calls = []
+        manager = expression_scene.unitsManager
+        monkeypatch.setattr(manager, "defaultLengthUnits", "in")
+        original = manager.evaluateExpression
+        monkeypatch.setattr(manager, "evaluateExpression", lambda expr, units:
+                            (calls.append((expr, units)), original(expr, units))[1])
+        for diameter in ("0.3125 in", "5"):
+            _payload(mh.handler(diameter=diameter, depth="StockZ/2", extent="blind", units="mm",
+                                face="h", points=[[1, 2, 0]]))
+            inp = expression_scene.rootComponent.features.holeFeatures.added[-1]._inp
+            assert inp.args["dia"] == ("V", diameter)
+            assert inp.extent == ("distance", ("V", "StockZ/2"))
+        assert calls == [("0.3125 in", "in"), ("StockZ/2", "in"), ("StockZ/2", "in")]
 
 
 # ── fakes that record the hole-input construction ───────────────────────────
@@ -49,6 +102,8 @@ class FakeHoleInput:
         self.tap = None             # ThreadInfo or None
         self.clearance = None       # ClearanceHoleInfo or None
         self.isModeled = False
+        self.isFullLength = False
+        self.threadLength = self.threadOffset = None
         self.isDefaultDirection = True
         self.holeTapType = 0
         self.tipAngle = None
@@ -81,6 +136,11 @@ class FakeHoleInput:
         if answer is False:
             return False
         self.placed = ("points", list(coll)); return answer
+    def setPositionByPoint(self, face, point):
+        answer = self._answer("setPositionByPoint")
+        if answer is True:
+            self.placed = ("face_point", point)
+        return answer
     def setPositionAtCenter(self, planar_entity, center_edge):
         assert planar_entity == "FACE"
         assert isinstance(center_edge, BRepEdge)
@@ -118,6 +178,14 @@ class FakeHoleInput:
         if answer is False:
             return False
         self.clearance = chi; return answer
+    def setLengthAndOffset(self, length, offset):
+        assert self.tap is not None
+        answer = self._answer("setLengthAndOffset")
+        if answer is not True:
+            return answer
+        self.isFullLength = False
+        self.threadLength, self.threadOffset = length, offset
+        return True
 
 
 class _Param:
@@ -161,7 +229,12 @@ class FakeHoleFeature:
         # designation on tappedHoleInfo, the helix flag on the thread feature a tapped hole also
         # creates, and the tip angle as a ModelParameter carrying RADIANS.
         self.tappedHoleInfo = inp.tap
-        self.thread = (type("T", (), {"isModeled": modeled_readback})()
+        self.thread = (SimpleNamespace(isModeled=modeled_readback, threadInfo=inp.tap,
+                         isFullLength=inp.isFullLength,
+                         threadLength=None if inp.isFullLength else _Param(
+                             float(inp.threadLength.stringValue.removesuffix(" cm")) if inp.threadLength is not None else 1.0),
+                         threadOffset=None if inp.isFullLength else _Param(
+                             float(inp.threadOffset.stringValue.removesuffix(" cm")) if inp.threadOffset is not None else 0.0))
                        if inp.tap and modeled_readback is not None else None)
         self.tipAngle = _Param(_deg_to_rad(inp.tipAngle)) if inp.tipAngle else None
         kind = inp.placed[0]
@@ -169,6 +242,8 @@ class FakeHoleFeature:
             pts = inp.placed[1]
         elif kind == "point":
             pts = [inp.placed[1]]
+        elif kind == "face_point":
+            pts = [_SketchPoint(inp.placed[1])]
         else:
             # center / on_edge / plane_offsets - ONE synthetic hole (these modes place exactly one;
             # the handler verifies the drilled-axis COUNT, not per-point coordinates, for them).
@@ -231,11 +306,13 @@ class FakeHoleFeatures:
 
 
 class _ThreadInfo:
-    def __init__(self, internal, ttype, desig, cls):
+    def __init__(self, internal, ttype, desig, cls, right_handed=True):
         self.internal, self.ttype, self.desig, self.cls = internal, ttype, desig, cls
+        self.right_handed = right_handed
         # the live ThreadInfo's own member names, which the read-back path reads
         self.threadDesignation = desig
         self.threadType = ttype
+        self.threadClass = cls
 
 
 class FakeThreadDataQuery:
@@ -256,18 +333,31 @@ class FakeThreadDataQuery:
             return ("M5x0.5",) if size.startswith("5") else ()
         return ("M5x0.8", "M5x0.5") if size.startswith("5") else ("M6x1",)
     def allClasses(self, internal, t, desig):
+        if t == "ANSI Unified Screw Threads":
+            return ("1B", "2B", "3B") if internal else ("1A", "2A", "3A")
         return ("6H",) if internal else ("6g",)
 
 
-class FakeThreadFeatures:
+class FakeThreadCatalog:
+    """What ThreadDataQuery.create and ThreadInfo.create answer from; neither has a measured shape."""
     def __init__(self):
-        self.threadDataQuery = FakeThreadDataQuery()
+        self.query = FakeThreadDataQuery()
         self.created = []
-    def __len__(self):
-        # a live ThreadFeatures collection is falsy while empty
-        return len(self.created)
-    def createThreadInfo(self, internal, ttype, desig, cls):
-        ti = _ThreadInfo(internal, ttype, desig, cls); self.created.append(ti); return ti
+    def data_query(self, tapered=False):
+        # Injected, not measured: the tapered library answers nothing here.
+        return None if tapered else self.query
+    def thread_info(self, tapered, internal, ttype, desig, cls, right_handed):
+        if tapered:
+            return None
+        ti = _ThreadInfo(internal, ttype, desig, cls, right_handed); self.created.append(ti); return ti
+
+
+@pytest.fixture(autouse=True)
+def thread_catalog(monkeypatch):
+    catalog = FakeThreadCatalog()
+    monkeypatch.setattr(mh.adsk.fusion.ThreadDataQuery, "create", catalog.data_query)
+    monkeypatch.setattr(mh.adsk.fusion.ThreadInfo, "create", catalog.thread_info)
+    return catalog
 
 
 # sketch / point machinery ----------------------------------------------------
@@ -348,11 +438,10 @@ class _Sketches(_NamedCollection):
 
 
 class _Features(FakeFeatures):
-    """comp.features plus the two collections a hole build reaches through."""
+    """comp.features plus the one collection a hole build reaches through."""
     def __init__(self, owner=None):
         super().__init__()
         self.holeFeatures = FakeHoleFeatures(parent=owner)
-        self.threadFeatures = FakeThreadFeatures()
 
 
 class _Comp(MakeComp):
@@ -668,6 +757,123 @@ def _install_verified(monkeypatch):
     monkeypatch.setattr(adsk.core.Point3D, "create",
                         staticmethod(lambda x, y, z: FakePoint(x, y, z)))
     return d
+
+
+class TestFacePoint:
+    @pytest.fixture
+    def scene(self, monkeypatch):
+        import adsk.core
+        design = install(mh, make_design(comp=_Root()))
+        face = BRepFace(Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 1)),
+                        body=BRepBody(parent_component=design.rootComponent))
+        face.isPointOnFace = lambda p: 0 <= p.x <= 2 and 0 <= p.y <= 2 and p.z == 1
+        monkeypatch.setattr(mh, "_resolve_face", lambda d, h: (face, None))
+        monkeypatch.setattr(mh, "_value", lambda value: ("V", value))
+        monkeypatch.setattr(adsk.core.Point3D, "create", staticmethod(FakePoint))
+        return design, face
+
+    def test_exact_owner_point_reaches_input_without_a_placement_sketch(self, scene):
+        design, _face = scene
+        data = _payload(mh.handler(diameter="4 mm", face="h", placement="face_point",
+                                  point=[5, 10, 10], depth="5 mm"))
+        assert data["point_space"] == "face-owner" and data["holes_verified"] is True
+        assert "points_space" not in data
+        assert data["drill_axes_owner_cm"] == [[.5, 1, 1, 0, 0, 1]]
+        assert design.rootComponent.sketches.created_on == []
+
+    @pytest.mark.parametrize("answer, message", [(False, "outside"), (None, "not verified"),
+                                                (1, "not verified")])
+    def test_unproved_face_containment_never_adds_a_hole(self, scene, monkeypatch, answer, message):
+        design, face = scene
+        monkeypatch.setattr(face, "isPointOnFace", lambda p: answer)
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and message in result["message"]
+        assert "[5, 10, 10]" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_same_plane_outside_point_refuses_without_geometry(self, scene):
+        design, _face = scene
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[30, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "outside" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_unread_owner_plane_refuses_before_add(self, scene, monkeypatch):
+        design, _face = scene
+        monkeypatch.setattr(mh._geom, "_face_plane", lambda face: (None, None))
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "plane" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_native_owner_mismatch_refuses_before_add(self, scene, monkeypatch):
+        design, face = scene
+        native = BRepFace(face.geometry, body=BRepBody(parent_component=_bracket("Other")))
+        monkeypatch.setattr(face, "nativeObject", native, raising=False)
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "native owner" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_placed_proxy_uses_native_plane_and_face_owner_with_root_active(self, scene, monkeypatch):
+        design, _face = scene
+        owner = _bracket("Turn")
+        native = BRepFace(Plane(FakeVector3D(0, 0, 1), FakePoint(0, 0, 1)),
+                          body=BRepBody(parent_component=owner))
+        native.isPointOnFace = lambda p: (p.x, p.y, p.z) == (.5, 1, 1)
+        occurrence = make_occurrence("Turn:1", owner)
+        proxy = BRepFace(Plane(FakeVector3D(1, 0, 0), FakePoint(9, 0, 0)),
+                         body=BRepBody(parent_component=owner))
+        proxy.nativeObject = native
+        proxy.assemblyContext = occurrence
+        monkeypatch.setattr(mh, "_resolve_face", lambda d, h: (proxy, None))
+        data = _payload(mh.handler(diameter="4 mm", face="h", placement="face_point",
+                                  point=[5, 10, 10], depth="5 mm"))
+        assert data["host_component"] == "Turn" and data["host_verified"] is True
+        assert data["face_normal_owner"] == [0, 0, 1]
+        assert owner.features.holeFeatures.add_calls == 1
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_off_plane_point_refuses_before_any_geometry_is_added(self, scene):
+        design, _face = scene
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 13], depth="5 mm")
+        assert result["isError"] is True and "3 mm off" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+        assert design.rootComponent.sketches.created_on == []
+
+    def test_unread_position_answer_never_reaches_add(self, scene):
+        design, _face = scene
+        design.rootComponent.features.holeFeatures.refusals["setPositionByPoint"] = None
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "returned None" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_wrong_axis_is_reported_as_a_landed_unverified_hole(self, scene, monkeypatch):
+        _design, _face = scene
+        monkeypatch.setattr(mh, "_drill_axes", lambda feature: ([(9, 9, 1, 0, 0, 1)], True))
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "landed" in result["message"]
+        assert "design_delete_feature" in result["message"]
+        assert result["details"]["feature"] == "Hole1"
+
+    def test_correct_point_but_nonparallel_drill_axis_is_not_success(self, scene, monkeypatch):
+        _design, _face = scene
+        monkeypatch.setattr(mh, "_drill_axes", lambda feature: ([(.5, 1, 1, 1, 0, 0)], True))
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=[5, 10, 10], depth="5 mm")
+        assert result["isError"] is True and "landed" in result["message"]
+
+    @pytest.mark.parametrize("point", [[True, 10, 10], [5, float("nan"), 10], [5, 10]])
+    def test_non_point_input_refuses_before_feature_add(self, scene, point):
+        design, _face = scene
+        result = mh.handler(diameter="4 mm", face="h", placement="face_point",
+                            point=point, depth="5 mm")
+        assert result["isError"] is True and "finite [x,y,z]" in result["message"]
+        assert design.rootComponent.features.holeFeatures.add_calls == 0
 
 
 class TestPerPointVerification:
@@ -1138,6 +1344,18 @@ class TestWorldPointsIntoANestedComponent:
         assert res["isError"] is True and "did not invert" in res["message"]
         assert _added(d) == []
 
+    def test_a_true_inverse_with_nonfinite_cells_is_refused(self, monkeypatch):
+        def corrupt_inverse(matrix):
+            matrix._r = ((float("nan"), 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+            return True
+
+        monkeypatch.setattr(FakeMatrix3D, "invert", corrupt_inverse)
+        sub = _bracket()
+        d, _sub = self._nested(monkeypatch, occs=[_placing(sub, FakeMatrix3D(90.0))], sub=sub)
+        res = _drill(points=[[40, 20, 10]], points_space="world")
+        assert res["isError"] is True and "finite matrix" in res["message"]
+        assert _added(d) == []
+
 
 class TestSketchSpacePoint:
     """The conversion on its own: (u, v, off_plane) in cm, straight off the sketch's converter."""
@@ -1590,15 +1808,14 @@ class TestCounterboreCountersink:
 # ── tapped ───────────────────────────────────────────────────────────────────
 
 class TestTapped:
-    def test_tapped_builds_thread_info_and_taps(self):
+    def test_tapped_builds_thread_info_and_taps(self, thread_catalog):
         d = _install()
         out = _payload(mh.handler(hole_type="simple", diameter="5 mm", face="h",
                                   points=[[5, 3, 0]], extent="blind", depth="12 mm",
                                   tap="M5x0.8"))
-        tf = d.rootComponent.features.threadFeatures
-        assert len(tf.created) == 1
-        ti = tf.created[0]
-        assert ti.internal is True and ti.desig == "M5x0.8"
+        assert len(thread_catalog.created) == 1
+        ti = thread_catalog.created[0]
+        assert ti.internal is True and ti.desig == "M5x0.8" and ti.right_handed is True
         inp = d.rootComponent.features.holeFeatures.added[0]._inp
         assert inp.tap is ti and inp.holeTapType == 2
         assert out.get("tapped") == "M5x0.8"
@@ -1608,6 +1825,191 @@ class TestTapped:
         res = mh.handler(hole_type="simple", diameter="5 mm", face="h",
                          points=[[5, 3, 0]], extent="blind", depth="12 mm", tap="M99x9")
         assert res["isError"] is True and "M99x9" in res["message"]
+
+
+class TestExplicitTapControls:
+    @pytest.fixture
+    def tap_scene(self, monkeypatch):
+        monkeypatch.setattr(mh.adsk.core.ValueInput, "createByString",
+                            lambda value: SimpleNamespace(stringValue=value))
+        return _install()
+
+    def call(self, **kw):
+        args = dict(diameter="5 mm", face="h", points=[[5, 3, 0]],
+                    extent="blind", depth="22.225 mm", tap="1/4-20 UNC")
+        args.update(kw)
+        return mh.handler(**args)
+
+    def test_partial_controls_send_explicit_centimeter_expressions(self, tap_scene):
+        _payload(self.call(thread_extent="partial", thread_length=12, thread_offset=2))
+        inp = tap_scene.rootComponent.features.holeFeatures.added[0]._inp
+        assert inp.threadLength.stringValue == "1.2 cm"
+        assert inp.threadOffset.stringValue == "0.2 cm"
+
+    @pytest.mark.parametrize("full", [False, True])
+    def test_class_and_extent_read_actual_child_in_output_units(self, tap_scene, full):
+        d = tap_scene
+        controls = {"thread_extent": "full"} if full else {
+            "thread_extent": "partial", "thread_length": 12 / 25.4, "thread_offset": 2 / 25.4}
+        out = _payload(self.call(thread_class="2b", units="in", **controls))
+        child = d.rootComponent.features.holeFeatures.added[0].thread
+        assert out["thread_class"] == child.threadInfo.threadClass == "2B"
+        assert "diameter='5 mm' is unused" in out["note"]
+        assert "find_geometry/model_inspect" in out["note"]
+        assert out["thread_full_length"] is full
+        assert out["thread_length_applicable"] is (not full)
+        assert out["thread_offset_applicable"] is (not full)
+        assert out["units"] == "in"
+        if full:
+            assert out["thread_length"] is out["thread_offset"] is None
+        else:
+            assert child.threadLength.value == pytest.approx(1.2)
+            assert child.threadOffset.value == pytest.approx(0.2)
+            assert out["thread_length"] == pytest.approx(12 / 25.4, abs=1e-6)
+            assert out["thread_offset"] == pytest.approx(2 / 25.4, abs=1e-6)
+
+    def test_omitted_controls_disclose_child_and_partial_offset_defaults_zero(self, tap_scene, monkeypatch):
+        d = tap_scene
+        hf = d.rootComponent.features.holeFeatures
+        original = hf.add
+        def add(inp):
+            f = original(inp)
+            if inp.threadLength is None:
+                f.thread.threadLength.value = 1.75
+                f.thread.threadOffset.value = 0.15
+            return f
+        monkeypatch.setattr(hf, "add", add)
+        out = _payload(self.call())
+        assert out["thread_class"] == "1B"
+        assert out["thread_full_length"] is False
+        assert out["thread_length"] == 17.5 and out["thread_offset"] == 1.5
+        out = _payload(self.call(thread_extent="partial", thread_length=12))
+        assert out["thread_offset"] == 0
+
+    @pytest.mark.parametrize("controls", [
+        {"tap": "", "thread_class": "2B"}, {"thread_extent": "partial"},
+        {"thread_extent": "full", "thread_offset": 0}, {"thread_length": 12},
+        {"thread_extent": "partial", "thread_length": 0},
+        {"thread_extent": "partial", "thread_length": 12, "thread_offset": -1},
+        {"thread_extent": "partial", "thread_length": float("nan")},
+        {"thread_class": "absent"},
+    ])
+    def test_invalid_controls_refuse_before_placement(self, tap_scene, controls):
+        d = tap_scene
+        result = self.call(**controls)
+        assert result["isError"] is True
+        assert d.rootComponent.sketches.created_on == []
+        assert d.rootComponent.features.holeFeatures.add_calls == 0
+
+    @pytest.mark.parametrize("defect", ["full_ignored", "partial_ignored", "class_mismatch", "length_unread"])
+    def test_unverified_controls_report_landed_hole(self, tap_scene, monkeypatch, defect):
+        d = tap_scene
+        hf = d.rootComponent.features.holeFeatures
+        controls = {"thread_extent": "partial", "thread_length": 12, "thread_offset": 2}
+        if defect == "full_ignored":
+            controls = {"thread_extent": "full"}
+            monkeypatch.setattr(FakeHoleInput, "isFullLength", property(lambda self: False,
+                                lambda self, value: None), raising=False)
+        elif defect == "partial_ignored":
+            monkeypatch.setattr(FakeHoleInput, "setLengthAndOffset", lambda *a: True)
+        else:
+            original = hf.add
+            def add(inp):
+                f = original(inp)
+                if defect == "class_mismatch":
+                    f.thread.threadInfo = SimpleNamespace(threadClass="3B")
+                else:
+                    f.thread.threadLength = None
+                return f
+            monkeypatch.setattr(hf, "add", add)
+        result = self.call(thread_class="2B", **controls)
+        assert result["isError"] is True
+        assert "Hole1" in result["message"] and "landed" in result["message"]
+        assert len(hf.added) == 1 and hf.added[0].deleted is False
+        assert result["details"]["thread_class"] == ("3B" if defect == "class_mismatch" else "2B")
+
+    def test_wrong_input_and_child_class_cannot_validate_each_other(self, tap_scene, monkeypatch,
+                                                                     thread_catalog):
+        monkeypatch.setattr(mh.adsk.fusion.ThreadInfo, "create",
+                            lambda tapered, internal, standard, designation, cls, right_handed:
+                            thread_catalog.thread_info(tapered, internal, standard, designation,
+                                                       "3B", right_handed))
+        result = self.call(thread_class="2b")
+        assert result["isError"] is True and "Hole1" in result["message"]
+        assert "thread_class='2b'" in result["message"]
+        assert result["details"]["thread_class"] == "3B"
+        hole = tap_scene.rootComponent.features.holeFeatures.added[0]
+        assert hole.tappedHoleInfo.threadClass == hole.thread.threadInfo.threadClass == "3B"
+
+    def test_refused_partial_setter_cleans_placement(self, tap_scene):
+        d = tap_scene
+        hf = d.rootComponent.features.holeFeatures
+        hf.refusals["setLengthAndOffset"] = False
+        result = self.call(thread_extent="partial", thread_length=12)
+        assert result["isError"] is True and "setLengthAndOffset" in result["message"]
+        assert hf.add_calls == 0
+        assert d.rootComponent.sketches._items[0].deleted is True
+
+
+class TestTapSizesSimpleHole:
+    @pytest.fixture
+    def scene(self, monkeypatch, thread_catalog):
+        design = _install()
+        query = thread_catalog.query
+        monkeypatch.setattr(query, "allSizes", lambda standard: ("0.375",))
+        monkeypatch.setattr(query, "allDesignations", lambda standard, size:
+                            ("3/8-16 UNC",) if standard == "ANSI Unified Screw Threads" else ())
+        monkeypatch.setattr(_ThreadInfo, "majorDiameter", 0.9525, raising=False)
+        return design
+
+    def call(self, **kw):
+        args = dict(face="h", points=[[5, 3, 0]], extent="blind", depth="22.225 mm",
+                    tap="3/8-16 UNC", thread_type="ANSI Unified Screw Threads", thread_class="2B")
+        args.update(kw)
+        return mh.handler(**args)
+
+    @pytest.mark.parametrize("units", ["mm", "in"])
+    def test_omitted_diameter_uses_actual_major_diameter_in_centimeters(self, scene, units):
+        out = _payload(self.call(units=units))
+        inp = scene.rootComponent.features.holeFeatures.added[0]._inp
+        assert inp.args["dia"] == ("V", "0.95250000000000001 cm")
+        assert inp.tap.threadDesignation == out["tapped"] == "3/8-16 UNC"
+        assert inp.tap.threadClass == out["thread_class"] == "2B"
+        assert "tap definition governs bore size" in out["note"]
+        assert "diameter=" not in out["note"]
+
+    @pytest.mark.parametrize("major", [None, 0, float("nan"), float("inf"), True, "raises"])
+    def test_unread_or_invalid_seed_refuses_before_placement(self, scene, monkeypatch, major):
+        def read(_):
+            if major == "raises":
+                raise RuntimeError("unread majorDiameter")
+            return major
+        monkeypatch.setattr(_ThreadInfo, "majorDiameter", property(read))
+        result = self.call()
+        assert result["isError"] is True and "3/8-16 UNC" in result["message"]
+        assert "positive major diameter" in result["message"] and "explicit 'diameter'" in result["message"]
+        assert scene.rootComponent.sketches.created_on == []
+        assert scene.rootComponent.features.holeFeatures.add_calls == 0
+
+    def test_explicit_diameter_does_not_need_the_seed(self, scene, monkeypatch):
+        monkeypatch.setattr(_ThreadInfo, "majorDiameter", None)
+        out = _payload(self.call(diameter="0.3125 in"))
+        assert scene.rootComponent.features.holeFeatures.added[0]._inp.args["dia"] == ("V", "0.3125 in")
+        assert "diameter='0.3125 in' is unused" in out["note"]
+
+    def test_supplied_diameter_expression_still_validates(self, scene, monkeypatch):
+        monkeypatch.setattr(mh._inputs, "length_value_input", lambda *a: (None, None, "Unknown parameter"))
+        result = self.call(diameter="MissingDiameter/2")
+        assert result["isError"] is True and "MissingDiameter/2" in result["message"]
+        assert scene.rootComponent.sketches.created_on == []
+        assert scene.rootComponent.features.holeFeatures.add_calls == 0
+
+    @pytest.mark.parametrize("extra", [{"tap": ""}, {"hole_type": "counterbore"}, {"hole_type": "countersink"}])
+    def test_other_holes_still_require_explicit_sizing(self, scene, extra):
+        result = self.call(**extra)
+        assert result["isError"] is True and "Provide 'diameter'" in result["message"]
+        assert scene.rootComponent.sketches.created_on == []
+        assert scene.rootComponent.features.holeFeatures.add_calls == 0
 
 
 # ── fastener-aware clearance holes ───────────────────────────────────────────
@@ -2031,7 +2433,7 @@ class TestBlindDepthGuard:
     def test_expression_depth_passes_the_guard(self, monkeypatch):
         # A parameter expression is the API's to evaluate - the guard must not float-parse it away.
         # The absent-design error AFTER the guard is the proof it let the expression through.
-        monkeypatch.setattr(mh._common, "design", lambda: None)
+        _install_design(mh, None)
         res = mh.handler(face="F", points=[[0, 0, 0]], diameter="8 mm", extent="blind",
                          depth="hole_depth")
         assert "POSITIVE depth" not in res.get("message", "")

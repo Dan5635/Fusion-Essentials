@@ -5,7 +5,7 @@ import math
 import pytest
 
 from conftest import _FakeObjectCollection, load_tool
-from _sketch_fakes import FakeSketch, _payload, _Spline, _SplinePoint, draw_installer
+from tests.fakes.sketch_scenarios import FakeSketch, _payload, _Spline, _SplinePoint, draw_installer
 
 sk = load_tool("sketch_add_3d_spline")
 _install_draw = draw_installer(sk)

@@ -269,15 +269,14 @@ def _pick_face(faces, snap):
 
 
 def _slide_index(slide_axis, ax_name):
-    """Resolve the pin_slot SLIDE direction index. Blank -> the next frame axis after the rotation
-    axis (guaranteed distinct). Returns (slide_idx_or_None, error_or_None); slide_idx None means 'use
-    the default in apply_motion'."""
+    """Resolve the pin_slot SLIDE direction index against the FRAME rotation axis `ax_name` (None
+    when the rotation is a custom entity). Returns (slide_idx or None for the default, error)."""
     s = (slide_axis or "").strip().lower()
     if not s:
         return None, None
     if s not in _AXES:
         return None, f"Unknown slide_axis '{slide_axis}'. Valid: x, y, z."
-    if _AXES[s] == _AXES[ax_name]:
+    if ax_name in _AXES and _AXES[s] == _AXES[ax_name]:
         return None, "For pin_slot, 'slide_axis' must differ from 'axis' (the rotation axis)."
     return _AXES[s], None
 
@@ -359,7 +358,7 @@ def _apply_limits(motion, *, min_deg=None, max_deg=None, rest_deg=None,
         rl = safe(lambda: motion.rotationLimits)
         if rl is None:
             return changed, unverified, ("This joint's motion has no ROTATION limits "
-    "(min_deg/max_deg/rest_deg need a revolute or cylindrical joint).")
+    "(min_deg/max_deg/rest_deg need a revolute, cylindrical, pin_slot or planar joint).")
         for (key, flag_prop, value_prop), wanted in zip(_ROT_LIMITS,
                                                         (min_deg, max_deg, rest_deg)):
             if wanted is None:

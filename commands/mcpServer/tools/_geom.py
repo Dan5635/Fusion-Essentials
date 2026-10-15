@@ -5,6 +5,7 @@
 before/after effect reads a write is verified with, and the nested-child disclosure a measure
 publishes."""
 
+import hashlib
 import math
 import types
 
@@ -15,9 +16,9 @@ from ._common import counted, safe
 from . import _common
 
 MAP_BLURB = (
-    "measurement math: unit_vector/unit_vector_between/evaluator_normal_at/dot/cross "
+    "math: unit_vector/unit_vector_between/evaluator_normal_at/dot/cross/coaxial "
     "(vectors); body_aabb/occ_world_frame/axis_vec (AABB, placement); volumes/volume_delta/"
-    "signed_volume/face_counts/face_count_delta/areas/area_delta/face_frames/faces_moved/"
+    "signed_volume/body_shape/face_counts/face_count_delta/areas/area_delta/face_frames/faces_moved/"
     "lump_count/aabb_gap/parallel_plane_facts (what a write is judged by; area/frames move where "
     "a pivot leaves the volume); address/subtree_facts")
 
@@ -204,6 +205,37 @@ def areas(bodies):
     """{id(body): surface-area-or-None} - the pre/post sample a BOUNDARY-changing feature compares,
     where neither volume nor face count moves. Same id() precondition as volumes()."""
     return {id(b): safe(lambda b=b: b.area) for b in bodies}
+
+
+def body_shape(body):
+    """One strict local body shape sample, including surfaces, or None when any field fails."""
+    solid = safe(lambda: body.isSolid)
+    area = safe(lambda: body.area)
+    bounds = _aabb_extents(body)
+    faces = safe(lambda: body.faces)
+    count = counted(lambda: faces.count)
+    if (solid is not True and solid is not False) or (not isinstance(area, (int, float))
+            or isinstance(area, bool) or not math.isfinite(area) or bounds is None
+            or count is None or count <= 0):
+        return None
+    samples = []
+    for i in range(count):
+        face = safe(lambda i=i: faces.item(i))
+        face_area = safe(lambda: face.area)
+        center = _coords(safe(lambda: face.centroid))
+        if (not isinstance(face_area, (int, float)) or isinstance(face_area, bool)
+                or center is None or not all(math.isfinite(v) for v in (face_area, *center))):
+            return None
+        samples.append((round(float(face_area), 9) or 0.0,
+                        *[round(float(v), 7) or 0.0 for v in center]))
+    volume = signed_volume(body) if solid else None
+    if solid and (volume is None or not math.isfinite(volume)):
+        return None
+    return {"solid": solid, "area_cm2": round(float(area), 9) or 0.0,
+            "bounds_cm": [[round(float(v), 7) or 0.0 for v in pair] for pair in bounds],
+            "face_count": count,
+            "face_signature": hashlib.sha256(repr(sorted(samples)).encode("ascii")).hexdigest(),
+            "volume_cm3": (round(float(volume), 9) or 0.0) if solid else None}
 
 
 def area_delta(bodies, before):
@@ -580,6 +612,21 @@ def cross(a, b):
     if a is None or b is None:
         return None
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def coaxial(origin_a, axis_a, origin_b, axis_b, *, axis_cross_tol=1e-6,
+            offset_cross_tol=1e-4, axis_dot_tol=None, offset_squared_tol=None):
+    """Compare unit axes with the caller's angular and positional threshold metrics."""
+    if axis_dot_tol is not None:
+        if abs(abs(dot(axis_a, axis_b)) - 1) > axis_dot_tol:
+            return False
+    elif any(abs(c) > axis_cross_tol for c in cross(axis_a, axis_b)):
+        return False
+    offset = [origin_b[i] - origin_a[i] for i in range(3)]
+    off = cross(axis_a, offset)
+    if offset_squared_tol is not None:
+        return dot(off, off) <= offset_squared_tol
+    return all(abs(c) < offset_cross_tol for c in off)
 
 
 def unit_vector(v, decimals: int = 6):

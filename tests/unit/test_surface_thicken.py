@@ -7,7 +7,7 @@ import adsk.fusion
 import pytest
 
 from conftest import (BRepBody, BRepEdge, BRepFace, FakeFeature as _SharedFeature, MakeComp,
-                      _NamedCollection, go_stale, install, load_tool, make_design,
+                      _NamedCollection, body_proxy, go_stale, install, load_tool, make_design,
                       make_source_document, payload)
 
 se = load_tool("surface_thicken")
@@ -119,6 +119,103 @@ def _unidentifiable(name):
     return body
 
 
+@pytest.fixture
+def visibility_scene(monkeypatch):
+    def build(before, after, unread=None, wall_solid=True, occurrence=None, **features):
+        source = BRepBody("Sheet", is_solid=False, light_bulb=before)
+        walls = [] if wall_solid is None else [BRepBody("Wall", is_solid=wall_solid)]
+        tf = FakeThickenFeatures(result_bodies=walls, created_faces=[_face_on(w) for w in walls],
+                                 **features)
+        original_add = tf.add
+        def add(inp):
+            feature = original_add(inp)
+            source.isLightBulbOn = after
+            if unread == "after":
+                go_stale(source, attrs=("isLightBulbOn",))
+            return feature
+        monkeypatch.setattr(tf, "add", add)
+        picked = body_proxy(source, occurrence) if occurrence else source
+        _wire(tf, handle_map={"F1": _face_on(picked)}, standing_bodies=[source])
+        if unread == "before":
+            go_stale(source, attrs=("isLightBulbOn",))
+        return source
+    return build
+
+
+class TestSourceVisibilityDisclosure:
+    @pytest.mark.parametrize("before,after,state,action", [(True, False, "hidden", "show"),
+                                                           (False, True, "shown", "hide")])
+    def test_new_wall_discloses_both_native_visibility_transitions(self, visibility_scene, before, after, state, action):
+        visibility_scene(before, after)
+        out = payload(se.handler(faces=["F1", "F1", "F1"], thickness=1, chaining=False))
+        assert out["source_visibility"] == [
+            {"body": "Sheet", "face_indices": [0, 1, 2], "handle": "Sheet",
+             "before": {"light_bulb_on": before, "visible": before},
+             "after": {"light_bulb_on": after, "visible": after}}]
+        assert out["note"].count(f"Source 'Sheet' became {state}.") == 1
+        assert out["note"].count("view_set(") == 1 and "design_get" not in out["note"]
+        assert f"Undo it with view_set(action='{action}', target=['Sheet'])." in out["note"]
+        assert "source_visibility" not in out.get("unverified", [])
+
+    def test_a_proxy_source_is_undone_by_its_own_handle(self, visibility_scene):
+        visibility_scene(True, False, occurrence=types.SimpleNamespace(name="Sub:1",
+                                                                       fullPathName="Sub:1"))
+        out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
+        assert ("Source 'Sheet' in 'Sub:1' became hidden. Undo it with view_set(action='show', "
+                "target=['PROXY::Sub:1::Sheet']).") in out["note"]
+        assert "design_get" not in out["note"]
+
+    def test_a_source_whose_handle_does_not_read_is_sent_to_the_tree(self, visibility_scene):
+        go_stale(visibility_scene(True, False), attrs=("entityToken",))
+        out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
+        assert ("Source 'Sheet' became hidden. Read design_get(include=['tree'], tree_bodies=true), "
+                "then view_set(action='show', target=[<body handle>]).") in out["note"]
+
+    def test_rows_group_by_body_identity_not_by_wrapper(self):
+        # each read hands back a fresh wrapper; a shared native identity, not `is`, groups the faces
+        # under one body
+        first, second = (BRepBody("Sheet", is_solid=False, entity_token="tok-sheet") for _ in "ab")
+        other = BRepBody("Sheet", is_solid=False, entity_token="tok-other")
+        wall = BRepBody("Wall", is_solid=True)
+        tf = FakeThickenFeatures(result_bodies=[wall], created_faces=[_face_on(wall)])
+        _wire(tf, handle_map={"F1": _face_on(first), "F2": _face_on(second),
+                              "F3": _face_on(other)})
+        out = payload(se.handler(faces=["F1", "F2", "F3"], thickness=1, chaining=False))
+        assert [(r["handle"], r["face_indices"]) for r in out["source_visibility"]] == [
+            ("tok-sheet", [0, 1]), ("tok-other", [2])]
+
+    @pytest.mark.parametrize("wall_solid,features,fragment", [
+        (None, {}, "owns no result body"),
+        (False, {}, "did not close into a solid"),
+        (True, {"landed_cm": 0.5}, "reads back 5.0")])
+    def test_every_exit_that_leaves_a_feature_still_discloses_the_hidden_source(
+            self, visibility_scene, wall_solid, features, fragment):
+        visibility_scene(True, False, wall_solid=wall_solid, **features)
+        res = se.handler(faces=["F1"], thickness=1, units="mm", chaining=False)
+        assert res["isError"] is True and fragment in res["message"]
+        assert "Source 'Sheet' became hidden." in res["message"]
+        assert "action='show'" in res["message"]
+
+    def test_an_unflipped_source_adds_no_sentence_to_an_error_exit(self, visibility_scene):
+        visibility_scene(True, True, landed_cm=0.5)
+        res = se.handler(faces=["F1"], thickness=1, units="mm", chaining=False)
+        assert res["isError"] is True and "Source" not in res["message"]
+
+    @pytest.mark.parametrize("unread", ["before", "after"])
+    def test_unread_visibility_does_not_become_a_false_transition(self, visibility_scene, unread):
+        visibility_scene(True, False, unread)
+        out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
+        row = out["source_visibility"][0]
+        assert row[unread] == {"light_bulb_on": None, "visible": None}
+        assert "source_visibility" in out["unverified"] and "became" not in out["note"]
+
+    def test_an_unread_source_name_leaves_source_visibility_unverified(self, visibility_scene):
+        go_stale(visibility_scene(True, True), attrs=("name",))
+        out = payload(se.handler(faces=["F1"], thickness=1, chaining=False))
+        assert out["source_visibility"][0]["body"] is None
+        assert "source_visibility" in out["unverified"]
+
+
 class TestOffsetThickenKind:
 
     def test_thicken_produces_a_solid(self):
@@ -176,14 +273,14 @@ class TestOffsetThickenKind:
         _wire(tf, handle_map={"F1": BRepFace(None)})
         out = payload(se.handler(faces=["F1"], thickness=3, units="mm"))
         assert out["thickness"] == 3.0           # the wall's own parameter, in the caller's units
-        assert "unverified" not in out
+        assert "thickness" not in out.get("unverified", [])
 
     def test_unreadable_thickness_is_flagged_unverified_not_silently_echoed(self):
         tf = FakeThickenFeatures(result_bodies=[BRepBody("Wall1", is_solid=True)],
                                  thickness_readable=False)
         _wire(tf, handle_map={"F1": BRepFace(None)})
         out = payload(se.handler(faces=["F1"], thickness=3, units="mm"))
-        assert out["unverified"] == ["thickness"]
+        assert "thickness" in out["unverified"]
         assert "Not read back off the feature: thickness." in out["note"]
         assert out["thickness"] == 3.0           # the request, published only because it is flagged
 
@@ -249,6 +346,20 @@ class TestOffsetThickenKind:
 
     def test_symmetric_input_description_states_per_side(self):
         assert "per side" in se.tool.input_schema["properties"]["symmetric"]["description"]
+
+    @pytest.mark.parametrize("native,hinted", [
+        ("3 : failed to thicken faces: ASM_INCONSISTENT_ORIENTATION - Faces in shell have "
+         "inconsistent orientation.", True),
+        ("3 : failed to thicken faces: ASM_SOMETHING_ELSE", False)])
+    def test_only_an_orientation_refusal_gets_the_per_face_remedy(self, native, hinted):
+        tf = FakeThickenFeatures()
+        def add(inp):
+            raise RuntimeError(native)
+        tf.add = add
+        _wire(tf, handle_map={"F1": BRepFace(None)})
+        res = se.handler(faces=["F1"], thickness=-2.5)
+        assert res["isError"] is True and native in res["message"]
+        assert ("thicken each face in its own call with chaining=false" in res["message"]) is hinted
 
     def test_thicken_zero_thickness_guard(self):
         _wire(FakeThickenFeatures(), handle_map={"F1": BRepFace(None)})

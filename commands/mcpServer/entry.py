@@ -8,15 +8,18 @@ plus start()/stop()) so it participates in the settings-driven enablement loop i
 commands/settings/entry.py. The enable checkbox for this module defaults to False
 (see commands/__init__.py), so start() only runs when the user opts in and reloads.
 
-start() hosts a local MCP server on 127.0.0.1:27182 path /mcp -- the same
-well-known endpoint Fusion's built-in MCP server uses -- but only when that
-built-in server is OFF (otherwise the port is taken and we report it). 27182 is
-Fusion's preferred default port; whichever server binds first wins, and if ours
-loses we detect it and guide the user (see _start_ownership_check / start()).
+start() hosts a local MCP server on 127.0.0.1, path /mcp, on the port the
+'mcp_port' setting names (endpoint.DEFAULT_PORT unless the user changes it). The
+port is this add-in's own, distinct from the one Fusion's built-in MCP server
+uses, so both servers can run side by side. start() binds exactly that port: a
+setting it cannot use, or a port something else answers on, is reported to the
+user and nothing else is bound (see _configured_port / _report_listener).
 """
 
 import importlib
+import os
 import pkgutil
+import threading
 
 import adsk.core
 
@@ -24,6 +27,7 @@ from ...lib import fusion360utils as futil
 from ...lib import loaded_attestation
 from ... import config
 from ... import shared_state
+from . import endpoint
 from .server import mcp_server
 from .server.task_manager import TaskManager
 from .mcp_primitives import registry
@@ -39,15 +43,15 @@ CMD_Description = (
     'can interact with your Fusion session. Off by default; loopback only.'
 )
 
-# Loopback only, on Fusion's well-known MCP port/path so clients configured for the
-# standard Fusion MCP endpoint reach us unchanged.
-HOST = '127.0.0.1'
-PORT = 27182
+# Loopback only. The port comes from the 'mcp_port' setting, read once in start().
+HOST = endpoint.HOST
 
 # This module's own settings group (separate from the FEATURE_ENABLEMENT checkbox
 # that gates the whole module). Gives the MCP server its own Settings tab where the
 # high-risk execute_api_script tool can be toggled independently.
 SETTINGS_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_MCP'
+# The Settings tab's icon folder; the dialog draws the copy of this path the settings file holds.
+ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', '')
 _ALLOW_EXECUTE_KEY = 'allow_execute_api_script'
 
 # Tool modules that are NOT auto-registered by the pkgutil sweep in _collect_items(): each is
@@ -60,7 +64,7 @@ DEFAULT_SETTINGS = {
     _ALLOW_EXECUTE_KEY: {
         "type": "checkbox",
         # High-risk: lets a connected AI run arbitrary Python in the live session.
-        # The "security risk" label IS the consent signal (no separate dialog). Sourced from
+        # The label's risk wording IS the consent signal (no separate dialog). Sourced from
         # GATED_TOOLS so sys_capability_map's gated-tool report can never quote a stale label.
         "label": GATED_TOOLS["sys_execute_script"],
         "default": False,
@@ -98,9 +102,24 @@ DEFAULT_SETTINGS = {
         "label": "Enable mesh MCP tools",
         "default": True,
     },
+    "family_enabled_pmi": {
+        "type": "checkbox",
+        "label": "Enable pmi MCP tools",
+        "default": True,
+    },
+    "family_enabled_render": {
+        "type": "checkbox",
+        "label": "Enable render MCP tools",
+        "default": True,
+    },
     "family_enabled_save": {
         "type": "checkbox",
         "label": "Enable save MCP tools",
+        "default": True,
+    },
+    "family_enabled_sheet": {
+        "type": "checkbox",
+        "label": "Enable sheet metal MCP tools",
         "default": True,
     },
     "family_enabled_surface": {
@@ -108,10 +127,46 @@ DEFAULT_SETTINGS = {
         "label": "Enable surface MCP tools",
         "default": True,
     },
+    # The Settings dialog draws checkboxes and dropdowns only, so it shows no input for this
+    # type: the port is edited in the settings file. start() refuses a value it cannot bind.
+    endpoint.PORT_SETTING: {
+        "type": "number",
+        "label": f"MCP server port ({endpoint.PORT_MIN}-{endpoint.PORT_MAX})",
+        "default": endpoint.DEFAULT_PORT,
+    },
 }
 
 # Register this module's settings group so it appears as a Settings tab.
-shared_state.load_settings_init(SETTINGS_ID, 'MCP Server', DEFAULT_SETTINGS, None)
+shared_state.load_settings_init(SETTINGS_ID, 'MCP Server', DEFAULT_SETTINGS, ICON_FOLDER)
+
+
+def _refresh_stored_presentation():
+    """Bring this group's stored row labels and tab icon path up to the shipped ones."""
+    # load_settings_init keeps an existing group's labels and img_path, and the Settings dialog
+    # draws those stored copies. Only "label" and "img_path" are assigned; no "default" is.
+    try:
+        groups = shared_state.get_all_module_settings()
+        group = groups.get(SETTINGS_ID) if isinstance(groups, dict) else None
+        if not isinstance(group, dict):
+            return
+        changed = False
+        rows = group.get("settings")
+        for key, shipped in DEFAULT_SETTINGS.items():
+            row = rows.get(key) if isinstance(rows, dict) else None
+            if isinstance(row, dict) and row.get("label") != shipped["label"]:
+                row["label"] = shipped["label"]
+                changed = True
+        if group.get("img_path") != ICON_FOLDER:
+            group["img_path"] = ICON_FOLDER
+            changed = True
+        if changed:
+            shared_state._write_settings(groups)
+    except Exception as e:
+        futil.log(f'{CMD_NAME}: stored Settings labels and icon not refreshed '
+                  f'({type(e).__name__}: {e})')
+
+
+_refresh_stored_presentation()
 
 
 def _execute_api_script_allowed() -> bool:
@@ -144,7 +199,21 @@ def _disabled_families() -> set:
             disabled.add(fam)
     return disabled
 
+
+def _configured_port():
+    """(port, None) from the 'mcp_port' setting, or (None, why start() must not bind)."""
+    try:
+        setting = shared_state.load_settings(SETTINGS_ID)[endpoint.PORT_SETTING]
+    except Exception as e:
+        return None, (f"The '{endpoint.PORT_SETTING}' setting could not be read "
+                      f"({type(e).__name__}: {e}); the shipped default is {endpoint.DEFAULT_PORT}.")
+    return endpoint.configured_port(setting)
+
+
 # Module-level handles to the running server, torn down in stop().
+# _lifecycle counts every start() and stop(); a listener report begun under an earlier count
+# drops itself instead of warning in, or stopping the TaskManager of, a later one.
+_lifecycle = 0
 _http_server = None
 _server_thread = None
 _mcp = None
@@ -238,16 +307,28 @@ def _resource_catalog():
 
 def start():
     """Called when the module is enabled and the add-in starts."""
-    global _http_server, _server_thread, _mcp
+    global _http_server, _server_thread, _mcp, _lifecycle
+    _lifecycle += 1
     # The TaskManager is started first and owns a registered custom event plus the pending-task
     # table, so every path that leaves without a running server must stop it again. One guard in
     # finally covers all of them - including an unexpected raise, which the blanket except below
     # otherwise reports and swallows, leaking the started TaskManager until the next add-in stop().
+    # The failed-bind report is the one hand-off: its main-thread callback stops the TaskManager.
     server_running = False
+    report_pending = False
     try:
         if TaskManager.start() is not True:
             futil.log(f'{CMD_NAME}: phase=task_manager_start server not started',
                       adsk.core.LogLevels.ErrorLogLevel)
+            return
+
+        port, problem = _configured_port()
+        if problem:
+            _report_start_problem(
+                f'Fusion-Essentials MCP server did not start. {problem} Edit it in the '
+                f"'{CMD_NAME}' group of {shared_state.SETTINGS_FILE}, then reload "
+                'Fusion-Essentials (Utilities -> Add-Ins -> Stop, then Run).'
+            )
             return
 
         loaded_attestation.resume()
@@ -256,7 +337,7 @@ def start():
             resources = _resource_catalog()
         finally:
             loaded_attestation.finish()
-        result = mcp_server.start_server(HOST, PORT, items=items, resources=resources,
+        result = mcp_server.start_server(HOST, port, items=items, resources=resources,
                                          attestation=loaded_attestation.attest)
         status = result.get("status")
 
@@ -266,25 +347,19 @@ def start():
             _server_thread = result["thread"]
             server_running = True
             futil.log(
-                f'{CMD_NAME}: running on http://{HOST}:{PORT}/mcp '
+                f'{CMD_NAME}: running on http://{HOST}:{port}{endpoint.MCP_PATH} '
                 f'({len(items)} item(s) registered)'
             )
 
-            # Layer-2 self-check: confirm WE are the server answering on the port.
-            # If a foreign server replies, Autodesk's built-in server won the race
-            # for 27182 and ours is effectively shadowed -> guide the user to fix it.
-            #
-            # The probe is a blocking HTTP GET, so it must NOT run here on the main
-            # (UI) thread or it would stall Fusion startup. Run it on a short-lived
-            # background thread; if it finds a foreign server, marshal the user-facing
-            # warning back to the main thread via TaskManager (UI calls must be on it).
-            _start_ownership_check()
+            # Self-check: confirm this session's server is the one answering on the port.
+            _report_listener(port, bound_here=True,
+                             own_session=getattr(_mcp, 'session_id', None))
 
         elif status == mcp_server.START_PORT_IN_USE:
-            # Autodesk's built-in MCP server already holds the port; our bind failed.
-            _warn_port_conflict(
-                f'Fusion-Essentials MCP server could not start: port {PORT} is already in use.'
-            )
+            futil.log(f'{CMD_NAME}: server not started - could not bind {HOST}:{port}. '
+                      'Identifying who answers there.', adsk.core.LogLevels.ErrorLogLevel)
+            _report_listener(port, bound_here=False)
+            report_pending = True
         else:
             # Some other startup failure; details already logged.
             futil.log(f'{CMD_NAME}: failed to start ({result.get("message", "unknown error")})')
@@ -292,73 +367,74 @@ def start():
         # A failure here must never break the rest of the add-in.
         futil.handle_error(f'{CMD_NAME}.start')
     finally:
-        if not server_running:
+        if not server_running and not report_pending:
             TaskManager.stop()
 
 
-def _start_ownership_check():
-    """Probe the port on a background thread; warn (on the main thread) if foreign.
+def _report_listener(port, bound_here, own_session=None):
+    """Identify who answers on HOST:port on a worker thread, then warn on the main thread.
 
-    Runs off the UI thread so the blocking HTTP probe never stalls Fusion startup.
-    If a different MCP server answers, the warning touches the UI, so it is posted
-    back to the main thread via TaskManager rather than shown from the worker thread.
+    The probe blocks on HTTP, so it never runs on the UI thread; the message goes back through
+    TaskManager.post. After a failed bind that callback also stops the TaskManager.
     """
-    import threading
+    lifecycle = _lifecycle
 
     def _probe():
-        try:
-            ownership = mcp_server.verify_ownership(HOST, PORT)
-        except Exception:
+        found = mcp_server.identify_listener(HOST, port)
+        message = _conflict_message(port, found, bound_here=bound_here, own_session=own_session)
+        if message is None or lifecycle != _lifecycle:
             return
-        if ownership != "foreign":
-            # "ours" -> all good; "unreachable" -> inconclusive, leave server running.
-            return
-        futil.log(f'{CMD_NAME}: port {PORT} answered by a different MCP server')
 
         def _warn_on_main(_data):
-            _warn_port_conflict(
-                f'Another MCP server is already answering on port {PORT} '
-                "(most likely Fusion's built-in MCP server)."
-            )
+            if lifecycle != _lifecycle:
+                return
+            try:
+                _report_start_problem(message)
+            finally:
+                if not bound_here:
+                    TaskManager.stop()
 
-        if TaskManager.is_running():
-            TaskManager.post(command="mcp_port_conflict_warning", callback=_warn_on_main, data={})
-        else:
-            # No way to safely reach the UI thread; at least it's logged above.
-            futil.log(f'{CMD_NAME}: could not show port-conflict warning (TaskManager down)')
+        posted = TaskManager.post(command="mcp_port_conflict_warning", callback=_warn_on_main,
+                                  data={})
+        if not posted and lifecycle == _lifecycle:
+            # No way to reach the UI thread; the message still goes to the log.
+            futil.log(message)
 
-    threading.Thread(target=_probe, daemon=True, name='FE-MCP-OwnershipCheck').start()
+    threading.Thread(target=_probe, daemon=True, name='FE-MCP-ListenerReport').start()
 
 
-def _warn_port_conflict(reason: str):
-    """Tell the user Fusion's built-in MCP server is conflicting, and open Preferences.
-
-    We cannot toggle Autodesk's built-in MCP setting via the API (no such API
-    exists), so we explain what to do and open the Preferences dialog so the user
-    lands where they can uncheck it.
-    """
-    msg = (
-        f'{reason}\n\n'
-        "To use the Fusion-Essentials MCP server instead, turn OFF Fusion's "
-        'built-in "Fusion MCP Server" setting in Preferences, then reload '
-        'Fusion-Essentials (Utilities -> Add-Ins -> Stop, then Run).\n\n'
-        'Opening Preferences now...'
+def _conflict_message(port, found, bound_here=False, own_session=None):
+    """The user message naming who answers on HOST:port, or None when a bound server is unshadowed."""
+    kind, name = found.get("kind"), found.get("name")
+    if kind == mcp_server.LISTENER_OURS:
+        if bound_here and own_session and found.get("session_id") == own_session:
+            return None
+        who = 'The Fusion-Essentials MCP server of another Fusion session answers there.'
+    elif kind == mcp_server.LISTENER_OTHER:
+        who = f'Another MCP server answers there, reporting the name {name!r}.'
+    elif bound_here:
+        return None
+    else:
+        who = ('Nothing there identified itself as an MCP server: an unidentified listener '
+               'holds the port, or the system reserves it.')
+    lead = (f'Fusion-Essentials MCP server bound {HOST}:{port}, but its requests are answered '
+            'elsewhere.' if bound_here else
+            f'Fusion-Essentials MCP server did not start: it could not bind {HOST}:{port}.')
+    return (
+        f'{lead} {who}\n\n'
+        f"Change '{endpoint.PORT_SETTING}' in the add-in's '{CMD_NAME}' settings "
+        f'({shared_state.SETTINGS_FILE}) to a free port from {endpoint.PORT_MIN} to '
+        f'{endpoint.PORT_MAX}, or stop the other program. Then reload Fusion-Essentials '
+        "(Utilities -> Add-Ins -> Stop, then Run) and use the new port in your MCP client's "
+        'server URL.'
     )
-    futil.log(msg)
+
+
+def _report_start_problem(message: str):
+    """Log a startup problem and show it to the user."""
+    futil.log(message, adsk.core.LogLevels.ErrorLogLevel)
     if ui:
-        ui.messageBox(msg, CMD_NAME)
-        _open_preferences()
-
-
-def _open_preferences():
-    """Open Fusion's Preferences dialog (best-effort)."""
-    try:
-        pref_cmd = ui.commandDefinitions.itemById('PreferencesCommand')
-        if pref_cmd:
-            pref_cmd.execute()
-    except Exception:
-        # Non-fatal: the message box already told the user where to go.
-        futil.handle_error(f'{CMD_NAME}._open_preferences')
+        ui.messageBox(message, CMD_NAME)
 
 
 def stop():
@@ -366,7 +442,8 @@ def stop():
 
     Tear-down order: stop HTTP server -> join thread -> stop TaskManager.
     """
-    global _http_server, _server_thread, _mcp
+    global _http_server, _server_thread, _mcp, _lifecycle
+    _lifecycle += 1
     try:
         # Remove the deferred-reload custom event (a fresh start() reinstalls it).
         try:

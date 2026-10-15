@@ -6,10 +6,15 @@ the cm-scaled length/offset/location), the designation/handedness/modeled settin
 input, and the honesty gates - a failed compute, a designation or side that reads back different
 from the one requested, and a modeled thread that left the body's volume untouched.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+
+import pytest
 
 from conftest import (load_tool, make_design, install, MakeComp, payload, error_message,
                       assert_no_active_design, assert_unknown_units,
-                      BRepBody, BRepFace, Cylinder, FakePoint, FakeVector3D)
+                      BRepBody, BRepFace, Cylinder, FakePoint, FakeVector3D, _NamedCollection)
 
 mt = load_tool("model_thread")
 
@@ -30,19 +35,34 @@ def _cyl_face(body=None, radial=(1.0, 0.0, 0.0), axis_origin=(0.0, 0.0, 0.0)):
 
 
 class FakeThreadInfo:
-    def __init__(self, internal, ttype, desig, cls):
+    def __init__(self, internal, ttype, desig, cls, right_handed=True):
         self.isInternal = internal
         self.threadType = ttype
         self.threadDesignation = desig
         self.threadClass = cls
+        self.isRightHanded = right_handed
 
 
 class FakeThreadInput:
+    """The thread input. Its retired isRightHanded starts true and every write to it is counted,
+    so a test can tell a request that needed the retired member from one that did not."""
+    __slots__ = ("inputCylindricalFaces", "threadInfo", "isModeled", "isFullLength",
+                 "threadLength", "threadOffset", "threadLocation", "_right_handed", "hand_writes")
+
+    @property
+    def isRightHanded(self):
+        return self._right_handed
+
+    @isRightHanded.setter
+    def isRightHanded(self, value):
+        self.hand_writes += 1
+        self._right_handed = value
+
     def __init__(self, faces, info):
+        self._right_handed, self.hand_writes = True, 0
         self.inputCylindricalFaces = faces
         self.threadInfo = info
         self.isModeled = False
-        self.isRightHanded = True
         self.isFullLength = True
         self.threadLength = None
         self.threadOffset = None
@@ -53,13 +73,15 @@ class FakeThreadFeature:
     """A live ThreadFeature reports the partial extent back: isFullLength plus threadLength /
     threadOffset as ModelParameters carrying centimetres, and threadLocation as the enum. The
     fake echoes the input unless a test overrides it to model an extent that did not take."""
-    def __init__(self, inp, name="Thread1", health=0, info=None, full_length=None,
+    def __init__(self, inp, name="Thread1", health=_HEALTHY, info=None, full_length=None,
                  length_cm=None, offset_cm=None):
         self.name = name
         self.healthState = health
         self.errorOrWarningMessage = "the thread does not fit the cylinder"
         self.threadInfo = info if info is not None else inp.threadInfo
         self.isModeled = inp.isModeled
+        # The feature answers the hand of the INPUT's flag; a left-handed ThreadInfo alone still
+        # builds a right-handed thread.
         self.isRightHanded = inp.isRightHanded
         self.isFullLength = inp.isFullLength if full_length is None else full_length
         got_len = inp.threadLength.value if inp.threadLength is not None else None
@@ -70,10 +92,8 @@ class FakeThreadFeature:
 
 
 class FakeThreadFeatures:
-    """createInput/add plus the thread-table query the shared resolver walks. add() shifts each
-    body's volume by `volume_delta` (split evenly) only when the input is modeled - a cosmetic
-    thread changes no geometry."""
-    def __init__(self, bodies=(), volume_delta=-2.0, return_feature=True, health=0,
+    """Record thread inputs and optionally change modeled fixture volume."""
+    def __init__(self, bodies=(), volume_delta=-2.0, return_feature=True, health=_HEALTHY,
                  feature_info=None, full_length=None, length_cm=None, offset_cm=None):
         self.added = 0
         self.full_length = full_length
@@ -84,14 +104,9 @@ class FakeThreadFeatures:
         self.return_feature = return_feature
         self.health = health
         self.feature_info = feature_info
-        self.threadDataQuery = FakeThreadDataQuery()
+        # Not a ThreadFeatures member: the library _wire puts behind the two static factories.
+        self.catalog = FakeThreadCatalog()
         self.last_input = None
-        self.created_info = []
-
-    def createThreadInfo(self, internal, ttype, desig, cls):
-        ti = FakeThreadInfo(internal, ttype, desig, cls)
-        self.created_info.append(ti)
-        return ti
 
     def createInput(self, faces, info):
         self.last_input = FakeThreadInput(faces, info)
@@ -138,11 +153,32 @@ class FakeThreadDataQuery:
         return ("6H", "6G") if internal else ("4g6g", "6g")
 
 
+class FakeThreadCatalog:
+    """What ThreadDataQuery.create and ThreadInfo.create answer from; neither has a measured shape."""
+    def __init__(self):
+        self.query = FakeThreadDataQuery()
+        self.created = []
+
+    def data_query(self, tapered=False):
+        # Injected, not measured: the tapered library answers nothing here.
+        return None if tapered else self.query
+
+    def thread_info(self, tapered, internal, ttype, desig, cls, right_handed):
+        if tapered:
+            return None
+        ti = FakeThreadInfo(internal, ttype, desig, cls, right_handed)
+        self.created.append(ti)
+        return ti
+
+
 def _wire(monkeypatch, feats, faces):
     import adsk.core
+    import adsk.fusion
     comp = MakeComp(name="Comp")
     comp.features = type("F", (), {"threadFeatures": feats})()
     install(mt, make_design(comp=comp))
+    monkeypatch.setattr(adsk.fusion.ThreadDataQuery, "create", feats.catalog.data_query)
+    monkeypatch.setattr(adsk.fusion.ThreadInfo, "create", feats.catalog.thread_info)
     monkeypatch.setattr(mt._FACES, "resolve", lambda raw: (faces, None))
     adsk.core.ValueInput.createByReal = staticmethod(lambda v: _VI(v))
 
@@ -161,16 +197,16 @@ class TestSideDerivation:
         _wire(monkeypatch, feats, [_shaft()])
         out = payload(mt.handler(faces=["h"], designation="M10x1.5"))
         assert out["internal"] is False
-        assert feats.created_info[0].isInternal is False
-        assert feats.created_info[0].threadClass == "4g6g"
+        assert feats.catalog.created[0].isInternal is False
+        assert feats.catalog.created[0].threadClass == "4g6g"
 
     def test_normal_pointing_at_the_axis_is_internal(self, monkeypatch):
         feats = FakeThreadFeatures()
         _wire(monkeypatch, feats, [_bore()])
         out = payload(mt.handler(faces=["h"], designation="M10x1.5"))
         assert out["internal"] is True
-        assert feats.created_info[0].isInternal is True
-        assert feats.created_info[0].threadClass == "6H"
+        assert feats.catalog.created[0].isInternal is True
+        assert feats.catalog.created[0].threadClass == "6H"
 
     def test_offset_axis_origin_still_classifies_by_the_radial_component(self, monkeypatch):
         face = _cyl_face(radial=(-1.0, 0.0, 0.0), axis_origin=(0.0, 0.0, 50.0))
@@ -203,16 +239,24 @@ class TestThreadSettings:
         _wire(monkeypatch, feats, [_shaft()])
         out = payload(mt.handler(faces=["h"], designation="M10x1.5"))
         assert feats.last_input.isModeled is False
-        assert feats.last_input.isRightHanded is True
+        assert feats.catalog.created[0].isRightHanded is True
         assert feats.last_input.isFullLength is True
         assert out["modeled"] is False and out["right_handed"] is True
 
-    def test_left_handed_flips_the_input_flag(self, monkeypatch):
+    def test_left_handed_sets_the_inputs_flag_as_well_as_the_thread_info(self, monkeypatch):
         feats = FakeThreadFeatures()
         _wire(monkeypatch, feats, [_shaft()])
         out = payload(mt.handler(faces=["h"], designation="M10x1.5", left_handed=True))
-        assert feats.last_input.isRightHanded is False
+        assert feats.last_input.threadInfo is feats.catalog.created[0]
+        assert feats.catalog.created[0].isRightHanded is False
+        assert feats.last_input.isRightHanded is False and feats.last_input.hand_writes == 1
         assert out["right_handed"] is False
+
+    def test_a_right_handed_thread_never_touches_the_retired_flag(self, monkeypatch):
+        feats = FakeThreadFeatures()
+        _wire(monkeypatch, feats, [_shaft()])
+        out = payload(mt.handler(faces=["h"], designation="M10x1.5"))
+        assert feats.last_input.hand_writes == 0 and out["right_handed"] is True
 
     def test_length_clears_full_length_and_scales_to_cm(self, monkeypatch):
         feats = FakeThreadFeatures()
@@ -306,9 +350,127 @@ class TestGuards:
         assert "CYLINDRICAL" in msg
 
 
+class TestLibraryChoices:
+    @pytest.fixture
+    def library(self, monkeypatch):
+        feats = FakeThreadFeatures()
+        _wire(monkeypatch, feats, [_shaft()])
+        query = feats.catalog.query
+        monkeypatch.setattr(query, "allSizes", lambda t: ("6.0",))
+        monkeypatch.setattr(query, "allDesignations", lambda t, s:
+                            ("M6x1", "M6x0.8", "M6x0.75", "M6x0.7", "M6x0.5"))
+        return feats
+
+    def test_refusal_offers_actual_literal_that_can_be_consumed(self, library):
+        args = dict(faces=["h"], designation="M6x1.0",
+                    thread_type="ISO Metric profile", thread_class="6g")
+        message = error_message(mt.handler(**args))
+        assert "'M6x1' in 'ISO Metric profile' (classes: 6g)" in message
+        assert "M5x0.8" not in message and "ANSI" not in message
+        assert "not fit recommendations" in message
+        assert message.count("(classes:") == 5
+        assert library.added == 0 and library.catalog.created == []
+        literal = message.split("recommendations): '", 1)[1].split("'", 1)[0]
+        assert literal == "M6x1"
+        out = payload(mt.handler(**{**args, "designation": literal}))
+        assert out["designation"] == literal and out["thread_class"] == "6g"
+        assert "was not measured" in out["note"] and "find_geometry" in out["note"]
+        assert "does not check" not in out["note"]
+
+    @pytest.mark.parametrize("standard,cls", [("unknown standard", "6g"), ("ISO Metric profile", "6H")])
+    def test_nearby_choices_survive_incompatible_selectors(self, library, standard, cls):
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0",
+                                           thread_type=standard, thread_class=cls))
+        assert "Nearby library spellings (not fit recommendations)" in message
+        assert "'M6x1' in 'ANSI Metric M Profile' (classes: 4g6g, 6g)" in message
+        assert "Choose a listed designation, type and class" in message
+        assert "Thread dialog" not in message
+        assert library.catalog.created == [] and library.added == 0
+
+    @pytest.mark.parametrize("listed", [("M6x1", "M6x0.8", "M6x0.75", "M6x0.7", "M6x0.5"),
+                                        ("M6x0.5", "M6x0.7", "M6x0.75", "M6x0.8", "M6x1")])
+    @pytest.mark.parametrize("standard,order", [
+        ("", ("ANSI Metric M Profile", "ISO Metric profile")),
+        ("ISO Metric profile", ("ISO Metric profile", "ANSI Metric M Profile"))])
+    def test_unreadable_classes_name_the_closest_catalog_designation_per_type(
+            self, library, monkeypatch, standard, order, listed):
+        def fail(*args):
+            raise RuntimeError("unreadable classes")
+        monkeypatch.setattr(library.catalog.query, "allClasses", fail)
+        monkeypatch.setattr(library.catalog.query, "allDesignations", lambda t, s: listed)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0", thread_type=standard))
+        assert ("No nearby alternative with readable classes was found. Closest designation per "
+                f"thread type: 'M6x1' in '{order[0]}'; 'M6x1' in '{order[1]}'. Retry with one as "
+                "designation and its thread_type.") in message
+        assert "Thread dialog" not in message and "(classes:" not in message
+        assert library.catalog.created == [] and library.added == 0
+
+    @pytest.mark.parametrize("count,more", [(5, ""), (6, "; 1 more thread type(s) not listed")])
+    def test_closest_designations_past_five_types_are_counted(self, library, monkeypatch, count,
+                                                               more):
+        types = tuple(f"T{i}" for i in range(1, count + 1))
+        monkeypatch.setattr(FakeThreadDataQuery, "allThreadTypes", property(lambda _self: types))
+        monkeypatch.setattr(library.catalog.query, "allClasses",
+                            lambda *a: (_ for _ in ()).throw(RuntimeError("unreadable classes")))
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0"))
+        listed = "; ".join(f"'M6x1' in 'T{i}'" for i in range(1, 6))
+        assert (f"Closest designation per thread type: {listed}{more}. Retry with one as "
+                "designation and its thread_type.") in message
+
+    def test_a_library_with_no_readable_designation_lists_its_thread_types(self, library,
+                                                                             monkeypatch):
+        monkeypatch.setattr(library.catalog.query, "allDesignations", lambda t, s: ())
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.0"))
+        assert message.endswith("No designation in the thread library read; its thread types: "
+                                "ANSI Metric M Profile, ISO Metric profile.")
+        assert "Thread dialog" not in message and library.added == 0
+
+    def test_query_and_reply_choices_are_bounded(self, library, monkeypatch):
+        queried = []
+        monkeypatch.setattr(library.catalog.query, "allDesignations", lambda t, s:
+                            tuple(f"M6x1.{i}" for i in range(20)))
+        def all_compatible(internal, standard, designation):
+            queried.append((internal, standard, designation))
+            return ("6g",)
+        monkeypatch.setattr(library.catalog.query, "allClasses", all_compatible)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.00",
+            thread_type="ISO Metric profile", thread_class="6g"))
+        assert len(queried) == message.count("(classes:") == 5
+        queried.clear()
+        def classes(internal, standard, designation):
+            queried.append((internal, standard, designation))
+            return ("6g",) if designation.endswith(".9") else ("4g6g",)
+        monkeypatch.setattr(library.catalog.query, "allClasses", classes)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.00",
+            thread_type="ISO Metric profile", thread_class="6g"))
+        assert len(queried) <= 10
+        assert message.count("(classes:") <= 5 and "(classes: 4g6g)" not in message
+        assert library.catalog.created == [] and library.added == 0
+
+    def test_fallback_reads_other_types_after_compatible_probe_budget(self, library, monkeypatch):
+        query = library.catalog.query
+        monkeypatch.setattr(query, "allSizes", lambda _t: ("6.0",))
+        close = tuple(f"M6x1.00{letter}" for letter in "abcde")
+        remaining = tuple(f"M6x1.0{i}" for i in range(5))
+        monkeypatch.setattr(FakeThreadDataQuery, "allThreadTypes",
+                            property(lambda _self: ("ISO Metric profile", "ANSI Metric M Profile")))
+        monkeypatch.setattr(query, "allDesignations", lambda t, _s:
+                            close + remaining if t == "ISO Metric profile" else close)
+        queried = []
+        def classes(internal, standard, designation):
+            queried.append((standard, designation))
+            return ("4g6g",) if standard == "ISO Metric profile" else ("6g",)
+        monkeypatch.setattr(query, "allClasses", classes)
+        message = error_message(mt.handler(faces=["h"], designation="M6x1.00?",
+                                           thread_type="ISO Metric profile", thread_class="6g"))
+        assert "'M6x1.00e' in 'ANSI Metric M Profile' (classes: 6g)" in message
+        assert len(queried) <= 20 and message.count("(classes:") <= 5
+        assert library.catalog.created == [] and library.added == 0
+
+
 class TestHonesty:
     def test_health_error_reported_not_false_ok(self, monkeypatch):
-        feats = FakeThreadFeatures(health=2)
+        feats = FakeThreadFeatures(health=_ERROR)
         _wire(monkeypatch, feats, [_shaft()])
         res = mt.handler(faces=["h"], designation="M10x1.5")
         assert res["isError"] is True
@@ -360,6 +522,56 @@ class TestHonesty:
         out = payload(mt.handler(faces=["h"], designation="M10x1.5"))
         assert out["threaded"] is True
         assert "volume_delta_cm3" not in out
+
+
+class TestCosmeticResize:
+    def _resized(self, monkeypatch, after_cm, extra=(), untyped=False, flipped=False):
+        """A 1 cm shaft on its body, `extra` faces beside it, whose radius reads `after_cm` after the thread."""
+        body = BRepBody("Post", volume=100.0)
+        face = _shaft(body)
+        face.geometry.radius = 1.0
+        body.faces = _NamedCollection([face, *extra])
+        feats = FakeThreadFeatures()
+        real_add = feats.add
+
+        def add(inp):
+            face.geometry.radius = after_cm
+            if untyped:
+                face.geometry.surfaceType = None
+            if flipped:
+                face.geometry.axis = FakeVector3D(0.0, 0.0, -1.0)
+            return real_add(inp)
+
+        feats.add = add
+        _wire(monkeypatch, feats, [face])
+        return payload(mt.handler(faces=["h"], designation="M10x1.5"))
+
+    @pytest.mark.parametrize("flipped", [False, True])     # True: the face's axis reads reversed after the thread
+    def test_a_changed_radius_is_reported_before_and_after(self, monkeypatch, flipped):
+        bore = _bore()
+        bore.geometry.radius = 0.5
+        elsewhere = _cyl_face(radial=(-1.0, 0.0, 0.0), axis_origin=(5.0, 0.0, 0.0))   # a shaft
+        elsewhere.geometry.radius = 2.0
+        # A shaft whose axis crosses the threaded one at the origin, perpendicular to it.
+        across = BRepFace(Cylinder(FakeVector3D(1.0, 0.0, 0.0), FakePoint(0.0, 0.0, 0.0)),
+                          body=BRepBody("Body1"), point_on_face=FakePoint(0.0, 0.0, 2.0),
+                          normal=FakeVector3D(0.0, 0.0, 1.0))
+        across.geometry.radius = 2.0
+        out = self._resized(monkeypatch, 1.486725, extra=(bore, elsewhere, across), flipped=flipped)
+        assert out["cylinder_radii"] == [{"before": 10.0, "after": 14.86725, "change": 4.86725}]
+        assert ("Cosmetic thread added; cylinder radius before -> after (mm): face 0 10.0 -> "
+                "14.86725 (+4.86725).") in out["note"] and "may resize" not in out["note"]
+
+    @pytest.mark.parametrize("after_cm,untyped", [(None, False), (1.486725, True)])
+    def test_an_unreadable_radius_says_the_resize_was_not_measured(self, monkeypatch, after_cm,
+                                                                    untyped):
+        coaxial = _shaft()        # reads the before radius, so skipping the threaded face reads 10 -> 10
+        coaxial.geometry.radius = 1.0
+        out = self._resized(monkeypatch, after_cm, extra=(coaxial,), untyped=untyped)
+        assert out["cylinder_radii"] == [{"before": 10.0, "after": None, "change": None}]
+        assert out["note"].startswith("Cosmetic thread added; the resize of face(s) [0] (0-based) "
+                                      "was not measured")
+        assert "find_geometry(kind='cylinder_face')" in out["note"]
 
 
 class TestOutputContract:
@@ -441,14 +653,12 @@ class TestInternalFlagIsReadOffTheCreatedFeature:
     pin that the classification reaches the ThreadInfo, and that the witness still fires."""
 
     def test_a_cosmetic_bore_thread_reports_the_internal_flag_the_feature_carries(self, monkeypatch):
-        # the default is COSMETIC (no geometry changes), so this flag is the only evidence the
-        # bore classification reached the feature at all
         feats = FakeThreadFeatures()
         _wire(monkeypatch, feats, [_bore()])
         out = payload(mt.handler(faces=["h"], designation="M10x1.5"))
         assert out["internal"] is True
         assert out["modeled"] is False
-        assert feats.created_info[0].isInternal is True
+        assert feats.catalog.created[0].isInternal is True
 
     def test_a_feature_reading_back_external_on_a_bore_is_an_error_not_a_silent_pass(
             self, monkeypatch):
@@ -460,6 +670,42 @@ class TestInternalFlagIsReadOffTheCreatedFeature:
         res = mt.handler(faces=["h"], designation="M10x1.5")
         assert res["isError"] is True
         assert "external" in res["message"] and "bores" in res["message"]
+
+
+class TestHandIsReadOffTheCreatedFeature:
+    def _reading(self, monkeypatch, hand):
+        """A thread whose feature answers `hand` for isRightHanded whatever was asked, or does not
+        answer at all for None. Injected: no such feature has been measured."""
+        feats = FakeThreadFeatures()
+        real_add = feats.add
+
+        def add(inp):
+            feature = real_add(inp)
+            if hand is None:
+                del feature.isRightHanded
+            else:
+                feature.isRightHanded = hand
+            return feature
+
+        feats.add = add
+        _wire(monkeypatch, feats, [_shaft()])
+        return feats
+
+    @pytest.mark.parametrize("left_handed,got,asked", [(True, "right", "left"),
+                                                       (False, "left", "right")])
+    def test_a_hand_that_reads_back_the_other_way_is_an_error(self, monkeypatch, left_handed, got,
+                                                              asked):
+        feats = self._reading(monkeypatch, left_handed)
+        msg = error_message(mt.handler(faces=["h"], designation="M10x1.5",
+                                       left_handed=left_handed))
+        assert f"reads back {got}-handed, not the requested {asked}-handed" in msg
+        assert "was created" in msg and "Thread1" in msg and feats.added == 1
+
+    def test_an_unreadable_hand_is_reported_null_not_refused(self, monkeypatch):
+        self._reading(monkeypatch, None)
+        out = payload(mt.handler(faces=["h"], designation="M10x1.5", left_handed=True))
+        assert out["right_handed"] is None
+        assert "right_handed could NOT be read back" in out["note"]
 
 
 class TestPartialExtentFailsClosed:
@@ -524,7 +770,7 @@ class TestAmbiguousDesignation:
         out = payload(mt.handler(faces=["h"], designation="M10x1.25",
                                  thread_type="ISO Metric profile"))
         assert out["designation"] == "M10x1.25"
-        assert feats.created_info[0].threadType == "ISO Metric profile"
+        assert feats.catalog.created[0].threadType == "ISO Metric profile"
 
     def test_a_thread_type_that_lacks_the_designation_is_refused(self, monkeypatch):
         _wire(monkeypatch, FakeThreadFeatures(), [_shaft()])
@@ -539,7 +785,7 @@ class TestAmbiguousDesignation:
         _wire(monkeypatch, feats, [_shaft()])
         out = payload(mt.handler(faces=["h"], designation="M10x1.5", thread_class="6g"))
         assert out["thread_class"] == "6g"
-        assert feats.created_info[0].threadClass == "6g"
+        assert feats.catalog.created[0].threadClass == "6g"
 
     def test_an_unoffered_thread_class_is_refused(self, monkeypatch):
         _wire(monkeypatch, FakeThreadFeatures(), [_shaft()])

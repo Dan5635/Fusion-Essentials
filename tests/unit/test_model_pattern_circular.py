@@ -232,6 +232,48 @@ def _cylindrical_face():
     return BRepFace(Cylinder(FakeVector3D(0, 0, 1)))
 
 
+def _ring_owned_by(landed):
+    """Pattern Spoke:1 about the ROOT's Y axis; the created feature answers `landed` ('Eye',
+    'Root', or 'Nameless' - a component whose name reads empty) as its owner. Returns the payload."""
+    _, cf = _install(["Spoke:1"])
+    root = pt.app.activeProduct.rootComponent
+    root.yConstructionAxis = types.SimpleNamespace(component=root)
+    owner = {"Eye": MakeComp(name="Eye", entity_token="TOKEN:Eye"), "Root": root,
+             "Nameless": MakeComp(name="", entity_token="TOKEN:Nameless")}[landed]
+    add = cf.add
+
+    def created(inp):
+        feature = add(inp)
+        feature.parentComponent = owner
+        return feature
+    cf.add = created
+    return payload(pt.handler(occurrences="Spoke:1", quantity=5, axis="y"))
+
+
+class TestOwnerReadBack:
+    """The reply names the component the created pattern reads as its owner, and the axis owner
+    when that is a different component."""
+
+    def test_a_pattern_landing_in_a_child_names_it_and_the_root_axis_owner(self):
+        out = _ring_owned_by("Eye")
+        assert (out["component"], out["axis_component"]) == ("Eye", "Root")
+        assert out["note"] == ("Occurrences patterned around the axis. The pattern is owned by "
+                               "component 'Eye'. Its axis belongs to component 'Root'. Pair with "
+                               "view_screenshot to view.")
+
+    def test_a_root_pattern_about_its_own_axis_adds_no_clause(self):
+        out = _ring_owned_by("Root")
+        assert out["component"] == "Root" and "axis_component" not in out
+        assert out["note"] == ("Occurrences patterned around the axis. Pair with view_screenshot "
+                               "to view.")
+
+    def test_an_owner_that_does_not_read_is_null_and_no_axis_owner_is_compared(self):
+        out = _ring_owned_by("Nameless")
+        assert out["component"] is None and "axis_component" not in out
+        assert "Its owning component did not read" in out["note"]
+        assert "axis belongs" not in out["note"]
+
+
 class TestCircular:
 
     def test_basic_full_ring(self):

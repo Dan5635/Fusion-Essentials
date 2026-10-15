@@ -4,6 +4,8 @@ This module is the substrate every MCP tool imports — one response shape, one 
 unit convention. If these drift, every tool drifts, so pin the contract explicitly.
 """
 
+from conftest import install as _install_design
+
 import json
 import types
 from types import SimpleNamespace
@@ -11,10 +13,92 @@ from types import SimpleNamespace
 import pytest
 
 import live_api_facts
-from conftest import (BRepBody, MakeComp, _NamedCollection, body_proxy, entity_proxy, load_tool,
+from conftest import (BRepBody, FakeMatrix3D, MakeComp, MakeDesign, _NamedCollection, body_proxy, entity_proxy, load_tool,
                       make_occurrence, make_sketch, make_sketch_curve, make_source_document)
 
 common = load_tool("_common")
+path_inputs = load_tool("_inputs")
+paths = load_tool("_path_common")
+
+
+def test_success_preserves_raw_content_and_message_without_changing_json_default():
+    blocks = [{"type": "text", "text": "raw\ntext"},
+              {"type": "image", "data": "YWJj", "mimeType": "image/png"}]
+    result = common.ok(content=blocks, message="")
+    assert result == {"content": blocks, "isError": False, "message": ""}
+    assert result["content"] is blocks
+    assert common.ok(content=[]) == {"content": [], "isError": False}
+    assert common.ok({"value": 7}) == {
+        "content": [{"type": "text", "text": '{\n  "value": 7\n}'}], "isError": False}
+
+
+@pytest.mark.parametrize("raw, expected", [(None, []), ("", []), ([], []),
+    (" TREE, , Timeline ", ["tree", "timeline"]),
+    (["Tree", " TIMELINE ", 2], ["tree", "timeline", "2"])])
+def test_include_normalizes_optional_comma_strings_and_lists(raw, expected):
+    assert common.normalize_include(raw) == expected
+
+
+@pytest.mark.parametrize("result, expected", [
+    ({"isError": False, "content": [{"text": '{"value": 7}'}]}, {"value": 7}),
+    ({"isError": True, "content": [{"text": '{"value": 7}'}]}, None),
+    ({"isError": False, "content": [{"text": "not JSON"}]}, None),
+    ({"isError": False, "content": []}, None)])
+def test_unwrap_decodes_success_and_preserves_failed_results(result, expected):
+    value, failure = common.unwrap(result)
+    assert value == expected
+    assert failure is (None if expected is not None else result)
+
+
+@pytest.mark.parametrize('case', ['root', 'contextual', 'nested_native', 'ambiguous', 'unreadable'])
+def test_world_translation_recognizes_roots_without_treating_native_local_as_world(monkeypatch, case):
+    component = MakeComp(name='Part', entity_token='world-part')
+    host = make_occurrence('Host:1')
+    root_placement = make_occurrence('Part:1', component=component,
+                                    transform2=FakeMatrix3D(t=(10, 20, 5)))
+    proxy = make_occurrence('Host:1+Part:1', component=component, assembly_context=host,
+                           transform2=FakeMatrix3D(t=(14, 20, 10)))
+    query = (proxy if case == 'contextual' else make_occurrence('Part:1', component=component,
+             transform2=FakeMatrix3D(t=(2, 3, 4) if case == 'nested_native' else (10, 20, 5))))
+    candidates = [proxy] if case == 'nested_native' else [root_placement]
+    if case == 'ambiguous':
+        candidates.append(make_occurrence('Part:1', component=component,
+                                          transform2=FakeMatrix3D(t=(10, 20, 5))))
+    if case == 'unreadable':
+        candidates.append(make_occurrence('Part:2', component=component,
+                                          raises_on={'assemblyContext': 'unreadable'}))
+    root = MakeComp(occurrences_by_component={'Part': candidates})
+    _install_design(common, MakeDesign(comp=root))
+    got = common.occurrence_world_translation(query, 10)
+    expected = ({'x': 100, 'y': 200, 'z': 50} if case == 'root' else
+                {'x': 140, 'y': 200, 'z': 100} if case == 'contextual' else None)
+    assert got == expected
+
+
+def test_optional_none_keeps_a_reason_and_false_remains_an_answer():
+    assert common.read_optional(lambda: None) == (None, "the read answered nothing")
+    assert common.read_optional(lambda: False) == (False, None)
+
+
+@pytest.fixture(params=["none", "false", "active"])
+def active_design_gate(monkeypatch, request):
+    active = MakeDesign() if request.param == "active" else False if request.param == "false" else None
+    monkeypatch.setattr(common, "design", lambda: active)
+    return active
+
+
+@pytest.mark.parametrize("remedy", [None, "Open an import target, or pass new_document=true."])
+@pytest.mark.parametrize("none_only", [False, True])
+def test_require_design_preserves_the_design_or_returns_its_refusal(active_design_gate, remedy, none_only):
+    active, refusal = common.require_design(remedy=remedy, none_only=none_only)
+    if active_design_gate is None or (active_design_gate is False and not none_only):
+        assert active is None
+        assert refusal["isError"] is True
+        assert refusal["message"] == "No active design. " + (
+            remedy or "Create or open a document first (see doc_new).")
+    else:
+        assert active is active_design_gate
+        assert refusal is None
 
 
 class TestShortRef:
@@ -33,6 +117,24 @@ class TestShortRef:
         assert common.short_ref(None) == ""
 
 
+class TestMeasuredExtensionRefusal:
+    @pytest.mark.parametrize("message", [
+        "3 : Manufacturing or Design Extension is required.",
+        "3 : Requires the Manufacturing Extension to be active.",
+    ])
+    def test_measured_refusal_names_the_action_requirement_and_alternative(self, message):
+        clause = common.entitlement_clause(RuntimeError(message), "Manufacturing Extension",
+                                           "select the faces manually")
+        assert "This operation requires the Manufacturing Extension" in clause
+        assert "select the faces manually" in clause
+        assert "this install" not in clause.lower()
+        assert "machining_capabilities" not in clause
+
+    def test_unmeasured_extension_error_does_not_get_an_entitlement_classification(self):
+        assert common.entitlement_clause(RuntimeError("Extension setup failed"),
+                                         "Manufacturing Extension", "try again") == ""
+
+
 class TestResponseBuilders:
     def test_ok_wraps_payload_as_json_text(self):
         res = common.ok({"a": 1, "b": "x"})
@@ -44,6 +146,47 @@ class TestResponseBuilders:
         assert res["isError"] is True
         assert res["message"] == "boom"
         assert res["content"][0]["text"] == "boom"
+
+    @pytest.mark.parametrize("message", ["guard refused", ""])
+    def test_explicit_error_summary_preserves_the_complete_payload(self, message):
+        body = {"blocked_by": ["guard"], "note": "Read the target again.", "error": "original detail"}
+        result = common.error("wire text", body, message=message)
+        assert result == {"content": [{"type": "text", "text": json.dumps(body, indent=2)}],
+                          "isError": True, "message": message}
+        assert body == {"blocked_by": ["guard"], "note": "Read the target again.", "error": "original detail"}
+
+    def test_error_preserves_structured_partial_effects(self):
+        body = {"failed": {"index": 1}, "retained": None, "note": "One entry failed."}
+        reason = "Entry 1 refused; inspect the retained entries before retrying."
+        result = common.error(reason, payload=body)
+        assert result["isError"] is True
+        assert result["message"] == reason
+        assert json.loads(result["content"][0]["text"]) == {**body, "error": reason}
+        assert list(json.loads(result["content"][0]["text"]))[0] == "error"
+        assert "error" not in body
+
+    def test_partial_payload_cannot_replace_the_failure_reason(self):
+        body = {"error": "Earlier failure", "retained": ["Cut1"]}
+        result = common.error("Restore refused; inspect Cut1.", payload=body)
+        assert json.loads(result["content"][0]["text"]) == {
+            "error": "Restore refused; inspect Cut1.", "retained": ["Cut1"]}
+        assert body == {"error": "Earlier failure", "retained": ["Cut1"]}
+
+    def test_partial_error_does_not_duplicate_an_existing_failure_note(self):
+        body = {"retained": ["Line1"], "note": "Entry 1 failed; read the sketch."}
+        result = common.error(body["note"], payload=body)
+        assert json.loads(result["content"][0]["text"]) == body
+        assert list(json.loads(result["content"][0]["text"]))[0] == "note"
+        assert result["message"] == body["note"]
+
+    def test_a_longer_failure_note_keeps_its_additional_guidance_once(self):
+        reason = "Scope finish returned False."
+        body = {"editing": True, "note": reason + " Read the retained scope before retrying."}
+        result = common.error(reason, payload=body)
+        assert json.loads(result["content"][0]["text"]) == body
+        assert list(json.loads(result["content"][0]["text"]))[0] == "note"
+        assert result["content"][0]["text"].count(reason) == 1
+        assert result["message"] == reason
 
     def test_underscore_aliases_are_gone(self):
         # the migration-era _ok/_error/_safe aliases were removed (single public spelling now).
@@ -215,6 +358,13 @@ class TestMeasured:
         assert common.measured(lambda: float("nan")) is None
         assert common.measured(lambda: float("inf")) is None
         assert common.measured(lambda: 0.0) == 0.0
+
+
+def test_finite_number_refuses_a_bool_and_reads_text_only_when_asked():
+    assert common.finite_number(True) is None and common.finite_number(False, text=True) is None
+    assert common.finite_number(1) == 1.0 and common.finite_number(0) == 0.0
+    assert common.finite_number("2.5") is None and common.finite_number("2.5", text=True) == 2.5
+    assert common.finite_number("nan", text=True) is None and common.finite_number(10 ** 400) is None
 
 
 class TestResultBodies:
@@ -407,26 +557,13 @@ class TestAllComponents:
         assert common.all_components(D()) == []
 
 
-class TestResolveSketchDesignWide:
-    def test_finds_a_sub_component_sketch_while_root_is_active(self):
-        root = _comp_with_sketches("Root")
-        sub = _comp_with_sketches("Frame", ["FrameSketch"])
-        sk = common.resolve_sketch(_design_with(root, [sub]), "FrameSketch")
-        assert sk is not None and sk.name == "FrameSketch"
-
-    def test_a_name_two_components_share_resolves_to_nothing(self):
-        # Two components each hold a "Profile" sketch. Neither is identified by that name, so the
-        # resolver hands back nothing rather than an arbitrary one to draw on or delete from.
-        root = _comp_with_sketches("Root", ["Profile"])
-        sub = _comp_with_sketches("Frame", ["Profile"])
-        assert common.resolve_sketch(_design_with(root, [sub], active=sub), "Profile") is None
-
+class TestFindSketch:
     def test_a_unique_name_still_resolves_beside_a_shared_one(self):
         # The other side of the boundary: one hit resolves even while another name is shared.
         root = _comp_with_sketches("Root", ["Profile", "Base"])
         sub = _comp_with_sketches("Frame", ["Profile"])
         d = _design_with(root, [sub], active=sub)
-        assert common.resolve_sketch(d, "Base") is root.sketches.item(1)
+        assert common.find_sketch(d, "Base") == (root.sketches.item(1), None)
 
     def test_a_sketch_in_the_ACTIVE_sub_component_is_reachable(self):
         # The reach that matters: a sketch drawn in an activated sub-component resolves by name.
@@ -437,18 +574,8 @@ class TestResolveSketchDesignWide:
         d = _design_with(root, [sub], active=sub)
         hits = common.find_sketches_by_name(d, "FrameOnly")
         assert [c.name for _sk, c in hits] == ["Frame"]
-        assert common.resolve_sketch(d, "FrameOnly") is sub.sketches.item(0)
+        assert common.find_sketch(d, "FrameOnly") == (sub.sketches.item(0), None)
 
-    def test_one_sketch_reached_through_the_active_and_root_wrappers_is_not_shared(self):
-        # The active component IS the root here, so the same sketch is reached three times (active,
-        # root, allComponents). De-duplicated by the sketch itself, that stays ONE hit - otherwise
-        # every root sketch would refuse as a name several sketches carry.
-        root = _comp_with_sketches("Root", ["Profile"])
-        d = _design_with(root, [], active=root)
-        assert common.resolve_sketch(d, "Profile") is root.sketches.item(0)
-
-
-class TestFindSketch:
     def test_a_shared_name_is_refused_naming_each_owning_component(self):
         root = _comp_with_sketches("Root", ["Profile"])
         sub = _comp_with_sketches("Frame", ["Profile"])
@@ -545,7 +672,6 @@ class TestFindSketch:
         sk, err = common.find_sketch(d, "Frame_Ring")
         assert sk is None
         assert "2 sketches are named 'Frame_Ring'" in err and err.count("Frame") >= 2
-        assert common.resolve_sketch(d, "Frame_Ring") is None
 
     def test_owners_sharing_a_name_are_listed_by_their_occurrence_paths(self):
         # The degenerate listing this replaces: "'Frame_Ring' in Frame, 'Frame_Ring' in Frame" is
@@ -669,7 +795,7 @@ class TestFindSketch:
         root = _comp_with_sketches("Root", ["Profile"])
         d = _design_with(root, [], active=root)
         assert len(common.find_sketches_by_name(d, "Profile")) == 1
-        assert common.resolve_sketch(d, "Profile") is root.sketches.item(0)
+        assert common.find_sketch(d, "Profile") == (root.sketches.item(0), None)
 
 
 class TestComponentsInScope:
@@ -1046,7 +1172,7 @@ class TestFindSketchIn:
     def test_the_unscoped_resolver_still_refuses_the_same_name(self):
         # The scope is an ADDITION: find_sketch must not have been weakened into a first-match.
         _root, _sub, d = self._shared()
-        assert common.resolve_sketch(d, "Sketch2") is None
+        assert common.find_sketch(d, "Sketch2")[0] is None
 
     def test_a_component_holding_no_such_sketch_is_refused_naming_the_ones_that_do(self):
         root = _comp_with_sketches("Root", ["Sketch2"])
@@ -2182,40 +2308,26 @@ class TestBuildPathLabel:
 
     def test_a_seed_that_expanded_reports_the_built_count(self, monkeypatch):
         self._stub_handles(monkeypatch, 1)
-        _p, label, err = common.build_path(self._comp(_BuiltPath(14)), "EDGE1")
+        _p, label, err = path_inputs.build_path(self._comp(_BuiltPath(14)), "EDGE1")
         assert err is None
         assert label == "14 edge(s) from 1 seed handle"
 
     def test_a_seed_that_did_not_expand_reports_one(self, monkeypatch):
         self._stub_handles(monkeypatch, 1)
-        _p, label, err = common.build_path(self._comp(_BuiltPath(1)), "EDGE1")
+        _p, label, err = path_inputs.build_path(self._comp(_BuiltPath(1)), "EDGE1")
         assert err is None and label == "1 edge(s) from 1 seed handle"
 
     def test_unreadable_count_says_so_instead_of_echoing_the_input(self, monkeypatch):
         self._stub_handles(monkeypatch, 1)
-        _p, label, err = common.build_path(self._comp(_UnreadablePath()), "EDGE1")
+        _p, label, err = path_inputs.build_path(self._comp(_UnreadablePath()), "EDGE1")
         assert err is None
         assert label == "from 1 seed handle; edge count unreadable"
 
     def test_several_handles_are_used_exactly(self, monkeypatch):
-        import adsk.fusion
         self._stub_handles(monkeypatch, 3)
-        monkeypatch.setattr(adsk.fusion.Path, "create",
-                            staticmethod(lambda coll, opts: _BuiltPath(3)))
-        _p, label, err = common.build_path(self._comp(None), ["E1", "E2", "E3"])
+        _p, label, err = path_inputs.build_path(self._comp(_BuiltPath(3)), ["E1", "E2", "E3"])
         assert err is None and label == "3 edge(s) from 3 handles, used exactly"
 
-    def test_the_docstring_states_the_tangent_continuity_rule(self):
-        # build_path's own docstring is what an author reads before wiring it (the helper-map
-        # catalog line points here): it must promise neither unconditional chaining nor its
-        # opposite (a tangent-continuous CLOSED loop chained all 8 edges from one seed) - only
-        # tangent continuity, and the built count as the answer.
-        doc = common.build_path.__doc__
-        assert "TANGENT connections" in doc
-        assert "sharp corner stops the chain" in doc
-        assert "count is the truth" in doc
-        assert "auto-chain" not in doc.lower()
-        assert "closed loop" not in doc.lower() and "seed edge alone" not in doc
 
 
 class _RecordingCollection:
@@ -2233,10 +2345,7 @@ class _RecordingCollection:
 
 
 class TestBuildPathFromSketch:
-    """The 'sketch:<name>' branch: every non-construction curve handed to Features.createPath as
-    ONE unchained collection (the static Path.create raises on native sketch curves - measured) -
-    not a single-seed chain, which a coincident-but-unmerged join stops short of the whole sketch.
-    A collection call that raises or answers no curve falls back to the seed chain."""
+    """Collection-first paths use a complete seed chain only with exact curve coverage."""
 
     def _comp(self, sketch, seed_chain_built, collection_answer=None):
         """createPath(collection, False) answers collection_answer(coll) (default: a path holding
@@ -2265,12 +2374,17 @@ class TestBuildPathFromSketch:
         comp = self._comp(self._sketch(5), _BuiltPath(1))
         coll = _RecordingCollection()
         monkeypatch.setattr(adsk.core.ObjectCollection, "create", staticmethod(lambda: coll))
-        p, label, err = common.build_path(comp, "sketch:PathSketch")
+        p, label, err = path_inputs.build_path(comp, "sketch:PathSketch")
         assert err is None
         assert p.count == 5
         assert label == "sketch:PathSketch"
         assert comp.coll_calls == [coll]          # the whole collection, unchained
         assert comp.seed_calls == []              # the collection built it - no fallback needed
+
+    @staticmethod
+    def _chain(*entities):
+        """A built Path whose members wrap `entities`, in order."""
+        return SimpleNamespace(count=len(entities), item=lambda i: SimpleNamespace(entity=entities[i]))
 
     def test_a_collection_that_raises_falls_back_to_the_seed_chain(self, monkeypatch):
         import adsk.core
@@ -2278,33 +2392,112 @@ class TestBuildPathFromSketch:
         def _boom(_c):
             raise RuntimeError("curves do not connect")
 
-        comp = self._comp(self._sketch(5), _BuiltPath(1), collection_answer=_boom)
+        sketch = self._sketch(5)
+        chain = self._chain(*list(sketch.sketchCurves)[:1])
+        comp = self._comp(sketch, chain, collection_answer=_boom)
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
-        p, label, err = common.build_path(comp, "sketch:PathSketch")
+        left = []
+        p, label, err = path_inputs.build_path(comp, "sketch:PathSketch", left_out=left)
         assert err is None
-        assert p.count == 1                        # the seed chain, not the collection
+        assert p is chain                          # the seed chain, not the collection
         assert label == "sketch:PathSketch"
+        assert left == ["line:1", "line:2", "line:3", "line:4"]
         assert comp.seed_calls and comp.seed_calls[0][1] is True
 
     def test_a_collection_that_answers_zero_falls_back_to_the_seed_chain(self, monkeypatch):
         import adsk.core
-        comp = self._comp(self._sketch(5), _BuiltPath(1), collection_answer=lambda c: _BuiltPath(0))
+        sketch = self._sketch(5)
+        chain = self._chain(*list(sketch.sketchCurves)[:1])
+        comp = self._comp(sketch, chain, collection_answer=lambda c: _BuiltPath(0))
         monkeypatch.setattr(adsk.core.ObjectCollection, "create",
                             staticmethod(lambda: _RecordingCollection()))
-        p, _label, err = common.build_path(comp, "sketch:PathSketch")
+        p, _label, err = path_inputs.build_path(comp, "sketch:PathSketch")
         assert err is None
-        assert p.count == 1
+        assert p is chain
         assert comp.seed_calls
+
+    def test_a_two_of_three_build_names_the_curve_it_left_out(self, monkeypatch):
+        import adsk.core
+        sketch = self._sketch(3)
+        curves = list(sketch.sketchCurves)
+        partial = self._chain(curves[0], curves[2])
+        comp = self._comp(sketch, partial, collection_answer=lambda c: partial)
+        monkeypatch.setattr(adsk.core.ObjectCollection, "create",
+                            staticmethod(lambda: _RecordingCollection()))
+        left = []
+        p, label, err = path_inputs.build_path(comp, "sketch:PathSketch", left_out=left)
+        assert err is None and p is partial
+        assert label == "sketch:PathSketch" and left == ["line:1"]
+        warning = paths.path_chain_warning(2, 3, "sweep", left)
+        assert "chained 2 of the sketch's 3 curves" in warning
+        assert "Not in the path: line:1." in warning
 
     def test_a_construction_curve_is_not_collected(self, monkeypatch):
         import adsk.core
         comp = self._comp(self._sketch(5, extra_construction=1), _BuiltPath(1))
         coll = _RecordingCollection()
         monkeypatch.setattr(adsk.core.ObjectCollection, "create", staticmethod(lambda: coll))
-        p, _label, err = common.build_path(comp, "sketch:PathSketch")
+        p, _label, err = path_inputs.build_path(comp, "sketch:PathSketch")
         assert err is None
         assert p.count == 5                        # the construction curve never reached the collection
+
+    @pytest.mark.parametrize('replacement', ['complete', 'foreign', 'duplicate', 'unreadable', 'short'])
+    def test_a_partial_collection_is_replaced_only_by_exact_seed_coverage(self, monkeypatch, replacement):
+        import adsk.core
+
+        sketch = self._sketch(3)
+        curves = list(sketch.sketchCurves)
+        candidate = list(curves)
+        if replacement == 'foreign':
+            candidate[-1] = make_sketch_curve('foreign')
+        elif replacement == 'duplicate':
+            candidate[-1] = candidate[0]
+        elif replacement == 'unreadable':
+            candidate[-1] = None
+        elif replacement == 'short':
+            candidate = candidate[:2]
+        chain = SimpleNamespace(count=len(candidate), item=lambda i: SimpleNamespace(entity=candidate[i]))
+        partial = _BuiltPath(2)
+        comp = self._comp(sketch, chain, collection_answer=lambda c: partial)
+        monkeypatch.setattr(adsk.core.ObjectCollection, 'create',
+                            staticmethod(lambda: _RecordingCollection()))
+        p, _label, err = path_inputs.build_path(comp, 'sketch:PathSketch')
+        assert err is None
+        assert p is (chain if replacement == 'complete' else partial)
+        assert comp.seed_calls == [(curves[0], True)]
+
+    def test_construction_first_does_not_seed_the_fallback(self, monkeypatch):
+        import adsk.core
+
+        construction = SimpleNamespace(isConstruction=True)
+        real = make_sketch_curve('real')
+        sketch = make_sketch('PathSketch', lines=[construction, real])
+        comp = self._comp(sketch, self._chain(real), collection_answer=lambda c: _BuiltPath(0))
+        monkeypatch.setattr(adsk.core.ObjectCollection, 'create',
+                            staticmethod(lambda: _RecordingCollection()))
+        p, _label, err = path_inputs.build_path(comp, 'sketch:PathSketch')
+        assert err is None and p.count == 1
+        assert comp.seed_calls == [(real, True)]
+
+    def test_all_construction_input_is_refused_without_a_native_path(self, monkeypatch):
+        sketch = make_sketch('PathSketch', lines=[SimpleNamespace(isConstruction=True)])
+        comp = self._comp(sketch, _BuiltPath(1))
+        p, _label, err = path_inputs.build_path(comp, 'sketch:PathSketch')
+        assert p is None and 'no non-construction curves' in err
+        assert not comp.seed_calls and not comp.coll_calls
+
+    def test_partial_warning_does_not_invent_a_corner_diagnosis(self):
+        warning = paths.path_chain_warning(2, 3, 'sweep')
+        assert '2 of' in warning and 'sketch_get' in warning
+        assert 'sharp' not in warning and 'tangent' not in warning
+        # A connected sketch drawn out of order also chains short, so neither cause is asserted.
+        assert "redrawn in chain order" in warning and "separate path sketches" in warning
+        assert "does not connect" not in warning and "Not in the path" not in warning
+
+    def test_a_full_chain_has_no_warning_whatever_ids_ride_along(self):
+        assert paths.path_chain_warning(3, 3, 'sweep', ["line:1"]) == ""
+        assert paths.path_chain_warning(2, 3, 'sweep', ["line:1"]).startswith("WARNING")
 
 
 class TestOpenProfileFromSketch:
@@ -2595,3 +2788,60 @@ class TestNullFeatureNoteWording:
         assert note == self._NO_SCOPE
         assert "the remesh result" in note
         assert "BaseFeature" not in note
+
+
+class TestRetainedFeatureRemedy:
+    """A failed write's retained feature is named by the address design_delete_feature takes."""
+
+    @staticmethod
+    def _feature(deleted=True):
+        comp = SimpleNamespace(name="Holder")
+        feature = SimpleNamespace(name="Fillet3", parentComponent=comp)
+        feature.timelineObject = SimpleNamespace(name="Fillet3", index=7, entity=feature)
+        feature.deleteMe = (lambda: deleted) if not isinstance(deleted, Exception) else (
+            lambda: (_ for _ in ()).throw(deleted))
+        return feature
+
+    def test_a_parametric_feature_is_named_with_its_delete_call(self):
+        assert common.failed_effect_remedy(SimpleNamespace(designType=1), self._feature()) == (
+            "'Holder/Fillet3@7' remains in the timeline; remove it with "
+            "design_delete_feature(feature='Holder/Fillet3@7').")
+
+    def test_a_direct_design_gets_undo_even_with_a_feature_object(self):
+        # A direct design's timeline read raises, so no delete call can name a row there.
+        text = common.failed_effect_remedy(SimpleNamespace(designType=0), self._feature())
+        assert "DIRECT mode" in text and "design_delete_feature" not in text
+
+    @pytest.mark.parametrize("deleted,said", [(True, "Deleting it returned True."),
+                                              (False, "Deleting it returned False. "),
+                                              (RuntimeError("busy"), "Deleting it raised (busy). ")])
+    def test_the_delete_a_site_runs_is_reported_as_it_answered(self, deleted, said):
+        removed, text = common.delete_failed_feature(SimpleNamespace(designType=1),
+                                                     self._feature(deleted))
+        assert removed is (deleted is True) and text.startswith(said)
+        assert ("design_delete_feature(feature='Holder/Fillet3@7')" in text) is (deleted is not True)
+
+
+@pytest.mark.parametrize("refusal", [True, False])
+def test_partial_sketch_batch_is_an_error_with_full_body(refusal):
+    batch = load_tool("_sketch_batch")
+    sketch = make_sketch(name="Partial")
+    def one(index, entry):
+        if index == 1:
+            if refusal:
+                return batch.refuse("Invalid entry")
+            raise RuntimeError("Write refused")
+        return {"kind": "line"}, None
+    result = batch.run_batch([{}, {}, {}], one, "geometry", "drawn", "Partial", sketch=sketch,
+                             result_note="Read current entities.",
+                             result_fields=lambda rows: {"units": "mm", "final_count": len(rows)})
+    body = json.loads(result["content"][0]["text"])
+    assert result["isError"] is True and result["message"] == body["note"]
+    assert body["drawn"] == 1 and body["requested"] == 3 and body["sketch"] == "Partial"
+    assert body["results"] == [{"kind": "line", "index": 0}]
+    assert body["failed"]["index"] == 1 and body["not_attempted"] == 1
+    assert body["failed_entry_counts"]["before"] == body["failed_entry_counts"]["after"]
+    assert body["units"] == "mm" and body["final_count"] == 1
+    assert body["result_note"] == "Read current entities."
+    assert ("Counts do not establish unchanged geometry" in body["note"]) is not refusal
+    assert ("retained" not in body) if refusal else body["retained"] is None

@@ -10,7 +10,7 @@ import adsk.fusion
 
 from ._common import safe
 
-# One-line "what to reuse from here" for the generated CLAUDE.md helper map (see tests/gen_manifest.py).
+# One-line "what to reuse from here" for the generated AGENTS.md helper map (see tests/gen_manifest.py).
 MAP_BLURB = ("the substrate assembly_get's contacts slice and assembly_edit_contacts share. "
              "contact_sets/all_contact_sets/contact_set_names - the DESIGN-scoped contactSets walk; "
              "find_contact_set - the EXACT resolve-one, refusing a duplicate; "

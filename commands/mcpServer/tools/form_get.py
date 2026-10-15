@@ -131,14 +131,9 @@ def handler(form: str = "", body: str = "", include=None, max_results: int = 0,
     inc = [str(s).strip().lower() for s in raw if str(s).strip()]
     if any(s != "cage" for s in inc):
         return error(f"Unknown include {inc}. Valid: cage.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
-    if _inputs.in_form_edit(design):
-        # MEASURED: inside a Form edit the edited Form is missing from its own collection.
-        return ok({"in_form_edit": True, "complete": False, "forms": [],
-                   "note": ("A Form edit is open, which hides that Form and the timeline - ask the "
-                            "user to click Finish Form, then read again.")})
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     forms = [ff for _comp, ff in _form_common.all_forms(design)]
     if form:
         ff, ferr = _form_common.resolve_form(design, _FORM, form)
@@ -157,6 +152,11 @@ def handler(form: str = "", body: str = "", include=None, max_results: int = 0,
     cap = _cam_common.clamp_rows(max_results, _ROWS_DEFAULT, _ROWS_CEILING)
     rows = [_row(ff) for ff in forms[:cap]]
     note = (_NO_RECORD if any(r["record"] is None for r in rows) else "") + _NOTE
+    # A Form edit hides every Form from this walk (formFeatures.count reads 0 inside one), so a
+    # direct-reading empty census is the same "an edit may be open" case, not "no Forms exist".
+    if not forms and _inputs.current_design_type(design) == _inputs.MODE_DIRECT:
+        from . import _design_common
+        note += _design_common.OPEN_EDIT_CAVEAT
     return ok({"forms": rows, "count": len(forms), "truncated": len(forms) > cap, "note": note})
 
 

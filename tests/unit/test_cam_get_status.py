@@ -8,7 +8,7 @@ live path (document + by-name target) that reports an inline/UI generation with 
 handle. ``_live_op_tally`` is pinned in test_tier2_misc.py.
 """
 
-import json
+import sys
 from types import SimpleNamespace
 
 import adsk.cam
@@ -17,13 +17,12 @@ import pytest
 from conftest import FakeCAMParameter, FakeCAMParameters, FakeMachine, load_tool, make_cam
 from conftest import FakeSetup as SharedSetup, FakeCAMFolder as SharedFolder
 from conftest import FakeOperation as SharedOp
+from conftest import FakeApplication, FakeFusionDocument, FakeProducts
 
 st = load_tool("cam_get_status")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── target resolution (via the shared _cam_common.resolve_cam_node) ─────────────────────────────────
@@ -102,6 +101,13 @@ class TestCollectOpHealth:
                                       _op("b", error="bad geometry"), _op("c")])
         assert out["warnings"] == [{"name": "a", "warning": "Spindle too fast"}]
         assert out["errors"] == [{"name": "b", "error": "bad geometry"}]
+
+    def test_a_suppressed_ops_stale_error_is_not_reported(self):
+        # MEASURED on 2706: suppressing a faulted op keeps hasError True - readiness must not call
+        # a user-suppressed op errored.
+        out = st._collect_op_health([_op("Off1", error="Top height below bottom height",
+                                          state=2, suppressed=True)])
+        assert out["errors"] == []
 
     def test_empty_toolpath_read_from_the_state_flags(self):
         # an op that GENERATED and produced no toolpath: state IsValid, isToolpathValid true,
@@ -493,7 +499,9 @@ class TestStatusHandler:
                                             readiness="0 of 2 active ops valid - run cam_generate to finish the rest."))
         out = _payload(st.handler(handle="gen1"))
         assert out["completed"] is False
-        assert out["readiness"] == out["live_states"]["readiness"]
+        # the nested tally keeps the live verdict; the top-level line is the poll directive
+        assert out["live_states"]["readiness"] == (
+            "0 of 2 active ops valid - run cam_generate to finish the rest.")
         assert "cam_get_status(handle='gen1')" in out["readiness"]
         assert "run cam_generate" not in out["readiness"]
         assert "Future" in out["note"] and "cam_get_status(handle='gen1')" in out["note"]
@@ -1250,6 +1258,20 @@ class TestSameDocumentIdentity:
         assert out["completion_basis"] == "document"  # not "its document is not active"
         assert "is NOT the active document" not in out["note"]
 
+    def test_a_save_that_rekeys_the_document_rekeys_its_released_handles(self, monkeypatch):
+        st._GENERATIONS.clear()
+        st._RELEASED.clear()
+        st._RELEASED["gen9"] = {"target": "operation 'RK_Face'", "target_name": "RK_Face",
+                                "doc_name": "Untitled", "doc_key": "unsaved:1",
+                                "elapsed_seconds": 2.9, "tally": None}
+        # every listener the write guard fires when a save re-keys an open document
+        for listener in list(sys.modules[st.on_key_renamed.__module__]._KEY_RENAME_LISTENERS):
+            listener("unsaved:1", "urn:saved")
+        monkeypatch.setattr(st, "document_key", lambda: "urn:saved")
+        msg = st.handler(handle="gen9")["message"]
+        assert "NOT the active document" not in msg
+        assert "cam_get_status(target='RK_Face')" in msg
+
     # ── consumer 1: the 'latest' routing gate ────────────────────────────────────────────────────
     # _same_document's None is a new state for this caller's `if`, so it gets its own test here -
     # the helper's own tests do not cover the branch this consumer takes on it.
@@ -1883,9 +1905,12 @@ class TestStatusLivePoll:
         assert out["completed"] is False
         assert out["live_states"]["generating"] == 1
         assert out["live_states"]["generating_settled"] == 0
-        assert out["readiness"] == out["live_states"]["readiness"]
         if route == "handle":
             assert "handle='gen1'" in out["readiness"]
+            assert "handle='gen1'" not in out["live_states"]["readiness"]
+        else:
+            assert out["readiness"] == out["live_states"]["readiness"]
+        assert "poll cam_get_status" in out["live_states"]["readiness"]
         assert "poll cam_get_status" in out["readiness"]
         assert "run cam_generate" not in out["readiness"]
         assert "check again later" in out["note"]
@@ -2130,3 +2155,60 @@ class TestOneHandleOverSeveralFutures:
         out = _payload(st.handler(handle="gen1"))
         assert out["completed"] is True
         assert out["operations_total"] == 5 and out["operations_completed"] == 5
+
+
+class TestValiditySyncOnReads:
+    """cam_get_status obtains the CAM product through get_cam(sync=True) before reading state, on
+    the by-name, document AND scoped-handle paths alike - checkValidity is MEASURED safe to call
+    mid-generation (_cam_common.sync_validity's own comment)."""
+
+    def _wire(self, monkeypatch, cam):
+        """The REAL get_cam over `cam`, pinned per test so only THIS path's own sync mutates it."""
+        monkeypatch.setattr(st._cam_common, "_VALIDITY_SYNCED", [True])
+        monkeypatch.setattr(st._cam_common, "app", FakeApplication(
+            active_document=FakeFusionDocument(products=FakeProducts(cam=cam))))
+        monkeypatch.setattr(adsk.cam.CAM, "cast", lambda x: x if x is cam else None)
+        monkeypatch.setattr(adsk.cam.Operation, "cast", staticmethod(lambda x: x))
+        return cam
+
+    def test_a_named_target_read_sees_the_state_the_sync_flipped(self, monkeypatch):
+        # Without the sync this reads state 0 (valid); the flip lands because _status_live
+        # obtains the product through get_cam(sync=True) before reading it.
+        op = SharedOp("Drill1", operation_state=0)
+        cam = self._wire(monkeypatch, make_cam(SharedSetup("S1", ops=[op]),
+                         check_validity=lambda: setattr(op, "_operation_state", 1)))
+        out = _payload(st.handler(target="S1", include_operations=False))
+        assert cam.check_validity_calls == [True]
+        assert out["live_states"]["out_of_date"] == 1
+        assert out["validity_synced"] is True
+
+    def test_a_raising_sync_yields_validity_synced_false_never_a_raise(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("checkValidity is not available on this build")
+        cam = self._wire(monkeypatch, make_cam(SharedSetup("S1", ops=[SharedOp("Face1")]),
+                                               check_validity=_boom))
+        out = _payload(st.handler(target="S1", include_operations=False))
+        assert out["validity_synced"] is False
+        assert "Validity not synced this call." in out["readiness"]
+        assert "checkValidity raised" in out["live_states"]["validity_not_synced"]
+
+    def test_the_scoped_handle_path_also_syncs_validity(self, monkeypatch):
+        # checkValidity is MEASURED safe mid-generation (_cam_common.sync_validity's own comment) -
+        # a scoped handle syncs like every other read, so the same design change the by-name test
+        # above catches is caught here too.
+        st._GENERATIONS.clear()
+        st._RELEASED.clear()
+        monkeypatch.setattr(st, "_active_identity", lambda: ("Doc", "urn:doc"))
+        monkeypatch.setattr(st, "document_key", lambda: "urn:doc")
+        op = SharedOp("Drill1", operation_state=0)
+        cam = self._wire(monkeypatch, make_cam(SharedSetup("S1", ops=[op]),
+                         check_validity=lambda: setattr(op, "_operation_state", 1)))
+        st._GENERATIONS["gen1"] = {
+            "future": SimpleNamespace(isGenerationCompleted=True, numberOfOperations=1,
+                                      numberOfCompleted=1),
+            "target": "setup 'S1'", "scope": "setup", "target_name": "S1",
+            "started_at": 0.0, "total": 1, "doc_name": "Doc", "doc_urn": "urn:doc",
+            "doc_key": "urn:doc"}
+        out = _payload(st.handler(handle="gen1", include_operations=False))
+        assert cam.check_validity_calls == [True]
+        assert out["live_states"]["out_of_date"] == 1

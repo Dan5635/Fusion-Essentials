@@ -24,7 +24,7 @@ Usage:
   py -3 tests/check_all.py --gen           # generator checks only
 
 The quality system, layer by layer (the one guarantee each makes):
-  constitution docs      the rules, taught once at the point of use (CLAUDE.md beside the code)
+  constitution docs      the rules, taught once at the point of use (AGENTS.md beside the code)
   unit tests             tool logic proven against fakes - which are POPULATED from measured facts
   lints                  the repo polices its own conventions (naming, wire text, comments, fakes)
   generators             TOOL_MANIFEST / TOOL_POINTER_MAP regenerate from code; gen_all --check gates
@@ -38,11 +38,13 @@ import argparse
 import os
 import subprocess
 import sys
-import urllib.request
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TESTS)
-HEALTH = "http://127.0.0.1:27182/health"
+sys.path.insert(0, os.path.join(TESTS, "live"))
+from verify_core import BASE, require_machine, health_gate, _bound_on_harness  # noqa: E402
+
+HEALTH = BASE + "/health"
 
 
 def _run(label, cmd, repair):
@@ -56,12 +58,12 @@ def _run(label, cmd, repair):
 
 
 def _fusion_up():
-    # GET /health recomputes the loaded attestation over the whole import closure on every call -
-    # seconds of hashing - so a tight timeout reads a live Fusion as absent.
+    """Read the configured endpoint only after explicit configuration and exact health admission."""
+    require_machine()
     try:
-        with urllib.request.urlopen(HEALTH, timeout=10) as resp:
-            return b"Fusion-Essentials" in resp.read()
-    except Exception:
+        health = health_gate()
+        return _bound_on_harness("check_all /health", health.get("bound"))
+    except (Exception, SystemExit):
         return False
 
 
@@ -86,12 +88,14 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    if not (args.offline or args.fast or args.gen):
+        require_machine()
 
     if not _run("gen_all --check", [sys.executable, os.path.join(TESTS, "gen_all.py"), "--check"],
                 "py -3 tests/gen_all.py   (then commit the regenerated files)"):
         return 1
     if args.gen:
-        print("\nGEN GREEN: every generated artifact is current. Run the full button before "
+        print("\nGEN GREEN: repository-generated artifacts are current; API applicability is reported above. Run the full button before "
               "calling the change done.")
         return 0
 
@@ -104,23 +108,23 @@ def main():
         return 1
 
     if args.fast:
-        print("\nFAST GREEN: generators current + lints pass. Run the full button before "
+        print("\nFAST GREEN: repository generators current + lints pass; API applicability is reported above. Run the full button before "
               "calling the change done.")
         return 0
 
     verify = os.path.join(TESTS, "live", "tool_verify.py")
-    if not _run("tool_verify --check", [sys.executable, verify, "--check"],
+    if not _run("tool_verify --check --full-scope", [sys.executable, verify, "--check", "--full-scope"],
                 "py -3 tests/live/tool_verify.py   (Fusion up - a green run rewrites "
                 "VERIFIED_TOOLS.md; --run <id> / --resume walks it in chunks)"):
         return 1
 
     if args.offline:
-        print("\nOFFLINE GREEN: generators current, suite green, and the live-run receipt matches")
+        print("\nOFFLINE GREEN: repository generators current, suite green, and the live-run receipt matches")
         print("this tool source - but the mocks were NOT re-confirmed against the installed")
         print("Fusion. Re-run without --offline (Fusion up, add-in enabled) before releasing.")
         return 0
     if not _fusion_up():
-        print("\nLIVE GATE FAILED: Fusion is not reachable on 127.0.0.1:27182.")
+        print("\nLIVE GATE FAILED: Fusion is not reachable on " + BASE + ".")
         print("Start Fusion with the add-in enabled and re-run - or pass --offline to accept an")
         print("unverified-mocks green, visibly.")
         return 1

@@ -8,6 +8,7 @@ depths costs a caller the heavy read they did not ask for, and reads green on a
 'the right one ran' assertion alone). The walk tests pin that the summary reaches sketches in
 SUB-components and tags each row with its owner.
 """
+from conftest import install as _install_design
 
 import json
 import sys
@@ -87,11 +88,14 @@ class TestSketchGetRouting:
 
         class FakeDetail:
             @staticmethod
-            def handler(sketch_name="", include_entities=False, units="mm", component=""):
+            def handler(sketch_name="", include_entities=False, units="mm", component="",
+                        entity_offset=0, max_results=0):
                 seen["name"] = sketch_name
                 seen["include_entities"] = include_entities
                 seen["units"] = units
                 seen["component"] = component
+                seen["entity_offset"] = entity_offset
+                seen["max_results"] = max_results
                 return {"isError": False, "content": [{"type": "text", "text": "{}"}]}
 
         # The handler resolves the engine by NAME in the module table on every call, so installing
@@ -102,14 +106,24 @@ class TestSketchGetRouting:
         monkeypatch.setattr(sketches, "_list_sketches", _never("the summary walk"))
 
         res = sketches.handler(sketch_name="Emblem", include_entities=True, units="in",
-                                          component="Frame")
+                                          component="Frame", entity_offset=200, max_results=50)
         assert seen.get("name") == "Emblem"     # routed to the detail engine with the name
         assert seen.get("include_entities") is True   # the zoom flag is threaded through
         assert seen.get("units") == "in"        # the units param is threaded through too
         # the scope reaches the engine that resolves it - dropped here, a scoped read of a shared
         # name would come back refused as ambiguous with the scope the caller gave ignored
         assert seen.get("component") == "Frame"
+        assert seen.get("entity_offset") == 200
+        assert seen.get("max_results") == 50
         assert res["isError"] is False
+
+    def test_invalid_named_xray_page_size_is_refused(self, monkeypatch):
+        _no_detail_engine(monkeypatch)
+        for value in (True, 1.5, "50", -1):
+            result = sketches.handler(sketch_name="Paged", include_entities=True,
+                                      max_results=value)
+            assert result["isError"] is True
+            assert "max_results" in result["message"] and repr(value) in result["message"]
 
     def test_whitespace_name_treated_as_no_name(self, monkeypatch):
         called = {}
@@ -121,6 +135,19 @@ class TestSketchGetRouting:
         _no_detail_engine(monkeypatch)          # a blank-ish name is not a name to look up
         sketches.handler(sketch_name="   ")
         assert called.get("summary") is True     # blank-ish name -> summary, not detail
+
+    def test_invalid_or_unscoped_entity_offset_is_refused(self, monkeypatch):
+        monkeypatch.setattr(sketches, "_list_sketches", _never("the summary walk"))
+        for offset in (-1, 1.5, True):
+            result = sketches.handler(sketch_name="Paged", include_entities=True,
+                                      entity_offset=offset)
+            assert result["isError"] is True
+            assert "entity_offset" in result["message"] and repr(offset) in result["message"]
+        for kwargs in ({"sketch_name": "Paged", "include_entities": False},
+                       {"sketch_name": "", "include_entities": True}):
+            result = sketches.handler(entity_offset=200, **kwargs)
+            assert result["isError"] is True
+            assert "include_entities=true" in result["message"]
 
 
 _comp_serial = iter(range(1, 10_000))
@@ -145,7 +172,7 @@ class TestSketchSummaryWalk:
         frame = self._comp("Frame", ["FrameSketch"])
         ring = self._comp("OuterRing", ["OuterRingSketch"])
         d = make_design(comp=root, all_components=[root, frame, ring])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         res = sketches._list_sketches()
         payload = json.loads(res["content"][0]["text"])
         assert payload["sketch_count"] == 2
@@ -157,7 +184,7 @@ class TestSketchSummaryWalk:
         frame = self._comp("Frame", ["Sketch1"])
         ring = self._comp("OuterRing", ["Sketch1"])
         d = make_design(comp=root, all_components=[root, frame, ring])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
 
     def test_the_component_scope_narrows_the_list_to_that_component(self, monkeypatch):
         # Both components hold a "Sketch1" (Fusion numbers per component from 1), so the OWNER is
@@ -184,7 +211,7 @@ class TestSketchSummaryWalk:
                         entity_token="comp-root")
         d = make_design(comp=comp, all_components=[comp],
                         timeline=make_timeline("OnFace", "OnPlane", marker=2))
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         payload = json.loads(sketches._list_sketches()["content"][0]["text"])
         rows = {r["name"]: r for r in payload["sketches"]}
         # a BOOLEAN under its OWN key: 'on_face' is the RECORD sketch_get(sketch_name=...) returns,
@@ -210,7 +237,7 @@ class TestSketchSummaryWalk:
                         occurrences=[self._occ("Frame:1", frame),
                                      self._occ("OuterRing:1", ring)])
         d = make_design(comp=root, all_components=[root, frame, ring])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         payload = json.loads(sketches._list_sketches("")["content"][0]["text"])
         assert payload["sketch_count"] == 2
         assert all("component_paths" not in r for r in payload["sketches"])
@@ -224,7 +251,7 @@ class TestSketchSummaryWalk:
         small = self._comp("Plate", ["PlateSketch"])
         root = self._comp("Root")
         d = make_design(comp=root, all_components=[root, big, small])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         res = sketches._list_sketches(scope, max_results)
         return json.loads(res["content"][0]["text"])
 
@@ -283,7 +310,7 @@ class TestSketchSummaryWalk:
                         occurrences=[self._occ("P2a-Gimbal:1+Frame:1", a),
                                      self._occ("P3-Gimbal:1+Frame:1", b)])
         d = make_design(comp=root, all_components=[root, a, b])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         assert a.entityToken == b.entityToken        # the fixture models the collision, or it lies
 
     def test_an_ambiguous_scope_publishes_each_placement_exactly_once(self, monkeypatch):
@@ -327,7 +354,7 @@ class TestSketchSummaryWalk:
                                      self._occ("P3-Gimbal:1+Frame:1", frame_b),
                                      self._occ("P3-Gimbal:1+Carrier:1", car_b)])
         d = make_design(comp=root, all_components=[root, frame_a, frame_b, car_a, car_b])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
 
     def test_a_scoped_call_gets_only_ITS_names_placements(self, monkeypatch):
         # MEASURED defect: asking about 'Frame' returned 16 placements - every placement of every
@@ -379,7 +406,7 @@ class TestSketchSummaryWalk:
                                      self._occ("P3-Gimbal:1+Frame:1", b),
                                      self._occ("Bolt:1", bolt)])
         d = make_design(comp=root, all_components=[root, a, b, bolt])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
         payload = json.loads(sketches._list_sketches("")["content"][0]["text"])
         assert payload["sketch_count"] == 3
         assert [p["path"] for p in payload["placements"]] == [
@@ -393,7 +420,7 @@ class TestSketchSummaryWalk:
                          profiles=[Profile(), Profile(), Profile()])
         root = MakeComp(name="Root", sketches=[sk], entity_token="comp-root")
         d = make_design(comp=root, all_components=[root])
-        monkeypatch.setattr(sketches._common, "design", lambda: d)
+        _install_design(sketches, d)
 
     def test_a_deferred_row_is_flagged_and_the_note_names_the_remedy(self, monkeypatch):
         # The list is where profile_count is met first, and a stale one reads exactly like a fresh

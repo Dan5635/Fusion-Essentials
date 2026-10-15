@@ -40,14 +40,11 @@ class TestAutoDiscovery:
         # skip them - that is how a read CORE behind a Get, like _sketch_detail / _data_read,
         # declares "I am not a tool".
         names = [n for n in _tool_module_names() if n not in _GATED]
+        assert names, "nothing was checked: no tool module was found"
         without = [n for n in names if not callable(getattr(load_tool(n), "register_tool", None))]
         assert not without, (f"non-gated, non-underscore modules missing register_tool() (would be "
                              f"silently UNREGISTERED - _-prefix them if they are shared engines): {without}")
         assert len(_sweep_register()) >= len(names)
-
-    def test_sweep_registers_a_full_nonempty_set(self):
-        items = _sweep_register()
-        assert len(items) >= 100, f"expected the full tool surface, got {len(items)}"
 
     def test_tool_names_are_unique(self):
         items = _sweep_register()

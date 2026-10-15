@@ -10,9 +10,9 @@ claiming success. Side-effects are observable because the fakes expose a real
 conftest), so the fake ops flow through unchanged.
 """
 
-import json
 import math
 import types
+import pytest
 
 from conftest import (Camera, FakeApplication, FakeFusionDocument, FakeProducts, FakeSelections,
                       Viewport, _NamedCollection, load_tool, make_bbox, make_cam)
@@ -38,9 +38,7 @@ def _install(setups):
     return fake_app
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _simple_world():
@@ -441,18 +439,30 @@ class TestToggleCheckedBeforeToolpath:
         assert out["has_toolpath"] is False and "no generated toolpath" in out["warning"]
         assert sa._activate_calls == 0 and sb.isActive is True
 
-    def test_a_pathless_additive_op_warns_by_construction_not_generate_it_first(self):
-        # an additive build op never has a toolpath to generate - "Generate it first" would send
-        # an agent to run a step that changes nothing.
+    def test_a_pathless_additive_op_is_not_told_to_generate_it_first(self):
+        # a valid arrange, orientation or support reads no toolpath - "Generate it first" would
+        # send an agent to run a step that changes nothing.
         import adsk.cam
         build = FakeOp("Body Preset1", has_toolpath=False)
+        build.strategy = "additive_buildstrategy"
         additive = FakeSetup("Build", [build], is_active=True,
                              operation_type=adsk.cam.OperationTypes.AdditiveOperation)
         _install([additive])
         out = _payload(st.handler(action="show", operation="Body Preset1"))
         assert out["has_toolpath"] is False
-        assert "by construction" in out["warning"]
+        assert "currently reads no toolpath" in out["warning"]
         assert "Generate it first" not in out["warning"]
+
+    def test_the_pathless_additive_slice_is_told_to_generate_it_first(self):
+        # the setup's Additive Toolpath reads hasToolpath true once generated (measured)
+        import adsk.cam
+        slice_op = FakeOp("Additive Toolpath1", has_toolpath=False)
+        slice_op.strategy = "additive_buildstyle"
+        additive = FakeSetup("Build", [slice_op], is_active=True,
+                             operation_type=adsk.cam.OperationTypes.AdditiveOperation)
+        _install([additive])
+        out = _payload(st.handler(action="show", operation="Additive Toolpath1"))
+        assert "Generate it first" in out["warning"] and "currently reads" not in out["warning"]
 
     def test_a_pathless_milling_op_keeps_the_generate_it_first_warning(self):
         # the milling arm of the SAME branch must stay untouched - the exclusion is additive-only.
@@ -460,7 +470,7 @@ class TestToggleCheckedBeforeToolpath:
         milling = FakeSetup("Mill", [drill], is_active=True)
         _install([milling])
         out = _payload(st.handler(action="show", operation="Drill"))
-        assert "Generate it first" in out["warning"] and "by construction" not in out["warning"]
+        assert "Generate it first" in out["warning"] and "currently reads" not in out["warning"]
 
 
 class TestActivateOwningSetup:
@@ -821,13 +831,89 @@ class TestFit:
 
 
 class TestFitWidensToStock:
-    """A plain fit(True) frames the model alone, cropping a toolpath overhanging the stock
-    (measured live). A setup whose stock box reads widens the frame to the model+stock union; one
-    that does not falls back to the plain fit, unchanged."""
+    """A plain fit(True) frames whatever's visible. A setup whose stock box reads widens the frame
+    to the model+stock union; one whose stock does not read instead frames its own model box; one
+    with neither box falls back to the honest 'viewport' label."""
 
     @staticmethod
     def _body(lo, hi):
         return types.SimpleNamespace(boundingBox=make_bbox(lo, hi))
+
+    @pytest.fixture
+    def dropped_frame(self, monkeypatch):
+        import adsk.core
+        import adsk.cam
+        from conftest import FakePoint
+
+        def install(stock, projection, drop):
+            model = self._body((0, 0, 0), (10, 6, 2))
+            setup = FakeSetup("S1", [FakeOp("Face1", shown=False)], is_active=True,
+                              models=[model], stock_solids=([self._body((-6, -6, -1), (16, 12, 3))]
+                                                          if stock else []))
+            cam = make_cam(setup)
+            kind = (adsk.core.CameraTypes.PerspectiveCameraType if projection == "perspective"
+                    else adsk.core.CameraTypes.OrthographicCameraType)
+            vp = Viewport(camera=Camera(eye=(10, 10, 10), perspective_angle=.4, camera_type=kind))
+            app = FakeApplication(active_document=FakeFusionDocument(products=FakeProducts(cam=cam)),
+                                  active_viewport=vp)
+            monkeypatch.setattr(st, "app", app)
+            monkeypatch.setattr(cc, "app", app)
+            monkeypatch.setattr(adsk.cam.CAM, "cast", lambda x: x if x is cam else None)
+            monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
+            normal_set = Viewport.camera.fset
+
+            def drop_frame(self, value):
+                old = self._cam._copy()
+                normal_set(self, value)
+                if not value.isFitView:
+                    if drop == "target":
+                        self._cam.target = old.target
+                    elif drop == "unreadable":
+                        self._cam.cameraType = None  # Injected unavailable projection read.
+                    elif projection == "perspective":
+                        self._cam.eye = old.eye
+                    else:
+                        self._cam._sides = old._sides  # Injected post-fit framing loss.
+
+            monkeypatch.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_frame))
+            return vp
+
+        return install
+
+    @pytest.mark.parametrize("stock,projection,drop", [
+        (False, "perspective", "framing"), (True, "perspective", "framing"),
+        (False, "orthographic", "framing"), (True, "orthographic", "framing"),
+        (False, "perspective", "target"), (True, "perspective", "target"),
+        (False, "perspective", "unreadable"), (True, "perspective", "unreadable")])
+    def test_a_dropped_frame_has_no_public_model_or_stock_claim(self, dropped_frame, stock, projection, drop):
+        vp = dropped_frame(stock, projection, drop)
+        out = _payload(st.handler(action="show", operation="Face1", fit=True))
+        assert out["fitted_to"] == "viewport"
+        assert "fit_box_cm" not in out and "camera_target_cm" not in out
+        assert "box framing is unverified" in out["note"]
+        if drop == "target":
+            assert (vp.camera.target.x, vp.camera.target.y, vp.camera.target.z) == (0, 0, 0)
+
+    def test_a_perspective_view_widens_by_moving_its_eye_back(self, monkeypatch):
+        import adsk.core
+        monkeypatch.setattr(adsk.core.Point3D, "create",
+                            staticmethod(lambda x, y, z: types.SimpleNamespace(x=x, y=y, z=z)))
+        model = self._body((0, 0, 0), (10, 6, 2))
+        stock = self._body((-6, -6, -1), (16, 12, 3))
+        setup = FakeSetup("S1", [FakeOp("Face1", shown=False)], is_active=True,
+                          models=[model], stock_solids=[stock])
+        app = _install([setup])
+        app.activeViewport.camera = Camera(
+            eye=(10.0, 10.0, 10.0), target=(0.0, 0.0, 0.0), perspective_angle=0.4,
+            camera_type=adsk.core.CameraTypes.PerspectiveCameraType)
+        out = _payload(st.handler(action="show", operation="Face1", fit=True))
+        assert out["fitted_to"] == "model+stock"
+        cam = st.app.activeViewport.camera
+        reach = math.dist((cam.eye.x, cam.eye.y, cam.eye.z),
+                          (cam.target.x, cam.target.y, cam.target.z))
+        widen = math.sqrt(22 ** 2 + 18 ** 2 + 4 ** 2) / math.sqrt(10 ** 2 + 6 ** 2 + 2 ** 2)
+        assert math.isclose(reach, math.sqrt(300.0) * widen)
+        assert (cam.target.x, cam.target.y, cam.target.z) == (5.0, 3.0, 1.0)
 
     def test_widens_the_frame_to_the_union_and_reports_it(self, monkeypatch):
         import adsk.core
@@ -844,16 +930,53 @@ class TestFitWidensToStock:
         model_diag = math.sqrt(10 ** 2 + 6 ** 2 + 2 ** 2)
         union_diag = math.sqrt(22 ** 2 + 18 ** 2 + 4 ** 2)
         cam = st.app.activeViewport.camera
-        assert cam.viewExtents == 100.0 * (union_diag / model_diag)
+        assert cam.getExtents() == [True] + [100.0 * (union_diag / model_diag)] * 2
         assert (cam.target.x, cam.target.y, cam.target.z) == (5.0, 3.0, 1.0)
 
-    def test_falls_back_to_model_when_no_stock_is_configured(self):
+    def test_falls_back_to_viewport_when_neither_box_is_configured(self):
+        # A setup with no readable box runs only the viewport's own fit, which 'viewport' names.
         setup = FakeSetup("S1", [FakeOp("Face1", shown=False)], is_active=True)
         _install([setup])
         out = _payload(st.handler(action="show", operation="Face1", fit=True))
-        assert out["fitted_to"] == "model"
+        assert out["fitted_to"] == "viewport"
         assert "fit_box_cm" not in out
         assert st.app.activeViewport.camera.isFitView is True
+
+    def test_frames_the_model_box_directly_when_stock_does_not_read(self, monkeypatch):
+        # a cutting setup's model is the FLAT body, not what isFitView framed (the folded body) -
+        # it must be framed on its own box.
+        import adsk.core
+        monkeypatch.setattr(adsk.core.Point3D, "create",
+                            staticmethod(lambda x, y, z: types.SimpleNamespace(x=x, y=y, z=z)))
+        model = self._body((0, 0, 0), (81.31, 60, 2.5))
+        setup = FakeSetup("S1", [FakeOp("Face1", shown=False)], is_active=True, models=[model])
+        _install([setup])
+        out = _payload(st.handler(action="show", operation="Face1", fit=True))
+        assert out["fitted_to"] == "model"
+        assert out["fit_box_cm"] == {"min": [0.0, 0.0, 0.0], "max": [81.31, 60.0, 2.5]}
+        assert out["camera_target_cm"] == [40.655, 30.0, 1.25]
+        cam = st.app.activeViewport.camera
+        assert (cam.target.x, cam.target.y, cam.target.z) == (40.655, 30.0, 1.25)
+        diag = math.sqrt(81.31 ** 2 + 60 ** 2 + 2.5 ** 2)
+        assert cam.getExtents() == [True, diag, diag]
+
+    def test_falls_back_to_viewport_when_the_camera_read_back_does_not_answer(self):
+        # a camera whose eye/target never read leaves the frame unconfirmed, so 'model' is refused.
+        class _EyelessCamera:
+            isFitView = False
+            isSmoothTransition = True
+
+            def _copy(self):
+                return self
+
+        model = self._body((0, 0, 0), (81.31, 60, 2.5))
+        setup = FakeSetup("S1", [FakeOp("Face1", shown=False)], is_active=True, models=[model])
+        _install([setup])
+        st.app.activeViewport._cam = _EyelessCamera()
+        out = _payload(st.handler(action="show", operation="Face1", fit=True))
+        assert out["fitted_to"] == "viewport"
+        assert "fit_box_cm" not in out and "camera_target_cm" not in out
+        assert "camera could not be measured" in out["note"]
 
     def test_falls_back_to_model_when_the_stock_reads_but_the_model_bodies_do_not(self):
         stock = self._body((-6, -6, -1), (16, 12, 3))

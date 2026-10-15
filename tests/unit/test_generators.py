@@ -62,7 +62,7 @@ class TestToolHandlerMap:
         assert self._map(src) == {}
 
 
-# ── gen_manifest: family grouping + CLAUDE.md splice ──────────────────────────
+# ── gen_manifest: family grouping + AGENTS.md splice ──────────────────────────
 
 class TestGenManifestFamilies:
     def test_first_matching_prefix_wins_and_leftovers_group_as_other(self):
@@ -71,6 +71,18 @@ class TestGenManifestFamilies:
         assert any(t["name"] == "model_extrude" for t in fam.get("model", []))
         assert any(t["name"] == "cam_get" for t in fam.get("cam", []))
         assert any(t["name"] == "zzz_thing" for t in fam.get("other", []))
+
+    def test_manifest_summary_newlines_and_pipes_stay_inside_table_cells(self):
+        summary = gen_manifest._first_sentence("First\ncontinued | details. More text")
+        data = {"kinds": [{"kind": "CurvePointRef", "summary": "<start|end|mid|center>"}],
+                "tools": [{"name": "doc_open", "write": "read", "summary": summary}], "helpers": []}
+
+        out = gen_manifest.render(data)
+
+        assert "First continued \\| details" in out
+        assert "| `CurvePointRef` | <start\\|end\\|mid\\|center> |" in out
+        assert "| · | `doc_open` | First continued \\| details |" in out
+        assert "First\ncontinued" not in out
 
     def test_catalog_escapes_pipes_in_kind_hints(self):
         data = {"kinds": [{"kind": "UnitField", "hint": "mm | cm | in selector", "summary": ""}],
@@ -81,7 +93,7 @@ class TestGenManifestFamilies:
 
 class TestSplice:
     # _splice is generic (path + begin/end markers); the same seam splices the root families census
-    # and the tools/CLAUDE.md catalog. Exercised here on a temp file with the catalog markers.
+    # and the tools/AGENTS.md catalog. Exercised here on a temp file with the catalog markers.
     def _doc(self, tmp_path, body, newline="\n"):
         # LF by default, as a generated file is: Path.write_text translates to the PLATFORM newline,
         # which would hand every test below a CRLF fixture no generator ever produces.
@@ -285,6 +297,62 @@ class TestApiSurfaceCheckNeedsBindings:
         monkeypatch.setattr(gen_api_surface, "OUT_PATH", str(out))
         assert gen_api_surface.main(["--check", "--bindings-dir", expected]) == 0
         assert seen == [expected]
+
+class TestRecordedBuildApplicability:
+    @pytest.fixture
+    def surface(self, tmp_path, monkeypatch):
+        root = tmp_path / "recorded" / "Api" / "Python" / "packages" / "adsk"
+        root.mkdir(parents=True)
+        for name in gen_api_surface._MODULES:
+            (root / (name + ".py")).write_text("", encoding="utf-8")
+        output = tmp_path / "snapshot.py"
+        output.write_text(gen_api_surface._render(str(root), {}, {}, set()), encoding="utf-8")
+        monkeypatch.setattr(gen_api_surface, "OUT_PATH", str(output))
+        monkeypatch.setattr(gen_api_surface, "_BINDING_GLOBS", (str(root),))
+        monkeypatch.setattr(gen_api_surface, "_EXTRA_CLASSES", ())
+        return root, output
+
+    @pytest.mark.parametrize("environment", ["absent", "different"])
+    def test_inapplicable_check_discloses_unverified_build_and_keeps_snapshot(self, surface, monkeypatch, capsys, environment):
+        root, output = surface
+        before = output.read_bytes()
+        monkeypatch.setattr(gen_api_surface, "find_bindings", lambda: None if environment == "absent" else str(root))
+        if environment == "different":
+            monkeypatch.setattr(gen_api_surface, "_build_id", lambda path: "other")
+        monkeypatch.setattr(gen_api_surface, "build", lambda *args: pytest.fail("inapplicable bindings were scanned"))
+        assert gen_api_surface.check_recorded_build() == 0
+        note = capsys.readouterr().out
+        assert "SKIPPED" in note and "recorded" in note and "not verified" in note
+        assert output.read_bytes() == before
+
+    def test_matching_build_runs_strict_comparison_and_stale_snapshot_fails(self, surface, capsys):
+        _root, output = surface
+        assert gen_api_surface.check_recorded_build() == 0
+        assert "api surface current" in capsys.readouterr().out
+        output.write_text(output.read_text(encoding="utf-8") + "\n# stale\n", encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            gen_api_surface.check_recorded_build()
+        assert exc.value.code == 1 and "STALE" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("text", ["PROPERTIES = {}", 'BINDINGS_BUILD = "recorded"\nBINDINGS_BUILD = None'])
+    def test_missing_or_ambiguous_snapshot_identity_cannot_be_skipped(self, surface, monkeypatch, text):
+        _root, output = surface
+        output.write_text(text, encoding="utf-8")
+        monkeypatch.setattr(gen_api_surface, "find_bindings", lambda: None)
+        with pytest.raises(SystemExit) as exc:
+            gen_api_surface.check_recorded_build()
+        assert exc.value.code == 1
+
+    def test_aggregate_keeps_repository_generator_failure_after_api_skip(self, monkeypatch):
+        seen = []
+        api = types.SimpleNamespace(check_recorded_build=lambda: seen.append("skipped") or 0)
+        docs = types.SimpleNamespace(main=lambda: seen.append("stale docs") or 1)
+        monkeypatch.setitem(gen_all.sys.modules, "gen_api_surface", api)
+        monkeypatch.setitem(gen_all.sys.modules, "gen_test_docs", docs)
+        monkeypatch.setattr(gen_all, "_GENERATORS", ("gen_api_surface", "gen_test_docs"))
+        monkeypatch.setattr(gen_all.sys, "argv", ["gen_all.py", "--check"])
+        assert gen_all.main() == 1 and seen == ["skipped", "stale docs"]
+
 
 # ── gen_api_surface: a measured runtime return beats a broken binding annotation ──
 

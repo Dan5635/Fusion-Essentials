@@ -24,9 +24,18 @@ _REMESH_MESH = _inputs.MeshBodyRef("mesh", required=True)
 
 def handler(mesh: str = "", density: float = 0.0) -> dict:
     """Regenerate a cleaner, more uniform triangulation (repair / even density). WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    if density is None:
+        density = 0.0
+    d = _common.finite_number(density)
+    if d is None:
+        return error(f"density={_common.short_ref(ascii(density))} is not a number. Pass a "
+                     "positive number, or 0 for the API default.")
+    if d < 0:
+        return error(f"density={density!a} is negative. Use a positive density, "
+                     "or 0 for the API default.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mb, merr = _REMESH_MESH.resolve(mesh)
     if merr:
         return error(merr)
@@ -56,10 +65,6 @@ def handler(mesh: str = "", density: float = 0.0) -> dict:
 
         # density takes a ValueInput, not a raw float (a raw float raises in the SWIG layer), and a
         # dropped set is silent - the read-back below is what catches it.
-        try:
-            d = float(density)
-        except Exception:
-            d = 0.0
         density_applied = None
         if d > 0:
             try:
@@ -131,7 +136,7 @@ tool = (
     Tool.create_simple(name="mesh_remesh", description=TOOL_DESCRIPTION)
     .add_input_property(_REMESH_MESH.name, _REMESH_MESH.schema())
     .add_required_input(_REMESH_MESH.name)
-    .add_input_property("density", {"type": "number", "description": "Relative target density, positive. Omit for the API default."})
+    .add_input_property("density", {"type": "number", "description": "Relative target density. Zero or omission uses the API default."})
     .strict_schema()
 )
 item = Item.create_tool_item(

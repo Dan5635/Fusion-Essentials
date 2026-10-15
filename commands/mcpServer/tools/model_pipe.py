@@ -14,8 +14,12 @@ import adsk.fusion
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, ok, safe, target_component, build_path
+from ._common import error, ok, safe, target_component
+from ._inputs import build_path
 from . import _common
+from . import _path_common
+from . import _design_common
+from . import _edit_feature_common
 from . import _assert
 from . import _geom
 from . import _inputs
@@ -146,18 +150,19 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
                      f"{round(frac_one + frac_two, 6)} - the two directions together cannot cover "
                      "more than the whole path (1.0).")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
-    pipe_path, path_label, patherr = build_path(comp, path)
+    left = []
+    pipe_path, path_label, patherr = build_path(comp, path, left_out=left)
     if patherr:
         return error(patherr)
     # What the built Path HOLDS, beside what the request named: the pipe follows these curves and
     # no others, so a chain that stopped short pipes a stub of the intended run.
     path_curves = _common.counted(lambda: pipe_path.count)
-    sketch_curves = _common.path_sketch_curve_count(comp, path)
+    sketch_curves = _path_common.path_sketch_curve_count(comp, path)
     path_closed = safe(lambda: pipe_path.isClosed)
     if frac_two is not None and path_closed is not True:
         if path_closed is None:
@@ -239,6 +244,16 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     # A join is told "grew a body" from "made a second one" by the census host's body NAMES before
     # the add - the same before-image a no-volume-change join error names its orphan body from.
     bodies_before = _common.component_body_names(census) if op_key == "join" else None
+    retire_hosts, before_timeline, before_shapes, before_marker = [], None, None, None
+    path_visibility_restore = None
+    if op_key == "cut" and participants:
+        path_visibility_restore = _edit_feature_common.path_sketch_visibility_restore(comp, path)
+        for owner in [comp] + [safe(lambda b=b: _common._native_of(b).parentComponent) for b in participants]:
+            if not any(_common.same_component(owner, prior) is True for prior in retire_hosts):
+                retire_hosts.append(owner)
+        before_timeline = _design_common.timeline_census(design)
+        before_marker, _ = _common.timeline_marker(design)
+        before_shapes = _edit_feature_common.all_shapes(design, components=retire_hosts)
 
     try:
         feature = comp.features.pipeFeatures.add(pin)
@@ -256,8 +271,11 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     delta_total = None
     if op_key == "new":
         if feature and not result:
-            return error("Pipe reported success but created no body. Check that the path is one "
-                         "connected chain and the section size fits around its corners.")
+            made = _common.counted(lambda: feature.bodies.count)
+            return error(("Pipe reported success but created no body." if made == 0 else
+                          "Pipe reported success but its result bodies did not read.") + " Check that the path is one connected chain and the "
+                         "section size fits around its corners. "
+                         + _common.failed_effect_remedy(design, feature))
         if not feature:
             count_after = _common.body_count(census)
             if count_before is None or count_after is None or count_after <= count_before:
@@ -289,8 +307,13 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
                 bodies_after = _common.component_body_names(census)
                 join_clause = _common.join_new_body_clause(op_key, bodies_before, bodies_after)
                 extra = (" " + join_clause) if join_clause else ""
+            remedy = _common.failed_effect_remedy(design, feature)
+            if op_key == "cut" and participants and feature:
+                remedy = _edit_feature_common.retire_failed_create(
+                    design, feature, before_timeline, before_shapes, retire_hosts, before_marker,
+                    restore_input_visibility=path_visibility_restore)
             return error(f"Pipe reported success but no body's volume changed, so the {op_key} "
-                         f"affected nothing.{extra} " + _common.failed_effect_remedy(design, feature))
+                         f"affected nothing.{extra} " + remedy)
 
     inv = 1.0 / scale_factor
     payload = {
@@ -309,7 +332,7 @@ def handler(path=None, section_size=None, section_type: str = "circular", operat
     }
     if sketch_curves is not None:
         payload["path_sketch_curves"] = sketch_curves
-    warning = _common.path_chain_warning(path_curves, sketch_curves, "pipe")
+    warning = _path_common.path_chain_warning(path_curves, sketch_curves, "pipe", left)
     if warning:
         payload["note"] += " " + warning
     if op_key in ("cut", "intersect"):

@@ -77,9 +77,9 @@ def handler(occurrence_one: str = "", occurrence_two: str = "", geometry: str = 
         if slide_err:
             return error(slide_err)
 
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     pending = _pending_move_guard(design)
     if pending:
@@ -155,12 +155,12 @@ def handler(occurrence_one: str = "", occurrence_two: str = "", geometry: str = 
     # at add() with a null geometry - so only a requested MOTION must confirm itself.
     got = _current_joint_type(joint)
     if got and got != jtype:
-        return error(f"The as-built joint was created as '{got}', not the requested '{jtype}'. It "
-                     "remains in the design - remove it with design_delete_feature and retry.")
+        return error(f"The as-built joint was created as '{got}', not the requested '{jtype}'. "
+                     + _common.failed_effect_remedy(design, joint) + " Then retry.")
     if jtype != "rigid" and not got:
         return error(f"The as-built joint was created but its motion could not be read back, so "
                      f"'{jtype}' is unconfirmed. Check it with assembly_get before relying on the "
-                     "degree of freedom.")
+                     "degree of freedom. " + _common.failed_effect_remedy(design, joint))
 
     # AsBuiltJoints.createInput/add take no name, so the name is applied AFTER the joint exists and
     # read back. set_verified is not used: its message tail describes a pre-add input object, and

@@ -19,6 +19,7 @@ from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, scale, target_component
 from . import _common
+from . import _path_common
 from . import _geom
 from . import _inputs
 from . import _joints
@@ -27,9 +28,11 @@ app = adsk.core.Application.get()
 
 # ── the mode vocabulary, grouped by kind ──────────────────────────────────────────────────────────
 _PLANE_MODES = ("offset", "at_angle", "at_angle_on_face", "three_points", "midplane",
-                "tangent_at_point", "offset_through_point", "on_path", "two_edges")
+                "tangent_at_point", "offset_through_point", "on_path", "two_edges",
+                "perpendicular_to_plane", "tangent")
 _AXIS_MODES = ("edge", "world", "circular_face", "two_points", "two_planes", "perpendicular_at_point")
-_POINT_MODES = ("coordinate", "circle_center", "two_edges", "three_planes", "edge_plane", "on_path")
+_POINT_MODES = ("coordinate", "at_point", "circle_center", "two_edges", "three_planes", "edge_plane",
+                "on_path")
 _MODES_BY_KIND = {"plane": _PLANE_MODES, "axis": _AXIS_MODES, "point": _POINT_MODES}
 _LEGACY_MODE = {"plane": "offset", "axis": "edge", "point": "coordinate"}
 # de-duplicated, order-preserving (two_edges/on_path are legal for two kinds - listed once).
@@ -47,17 +50,26 @@ _COINCIDENT_REL_TOL = 1e-8
 
 # ── shared typed inputs (reused across modes; each mode uses the subset it needs) ────────────────
 _AXIS = _inputs.AxisRef("axis", default="z")
-_PLANE = _inputs.PlaneRef("plane", default="xy", description="Base/1st plane.")
+_PLANE = _inputs.PlaneRef("plane", default="xy")
 _PLANE2 = _inputs.PlaneRef("plane2")
 _PLANE3 = _inputs.PlaneRef("plane3")
 _EDGES = _inputs.GeometryHandleList("edges", require="edge")
-_POINTS = _inputs.GeometryHandleList("points", require="vertex")
+# mode='two_edges' reads each 'edges' entry as a line: a straight edge or a sketch line.
+_LINE = _inputs.AxisRef("edges", entity_only=True)
+_POINTS = _inputs.PointRefList("points")
 _FACE = _inputs.GeometryHandle("face", require="face")
-_MODE = _inputs.Choice("mode", _MODE_OPTIONS, default="",
-    description="Build method within 'kind'.")
+_MODE = _inputs.Choice("mode", _MODE_OPTIONS, default="")
 # mode='on_path' reads 'at' through this: a unitless 0-1 ratio, or a length from the path start.
 _DISTANCE_TYPE = _inputs.Choice("distance_type", ["proportional", "absolute"])
-_TO_OBJECT = _inputs.GeometryHandle("to_object", require="vertex")
+_TO_OBJECT = _inputs.PointRef("to_object", description="One point, as 'points'.")
+
+# The way past an operand of a component placed several times: name the instance.
+_OPERAND_REMEDY = ("Pass its handle from find_geometry or sketch_get, read through the instance "
+                   "you mean.")
+
+# How far (cm) an operand point may sit off a datum built through it: float noise, far below any
+# modelling tolerance.
+_INCIDENCE_TOL_CM = 1e-6
 
 # MODE GUARD: setByPoint(Point3D) / setByLine(InfiniteLine3D) are DIRECT-edit-only and fail in
 # parametric, the default. Every other mode resolves real geometry and is parametric-valid, so it
@@ -85,7 +97,7 @@ def _direct_only_block(design, k):
     return _PARAMETRIC_COORD_MSG.format(k=k)
 
 
-def _env_error(e):
+def _env_error(e, suffix=""):
     """Backstop for an environment/mode rejection that slips past the ModeGuard. States which datum
     kinds need Direct vs Parametric rather than prescribing a fix direction."""
     msg = str(e)
@@ -93,8 +105,8 @@ def _env_error(e):
         return error("Could not add construction geometry: this datum mode isn't supported in the "
             "current modeling mode. Only a bare coordinate point or a world-axis-through-a-point "
             "needs DIRECT-modeling; every geometry-based mode (edge axis, offset plane, and all "
-            "edge/face/plane/vertex-based modes) works in Parametric.")
-    return error(f"Could not add construction geometry: {e}")
+            "edge/face/plane/vertex-based modes) works in Parametric." + suffix)
+    return error(f"Could not add construction geometry: {e}{suffix}")
 
 
 def _resolve_mode(knd, raw_mode):
@@ -122,6 +134,110 @@ def _need_val(val, label, m):
     if val is None:
         return f"mode='{m}' needs '{label}'."
     return None
+
+
+def _lifted(label, ents, comp, design, ops):
+    """(the operands as `comp`'s datum input takes them, error), each one's meta added to `ops`."""
+    context = safe(lambda: design.activeOccurrence)
+    out = []
+    for i, ent in enumerate(ents):
+        tag = f"{label}[{i}]" if label in ("points", "edges") else label
+        lifted, err = _inputs.operand_in(f"'{tag}'", ent, comp, design, remedy=_OPERAND_REMEDY)
+        if err:
+            return None, err
+        ops.append({"input": tag, **_inputs.operand_meta(lifted, context)})
+        out.append(lifted)
+    return out, None
+
+
+def _point_operands(raw, n, m, comp, design, ops):
+    """(exactly `n` 'points' operands, lifted, error)."""
+    pts, err = _POINTS.resolve(raw)
+    if err:
+        return None, err
+    cerr = _need(pts, n, "points", m)
+    if cerr:
+        return None, cerr
+    return _lifted("points", pts, comp, design, ops)
+
+
+def _line_operands(raw, m, comp, design, ops):
+    """(the two 'edges' lines of two_edges - straight edges or sketch lines - lifted, error)."""
+    items = _inputs.list_items(raw) if raw not in (None, "", []) else []
+    cerr = _need(items, 2, "edges", m)
+    if cerr:
+        return None, cerr
+    ents = []
+    for i, item in enumerate(items):
+        tagged, err = _LINE.resolve(item)
+        if err:
+            return None, f"'edges'[{i}]: {err}"
+        if tagged[0] != "edge":
+            return None, (f"mode='{m}': 'edges'[{i}] '{item}' is a world direction, not a line - "
+                          "pass a straight edge or a sketch line.")
+        ents.append(tagged[1])
+    return _lifted("edges", ents, comp, design, ops)
+
+
+def _through_clause(ops):
+    """The sentence naming every operand that went in through an occurrence, or ''."""
+    named = [f"'{op['input']}' in '{op['assembly_path']}'" for op in ops if op.get("assembly_path")]
+    return f" Operand(s) passed through an occurrence: {', '.join(named)}." if named else ""
+
+
+def _published_operands(ops, inv_k):
+    """The operand rows the payload carries, their WORLD points in the call's units."""
+    def scaled(v):
+        if isinstance(v, (list, tuple)) and v and isinstance(v[0], (list, tuple)):
+            return [scaled(p) for p in v]
+        return [round(c * inv_k, 6) for c in v] if v else None
+    return [{**{key: op.get(key) for key in ("input", "type", "ref", "component", "assembly_path")},
+             "world": scaled(op.get("world_cm"))} for op in ops]
+
+
+def _points_off(ops, measure):
+    """The largest distance (cm) `measure` reports for the operand points, None when one is unread."""
+    dists = [measure(op.get("world_cm")) for op in ops]
+    return None if not dists or any(d is None for d in dists) else max(dists)
+
+
+def _off_plane(g):
+    """A measure: the distance (cm) from a point to the plane `g`, None when unread."""
+    def measure(p):
+        dist, _lever = _point_plane_offset(g, p)
+        return abs(dist) if dist is not None else None
+    return measure
+
+
+def _off_line(g):
+    """A measure: the distance (cm) from a point to the line `g` (origin + direction), or None."""
+    d = _geom.unit_vector(safe(lambda: g.direction), decimals=_GATE_DECIMALS)
+    o = _geom._coords(safe(lambda: g.origin))
+
+    def measure(p):
+        if d is None or o is None or not p:
+            return None
+        c = _geom.cross([p[i] - o[i] for i in range(3)], d)
+        return (c[0] ** 2 + c[1] ** 2 + c[2] ** 2) ** 0.5
+    return measure
+
+
+def _through_report(ops, measure, k):
+    """{passes_through_point, point_offset in 'units' on a miss} - published, never gated."""
+    miss = _points_off(ops, measure)
+    if miss is None:
+        return {"passes_through_point": None}
+    out = {"passes_through_point": miss <= _INCIDENCE_TOL_CM}
+    if not out["passes_through_point"]:
+        out["point_offset"] = round(miss / k, 6)
+    return out
+
+
+def _missed(m, obj, what, miss, units, k):
+    """The error for a datum that landed off its operand points."""
+    return (f"mode='{m}': Fusion reported success but the {what} it created misses its operand "
+            f"point(s) by {round(miss / k, 6)} {units}. The datum '{safe(lambda: obj.name)}' was "
+            "added and is still in the design - remove it with design_delete_feature.")
 
 
 def _surface_label(face):
@@ -191,14 +307,15 @@ def _space_unread(design, obj):
 
 
 # What the published 'handle' can be spent on, per kind - each named tool resolves the datum through
-# a typed kind that accepts it (AxisRef for an axis, PlaneRef for a plane), so the claim fails loudly
-# if it stops being true. No typed kind resolves a construction POINT, so that kind claims none.
+# a typed kind that accepts it (AxisRef for an axis, PlaneRef for a plane, PointRef for a point), so
+# the claim fails loudly if it stops being true.
 _HANDLE_NOTE = {
     "axis": ("'handle' is this axis's entityToken - pass it (or the datum's name in this component) "
              "as 'axis' to model_pattern_circular, model_revolve, or model_move."),
-    "plane": ("'handle' is this plane's entityToken - pass it as 'plane' to model_mirror, "
-              "view_section, or model_split; sketch_create takes this datum's NAME instead."),
-    "point": "'handle' is this point's entityToken.",
+    "plane": ("'handle' is this plane's entityToken - pass it as 'plane' to sketch_create, "
+              "model_mirror, view_section, or model_split."),
+    "point": ("'handle' is this point's entityToken - pass it (or the datum's name in this "
+              "component) in model_construction's 'points' or 'to_object'."),
 }
 
 
@@ -247,6 +364,16 @@ def _plane_offset(normal_src, origin, pt):
     if dist is None or lever is None:
         return None, None
     return dist, lever
+
+
+def _point_plane_offset(g, p):
+    """_plane_offset for a plane geometry `g` and a WORLD (x, y, z) cm point `p`."""
+    n = _geom.unit_vector(safe(lambda: g.normal), decimals=_GATE_DECIMALS)
+    o = _geom._coords(safe(lambda: g.origin))
+    if n is None or o is None or not p:
+        return None, None
+    v = [p[i] - o[i] for i in range(3)]
+    return _geom.dot(n, v), sum(c * c for c in v) ** 0.5
 
 
 def _on_plane(dist, lever):
@@ -298,11 +425,16 @@ def _on_path_distance(comp, design, k, path_raw, at_raw, dtype_raw, m):
             return None, None, None, None, aerr
         member = adsk.fusion.PathDistanceTypes.ProportionalPathDistanceType
         val, extra = adsk.core.ValueInput.createByReal(v), {"at_ratio": v}
-    path, label, perr = _common.build_path(comp, path_raw)
+    left_out = []
+    path, label, perr = _inputs.build_path(comp, path_raw, left_out=left_out)
     if perr:
         return None, None, None, None, perr
     extra["path"] = label
     extra["distance_type"] = dtype
+    warning = _path_common.path_chain_warning(
+        safe(lambda: path.count), _path_common.path_sketch_curve_count(comp, path_raw), "datum", left_out)
+    if warning:
+        extra["path_warning"] = warning
     return path, member, val, extra, None
 
 
@@ -446,10 +578,13 @@ def _landed_angle(obj, want_rad, asked, m):
 
 
 def _geometry_readback(knd, design, obj, inv_k):
-    """The CREATED datum's real geometry (not an echo of the input), read through _datum_geometry so
-    it sits in the same space as the caller's handles. Construction geometry carries no healthState,
-    so this read is the effect check. {} when the geometry cannot be read."""
-    g = _datum_geometry(design, obj)
+    """The created datum's geometry in caller space, or {} when it cannot be read."""
+    if knd == "axis":
+        g, _ = _inputs._datum_world_line(
+            safe(lambda: obj.name) or "created axis", obj,
+            occurrence=safe(lambda: design.activeOccurrence))
+    else:
+        g = _datum_geometry(design, obj)
     if g is None:
         return {}
     if knd == "plane":
@@ -464,7 +599,7 @@ def _geometry_readback(knd, design, obj, inv_k):
 # ── per-kind builders: (mode, ...) -> (obj, extra_payload, error) ────────────────────────────────
 
 def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges_raw, angle,
-                 face_raw, points_raw, path_raw, at_raw, dtype_raw, to_object_raw):
+                 face_raw, points_raw, path_raw, at_raw, dtype_raw, to_object_raw, ops):
     if m == "offset":
         base, err = _PLANE.resolve(plane_raw)
         if err:
@@ -582,12 +717,9 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
         base, err = _PLANE.resolve(plane_raw)
         if err:
             return None, None, err
-        pts, err = _POINTS.resolve(points_raw)
+        pts, err = _point_operands(points_raw, 1, m, comp, design, ops)
         if err:
             return None, None, err
-        cerr = _need(pts, 1, "points", m)
-        if cerr:
-            return None, None, cerr
         cpi = comp.constructionPlanes.createInput()
         if not cpi.setByOffsetThroughPoint(base, pts[0]):
             return None, None, ("mode='offset_through_point': Fusion rejected these inputs "
@@ -596,8 +728,7 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
         # The point DEFINES the offset, so the created plane passes through it exactly (measured) -
         # a non-zero distance means the plane that landed is not the one that was asked for.
         g = _datum_geometry(design, obj)
-        dist, lever = _plane_offset(safe(lambda: g.normal), safe(lambda: g.origin),
-                                    safe(lambda: pts[0].geometry))
+        dist, lever = _point_plane_offset(g, ops[-1].get("world_cm"))
         on = _on_plane(dist, lever)
         if on is False:
             return None, None, (f"mode='offset_through_point': Fusion reported success but the "
@@ -619,10 +750,15 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
                 return None, None, ("mode='on_path': 'to_object' places the plane AT that point "
                                     "(shifted by 'offset'), so it cannot be combined with 'at' or "
                                     "'distance_type' - pass one or the other.")
+            lifted, err = _lifted("to_object", [to_obj], comp, design, ops)
+            if err:
+                return None, None, err
+            to_obj = lifted[0]
             val, _offset_cm, verr = _inputs.length_value_input(offset, k, design, "offset")
             if verr:
                 return None, None, verr
-            path, label, perr = _common.build_path(comp, path_raw)
+            left_out = []
+            path, label, perr = _inputs.build_path(comp, path_raw, left_out=left_out)
             if perr:
                 return None, None, perr
             cpi = comp.constructionPlanes.createInput()
@@ -637,6 +773,11 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
             # reading and the same off-path disclosure.
             extra = {"path": label, "to_object": True, "offset": _inputs.expression_report(offset),
                      "path_extrapolates": True}
+            warning = _path_common.path_chain_warning(
+                safe(lambda: path.count), _path_common.path_sketch_curve_count(comp, path_raw),
+                "datum", left_out)
+            if warning:
+                extra["path_warning"] = warning
             extra.update(_landed_path_report(obj))
             extra.update(_path_extent_report(obj, path, 1.0 / k, with_offset=True))
             return obj, extra, None
@@ -656,19 +797,22 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
         return obj, extra, None
 
     if m == "three_points":
-        pts, err = _POINTS.resolve(points_raw)
+        pts, err = _point_operands(points_raw, 3, m, comp, design, ops)
         if err:
             return None, None, err
-        cerr = _need(pts, 3, "points", m)
-        if cerr:
-            return None, None, cerr
         cpi = comp.constructionPlanes.createInput()
         # Fails if the points do not form a triangle (two coincident, or all three collinear) - live API doc.
         if not cpi.setByThreePoints(pts[0], pts[1], pts[2]):
             return None, None, ("mode='three_points': Fusion rejected these points (setByThreePoints "
                                 "returned false) - they must form a triangle (no two coincident, not "
                                 "all three collinear).")
-        return comp.constructionPlanes.add(cpi), {"point_count": 3}, None
+        obj = comp.constructionPlanes.add(cpi)
+        # A plane through three points holds all three, so its normal follows from them too.
+        miss = _points_off(ops, _off_plane(_datum_geometry(design, obj)))
+        if miss is not None and miss > _INCIDENCE_TOL_CM:
+            return None, None, _missed(m, obj, "plane", miss, units, k)
+        return obj, {"point_count": 3, "passes_through_points": (True if miss is not None
+                                                                 else None)}, None
 
     if m == "midplane":
         p1, err = _PLANE.resolve(plane_raw)
@@ -698,25 +842,20 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
         cerr = _require_curved_face(face, m)
         if cerr:
             return None, None, cerr
-        pts, err = _POINTS.resolve(points_raw)
+        pts, err = _point_operands(points_raw, 1, m, comp, design, ops)
         if err:
             return None, None, err
-        cerr = _need(pts, 1, "points", m)
-        if cerr:
-            return None, None, cerr
         cpi = comp.constructionPlanes.createInput()
         if not cpi.setByTangentAtPoint(face, pts[0]):
             return None, None, ("mode='tangent_at_point': Fusion rejected these inputs "
                                 "(setByTangentAtPoint returned false).")
-        return comp.constructionPlanes.add(cpi), {}, None
+        obj = comp.constructionPlanes.add(cpi)
+        return obj, _through_report(ops, _off_plane(_datum_geometry(design, obj)), k), None
 
     if m == "two_edges":
-        eds, err = _EDGES.resolve(edges_raw)
+        eds, err = _line_operands(edges_raw, m, comp, design, ops)
         if err:
             return None, None, err
-        cerr = _need(eds, 2, "edges", m)
-        if cerr:
-            return None, None, cerr
         cpi = comp.constructionPlanes.createInput()
         # Fails if the two linear entities are not coplanar - live API doc.
         if not cpi.setByTwoEdges(eds[0], eds[1]):
@@ -724,18 +863,156 @@ def _plane_datum(m, comp, design, k, units, plane_raw, plane2_raw, offset, edges
                                 "returned false) - the two entities must be coplanar and linear.")
         return comp.constructionPlanes.add(cpi), {}, None
 
+    if m == "perpendicular_to_plane":
+        base, err = _PLANE.resolve(plane_raw)
+        if err:
+            return None, None, err
+        through = points_raw not in (None, "", [])
+        offset_given = _inputs.looks_like_expression(offset) or bool(offset)
+        if through and offset_given:
+            return None, None, ("mode='perpendicular_to_plane' is placed by 'offset' OR through "
+                                "one of 'points', not both. Drop one.")
+        cpi = comp.constructionPlanes.createInput()
+        offset_cm = None
+        if through:
+            pts, err = _point_operands(points_raw, 1, m, comp, design, ops)
+            if err:
+                return None, None, err
+            done = cpi.setByPerpendicularToPlane(base, None, pts[0])
+        elif offset_given:
+            val, offset_cm, verr = _inputs.length_value_input(offset, k, design, "offset")
+            if verr:
+                return None, None, verr
+            done = cpi.setByPerpendicularToPlane(base, val)
+        else:
+            done = cpi.setByPerpendicularToPlane(base)
+        if not done:
+            return None, None, ("mode='perpendicular_to_plane': Fusion rejected these inputs "
+                                "(setByPerpendicularToPlane returned false).")
+        obj = comp.constructionPlanes.add(cpi)
+        left = (f" The datum '{safe(lambda: obj.name)}' was added and is still in the design - "
+                "remove it with design_delete_feature.")
+        g = _datum_geometry(design, obj)
+        dot = _geom.dot(
+            _geom.unit_vector(safe(lambda: _datum_geometry(design, base).normal),
+                              decimals=_GATE_DECIMALS),
+            _geom.unit_vector(safe(lambda: g.normal), decimals=_GATE_DECIMALS))
+        if dot is not None and abs(dot) > _COINCIDENT_REL_TOL:
+            return None, None, ("mode='perpendicular_to_plane': Fusion reported success but the "
+                                f"plane it created is not perpendicular to 'plane' (the unit "
+                                f"normals' dot product reads {dot:.9f}, not 0)." + left)
+        extra = {"perpendicular_to": _inputs.surface_ref_label(base),
+                 "perpendicular": True if dot is not None else None}
+        if dot is None and (_space_unread(design, base) or _space_unread(design, obj)):
+            extra["space_unread"] = True
+        if through:
+            dist, lever = _point_plane_offset(g, ops[-1].get("world_cm"))
+            on = _on_plane(dist, lever)
+            if on is False:
+                return None, None, ("mode='perpendicular_to_plane': Fusion reported success but "
+                                    f"the plane it created misses the point by {abs(dist):.6f} cm."
+                                    + left)
+            extra["passes_through_point"] = on
+        if offset_cm is not None:
+            landed = safe(lambda: obj.definition.distance.value)
+            if isinstance(landed, (int, float)) and not isinstance(landed, bool):
+                if abs(landed - offset_cm) > _common.EXTENT_MATCH_TOL_CM:
+                    return None, None, ("mode='perpendicular_to_plane': Fusion reported success "
+                                        f"but the plane reads back an offset of "
+                                        f"{round(landed / k, 6)} {units}, not the requested "
+                                        f"{round(offset_cm / k, 6)} {units}." + left)
+                extra["offset"] = round(landed / k, 6)
+                pname = safe(lambda: obj.definition.distance.name)
+                if pname:
+                    extra["model_parameters"] = {"offset": pname}
+            else:
+                extra["offset"] = None
+                extra["offset_requested"] = _inputs.expression_report(offset)
+        return obj, extra, None
+
+    if m == "tangent":
+        face, err = _FACE.resolve(face_raw)
+        if err:
+            return None, None, err
+        cerr = _need_val(face, "face", m)
+        if cerr:
+            return None, None, cerr
+        if safe(lambda: face.geometry.surfaceType) != adsk.core.SurfaceTypes.CylinderSurfaceType:
+            return None, None, ("mode='tangent' needs a CYLINDRICAL 'face' (got a "
+                                f"{_surface_label(face)} face). plane mode 'tangent_at_point' takes "
+                                "a cone, at a point on it.")
+        base, err = _PLANE.resolve(plane_raw)
+        if err:
+            return None, None, err
+        axis = _geom.unit_vector(safe(lambda: face.geometry.axis), decimals=_GATE_DECIMALS)
+        base_normal = _geom.unit_vector(safe(lambda: _datum_geometry(design, base).normal),
+                                        decimals=_GATE_DECIMALS)
+        lined_up = _geom.dot(axis, base_normal)
+        # The square-to-the-axis refusal is established for a face read in its own component; on
+        # a face placed through an occurrence Fusion's own answer is passed on below.
+        placed = safe(lambda: face.assemblyContext) is not None
+        if (not placed and lined_up is not None
+                and abs(abs(lined_up) - 1.0) <= _COINCIDENT_REL_TOL):
+            return None, None, ("mode='tangent': 'plane' is square to the cylinder's axis, so no "
+                                "angle can be measured from it. Pass a reference plane the axis "
+                                "lies along (one whose normal is perpendicular to the axis).")
+        val, want_rad, verr = _angle_value_input(angle, design)
+        if verr:
+            return None, None, verr
+        cpi = comp.constructionPlanes.createInput()
+        if not cpi.setByTangent(face, val, base):
+            return None, None, ("mode='tangent': Fusion rejected these inputs (setByTangent "
+                                "returned false).")
+        try:
+            obj = comp.constructionPlanes.add(cpi)
+        except Exception as e:
+            return None, None, (f"mode='tangent': Fusion refused this face and reference plane "
+                                f"({e}). Nothing was created. Try another reference 'plane'"
+                                + ("; for a cylinder in a placed component the accepted planes "
+                                   "differ from those of an unplaced one." if placed else "."))
+        extra, merr = _landed_angle(obj, want_rad, angle, m)
+        if merr:
+            return None, None, merr
+        extra["angle_from"] = _inputs.surface_ref_label(base)
+        # Tangent to a cylinder: the plane's normal is square to the axis and the plane sits one
+        # radius from a point on the axis (Cylinder.origin).
+        g = _datum_geometry(design, obj)
+        square = _geom.dot(_geom.unit_vector(safe(lambda: g.normal), decimals=_GATE_DECIMALS), axis)
+        dist, _lever = _plane_offset(safe(lambda: g.normal), safe(lambda: g.origin),
+                                     safe(lambda: face.geometry.origin))
+        radius = safe(lambda: face.geometry.radius)
+        if None in (square, dist, radius):
+            extra["tangent_to_face"] = None
+            if _space_unread(design, obj):
+                extra["space_unread"] = True
+            return obj, extra, None
+        gap = abs(abs(dist) - radius)
+        if abs(square) > _COINCIDENT_REL_TOL or gap > _INCIDENCE_TOL_CM:
+            return None, None, ("mode='tangent': Fusion reported success but the plane it created "
+                                f"is not tangent to the cylinder: it sits {round(abs(dist) / k, 6)} "
+                                f"{units} from the axis against a radius of "
+                                f"{round(radius / k, 6)} {units}. The datum "
+                                f"'{safe(lambda: obj.name)}' was added and is still in the design "
+                                "- remove it with design_delete_feature.")
+        extra["tangent_to_face"] = True
+        return obj, extra, None
+
     return None, None, f"Unhandled plane mode '{m}'."
 
 
-def _axis_datum(m, comp, design, k, x, y, z, axis_raw, plane_raw, plane2_raw, face_raw, points_raw):
+def _axis_datum(m, comp, design, k, units, x, y, z, axis_raw, plane_raw, plane2_raw, face_raw,
+                points_raw, ops):
     if m in ("", "edge", "world"):
         ax, aerr = _AXIS.resolve(axis_raw)
         if aerr:
             return None, None, aerr
         if ax[0] == "edge":
+            line, lerr = _lifted("axis", [ax[1]], comp, design, ops)
+            if lerr:
+                return None, None, lerr
             # Edge-defined axis: setByEdge is parametric-LEGAL (setByLine is not) - confirmed live.
             cai = comp.constructionAxes.createInput()
-            if not cai.setByEdge(ax[1]):
+            if not cai.setByEdge(line[0]):
                 return None, None, ("mode='edge': Fusion rejected this edge (setByEdge returned "
                                     "false).")
             obj = comp.constructionAxes.add(cai)
@@ -795,18 +1072,26 @@ def _axis_datum(m, comp, design, k, x, y, z, axis_raw, plane_raw, plane2_raw, fa
         return obj, extra, None
 
     if m == "two_points":
-        pts, err = _POINTS.resolve(points_raw)
+        pts, err = _point_operands(points_raw, 2, m, comp, design, ops)
         if err:
             return None, None, err
-        cerr = _need(pts, 2, "points", m)
-        if cerr:
-            return None, None, cerr
         cai = comp.constructionAxes.createInput()
         # Fails if the two points are coincident - live API doc.
         if not cai.setByTwoPoints(pts[0], pts[1]):
             return None, None, ("mode='two_points': Fusion rejected these points (setByTwoPoints "
                                 "returned false) - they must not be coincident.")
-        return comp.constructionAxes.add(cai), {}, None
+        obj = comp.constructionAxes.add(cai)
+        # The axis reads component-LOCAL (see circular_face), so it is lifted by the placement.
+        g = _datum_geometry(design, obj, comp, safe(lambda: design.activeOccurrence))
+        miss = _points_off(ops, _off_line(g)) if g is not None else None
+        if miss is not None and miss > _INCIDENCE_TOL_CM:
+            return None, None, _missed(m, obj, "axis", miss, units, k)
+        extra = {"passes_through_points": True if miss is not None else None,
+                 "frame": "world" if g is not None else "component"}
+        if g is not None:
+            extra["geometry"] = {"direction": _geom.unit_vector(safe(lambda: g.direction)),
+                                 "origin": _common.ptxyz(safe(lambda: g.origin), 1.0 / k)}
+        return obj, extra, None
 
     if m == "two_planes":
         p1, err = _PLANE.resolve(plane_raw)
@@ -832,12 +1117,9 @@ def _axis_datum(m, comp, design, k, x, y, z, axis_raw, plane_raw, plane2_raw, fa
         cerr = _need_val(face, "face", m)
         if cerr:
             return None, None, cerr
-        pts, err = _POINTS.resolve(points_raw)
+        pts, err = _point_operands(points_raw, 1, m, comp, design, ops)
         if err:
             return None, None, err
-        cerr = _need(pts, 1, "points", m)
-        if cerr:
-            return None, None, cerr
         face_normal = _geom.unit_vector(safe(lambda: face.geometry.normal))
         cai = comp.constructionAxes.createInput()
         if not cai.setByPerpendicularAtPoint(face, pts[0]):
@@ -853,13 +1135,37 @@ def _axis_datum(m, comp, design, k, x, y, z, axis_raw, plane_raw, plane2_raw, fa
         elif _space_unread(design, obj):
             extra["aligned_to_face_normal"] = None
             extra["space_unread"] = True
+        g = _datum_geometry(design, obj, comp, safe(lambda: design.activeOccurrence))
+        extra.update(_through_report(ops, _off_line(g), k) if g is not None
+                     else {"passes_through_point": None})
         return obj, extra, None
 
     return None, None, f"Unhandled axis mode '{m}'."
 
 
-def _point_datum(m, comp, design, k, x, y, z, plane_raw, plane2_raw, plane3_raw, edges_raw,
-                 path_raw, at_raw, dtype_raw, to_object_raw):
+def _point_datum(m, comp, design, k, units, x, y, z, plane_raw, plane2_raw, plane3_raw, edges_raw,
+                 path_raw, at_raw, dtype_raw, to_object_raw, points_raw, ops):
+    if m == "at_point":
+        pts, err = _point_operands(points_raw, 1, m, comp, design, ops)
+        if err:
+            return None, None, err
+        cpi = comp.constructionPoints.createInput()
+        if not cpi.setByPoint(pts[0]):
+            return None, None, ("mode='at_point': Fusion rejected this point (setByPoint returned "
+                                "false).")
+        obj = comp.constructionPoints.add(cpi)
+        # A datum point's .geometry reads in its component's space; the placement lifts it.
+        at = _inputs.placed_point_cm(obj, safe(lambda: design.activeOccurrence))
+        want = ops[-1].get("world_cm")
+        if at is None or not want:
+            return obj, {"at_operand": None}, None
+        miss = sum((a - b) ** 2 for a, b in zip(at, want)) ** 0.5
+        if miss > _INCIDENCE_TOL_CM:
+            return None, None, _missed(m, obj, "point", miss, units, k)
+        return obj, {"at_operand": True, "world": {"x": round(at[0] / k, 6),
+                                                   "y": round(at[1] / k, 6),
+                                                   "z": round(at[2] / k, 6)}}, None
+
     if m == "coordinate":
         # setByPoint(Point3D) is direct-edit-only - the ModeGuard refuses cleanly BEFORE the doomed
         # mutation (and gives the correct-direction remedy).
@@ -889,12 +1195,9 @@ def _point_datum(m, comp, design, k, x, y, z, plane_raw, plane2_raw, plane3_raw,
         return comp.constructionPoints.add(cpi), {}, None
 
     if m == "two_edges":
-        eds, err = _EDGES.resolve(edges_raw)
+        eds, err = _line_operands(edges_raw, m, comp, design, ops)
         if err:
             return None, None, err
-        cerr = _need(eds, 2, "edges", m)
-        if cerr:
-            return None, None, cerr
         cpi = comp.constructionPoints.createInput()
         if not cpi.setByTwoEdges(eds[0], eds[1]):
             return None, None, ("mode='two_edges': Fusion rejected these edges (setByTwoEdges "
@@ -985,27 +1288,37 @@ def handler(kind: str = "point", mode: str = "", x: float = 0.0, y: float = 0.0,
     if merr:
         return error(merr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
+    ops = []           # every operand's frame and owner, in the order resolved
     try:
         if knd == "point":
-            obj, extra, berr = _point_datum(m, comp, design, k, x, y, z, plane, plane2, plane3,
-                                            edges, path, at, distance_type, to_object)
+            obj, extra, berr = _point_datum(m, comp, design, k, units, x, y, z, plane, plane2,
+                                            plane3, edges, path, at, distance_type, to_object,
+                                            points, ops)
         elif knd == "axis":
-            obj, extra, berr = _axis_datum(m, comp, design, k, x, y, z, axis, plane, plane2, face, points)
+            obj, extra, berr = _axis_datum(m, comp, design, k, units, x, y, z, axis, plane, plane2,
+                                           face, points, ops)
         else:
             obj, extra, berr = _plane_datum(m, comp, design, k, units, plane, plane2, offset, edges,
-                                            angle, face, points, path, at, distance_type, to_object)
+                                            angle, face, points, path, at, distance_type, to_object,
+                                            ops)
         if berr:
-            return error(berr)
+            return error(berr + _through_clause(ops))
     except Exception as e:
-        return _env_error(e)
+        return _env_error(e, _through_clause(ops))
 
     if not obj:
         return error(f"Construction {knd} creation returned nothing.")
+    elsewhere = _common.same_component(safe(lambda: obj.component), comp)
+    if elsewhere is False:
+        return error(f"Fusion reported success but the datum '{safe(lambda: obj.name)}' reads "
+                     f"component '{safe(lambda: obj.component.name)}', not "
+                     f"'{safe(lambda: comp.name)}' where it was built. It is still in the design - "
+                     "remove it with design_delete_feature.")
     # apply_rename, not a swallowed setattr: a declined/deduped datum rename is disclosed.
     datum_name, rename_warning = _common.apply_rename(obj, name)
 
@@ -1030,13 +1343,19 @@ def handler(kind: str = "point", mode: str = "", x: float = 0.0, y: float = 0.0,
     if knd == "plane":
         out["note"] += _SKETCH_ORIGIN_NOTE
     out.update(extra or {})
+    if out.pop("path_warning", ""):
+        out["note"] += " " + extra["path_warning"]
     # One disclosure for every null the active occurrence's space cost us - the mode's own claim
     # (flagged by the builder) and/or the geometry read-back, which comes back empty for the same
     # reason.
-    if out.pop("space_unread", False) or _space_unread(design, obj):
+    space_noted = out.pop("space_unread", False) or _space_unread(design, obj)
+    if space_noted:
         out["note"] += _UNREAD_SPACE_NOTE
     if out.pop("axis_frame_unresolved", False):
         out["note"] += _AXIS_FRAME_UNRESOLVED_NOTE
+    if "offset_requested" in out:
+        out["note"] += (" offset is null: the created plane's distance parameter did not read "
+                        "back, so 'offset_requested' was not compared with what landed.")
     if out.pop("angle_unread", False):
         out["note"] += (" angle_deg is null: the created plane's angle parameter did not read back, "
                         "so the landed angle was not compared to the request.")
@@ -1051,11 +1370,26 @@ def handler(kind: str = "point", mode: str = "", x: float = 0.0, y: float = 0.0,
     if out.get("model_parameters"):
         out["note"] += (" The names in 'model_parameters' are this datum's own model parameters - "
                         "param_set one to an expression to drive the datum parametrically.")
+    if out.get("passes_through_point") is False:
+        out["note"] += (" passes_through_point is false: the created datum misses the operand "
+                        "point by 'point_offset', in 'units'.")
+    unread = [key for key in ("passes_through_point", "passes_through_points", "at_operand")
+              if key in out and out[key] is None]
+    if unread and not space_noted:
+        out["note"] += (f" {unread[0]} is null: the datum's or an operand's world position did "
+                        "not read, so the two were not compared.")
+    if ops:
+        out["operands"] = _published_operands(ops, 1.0 / k)
+        out["note"] += (" 'operands' is where each input sat in WORLD space when it was used, with "
+                        "its owner and the occurrence it was read through.")
+        if any(op.get("world_cm") is None for op in ops):
+            out["note"] += (" An operand's world position did not read, so its datum was not "
+                            "checked against it.")
     return ok(out)
 
 
 TOOL_DESCRIPTION = (
-    "Add a construction point, axis, or plane; each 'mode' reads its own subset of the inputs."
+    "Add a construction point, axis or plane; each 'mode' reads its own inputs."
 )
 
 construction_tool = (
@@ -1079,9 +1413,9 @@ construction_tool = (
                            "count is the truth), or 'sketch:<name>'."})
     .add_input_property("at", {"type": ["number", "string"]})
     .add_input_property(*_DISTANCE_TYPE.as_property())
-    .add_input_property(*_TO_OBJECT.as_property())
+    .add_input_property(*_TO_OBJECT.as_property(brief=True))
     .add_input_property("offset", {"type": ["number", "string"],
-            "description": "The plane offset, or the shift from 'to_object'."})
+            "description": "Plane offset, or 'to_object' shift."})
     .add_input_property(*_inputs.UNITS.as_property())
     .add_input_property("name", {"type": "string"})
     .strict_schema()

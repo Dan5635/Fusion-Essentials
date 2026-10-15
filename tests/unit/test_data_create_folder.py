@@ -2,19 +2,13 @@
 disclosure of parent folders a failed call already created.
 """
 
-import json
 
 import pytest
 
-from conftest import FakeApplication, FakeData, FakeDataFolder, load_tool, make_data_tree
+from conftest import FakeApplication, FakeData, FakeDataFolder, load_tool, make_data_tree, payload as _payload
 
 dm = load_tool("data_create_folder")
 dc = load_tool("_data_common")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 @pytest.fixture

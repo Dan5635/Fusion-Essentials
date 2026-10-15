@@ -2,7 +2,7 @@
 
 import pytest
 from conftest import load_tool
-from _sketch_fakes import FakeSketch, _Curve, _payload, draw_installer, scoped_installer
+from tests.fakes.sketch_scenarios import FakeSketch, _Curve, _payload, draw_installer, scoped_installer
 
 sk = load_tool("sketch_add_3d_line")
 _install_draw = draw_installer(sk)

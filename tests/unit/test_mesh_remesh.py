@@ -159,7 +159,35 @@ class TestMeshRemesh:
         assert bf._starts == 1 and bf._finishes == 1
 
 
+@pytest.fixture
+def negative_density_mesh():
+    """Install a parametric mesh whose remesh would visibly replace its triangle count."""
+    bf = FakeBaseFeature()
+    src = MeshBody("Scan", tri=2000, area=50.0, volume=10.0)
+    feats = _MeshFeatures([], on_add=lambda: setattr(src.displayMesh, "triangleCount", 6))
+    _wire(src, feats, design_type=1, base_feature=bf)
+    return src, feats, bf
+
+
 class TestRemeshDensityReadBack:
+
+    def test_negative_density_refuses_before_base_feature_edit(self, negative_density_mesh):
+        src, feats, bf = negative_density_mesh
+        result = mo.handler(mesh="H", density=-1)
+        assert result["isError"] is True and "density=-1 is negative" in result["message"]
+        assert "0 for the API default" in result["message"]
+        assert bf._starts == bf._finishes == 0 and feats.last_input is None
+        assert src.displayMesh.triangleCount == 2000 and src.area == 50.0 and src.volume == 10.0
+
+    @pytest.mark.parametrize("bad,shown", [("abc", "density='abc'"), (float("nan"), "density=nan"),
+                                           (True, "density=True"), (float("inf"), "density=inf")])
+    def test_a_non_numeric_density_is_refused_before_any_write(self, negative_density_mesh, bad,
+                                                               shown):
+        src, feats, bf = negative_density_mesh
+        result = mo.handler(mesh="H", density=bad)
+        assert result["isError"] is True and f"{shown} is not a number" in result["message"]
+        assert bf._starts == bf._finishes == 0 and feats.last_input is None
+        assert src.displayMesh.triangleCount == 2000
 
     def test_density_that_lands_is_echoed(self):
         # density takes a ValueInput (live-verified; a raw float raises in the SWIG layer) and the
@@ -186,8 +214,11 @@ class TestRemeshDensityReadBack:
         res = mo.handler(mesh="H", density=12)
         assert res["isError"] is True and "did not land" in res["message"]
 
-    def test_no_density_asks_for_no_read_back(self):
+    @pytest.mark.parametrize("density_args", [{}, {"density": 0}])
+    def test_zero_or_omission_uses_default_without_a_density_assignment(self, density_args):
         src = MeshBody("Scan", tri=2000)
-        _wire(src, _MeshFeatures([MeshBody("Scan", tri=900)]))
-        out = payload(mo.handler(mesh="H"))
-        assert "density_applied" not in out
+        feats = _MeshFeatures([MeshBody("Scan", tri=900)])
+        _wire(src, feats)
+        out = payload(mo.handler(mesh="H", **density_args))
+        assert "density_applied" not in out and not hasattr(feats.last_input, "density")
+        assert out["before"]["triangle_count"] == 2000 and out["after"]["triangle_count"] == 900

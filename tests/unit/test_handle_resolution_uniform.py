@@ -13,6 +13,7 @@ This locks the invariant two ways:
      key in the map. A kind that passes the whole composite string to findEntityByToken won't resolve
      it, and the test fails.
 """
+from conftest import install as _install_design
 
 import os
 import re
@@ -109,7 +110,7 @@ def _wire(handle_map, *, faces=False, edges=False, bodies=False):
             return [e] if e is not None else []
         rootComponent = type("R", (), {"bRepBodies": type("BB", (), {"itemByName": staticmethod(lambda n: None)})()})()
     d = _D()
-    inp._common.design = lambda: d
+    _install_design(inp, d)
     inp._common.target_component = lambda x: d.rootComponent
     return d
 

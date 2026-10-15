@@ -186,9 +186,9 @@ def _total_volume(bodies, factor):
 def handler(tools=None, cells=None, operation: str = "new", remove_tools: bool = False,
             units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     vals, verr = _inputs.resolve_inputs(_SPEC, {"tools": tools, "operation": operation,
                                                 "units": units})
@@ -292,12 +292,11 @@ def handler(tools=None, cells=None, operation: str = "new", remove_tools: bool =
     # its pre-fill volume, so its contribution to the delta is stale-minus-stale = 0.
     consumed, kept_tools, unreadable, inherited = _tool_fate(tool_ids, {f["name"] for f in facts})
     if not facts and not consumed and not (delta_readable and abs(delta_cm3) > 1e-9):
-        rolled = bool(safe(lambda: feature.deleteMe()))
+        solids = ("left every solid in the design at its old volume - nothing was sealed" if
+                  delta_readable else "the design's solid volumes did not read")
         return error(
-            "Boundary fill reported success but produced no body, consumed no tool, and left every "
-            "solid in the design at its old volume - nothing was sealed. "
-            + ("The empty feature was rolled back." if rolled else
-               "The empty feature could NOT be deleted - remove it with design_delete_feature."))
+            f"Boundary fill reported success but produced no body, consumed no tool, and {solids}. "
+            + _common.delete_failed_feature(design, feature)[1])
 
     picked = [volumes[i] for i in keep]
     predicted = (round(sum(v for v in picked if v is not None), 6)

@@ -1,6 +1,5 @@
 """Unit tests for ``view_list_workspaces.py`` - the workspace listing and its active-doc flag."""
 
-import json
 
 import pytest
 
@@ -34,9 +33,7 @@ def ui(monkeypatch):
     return _install
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestList:

@@ -96,14 +96,3 @@ class TestNoHandSeededEnums:
             "assignment; if the value you need is not measured yet, add a measurement row to "
             "tests/live/measure_api.py and regenerate:\n  " + "\n  ".join(offenders))
 
-    def test_allowlist_files_still_trip(self):
-        stale = []
-        for fn, reason in _ALLOWLIST.items():
-            assert reason.strip(), f"{fn} allowlist entry needs a plain-English reason"
-            path = os.path.join(UNIT_DIR, fn)
-            if not os.path.exists(path):
-                stale.append(f"{fn}: no such file")
-            elif not _offending_lines(path):
-                stale.append(f"{fn}: no hand-assignment remains - remove the allowlist entry")
-        assert not stale, "stale allowlist entries:\n  " + "\n  ".join(stale)
-

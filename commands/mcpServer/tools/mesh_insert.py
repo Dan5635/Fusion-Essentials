@@ -1,8 +1,9 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""MCP building block: import an STL / OBJ / 3MF from a local path as a MeshBody. In a PARAMETRIC
-design the import runs inside a BaseFeature edit scope (run_in_base_feature), which the API requires.
+"""MCP building block: import an STL / OBJ / 3MF from a local path, or build one mesh from caller
+triangle data, as a MeshBody. In a PARAMETRIC design the write runs inside a BaseFeature edit scope
+(run_in_base_feature), which the API requires.
 """
 
 import os
@@ -78,6 +79,84 @@ def _insert_meshes(comp, design, full_path, mesh_units):
     return result["mesh_list"], result["base_feature_name"], None
 
 
+_DATA_KEYS = ("vertices", "triangles")
+_MAX_VERTICES, _MAX_TRIANGLES = 2000, 4000
+# Two read-back coordinates closer than this (cm) are the coordinate that was sent.
+_DATA_TOL_CM = 1e-6
+
+
+def _triples(rows, what, kind, cap):
+    """(rows as tuples, error) for a list of three-number entries, naming the first bad one."""
+    if not isinstance(rows, list) or len(rows) > cap:
+        return None, f"data.{what} is a list of at most {cap} [a, b, c] entries."
+    out = []
+    for i, row in enumerate(rows):
+        good = isinstance(row, (list, tuple)) and len(row) == 3 and all(
+            (isinstance(v, int) and not isinstance(v, bool) and v >= 0) if kind is int
+            else _common.finite_number(v) is not None for v in row)
+        if not good:
+            return None, (f"data.{what}[{i}] is {row!r}, not three "
+                          + ("whole numbers of at least 0." if kind is int else "finite numbers."))
+        out.append(tuple(row))
+    return out, None
+
+
+def _mesh_data(data, unit_cm):
+    """((coords cm, indices) as flat lists, error) - every index checked
+    here, because a refused add leaves its opened base feature behind, empty."""
+    if not isinstance(data, dict) or set(data) - set(_DATA_KEYS):
+        return None, (f"'data' is an object of {', '.join(_DATA_KEYS)} - got "
+                      f"{sorted(set(data) - set(_DATA_KEYS)) if isinstance(data, dict) else data!r}.")
+    verts, err = _triples(data.get("vertices"), "vertices", float, _MAX_VERTICES)
+    tris, err = (None, err) if err else _triples(data.get("triangles"), "triangles", int,
+                                                 _MAX_TRIANGLES)
+    if err:
+        return None, err
+    if len(verts) < 3 or not tris:
+        return None, (f"'data' needs at least 3 vertices and 1 triangle - got {len(verts)} and "
+                      f"{len(tris)}.")
+    for i, tri in enumerate(tris):
+        if max(tri) >= len(verts) or len(set(tri)) != 3:
+            return None, (f"data.triangles[{i}] is {list(tri)}: it must name three different "
+                          f"vertices below {len(verts)}.")
+    return ([float(v) * unit_cm for row in verts for v in row],
+            [v for row in tris for v in row]), None
+
+
+def _insert_data(comp, design, flat):
+    """Add one mesh from flat triangle data: (mesh body, base feature name, error or None)."""
+    coords, indices = flat
+    before = _common.counted(lambda: comp.meshBodies.count)
+
+    def inner_op(base_feature):
+        try:
+            # Fusion works the normals out from the triangles; ones passed here are not kept.
+            body = comp.meshBodies.addByTriangleMeshData(coords, indices, [], [])
+        except Exception as e:
+            return error(f"Mesh creation failed (addByTriangleMeshData raised): {e}. "
+                         "design_get(include=['timeline']) shows whether a base feature was left.")
+        return {"body": body,
+                "base_feature_name": safe(lambda: base_feature.name) if base_feature else None}
+
+    result, scope_err = run_in_base_feature(design, comp, inner_op)
+    if scope_err:
+        return None, None, scope_err
+    if isinstance(result, dict) and result.get("isError") is True:
+        return None, None, result
+    body, after = result["body"], _common.counted(lambda: comp.meshBodies.count)
+    if body is None or before is None or after != before + 1:
+        return None, None, error("addByTriangleMeshData did not add exactly one mesh body (count "
+                                 f"{before} before, {after} after); mesh_get reads what is there.")
+    got = safe(lambda: [float(v) for v in body.mesh.nodeCoordinatesAsDouble])
+    got_idx = safe(lambda: [int(v) for v in body.mesh.triangleNodeIndices])
+    if (got is None or len(got) != len(coords) or got_idx != indices
+            or any(abs(a - b) > _DATA_TOL_CM for a, b in zip(got, coords))):
+        return None, None, error(f"The mesh body '{safe(lambda: body.name)}' was added but does "
+                                 "not read back the vertices and triangles sent; mesh_delete "
+                                 "removes it.")
+    return body, result["base_feature_name"], None
+
+
 def _target_of(design, target_component):
     """(component, error) for the component `target_component` names (an occurrence handle/path/
     name), or the active component when it is blank."""
@@ -96,13 +175,49 @@ def _target_of(design, target_component):
     return comp, None
 
 
+def _from_data(data, target_component, units, name):
+    """Build one mesh body from caller triangle data and read its vertices and triangles back."""
+    mesh_units, ukey, unit_cm = _mesh_units(units)
+    if mesh_units is None:
+        return error(f"Unknown units '{units}' for mesh data. Use mm, cm, m, in, or ft.")
+    flat, derr = _mesh_data(data, unit_cm)
+    if derr:
+        return error(derr)
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
+    comp, terr = _target_of(design, target_component)
+    if terr:
+        return error(terr)
+    body, bf_name, ierr = _insert_data(comp, design, flat)
+    if ierr:
+        return ierr
+    payload = {"imported": True, "component": safe(lambda: comp.name), "units": ukey,
+               "base_feature": bf_name, "source": "data",
+               "vertices": len(flat[0]) // 3, "triangles": len(flat[1]) // 3,
+               "readback": "vertices and triangles exact",
+               "note": "One MESH body built from the data; its vertices and triangles read back "
+                       "as sent. mesh_get lists it."}
+    want_name = (name or "").strip()
+    if want_name:
+        _final, rename_warning = _common.apply_rename(body, want_name)
+        payload["name_applied"] = rename_warning is None
+        if rename_warning:
+            payload["rename_warning"] = rename_warning
+    payload["bodies"] = [_mesh_summary(body, inv_scale=1.0 / unit_cm)]
+    return ok(payload)
+
+
 def handler(file_path: str = "", target_component: str = "",
-            units: str = "mm", name: str = "") -> dict:
+            units: str = "mm", name: str = "", data=None) -> dict:
     """Import an STL/OBJ/3MF from a local path as a MeshBody into the active (or named) component.
     In a PARAMETRIC design the import is wrapped in a BaseFeature edit scope (API-required). WRITES."""
     path = (file_path or "").strip()
-    if not path:
-        return error("file_path is required - a full path to a .stl / .obj / .3mf file.")
+    if bool(path) == (data is not None):
+        return error("Pass exactly one of 'file_path' (a .stl / .obj / .3mf file) and 'data' "
+                     "(vertices and triangles) - got " + ("both." if path else "neither."))
+    if data is not None:
+        return _from_data(data, target_component, units, name)
     ext = os.path.splitext(path)[1].lower()
     if ext not in _VALID_EXTS:
         return error(f"Unsupported mesh file '{ext or path}'. Import needs one of: "
@@ -111,9 +226,9 @@ def handler(file_path: str = "", target_component: str = "",
         return error(f"File not found: {path}. (To import from the data model, first resolve the file "
                      "to a local path with the data_* tools, then pass that path.)")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     comp, terr = _target_of(design, target_component)
     if terr:
@@ -168,8 +283,15 @@ def handler(file_path: str = "", target_component: str = "",
     return ok(payload)
 
 
+def _TRIPLES(kind, cap, minimum):
+    """The schema of a capped list of three-number entries."""
+    item = {"type": kind} if minimum is None else {"type": kind, "minimum": minimum}
+    return {"type": "array", "maxItems": cap,
+            "items": {"type": "array", "items": item, "minItems": 3, "maxItems": 3}}
+
+
 TOOL_DESCRIPTION = (
-    "Import an STL / OBJ / 3MF from a LOCAL path as a MESH body."
+    "Insert exactly one LOCAL file_path or triangle data as mesh. mesh_get reads it."
 )
 
 tool = (
@@ -179,7 +301,12 @@ tool = (
     .add_input_property("units", {"type": "string", "enum": list(_MESH_UNIT_TABLE),
             "description": "The unit the file is authored in; stats are reported in it."})
     .add_input_property("name", {"type": "string", "description": "Renames the imported body; single-body imports only."})
-    .add_required_input("file_path")
+    .add_input_property("data", {
+        "type": "object", "additionalProperties": False, "required": ["vertices", "triangles"],
+        "description": "Local vertices in units.",
+        "properties": {
+            "vertices": _TRIPLES("number", _MAX_VERTICES, None),
+            "triangles": _TRIPLES("integer", _MAX_TRIANGLES, 0)}})
     .strict_schema()
 )
 item = Item.create_tool_item(

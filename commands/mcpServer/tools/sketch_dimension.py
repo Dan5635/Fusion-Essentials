@@ -3,20 +3,25 @@
 
 """MCP building block: add a dimensional constraint (distance/radius/diameter/angle) to a sketch and
 drive its value - the sizing half of parametric sketching (sketch_constrain is the geometric half).
-Entity references are '<type>:<index>', the same scheme as sketch_constrain. WRITES.
+Entity references are '<type>:<index>', the same scheme as sketch_constrain. Also edits an existing
+dimension's driving flag or label position, addressed by its parameter name. WRITES.
 """
 
 import adsk.core
 import adsk.fusion
+from math import isfinite
 
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, safe
+from ._common import error, ok, safe
 from . import _common
+from . import _form_common
 from . import _inputs
 from . import _sketch_batch
 from . import _sketch_detail
+from ._sketch_batch import MID_ANCHORS as _MID_ANCHORS, retired_clause as _retired_clause
+from ._sketch_detail import distance_cm, moved_cm, point_cm, point_mm
 
 app = adsk.core.Application.get()
 
@@ -134,50 +139,33 @@ _MOVE_SLACK = 2.0
 _MOVE_FLOOR_CM = 0.01   # 0.1 mm
 
 
-def _xyz(geo):
-    """(x, y, z) in cm off a point geometry, or None when it does not read."""
-    x = safe(lambda: float(geo.x))
-    y = safe(lambda: float(geo.y))
-    if x is None or y is None:
-        return None
-    return (x, y, safe(lambda: float(geo.z), 0.0) or 0.0)
-
-
-def _mm3(p):
-    return [round(v * _MM, 4) for v in p]
-
-
-def _distance_cm(a, b):
-    return sum((p - q) ** 2 for p, q in zip(a, b)) ** 0.5
-
-
 def _entity_solved(entity):
     """(facts, positions) for ONE sketch entity: `facts` is the mm geometry the payload publishes -
     a circle/arc's center + radius, a line's span and midpoint, a point's position - and `positions`
     are the cm points a MOVE is measured on. ({}, []) for an entity whose geometry does not read."""
     center = safe(lambda: entity.centerSketchPoint)
     if center is not None:
-        c = _xyz(safe(lambda: center.geometry))
+        c = point_cm(safe(lambda: center.geometry))
         r = safe(lambda: float(entity.geometry.radius))
         facts = {}
         if c is not None:
-            facts["center_mm"] = _mm3(c)
+            facts["center_mm"] = point_mm(c)
         if r is not None:
             facts["radius_mm"] = round(r * _MM, 4)
         return facts, ([c] if c is not None else [])
     start = safe(lambda: entity.startSketchPoint)
     end = safe(lambda: entity.endSketchPoint)
     if start is not None and end is not None:
-        a = _xyz(safe(lambda: start.geometry))
-        b = _xyz(safe(lambda: end.geometry))
+        a = point_cm(safe(lambda: start.geometry))
+        b = point_cm(safe(lambda: end.geometry))
         if a is None or b is None:
             return {}, [p for p in (a, b) if p is not None]
         mid = tuple((p + q) / 2.0 for p, q in zip(a, b))
-        return ({"start_mm": _mm3(a), "end_mm": _mm3(b), "mid_mm": _mm3(mid),
-                 "length_mm": round(_distance_cm(a, b) * _MM, 4)}, [a, b])
-    p = _xyz(safe(lambda: entity.geometry))
+        return ({"start_mm": point_mm(a), "end_mm": point_mm(b), "mid_mm": point_mm(mid),
+                 "length_mm": round(distance_cm(a, b) * _MM, 4)}, [a, b])
+    p = point_cm(safe(lambda: entity.geometry))
     if p is not None:
-        return {"position_mm": _mm3(p)}, [p]
+        return {"position_mm": point_mm(p)}, [p]
     return {}, []
 
 
@@ -205,23 +193,15 @@ def _gap_cm(dt, p1, p2):
     euclidean span for an aligned distance, the axis projection for a horizontal/vertical one (those
     two measure one component, so their demanded change is computed on that component). None when
     either point does not read."""
-    a = _xyz(safe(lambda: p1.geometry))
-    b = _xyz(safe(lambda: p2.geometry))
+    a = point_cm(safe(lambda: p1.geometry))
+    b = point_cm(safe(lambda: p2.geometry))
     if a is None or b is None:
         return None
     if dt == "horizontal_distance":
         return abs(a[0] - b[0])
     if dt == "vertical_distance":
         return abs(a[1] - b[1])
-    return _distance_cm(a, b)
-
-
-def _moved_cm(before, after):
-    """The furthest one entity's sampled points moved, in cm, or None when the two reads do not
-    describe the same points (nothing can be said about a move that was not measured twice)."""
-    if not before or not after or len(before) != len(after):
-        return None
-    return max(_distance_cm(a, b) for a, b in zip(before, after))
+    return distance_cm(a, b)
 
 
 def _solved_block(pairs, before):
@@ -230,7 +210,7 @@ def _solved_block(pairs, before):
     rows, moves = [], []
     for ref, ent in pairs:
         facts, positions = _entity_solved(ent)
-        moved = _moved_cm(before.get(ref), positions)
+        moved = moved_cm(before.get(ref), positions)
         if moved is not None:
             moves.append((ref, moved))
             facts["moved_mm"] = round(moved * _MM, 4)
@@ -277,7 +257,7 @@ def _shared_coordinate_clause(sketch, dt, operands):
     n = safe(lambda: pts.count, 0) if pts is not None else 0
     points = [p for _ref, p in operands]
     for label, p in operands:
-        at = _xyz(safe(lambda p=p: p.geometry))
+        at = point_cm(safe(lambda p=p: p.geometry))
         if at is None:
             continue
         hits = []
@@ -285,7 +265,7 @@ def _shared_coordinate_clause(sketch, dt, operands):
             q = safe(lambda j=j: pts.item(j))
             if q is None or any(safe(lambda q=q, o=o: q == o) is True for o in points):
                 continue
-            g = _xyz(safe(lambda q=q: q.geometry))
+            g = point_cm(safe(lambda q=q: q.geometry))
             if g is not None and abs(g[i] - at[i]) <= _SAME_COORD_TOL_CM:
                 hits.append(f"point:{j}")
         if hits:
@@ -300,15 +280,200 @@ def _shared_coordinate_clause(sketch, dt, operands):
 _ENTRY_FIELDS = ("dim_type", "entity_one", "entity_two", "value", "surface", "is_driving",
                  "tangent_side_one", "tangent_side_two")
 
+_SOLVED_NOTE = ("When present, 'solved' is each REFERENCED entity's geometry read back after the solve, "
+                "with the distance it moved (moved_mm) getting there; geometry the solve "
+                "moved elsewhere in the sketch is not covered - read that back with "
+                "sketch_get(include_entities=true).")
 
-def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict:
+
+def _numeric_entity_refs(entry):
+    """The numeric line and point references carried by one dimension entry."""
+    refs = []
+    for field in ("entity_one", "entity_two"):
+        raw = entry.get(field)
+        if not isinstance(raw, str):
+            continue
+        base, _anchor, err = _common.parse_anchor_ref(raw)
+        parts = base.strip().lower().split(":") if not err and base else []
+        if len(parts) == 2 and parts[0] in ("line", "point"):
+            try:
+                int(parts[1])
+            except ValueError:
+                continue
+            refs.append(raw.strip())
+    return refs
+
+
+_DIMENSION = _inputs.SketchDimensionRef("dimension",
+                                description="Existing dimension parameter from sketch_get.")
+_TEXT_X = _inputs.Distance("text_x", allow_zero=True)
+_TEXT_Y = _inputs.Distance("text_y", allow_zero=True)
+
+
+def _edit_refusal(dimensions, dimension, is_driving, text_position, units):
+    """Why a single existing-dimension edit cannot run as sent, or None."""
+    if dimensions:
+        return ("'dimension' with 'is_driving' or 'text_position' edits one existing dimension and takes no 'dimensions' "
+                "batch; this call carries both. Send the batch in its own call.")
+    if not isinstance(dimension, str) or not dimension.strip():
+        label = (f"is_driving={is_driving!r}" if text_position is None
+                 else f"text_position={text_position!r}")
+        return (f"{label} needs 'dimension' - the parameter name of an existing "
+                "dimension, from sketch_get(include_entities=true).")
+    if text_position is not None:
+        if is_driving is not None:
+            return "Edit 'is_driving' and 'text_position' in separate calls."
+        if not isinstance(text_position, (list, tuple)) or len(text_position) != 2:
+            return f"'text_position' needs [x,y] in 'units'; got {text_position!r}."
+    elif not isinstance(is_driving, bool):
+        return f"dimension '{dimension}' needs 'is_driving' true or false; got {is_driving!r}."
+    if text_position is None and units != "mm":
+        return "'units' applies to 'text_position' only; omit it for an is_driving edit."
+    return None
+
+
+
+
+def _set_driving(design, sketch, name, want):
+    """Assign one existing dimension's isDriving and publish the state as re-read."""
+    dim, derr = _DIMENSION.resolve(name, sketch)
+    if derr:
+        return error(derr)
+    sname = safe(lambda: sketch.name)
+    unread = {}
+
+    def state(suffix):
+        reads = {"is_driving": lambda: dim.isDriving, "parameter": lambda: dim.parameter.name,
+                 "fully_constrained": lambda: sketch.isFullyConstrained}
+        row = {}
+        for key, getter in reads.items():
+            row[key + suffix], why = _common.read_optional(getter)
+            if key in ("is_driving", "fully_constrained") and type(row[key + suffix]) is not bool:
+                row[key + suffix], why = None, why or "the flag did not read a boolean"
+            if why:
+                unread[key + suffix] = why
+        return row
+
+    out = {"sketch": sname, "dimension": name, "requested": want, **state("_before")}
+    before = out["is_driving_before"]
+    if before is want:
+        out.update(changed=False, is_driving=before,
+                   note=f"Dimension '{name}' already reads is_driving={want}; nothing was written.")
+        if unread:
+            out["unread"] = dict(unread)
+        return ok(out)
+    errors_before, warnings_before, _total = _common.timeline_health(design)
+    raised = None
+    try:
+        dim.isDriving = want
+    except Exception as e:
+        raised = e
+    out.update(state(""))
+    after = out["is_driving"]
+    errors_after, warnings_after, _total = _common.timeline_health(design)
+    out.update(changed=None if None in (before, after) else before != after,
+               sketch_health=_form_common.health_label(sketch),
+               new_timeline_errors=[n for n in errors_after if n not in errors_before],
+               new_timeline_warnings=[n for n in warnings_after if n not in warnings_before])
+    if unread:
+        out["unread"] = unread
+    where = f"dimension '{name}' in sketch '{sname}'"
+    if raised is not None:
+        text = (f"Could not set is_driving={want} on {where}: {raised}. It reads "
+                f"is_driving={after} now.")
+    elif after is None:
+        text = (f"is_driving={want} was assigned to {where} but the flag did not read back, so "
+                "the change is unverified. Read it with sketch_get(include_entities=true).")
+    elif after is not want:
+        text = (f"is_driving did not take - {where} still reads {after} after {want} was "
+                "assigned, and no error was raised.")
+    else:
+        text = None
+    if text:
+        out["note"] = text
+        return error(text, out)
+    note = f"Dimension '{name}' is_driving {before} -> {after}."
+    was, now = out["parameter_before"], out["parameter"]
+    if was is not None and now is not None and was != now:
+        note += f" Its parameter is now named '{now}' (was '{was}'); address it by that name."
+    problems = out["new_timeline_errors"] + out["new_timeline_warnings"]
+    if problems:
+        note += (f" The timeline reads {len(problems)} new error(s)/warning(s) after it: "
+                 f"{', '.join(problems)}. Nothing was rolled back.")
+    out["note"] = note
+    return ok(out)
+
+
+def _set_text_position(sketch, name, requested, units):
+    """Move one dimension label and read back its position and dimension state."""
+    factor, uerr = _inputs.UNITS.resolve(units)
+    if uerr:
+        return error(uerr)
+    x, xerr = _TEXT_X.resolve_scaled(requested[0], factor)
+    y, yerr = _TEXT_Y.resolve_scaled(requested[1], factor)
+    if xerr or yerr:
+        return error(xerr or yerr)
+    if not all(isfinite(v) for v in (x, y)):
+        return error(f"'text_position' {requested!r} in '{units}' exceeds Fusion's finite coordinate range.")
+    dim, derr = _DIMENSION.resolve(name, sketch)
+    if derr:
+        return error(derr)
+    before = _sketch_detail.point_cm(safe(lambda: dim.textPosition))
+    if before is None or not all(isfinite(v) for v in before):
+        return error(f"Dimension '{name}' textPosition did not read; no label was moved.")
+    prior_value = safe(lambda: dim.parameter.value)
+    prior_driving = _common.read_flag(lambda: dim.isDriving)
+    target = (x, y, 0.0)
+    scaled = lambda point: {"x": round(point[0] / factor, 4),
+                            "y": round(point[1] / factor, 4),
+                            "z": round(point[2] / factor, 4)}
+    out = {"sketch": safe(lambda: sketch.name), "dimension": name, "units": units,
+           "text_position_before": scaled(before), "requested": scaled(target)}
+    if all(abs(a - b) < 1e-7 for a, b in zip(before, target)):
+        return ok({**out, "changed": False, "text_position": scaled(before),
+                   "note": f"Dimension '{name}' label is already at the requested position."})
+    raised = None
+    try:
+        dim.textPosition = adsk.core.Point3D.create(*target)
+    except Exception as exc:
+        raised = exc
+    after = _sketch_detail.point_cm(safe(lambda: dim.textPosition))
+    if after is not None and not all(isfinite(v) for v in after):
+        after = None
+    out["text_position"] = scaled(after) if after is not None else None
+    out["changed"] = (None if after is None else
+                      any(abs(a - b) >= 1e-7 for a, b in zip(before, after)))
+    out["dimension_value_unchanged"] = (prior_value is not None
+                                         and safe(lambda: dim.parameter.value) == prior_value)
+    out["driving_unchanged"] = (prior_driving is not None
+                                and _common.read_flag(lambda: dim.isDriving) == prior_driving)
+    if (raised is not None or after is None
+            or any(abs(a - b) >= 1e-7 for a, b in zip(after, target))
+            or not out["dimension_value_unchanged"] or not out["driving_unchanged"]):
+        note = (f"Dimension '{name}' label edit did not verify; it may have changed. "
+                "Read sketch_get(include_entities=true) before retrying."
+                + (f" Fusion said: {raised}" if raised is not None else ""))
+        return error(note, {**out, "note": note})
+    return ok({**out, "note": f"Dimension '{name}' label moved; sketch_get reads its position."})
+
+
+def handler(dimensions=None, sketch_name: str = "", component: str = "", dimension: str = "",
+            is_driving=None, text_position=None, units="mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    entries, eerr = _sketch_batch.entries_or_error(dimensions, "dimensions", _ENTRY_FIELDS)
-    if eerr:
-        return error(eerr)
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    editing = dimension not in ("", None) or is_driving is not None or text_position is not None
+    if editing:
+        refusal = _edit_refusal(dimensions, dimension, is_driving, text_position, units)
+        if refusal:
+            return error(refusal)
+    else:
+        if units != "mm":
+            return error("'units' applies to an existing dimension's 'text_position' only; omit it when adding dimensions.")
+        entries, eerr = _sketch_batch.entries_or_error(dimensions, "dimensions", _ENTRY_FIELDS)
+        if eerr:
+            return error(eerr)
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     sketch, requested, refusal = _sketch_detail.scoped_or_recent_sketch(
         design, sketch_name, component)
     if refusal:
@@ -319,8 +484,34 @@ def handler(dimensions=None, sketch_name: str = "", component: str = "") -> dict
                         + (", ".join(n for n in _common.all_sketch_names(design) if n)
                            or "(none)") + ". Use sketch_get.")
         return error("No sketch to dimension. Create one first with sketch_create.")
-    return _sketch_batch.run_batch(entries, lambda i, e: _one(sketch, e), "dimensions",
-                                   "dimensioned", safe(lambda: sketch.name))
+    if editing:
+        return (_set_text_position(sketch, dimension.strip(), text_position, units)
+                if text_position is not None else
+                _set_driving(design, sketch, dimension.strip(), is_driving))
+    ellipse_shift = None
+
+    def one(i, entry):
+        nonlocal ellipse_shift
+        stale = _numeric_entity_refs(entry) if ellipse_shift else []
+        if stale:
+            refs = ", ".join(f"'{ref}'" for ref in stale)
+            return _sketch_batch.refuse(
+                f"dimensions[{i}] uses numeric line:N or point:N ref(s) {refs} after "
+                f"{ellipse_shift} in this batch. Ellipse-radius dimensions can add construction "
+                "axes and endpoints, shifting line and point indices. This entry was refused before "
+                "mutation; earlier results are in the partial reply. Re-read "
+                "sketch_get(include_entities=true) and use its current line and point refs in a new "
+                "call.")
+        result, err = _one(sketch, entry)
+        dim_type = entry.get("dim_type", "distance")
+        if (not err and isinstance(dim_type, str)
+                and dim_type.strip().lower() in ("ellipse_major_radius", "ellipse_minor_radius")):
+            ellipse_shift = dim_type.strip().lower()
+        return result, err
+
+    return _sketch_batch.run_batch(
+        entries, one, "dimensions", "dimensioned",
+        safe(lambda: sketch.name), sketch=sketch, result_note=_SOLVED_NOTE)
 
 
 def _one(sketch, entry):
@@ -333,24 +524,25 @@ def _one(sketch, entry):
     is_driving = entry.get("is_driving", True)
     tangent_side_one = entry.get("tangent_side_one", True)
     tangent_side_two = entry.get("tangent_side_two", True)
+    refuse = _sketch_batch.refuse
     dt = (dim_type or "distance").strip().lower()
     if dt not in _DIM_TYPES:
-        return None, (f"Unknown dim_type '{dim_type}'. Valid: {', '.join(_DIM_TYPES)}.")
+        return refuse(f"Unknown dim_type '{dim_type}'. Valid: {', '.join(_DIM_TYPES)}.")
     # isDriving=False is the API's DRIVEN (reference) dimension: the geometry controls the
     # dimension, so an expression cannot drive it. Refuse the contradiction naming both inputs.
     if not is_driving and (value or "").strip():
-        return None, (f"is_driving=false creates a DRIVEN (reference) dimension - the geometry "
-                     f"controls it, so value '{value}' cannot drive it. Drop 'value', or leave "
-                     "is_driving true.")
+        return refuse(f"is_driving=false creates a DRIVEN (reference) dimension - the geometry "
+                      f"controls it, so value '{value}' cannot drive it. Drop 'value', or leave "
+                      "is_driving true.")
 
     base1, anchor1, aerr1 = _common.parse_anchor_ref(entity_one)
     if aerr1:
-        return None, (aerr1)
+        return refuse(aerr1)
     e1 = _common.resolve_entity_ref(sketch, base1)
     if e1 is None:
-        return None, (f"entity_one '{entity_one}' did not resolve. Use '<type>:<index>' "
-    f"({'/'.join(_common.ENTITY_REF_KINDS)}), optionally with an anchor "
-    "':start'/':end'/':mid'/':center', e.g. 'line:0:end'.")
+        return refuse(f"entity_one '{entity_one}' did not resolve. Use '<type>:<index>' "
+                      f"({'/'.join(_common.ENTITY_REF_KINDS)}), optionally with an anchor "
+                      "':start'/':end'/':mid'/':center', e.g. 'line:0:end'.")
     need_two = dt in _TWO_ENTITY_TYPES
     e2 = None
     base2 = None
@@ -361,21 +553,21 @@ def _one(sketch, entry):
         # Only a line qualifies: it has two endpoints and no center (an arc's endpoint span is
         # not its length, so an arc/circle still needs an explicit entity_two).
         if anchor1:
-            return None, (f"A single-entity '{dt}' dimensions the whole line's length - drop the "
-                         f"':{anchor1}' anchor, or give entity_two to pin two points.")
+            return refuse(f"A single-entity '{dt}' dimensions the whole line's length - drop the "
+                          f"':{anchor1}' anchor, or give entity_two to pin two points.")
         has_ends = (safe(lambda: e1.startSketchPoint) is not None
                     and safe(lambda: e1.endSketchPoint) is not None)
         if not has_ends or safe(lambda: e1.centerSketchPoint) is not None:
-            return None, (f"'{dt}' with no entity_two dimensions a LINE's own length; "
-                         f"'{entity_one}' is not a line. Give entity_two ('<type>:<index>').")
+            return refuse(f"'{dt}' with no entity_two dimensions a LINE's own length; "
+                          f"'{entity_one}' is not a line. Give entity_two ('<type>:<index>').")
         lone_line = True
     elif need_two:
         base2, anchor2, aerr2 = _common.parse_anchor_ref(entity_two)
         if aerr2:
-            return None, (aerr2)
+            return refuse(aerr2)
         e2 = _common.resolve_entity_ref(sketch, base2)
         if e2 is None:
-            return None, (f"'{dt}' needs entity_two ('<type>:<index>'). '{entity_two}' did not resolve.")
+            return refuse(f"'{dt}' needs entity_two ('<type>:<index>'). '{entity_two}' did not resolve.")
 
     dims = sketch.sketchDimensions
     P = adsk.core.Point3D.create
@@ -386,10 +578,10 @@ def _one(sketch, entry):
     # Anchors pin one point of an entity for a DISTANCE dim (and for point_to_surface, whose binding
     # argument IS a SketchPoint); every other type takes whole entities.
     if anchor1 and dt not in _ANCHOR_TYPES:
-        return None, (f"'{dt}' takes a whole entity, not a point anchor - drop the ':{anchor1}' from entity_one.")
+        return refuse(f"'{dt}' takes a whole entity, not a point anchor - drop the ':{anchor1}' from entity_one.")
     if anchor2 and dt not in _DISTANCE_TYPES:
-        return None, (f"'{dt}' takes a whole entity as entity_two, not a point anchor - drop the "
-                     f"':{anchor2}'.")
+        return refuse(f"'{dt}' takes a whole entity as entity_two, not a point anchor - drop the "
+                      f"':{anchor2}'.")
 
     kinds1, kinds2 = _OPERANDS.get(dt, (None, None))
     # an anchored ref for point_to_surface resolves to a SketchPoint whatever entity it names, so the
@@ -397,23 +589,33 @@ def _one(sketch, entry):
     if kinds1 and not anchor1:
         oerr = _operand_error(dt, "entity_one", entity_one, base1, kinds1)
         if oerr:
-            return None, (oerr)
+            return refuse(oerr)
     if kinds2:
         oerr = _operand_error(dt, "entity_two", entity_two, base2, kinds2)
         if oerr:
-            return None, (oerr)
+            return refuse(oerr)
 
     surf = None
     if dt in _SURFACE_TYPES:
         surf, serr = _SURFACE.resolve(surface, dt)
         if serr:
-            return None, (serr)
+            return refuse(serr)
         if surf is None:
-            return None, (f"'{dt}' needs 'surface' - a plane alias (xy/xz/yz), a construction-plane "
-                         "name, or a face handle from find_geometry"
-                         + (" (curved faces allowed)." if dt in _CURVED_SURFACE_OK
-                            else " (this dimension takes a PLANAR face only)."))
+            return refuse(f"'{dt}' needs 'surface' - a plane alias (xy/xz/yz), a construction-plane "
+                          "name, or a face handle from find_geometry"
+                          + (" (curved faces allowed)." if dt in _CURVED_SURFACE_OK
+                             else " (this dimension takes a PLANAR face only)."))
 
+    for slot, entity, anchor in (("entity_one", e1, anchor1), ("entity_two", e2, anchor2)):
+        if anchor:
+            _point, perr = _common.anchor_preflight(entity, anchor)
+            if perr:
+                return refuse(f"{slot}: {perr}")
+    # A midpoint anchor MINTS a welded point; the points this entry minted are retired when its
+    # second anchor returns an error or its dimension add fails.
+    minted = []
+    baseline = (_sketch_batch.entry_counts(sketch)
+                if anchor1 in _MID_ANCHORS or anchor2 in _MID_ANCHORS else None)
     if dt in _DISTANCE_TYPES:
         if lone_line:
             p1 = safe(lambda: e1.startSketchPoint)
@@ -422,17 +624,21 @@ def _one(sketch, entry):
             p1, perr1 = _dim_point(sketch, e1, anchor1)
             if perr1:
                 return None, (f"entity_one: {perr1}")
+            minted += [p1] if anchor1 in _MID_ANCHORS else []
             p2, perr2 = _dim_point(sketch, e2, anchor2)
             if perr2:
-                return None, (f"entity_two: {perr2}")
+                return None, f"entity_two: {perr2}" + _retired_clause(sketch, minted, baseline)
+            minted += [p2] if anchor2 in _MID_ANCHORS else []
     elif dt == "point_to_surface":
         p1, perr1 = _dim_point(sketch, e1, anchor1)
         if perr1:
             return None, (f"entity_one: {perr1}")
+        minted += [p1] if anchor1 in _MID_ANCHORS else []
     # Where the referenced entities sit BEFORE the solve - the baseline the post-solve read-back
     # measures movement against; gap_before is what the dimension measures between them right now.
     pairs = _referenced_pairs((base1, e1), (base2, e2))
     before = _positions_of(pairs)
+    fixed = {ref for ref, ent in pairs if safe(lambda ent=ent: ent.isFixed) is True}
     gap_before = _gap_cm(dt, p1, p2) if dt in _DISTANCE_TYPES else None
     try:
         if dt in _DISTANCE_TYPES:
@@ -473,24 +679,28 @@ def _one(sketch, entry):
         else:  # line_to_surface
             dim = dims.addDistanceBetweenLineAndPlanarSurfaceDimension(e1, surf, is_driving)
     except Exception as e:
+        msg = None
         if dt in _SHARED_COORD and _OVER_CONSTRAINED in str(e).upper():
             one, two = ((entity_one, entity_two) if not lone_line
                         else (f"{entity_one}:start", f"{entity_one}:end"))
             clause = _shared_coordinate_clause(sketch, dt, [(f"'{two}'", p2), (f"'{one}'", p1)])
             if clause:
-                return None, f"Could not add the {dt} dimension: {e}.{clause}"
-        if dt in _SELF_NAMING_FAILURE:
-            return None, (f"Could not add the {dt} dimension: {e}")
-        if kinds1:
-            hint = (f"'{dt}' takes {_kinds_text(kinds1)} as entity_one"
-                    + (f" and {_kinds_text(kinds2)} as entity_two" if kinds2 else "")
-                    + (" plus a 'surface'" if dt in _SURFACE_TYPES else "") + ".")
-        else:
-            hint = ("Check the entity types match the dimension - radius/diameter need an "
-                    "arc/circle, angle needs two lines.")
-        return None, (f"Could not add the {dt} dimension: {e}. ({hint})")
+                msg = f"Could not add the {dt} dimension: {e}.{clause}"
+        if msg is None and dt in _SELF_NAMING_FAILURE:
+            msg = f"Could not add the {dt} dimension: {e}"
+        elif msg is None:
+            if kinds1:
+                hint = (f"'{dt}' takes {_kinds_text(kinds1)} as entity_one"
+                        + (f" and {_kinds_text(kinds2)} as entity_two" if kinds2 else "")
+                        + (" plus a 'surface'" if dt in _SURFACE_TYPES else "") + ".")
+            else:
+                hint = ("Check the entity types match the dimension - radius/diameter need an "
+                        "arc/circle, angle needs two lines.")
+            msg = f"Could not add the {dt} dimension: {e}. ({hint})"
+        return None, msg + _retired_clause(sketch, minted, baseline)
     if not dim:
-        return None, (f"Adding the {dt} dimension returned nothing.")
+        return None, (f"Adding the {dt} dimension returned nothing."
+                      + _retired_clause(sketch, minted, baseline))
 
     value_driven = False
     set_error = None
@@ -532,10 +742,10 @@ def _one(sketch, entry):
     solved, moves = _solved_block(pairs, before)
     if solved:
         out["solved"] = solved
-        out["note"] += (" 'solved' is each REFERENCED entity's geometry read back after the solve, "
-                        "with the distance it moved (moved_mm) getting there; geometry the solve "
-                        "moved elsewhere in the sketch is not covered - read that back with "
-                        "sketch_get(include_entities=true).")
+    # MEASURED: a line's isFixed holds through a mid-to-end dimension that moves both its endpoints.
+    fixed_moved = [ref for ref, moved in moves if ref in fixed and moved > _sketch_detail.MOVE_TOL_CM]
+    if fixed_moved:
+        out["fixed_entity_moved"] = fixed_moved
     # DISTANCE family only: a parameter's value is in DATABASE units, so an angular dimension's is
     # radians and no length threshold applies to it.
     jump = _moved_warning(moves, eval_cm, gap_before) if dt in _DISTANCE_TYPES else None
@@ -545,7 +755,7 @@ def _one(sketch, entry):
 
 
 TOOL_DESCRIPTION = (
-"Add dimensional constraints to one sketch, each optionally driven to a value."
+"Add dimensions, or edit an existing dimension's driving state/label position; sketch_get reads it."
 )
 
 # One 'dimensions' entry on the wire: the same fields the entry guard admits (_ENTRY_FIELDS).
@@ -569,9 +779,14 @@ tool = (
     Tool.create_simple(name="sketch_dimension", description=TOOL_DESCRIPTION)
     .add_input_property("dimensions", {"type": "array", "items": _ENTRY_SCHEMA,
             "description": "Run in order; the first failure stops the run."})
-    .add_required_input("dimensions")
     .add_input_property("sketch_name", {"type": "string"})
     .add_input_property(*_sketch_detail.COMPONENT_SCOPE)
+    .add_input_property(*_DIMENSION.as_property())
+    .add_input_property("is_driving", {"type": "boolean"})
+    .add_input_property("text_position", {"type": "array", "items": {"type": "number"},
+                                      "minItems": 2, "maxItems": 2,
+                                      "description": "Existing dimension label [x,y], sketch-local in 'units'."})
+    .add_input_property(*_inputs.UNITS.as_property())
     .strict_schema()
 )
 

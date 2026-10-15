@@ -46,12 +46,21 @@ def _missing_members(rg, coll):
     return [w for w in wanted if w and w not in labelled]
 
 
+def _loose_nested_members(rg):
+    """Paths of the group's nested members whose isGroundToParent READS False."""
+    return [path for path in (
+        safe(lambda o=o: o.fullPathName) or safe(lambda o=o: o.name)
+        for o in _common.iter_collection(safe(lambda: rg.occurrences))
+        if safe(lambda o=o: o.assemblyContext) is not None
+        and _common.read_flag(lambda o=o: o.isGroundToParent) is False) if path]
+
+
 def handler(occurrences: str = "", include_children: bool = False) -> dict:
     """Lock two or more occurrences together as one rigid unit; include_children also takes in
     their children. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     coll, resolved, errors = _resolve_many(design, occurrences)
     if errors:
         return error("; ".join(errors))
@@ -74,13 +83,28 @@ def handler(occurrences: str = "", include_children: bool = False) -> dict:
                      f"{', '.join(missing)} - it locks parts that were not asked for. Remove it "
                      f"with assembly_edit_relations(kind='rigid_group', name='{gname}', "
                      "action='delete') and retry.")
-    return ok({
+    landed = safe(lambda: rg.parentComponent)
+    component = safe(lambda: landed.name) or None
+    note = "Occurrences locked together as a rigid group."
+    if component is None:
+        note += " Its owning component did not read; assembly_get(include=['relations']) lists it."
+    elif _common.same_component(landed, safe(lambda: design.rootComponent)) is False:
+        note += f" The group is owned by component '{component}'."
+    out = {
     "assembly_rigid_group": safe(lambda: rg.name),
+    "component": component,
     "member_count": member_count,
     "grouped": resolved,
     "include_children": bool(include_children),
-    "note": "Occurrences locked together as a rigid group.",
-    })
+    }
+    loose = _loose_nested_members(rg)
+    if loose:
+        out["members_not_grounded_to_parent"] = loose
+        note += (" Nested member(s) reading isGroundToParent false: "
+                 f"{_common.named_with_remainder(loose)}. assembly_ground(occurrence='{loose[0]}', "
+                 "ground_to_parent=true) locks one to its parent.")
+    out["note"] = note
+    return ok(out)
 
 
 TOOL_DESCRIPTION = (

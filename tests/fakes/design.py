@@ -57,6 +57,7 @@ class BRepBody:
         self.parentComponent = parent_component
         self.nativeObject = None
         self.assemblyContext = None
+        self._organization = None
         self.boundingBox = bbox
         # Set only when given, so a body whose precise box does not read stays a testable state.
         if precise_bbox is not None:
@@ -104,6 +105,28 @@ class BRepBody:
         # `del body.isSolid` and go_stale(body, attrs=("isSolid",)) both mean the flag stops
         # answering, which is what solid_readable False already models.
         self._solid_readable = False
+
+    def createForAssemblyContext(self, occurrence):
+        """Return the measured placement proxy for this native body."""
+        return body_proxy(self, occurrence)
+
+    def copyToComponent(self, target):
+        """Delegate the scene's modeled copy."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("copy", target)
+
+    def moveToComponent(self, target):
+        """Delegate the scene's modeled move."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("move", target)
+
+    def createComponent(self):
+        """Delegate the scene's modeled component creation."""
+        if self._organization is None:
+            raise RuntimeError("Body organization scene is not configured")
+        return self._organization("create_component", None)
 
 
 @fusion_fake(live_type="BRepBody", facts=("shape-dump-design-world", "body-proxy-token-differs",
@@ -680,7 +703,7 @@ class FakeOccurrence:
     (occurrence-plain-reads-valid-and-lit): a plain local occurrence answers the bool False, so that
     is the default rather than an absent member; the read goes through ``raises_on`` like every
     other one here and the write lands, so an isolate walk that sets the lock and reads it back
-    drives the shared fake.
+    drives the shared fake. ``document`` is the document an isolation write marks modified.
 
     ``appearance`` is the override applied to this instance - None until one is, measured by
     shape-dump-appearance-world, which also measured that Occurrence carries NO ``opacity`` member
@@ -702,7 +725,8 @@ class FakeOccurrence:
                  ground_set_ok=True, ground_lies=False, referenced=None, delete_ok=True,
                  derived=False, document_reference=None, valid=_OCC_PLAIN_VALID,
                  light_bulb_on=_OCC_PLAIN_LIT, bodies_bounding_box=_UNSET, isolated=False,
-                 mesh_bodies=None):
+                 mesh_bodies=None, document=None):
+        self._document = document
         # meshBodies is handed in WHOLE: an occurrence's is a MeshBodyVector (len + iteration, no
         # count/item - meshbodyvector-shape), not the counted collection a component answers, so
         # the caller supplies the shape it is testing against.
@@ -781,6 +805,8 @@ class FakeOccurrence:
     @isIsolated.setter
     def isIsolated(self, value):
         self._isolated = value
+        if self._document is not None:
+            self._document.isModified = True
 
     # Each read below goes through _read, so `raises`/`raises_on` govern it like every
     # other read here; each takes a setter so a scenario SUBCLASS can assign it in its own __init__.
@@ -892,20 +918,62 @@ class FakeOccurrence:
         return self._activate_ok
 
 
+@fusion_fake(scenario_double="the addByInsert member of a component's occurrences alone, landing "
+                             "as linked insertions through doc_insert_occurrence were read to "
+                             "land; no measure_api row drives a linked insertion, which needs "
+                             "a saved cloud document")
+class LinkedInsertOccurrences:
+    """component.occurrences as occurrences.addByInsert reaches it, for a component standing at the
+    world pose given (sixteen row-major cells; None is the root).
+
+    Measured in a parametric and in a direct design, as a first insertion and as a later one: the
+    new occurrence lands at M.H in the world - M the matrix passed, H the host's world pose - so in
+    the host's frame it reads inv(H).M.H. At the root it reads M. The underscored state is this
+    fake's own: what was last handed in, and an occurrence to hand back in place of the landing."""
+    _DEFAULT = object()
+
+    def __init__(self, host_world=None):
+        self._host_world = None if host_world is None else [float(v) for v in host_world]
+        self._last_transform = self._last_as_ref = None
+        self._insert_result = self._DEFAULT
+
+    @staticmethod
+    def _product(a, b):
+        return [sum(a[4 * r + i] * b[4 * i + c] for i in range(4))
+                for r in range(4) for c in range(4)]
+
+    def addByInsert(self, data_file, transform, as_ref):
+        self._last_transform, self._last_as_ref = transform, as_ref
+        if self._insert_result is not self._DEFAULT:
+            return self._insert_result
+        cells = [float(v) for v in transform.asArray()]
+        if self._host_world is not None:
+            h = self._host_world
+            rot = [[h[4 * c + r] for c in range(3)] for r in range(3)]
+            back = [-sum(rot[r][i] * h[4 * i + 3] for i in range(3)) for r in range(3)]
+            inverse = [*rot[0], back[0], *rot[1], back[1], *rot[2], back[2], 0.0, 0.0, 0.0, 1.0]
+            cells = self._product(self._product(inverse, cells), h)
+        landed = FakeMatrix3D()
+        landed.setWithArray(cells)
+        return make_occurrence(path="Part:1", referenced=as_ref, transform2=landed)
+
+
 @fusion_fake(factory_for="FakeOccurrence")
 def make_occurrence(path="Comp:1", component=None, raises=None, transform2=None,
                     assembly_context=None, ground_to_parent=None, children=(), raises_on=None,
                     transform=None, joints=None, grounded=None, bodies=None, bounding_box=None,
                     entity_token=None, referenced=None, delete_ok=True, derived=False,
                     document_reference=None, valid=_OCC_PLAIN_VALID, light_bulb_on=_OCC_PLAIN_LIT,
-                    bodies_bounding_box=FakeOccurrence._UNSET, isolated=False, mesh_bodies=None):
+                    bodies_bounding_box=FakeOccurrence._UNSET, isolated=False, mesh_bodies=None,
+                    document=None):
     """An occurrence placing `component` at assembly path `path`, with the placement matrix
     ``transform2`` and the occurrence ``assembly_context`` that places it, the ground-to-parent lock
     ``ground_to_parent`` and the nested ``children`` a census descends into. Pass ``raises`` to model
     an unresolved external reference, where every read but ``name`` throws that message, or
     ``raises_on`` = {property: message} for the row where only that one read declines;
     ``delete_ok`` False is the deleteMe the platform refuses. ``valid``/``light_bulb_on``/
-    ``bodies_bounding_box``/``isolated``/``mesh_bodies`` pass through to FakeOccurrence."""
+    ``bodies_bounding_box``/``isolated``/``mesh_bodies``/``document`` pass through to
+    FakeOccurrence."""
     return FakeOccurrence(path, component, raises, transform2, assembly_context,
                           ground_to_parent, children, raises_on, transform=transform,
                           joints=joints, grounded=grounded, bodies=bodies,
@@ -913,7 +981,7 @@ def make_occurrence(path="Comp:1", component=None, raises=None, transform2=None,
                           referenced=referenced, delete_ok=delete_ok, derived=derived,
                           document_reference=document_reference, valid=valid,
                           light_bulb_on=light_bulb_on, bodies_bounding_box=bodies_bounding_box,
-                          isolated=isolated, mesh_bodies=mesh_bodies)
+                          isolated=isolated, mesh_bodies=mesh_bodies, document=document)
 
 
 @fusion_fake(factory_for="FakeOccurrence")
@@ -970,6 +1038,7 @@ class FakeTimeline:
     every read here throws with it, so a caller cannot lean on one that was never measured."""
     def __init__(self, items=(), marker=None, raises=None, move_ok=True):
         self._items = list(items)
+        self._timeline_groups = _NamedCollection()
         self._marker = len(self._items) if marker is None else marker
         self._raises = raises
         self._move_ok = move_ok
@@ -986,6 +1055,14 @@ class FakeTimeline:
 
     def item(self, i):
         return self._read(_NamedCollection(self._items).item(i))
+
+    @property
+    def timelineGroups(self):
+        return self._read(self._timeline_groups)
+
+    @timelineGroups.setter
+    def timelineGroups(self, value):
+        self._timeline_groups = value
 
     @property
     def markerPosition(self):
@@ -1019,6 +1096,17 @@ class FakeTimeline:
         return self._move(self._marker - 1)
 
 
+def _injected_roll(timeline, index, mode):
+    """Return a test-only roll callback for refusal, no-op, truthy, and exception cases."""
+    def roll(_before):
+        if mode == "raise":
+            raise RuntimeError("injected roll failure")
+        if mode != "noop":
+            timeline.markerPosition = index
+        return {"false": False, "truthy": 1, "noop": True}[mode]
+    return roll
+
+
 @fusion_fake(live_type="Feature",
              facts=("shape-dump-timeline-world", "enum-feature-health-states"))
 class FakeFeature:
@@ -1050,6 +1138,39 @@ class FakeFeature:
         self._deletes += 1
         return self._delete_ok
 
+
+@fusion_fake(scenario_double="an injected mirror plane-reset scene with unread and dropped-write "
+                            "faults; no new measured Fusion shape")
+class MirrorPlaneResetScene(FakeFeature):
+    """A shared feature scene with explicit mirror plane/reset/read/drop faults."""
+
+    def __init__(self, mirror, **kwargs):
+        super().__init__(**kwargs)
+        self._mirror = dict(mirror, plane_writes=[], combine_writes=[])
+
+    @property
+    def mirrorPlane(self):
+        return self._mirror["plane"]
+
+    @mirrorPlane.setter
+    def mirrorPlane(self, value):
+        self._mirror["plane_writes"].append(value)
+        self._mirror["plane"] = value
+        # This configured setter injects the plane-reset premise; faults are explicit below.
+        self._mirror["combine"] = False
+
+    @property
+    def isCombine(self):
+        if not self._mirror.get("readable", True):
+            raise RuntimeError("injected unread combine flag")
+        return self._mirror["combine"]
+
+    @isCombine.setter
+    def isCombine(self, value):
+        writes = self._mirror["combine_writes"]
+        writes.append(value)
+        if len(writes) not in self._mirror.get("drop_writes", ()):
+            self._mirror["combine"] = value
 
 @fusion_fake(live_type="BaseFeature",
              facts=("shape-dump-timeline-world", "basefeature-edit-scope"))
@@ -1176,7 +1297,8 @@ class FakeUserParameter:
         createdBy = _absent_member("createdBy")
 
     def __init__(self, name="d1", expression="10 mm", value=1.0, unit="mm", comment="",
-                 favorite=False, delete_ok=True, text_value=None, dependents=(), dependencies=()):
+                 favorite=False, delete_ok=True, text_value=None, dependents=(), dependencies=(),
+                 favorite_write_ok=True, favorite_read_ok=True, favorite_write_raises=False):
         self.name = name
         self.expression = expression
         self.dependentParameters = _NamedCollection(list(dependents))
@@ -1185,11 +1307,27 @@ class FakeUserParameter:
         self._text = text_value
         self.unit = unit
         self.comment = comment
-        self.isFavorite = favorite
+        self._favorite = favorite
+        self._favorite_write_ok = favorite_write_ok
+        self._favorite_read_ok = favorite_read_ok
+        self._favorite_write_raises = favorite_write_raises
         if text_value is not None:
             self.textValue = text_value
         self._delete_ok = delete_ok
         self._deleted = False
+
+    @property
+    def isFavorite(self):
+        if not self._favorite_read_ok:
+            raise RuntimeError("injected unreadable favorite")
+        return self._favorite
+
+    @isFavorite.setter
+    def isFavorite(self, favorite):
+        if self._favorite_write_raises:
+            raise RuntimeError("injected read-only favorite")
+        if self._favorite_write_ok:
+            self._favorite = favorite
 
     @property
     def value(self):

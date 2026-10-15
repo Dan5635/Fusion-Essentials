@@ -16,14 +16,16 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe
+from ._common import normalize_include as _normalize_include, unwrap as _unwrap
 from . import _common
 from . import _geom
 from . import _inputs
 from . import _joints
+from . import sys_get_preferences as _prefs
 
 app = adsk.core.Application.get()
 
-_SLICES = ("mass",)   # mesh stats are automatic for a mesh target (routed by kind), not an include=
+_SLICES = ("mass", "material", "appearance")   # mesh stats are automatic for a mesh target
 # The default measurement's name in include=: include= omits the bounding box unless 'default' rides
 # beside it, so a mass read carries the properties asked for and not the box again.
 _DEFAULT_NAMES = ("default",)
@@ -228,10 +230,10 @@ def _measuring_axes(jo, geom, x_vec, y_vec, jo_name, desc):
                 f"extents are measured in is unknown - Joint Origin '{jo_name}' placed fine. Target "
                 "a body inside the occurrence you mean (find_geometry returns one handle per "
                 "instance), or omit 'frame' for a world-aligned box.")
-        inverse = safe(lambda: from_world.copy())
-        if inverse is None or not safe(lambda: inverse.invert()):
+        inverse = _joints._finite_inverse(from_world)
+        if inverse is None:
             return None, None, (
-                f"The placement of the component {desc} belongs to did not invert, so the frame's "
+                f"The placement of the component {desc} belongs to did not invert to a finite matrix, so the frame's "
                 "axes could not be brought into the space its extents are measured in. Omit "
                 "'frame' for a world-aligned box.")
     out = []
@@ -379,9 +381,9 @@ def _physical_properties(design, entity, desc, units, accuracy, per_body):
         return error(f"Could not compute physical properties for {desc} (no measurable solid? an empty "
                      "or surface-only target has no mass).")
 
-    result = {"target": desc, "units": units, "accuracy": acc_key}
+    result = {"target": desc, "units": units, "accuracy": acc_key, "freshness_verified": False}
     result.update(_full_props(pp, k))
-    result["accuracy_used"] = _ACCURACY_NAME.get(safe(lambda: pp.accuracy), acc_key)
+    result["accuracy_used"] = _ACCURACY_NAME.get(safe(lambda: pp.accuracy))
 
     truncated = False
     if per_body:
@@ -421,9 +423,10 @@ def _physical_properties(design, entity, desc, units, accuracy, per_body):
         result["per_body_count"] = len(body_rows)
         result["per_body_truncated"] = body_cut
 
-    note = ("Mass is driven by each body's PHYSICAL MATERIAL (density), not its appearance - "
-            "if a mass looks wrong, check 'density'. Inertia_world is about the WORLD origin; "
-            "principal_moments are about the center of mass.")
+    note = ("Physical-property freshness is unverified. Linked feature edits may leave stale values. "
+            "Call design_recompute and read again; it may reset uncaptured driven joint poses. "
+            "Recompute does not verify freshness. Mass follows physical material density, not "
+            "appearance. Inertia_world is about the world origin; principal_moments are about CoM.")
     if per_body:
         note += (" per_occurrence carries one row per occurrence in the target's subtree, NESTED ones "
                  "included, keyed by full path; a row marked aggregates_children:true already covers "
@@ -447,16 +450,6 @@ def _physical_properties(design, entity, desc, units, accuracy, per_body):
 
 # ── router ───────────────────────────────────────────────────────────────────
 
-def _unwrap(result):
-    """(payload, None) on ok; (None, error_result) on error."""
-    if result.get("isError"):
-        return None, result
-    try:
-        return json.loads(result["content"][0]["text"]), None
-    except Exception:
-        return None, result
-
-
 def _entity_desc(ent, kind):
     """A short human label for the resolved target."""
     if kind == "design":
@@ -465,20 +458,206 @@ def _entity_desc(ent, kind):
     return f"{kind} '{nm}'" if nm else kind
 
 
-def _normalize_include(include):
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
+def _assignment_bodies(entity, kind):
+    """(holders, census status) for a body target or the target's scoped occurrence subtree."""
+    status = {"complete": True, "truncated": None, "unavailable_census": [],
+              "unavailable_slots": []}
+    if kind == "body":
+        status["truncated"] = False
+        path = None
+        try:
+            occurrence = entity.assemblyContext
+            if occurrence is not None:
+                path = occurrence.fullPathName
+                if not isinstance(path, str) or not path:
+                    raise ValueError("body placement path did not read")
+        except Exception as exc:
+            status["complete"] = False
+            status["unavailable_census"].append(
+                {"scope": "body placement", "error": str(exc)[:160] or type(exc).__name__})
+        return [(path, entity)], status
+    if kind not in ("design", "component", "occurrence"):
+        return None, status
+    if kind in ("design", "component"):
+        walk = _common.component_walk(entity)
+        all_occs = walk.occurrences
+        occs = all_occs[:_MAX_PER_BODY_ROWS + 1]
+        status["complete"] = walk.complete if walk.readable else None
+        if walk.broken:
+            status["complete"] = False
+            status["unavailable_census"].append(
+                {"scope": "occurrence tree", "unreadable_occurrences": len(walk.broken)})
+        if not walk.complete:
+            status["unavailable_census"].append(
+                {"scope": "occurrence tree", "error": f"census incomplete ({walk.method})"})
+        none_slots = [i for i, occurrence in enumerate(all_occs) if occurrence is None]
+        if none_slots:
+            status["complete"] = False
+            status["unavailable_slots"].append(
+                {"scope": "occurrence tree", "count": len(none_slots),
+                 "indices": none_slots[:16], "more": len(none_slots) > 16})
+        if walk.total is not None and walk.total > _MAX_PER_BODY_ROWS:
+            status["complete"] = False
+            status["unavailable_census"].append(
+                {"scope": "occurrence tree", "error": "body assignment scope exceeded occurrence cap"})
+        elif status["complete"]:
+            status["truncated"] = False
+    else:
+        occs = _subtree_occurrences(entity, _MAX_PER_BODY_ROWS)
+        component = safe(lambda: entity.component)
+        walk = _common.component_walk(component) if component is not None else None
+        if walk is None or not walk.readable:
+            status["complete"] = None
+            status["unavailable_census"].append(
+                {"scope": "occurrence tree", "error": "component census unavailable"})
+        else:
+            none_slots = [i for i, occurrence in enumerate(walk.occurrences)
+                          if occurrence is None]
+            expected = len(walk.occurrences) - len(none_slots)
+            actual = len([occurrence for occurrence in occs[:_MAX_PER_BODY_ROWS]
+                          if occurrence is not None])
+            status["complete"] = (walk.complete and not walk.broken and not none_slots and
+                                   walk.total is not None and walk.total <= _MAX_PER_BODY_ROWS and
+                                   len(occs) <= _MAX_PER_BODY_ROWS and actual == expected)
+            if status["complete"]:
+                status["truncated"] = False
+            if walk.broken:
+                status["unavailable_census"].append(
+                    {"scope": "occurrence tree", "unreadable_occurrences": len(walk.broken)})
+            if none_slots:
+                status["unavailable_slots"].append(
+                    {"scope": "occurrence tree", "count": len(none_slots),
+                     "indices": none_slots[:16], "more": len(none_slots) > 16})
+            if not walk.complete:
+                status["unavailable_census"].append(
+                    {"scope": "occurrence tree", "error": f"census incomplete ({walk.method})"})
+            if len(occs) > _MAX_PER_BODY_ROWS or (walk.total or 0) > _MAX_PER_BODY_ROWS:
+                status["unavailable_census"].append(
+                    {"scope": "occurrence tree", "error": "body assignment scope exceeded occurrence cap"})
+        if status["complete"] is False and not status["unavailable_census"] and not status["unavailable_slots"]:
+            status["unavailable_census"].append(
+                {"scope": "occurrence tree", "error": "target and component census did not agree"})
+    own_path = (safe(lambda: entity.fullPathName) or safe(lambda: entity.name)
+                if kind == "occurrence" else None)
+    rows = [(own_path, entity)]
+    for index, occurrence in enumerate(occs[:_MAX_PER_BODY_ROWS]):
+        if occurrence is None:
+            status["complete"] = False
+            status["unavailable_slots"].append({"scope": "occurrence tree", "index": index,
+                                                  "error": "occurrence slot was unavailable"})
+            continue
+        rows.append((safe(lambda o=occurrence: o.fullPathName) or
+                     safe(lambda o=occurrence: o.name), occurrence))
+    if len(occs) > _MAX_PER_BODY_ROWS:
+        status["truncated"] = None
+        status["complete"] = False
+    return rows, status
+
+
+def _assignment_record(body, occurrence, fields):
+    """Read requested body assignment fields independently; failed properties stay null."""
+    row = {"body": safe(lambda: body.name), "occurrence": occurrence}
+    unavailable = {}
+    for output, getter in fields:
+        try:
+            value = getter()
+            if output in ("material", "appearance"):
+                if value is None:
+                    raise ValueError("the assignment read answered nothing")
+                value = value.name
+                if not isinstance(value, str) or not value:
+                    raise ValueError("the assignment name did not read")
+            if output in ("opacity", "visible_opacity") and value is not None:
+                number = _common.finite_number(value)
+                if number is None:
+                    raise ValueError("value is not a finite number")
+                value = number
+            row[output] = value
+            if output == "appearance_source_type":
+                row["appearance_source"] = _prefs.enum_member_name(
+                    safe(lambda: adsk.core.AppearanceSourceTypes), value)
+                if row["appearance_source"] is None:
+                    unavailable["appearance_source"] = "source type has no readable enum label"
+        except Exception as exc:
+            row[output] = None
+            unavailable[output] = str(exc)[:160] or type(exc).__name__
+            if output == "appearance_source_type":
+                row["appearance_source"] = None
+                unavailable["appearance_source"] = unavailable[output]
+    if unavailable:
+        row["unavailable"] = unavailable
+    return row
+
+
+def _assignment_slice(entity, kind, include):
+    """Actual material or appearance assignments for the target's bodies and instances."""
+    holders, status = _assignment_bodies(entity, kind)
+    if holders is None:
+        return error(f"Material/appearance reads do not support target kind '{kind}'. Target a body, component, or occurrence.")
+    rows, body_total = [], 0
+    for occurrence, holder in holders:
+        if kind == "body":
+            bodies, count = [holder], 1
+        else:
+            try:
+                bodies = holder.bRepBodies
+                count = bodies.count
+                if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                    raise ValueError(f"invalid body count {count!r}")
+            except Exception as exc:
+                label = occurrence or safe(lambda holder=holder: holder.name) or kind
+                status["complete"] = False
+                status["unavailable_census"].append(
+                    {"scope": label, "collection": "bRepBodies",
+                     "error": str(exc)[:160] or type(exc).__name__})
+                continue
+        body_total += count
+        for index in range(min(count, max(0, _MAX_PER_BODY_ROWS - len(rows)))):
+            if kind == "body":
+                body = holder
+            else:
+                try:
+                    body = bodies.item(index)
+                    if body is None:
+                        raise ValueError("item returned None")
+                except Exception as exc:
+                    label = occurrence or safe(lambda holder=holder: holder.name) or kind
+                    status["complete"] = False
+                    status["unavailable_slots"].append(
+                        {"scope": label, "collection": "bRepBodies", "index": index,
+                         "error": str(exc)[:160] or type(exc).__name__})
+                    continue
+            fields = []
+            if "material" in include:
+                fields.append(("material", lambda body=body: body.material))
+            if "appearance" in include:
+                fields.extend((
+                    ("appearance", lambda body=body: body.appearance),
+                    ("appearance_source_type", lambda body=body: body.appearanceSourceType),
+                    ("opacity", lambda body=body: body.opacity),
+                    ("visible_opacity", lambda body=body: body.visibleOpacity),
+                ))
+            rows.append(_assignment_record(body, occurrence, fields))
+    if body_total > _MAX_PER_BODY_ROWS:
+        status["truncated"] = True
+        status["complete"] = False
+    elif (status["truncated"] is None or status["unavailable_census"] or
+          any(slot.get("scope") == "occurrence tree" for slot in status["unavailable_slots"])):
+        status["truncated"] = None
+    return ok({"bodies": rows, "truncated": status["truncated"],
+               "occurrence_path_scope": ("relative to target component" if kind == "component"
+                                         else "assembly context of the target"),
+               "scope_complete": status["complete"],
+               "unavailable_census": status["unavailable_census"],
+               "unavailable_slots": status["unavailable_slots"]})
 
 
 def handler(target: str = "", include=None, units: str = "mm", accuracy: str = "medium",
             per_body: bool = False, frame: str = "") -> dict:
     """Measure a target at the right detail level (rich read)."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # Resolve + classify the target ONCE (TargetRef is the single resolver). The cores below measure
     # the RESOLVED ENTITY - no second, divergent lookup, so kind and measurement always agree.
@@ -495,6 +674,8 @@ def handler(target: str = "", include=None, units: str = "mm", accuracy: str = "
 
     # A MESH target is measured by mesh stats (it has no BRep bbox/mass the solid path computes).
     if kind == "mesh":
+        if any(s in inc for s in ("material", "appearance")):
+            return error("Material/appearance reads require a body, component, or occurrence target.")
         from . import _mesh_common
         out, e = _unwrap(_mesh_common.mesh_measure_of_body(ent, units))
         if e:
@@ -525,18 +706,25 @@ def handler(target: str = "", include=None, units: str = "mm", accuracy: str = "
         out["mass"], e = _unwrap(_physical_properties(design, ent, desc, units, accuracy, per_body))
         if e:
             return e
-    else:
-        # Only the bbox so far - point at the one deeper slice + the part-space option.
+    elif not any(s in inc for s in ("material", "appearance")):
+        # Only the bbox so far - point at the deeper slices + the part-space option.
         out["note"] = ("Bounding box over the SOLID/SURFACE/MESH bodies only - sketch and construction "
                        "geometry (planes, axes) are excluded, so an orphaned datum does not inflate it. "
-                       "Add include=['mass'] for full physical properties (mass/volume/CoM/inertia; "
-                       "'per_body' adds a row per body and per occurrence in the subtree). "
+                       "Add include=['mass'] for physical properties; include=['material'] or "
+                       "include=['appearance'] reads body assignments. 'per_body' adds a row per body "
+                       "and per occurrence in the subtree. "
                        "'frame'=<Joint Origin> measures in part space.")
+    for assignment in ("material", "appearance"):
+        if assignment in inc:
+            result = _assignment_slice(ent, kind, [assignment])
+            if result.get("isError"):
+                return result
+            out[assignment] = json.loads(result["content"][0]["text"])
     return ok(out)
 
 
 TOOL_DESCRIPTION = (
-    "Measure a target: the bounding box by default, mass or mesh stats through 'include'."
+    "Measure bounds or mesh stats; opt-in mass/material/appearance."
 )
 
 tool = (

@@ -10,8 +10,13 @@ Document.save() false-success), ReferencesFresh (the lying isUpToDate), FileLand
 nothing), FeatureHealthy (a feature add()ed but computed with an error health state). Every gate is
 proven to BITE (the failure case goes red through the wrapper).
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+from conftest import install as _install_design
 
 import json
+import sys
 import types
 
 import pytest
@@ -25,8 +30,12 @@ from conftest import (
     FakeDataFile,
     FakeDocumentReference,
     FakeFusionDocument,
+    FakeMatrix3D,
     FakeTimeline,
     FakeTimelineObject,
+    FakeVector3D,
+    MakeComp,
+    MakeDesign,
     load_tool,
     make_occurrence,
 )
@@ -38,9 +47,7 @@ def _ok(payload):
     return {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": False}
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class Fixed(kernel.Postcondition):
@@ -125,12 +132,15 @@ class TestWrapContract:
         assert "verify exploded" in out["verify_error"]
 
     def test_hard_capture_crash_fails_closed(self):
-        # a raising capture leaves no baseline, so verify can never run - same fail-closed error.
         wrapped = kernel.wrap(lambda **kw: _ok({"done": True}), [Fixed(capture_boom=True)])
         res = wrapped()
         assert res["isError"] is True
-        assert "verification could not run" in res["message"]
+        assert "baseline capture failed; handler not run" in res["message"]
         assert "capture exploded" in res["message"]
+        body = json.loads(res["content"][0]["text"])
+        assert body["handler_not_run"] is True
+        assert "handler_reported_unverified_result" not in body
+        assert "may have succeeded" not in body["note"]
 
     def test_soft_capture_crash_stays_an_annotation(self):
         wrapped = kernel.wrap(lambda **kw: _ok({"done": True}),
@@ -139,9 +149,7 @@ class TestWrapContract:
         assert out["fixed_confirmed"] is False
         assert "capture exploded" in out["verify_error"]
 
-    def test_capture_crash_does_not_block_the_handler(self):
-        # fail-closed applies to the RESULT, not the mutation: the handler still runs - the kernel
-        # never rolls back or pre-empts the work, it reports the unverifiable outcome honestly.
+    def test_hard_capture_crash_blocks_the_handler(self):
         calls = {"n": 0}
 
         def handler(**kw):
@@ -149,13 +157,30 @@ class TestWrapContract:
             return _ok({"done": True})
 
         res = kernel.wrap(handler, [Fixed(capture_boom=True)])()
-        assert calls["n"] == 1 and res["isError"] is True
+        assert calls["n"] == 0 and res["isError"] is True
 
-    def test_handler_error_passes_through_even_when_capture_crashed(self):
-        # an error result carries its own honest failure; the verification-impossible error must not
-        # replace it (the mutation did NOT claim success, so there is nothing to fail closed about).
+    def test_hard_capture_refusal_precedes_a_handler_that_would_error(self):
         err = {"content": [], "isError": True, "message": "handler refused"}
-        assert kernel.wrap(lambda **kw: err, [Fixed(capture_boom=True)])() is err
+        res = kernel.wrap(lambda **kw: err, [Fixed(capture_boom=True)])()
+        assert res is not err and "handler not run" in res["message"]
+
+    @pytest.mark.parametrize("boom", [False, True])
+    def test_hard_failure_retains_identities_and_completed_evidence_without_promoting_success(self, boom):
+        original = {"created": True, "feature": "Extrude2", "result_bodies": ["Body2"],
+                    "postcondition": "not authoritative", "note": "handler says success", "isError": False}
+        posts = [Fixed(evidence={"feature_healthy": True}),
+                 Fixed(reason="area below threshold", boom=boom, read_tool="model_inspect")]
+        result = kernel.wrap(lambda **kw: _ok(original), posts)()
+        body = json.loads(result["content"][0]["text"])
+        assert result["isError"] is True and body["postcondition"] == "fixed"
+        assert "created" not in body and "feature" not in body and "isError" not in body
+        assert body["handler_reported_unverified_result"] == dict(original, feature_healthy=True)
+        assert "model_inspect" in body["note"] and "not confirmation" in body["note"]
+
+    def test_none_capture_baseline_still_reaches_handler_and_verify(self):
+        post = Fixed(capture_value=None, evidence={"baseline_available": False})
+        result = _payload(kernel.wrap(lambda **kw: _ok({"created": True}), [post])())
+        assert result == {"created": True, "baseline_available": False}
 
     def test_no_postconditions_returns_handler_unwrapped(self):
         h = lambda **kw: _ok({})
@@ -208,6 +233,18 @@ class TestVersionAdvanced:
         assert res["isError"] is True
         assert "still modified" in res["message"].lower()
         assert "created no version" not in res["message"].lower()
+
+    @pytest.mark.parametrize("fresh,said", [
+        ([_version("urn:part", 1), _version("urn:part", 2)],
+         "A fresh read shows cloud version 2 landed."),
+        ([_version("urn:part", 1), _version("urn:part", 1)], "A fresh read shows no new cloud version."),
+        ([None, _version("urn:part", 2)], "Whether a cloud version landed is unknown")])
+    def test_a_still_modified_save_reports_one_fresh_version_read(self, monkeypatch, fresh, said):
+        app = self._app(True, fresh=fresh)
+        monkeypatch.setattr(kernel, "app", app)
+        res = kernel.wrap(lambda **kw: _ok({"saved": True}), [self._post(monkeypatch)])()
+        assert res["isError"] is True and said in res["message"]
+        assert app.data.calls == 2                 # the capture read and ONE fresh read, no poll
 
     def test_fresh_same_lineage_advance_confirms_separately_from_local_completion(self, monkeypatch):
         app = self._app(False, fresh=[_version("urn:part", 1), _version("urn:part", 2)])
@@ -579,7 +616,7 @@ class TestSketchCurvesChangedScope:
         seen = []
         import mcpServer.tools._sketch_detail as sd
         import mcpServer.tools._common as common
-        monkeypatch.setattr(common, "design", lambda: object())
+        _install_design(common, object())
 
         def _scoped(d, n, c, input_name="component"):
             seen.append((n, c))
@@ -666,7 +703,9 @@ def _coll(items):
 
 
 def _occ(name, transl, bodies=None, children=None):
-    return make_occurrence(path=name, transform=types.SimpleNamespace(translation=transl),
+    matrix = types.SimpleNamespace(translation=transl)
+    return make_occurrence(path=name, transform=matrix, transform2=matrix,
+                           assembly_context=make_occurrence('Host:1'),
                            bodies=bodies or [], children=children or [])
 
 
@@ -748,7 +787,7 @@ class TestComputeState:
         return ent
 
     def test_a_failed_entity_answers_broken_and_hands_back_the_failure(self):
-        state, failure = kernel.compute_state(self._paired(own_health=2, own_msg="over-constrained"))
+        state, failure = kernel.compute_state(self._paired(own_health=_ERROR, own_msg="over-constrained"))
         assert state == "broken"
         assert failure == ("error", "over-constrained")
 
@@ -762,26 +801,26 @@ class TestComputeState:
     def test_the_entity_is_read_first_when_both_sources_fail(self):
         # both carry a failure with DIFFERENT text, so the order is what the assertion reads.
         _state, failure = kernel.compute_state(
-            self._paired(own_health=2, own_msg="from the entity",
-                         tl_health=2, tl_msg="from the timeline item"))
+            self._paired(own_health=_ERROR, own_msg="from the entity",
+                         tl_health=_ERROR, tl_msg="from the timeline item"))
         assert failure == ("error", "from the entity")
 
     def test_a_healthy_timeline_item_does_not_mask_a_failed_entity(self):
         state, failure = kernel.compute_state(
-            self._paired(own_health=1, own_msg="iffy", tl_health=0))
+            self._paired(own_health=1, own_msg="iffy", tl_health=_HEALTHY))
         assert state == "broken" and failure == ("warning", "iffy")
 
     # The failing pair is WARNING (1) and ERROR (2); the two states either side of it read and are
     # deliberately not flagged, so both boundaries are pinned rather than the middle alone.
     def test_healthy_is_the_boundary_below_the_failing_pair(self):
-        assert kernel.compute_state(self._paired(own_health=0)) == ("healthy", None)
+        assert kernel.compute_state(self._paired(own_health=_HEALTHY)) == ("healthy", None)
 
     def test_suppressed_is_the_boundary_above_the_failing_pair(self):
         # 3 = SUPPRESSED: a state that READ and is parked on purpose - healthy, never withheld.
         assert kernel.compute_state(self._paired(own_health=3)) == ("healthy", None)
 
     def test_a_state_only_the_timeline_item_answers_reads_healthy(self):
-        assert kernel.compute_state(self._paired(tl_health=0)) == ("healthy", None)
+        assert kernel.compute_state(self._paired(tl_health=_HEALTHY)) == ("healthy", None)
 
     def test_neither_source_answering_is_unknown_not_healthy(self):
         # An unread state is not a clean bill of health: the caller withholds its flag on this.
@@ -945,21 +984,60 @@ class TestChildGeometryMoved:
         assert res["isError"] is True                  # the world move did NOT reach the geometry
         assert "did not propagate" in res["message"].lower()
 
-    def test_transform_is_the_fallback_when_transform2_answers_nothing(self, monkeypatch):
-        # An occurrence whose transform2 answers nothing must still be gated, not silently skipped.
+    def test_missing_transform2_discloses_an_unverified_move_without_local_fallback(self, monkeypatch):
         cbody = _body(_pt(0, 0, 0))
         child = _occ("Child:1", _pt(0, 0, 0), bodies=[cbody])
         wrapper = _occ("Wrapper:1", _pt(0, 0, 0), children=[child])
-        assert wrapper.transform2 is None
+        wrapper.transform2 = None
         p = self._wire(monkeypatch, [wrapper])
 
         def handler(**kw):
             wrapper.transform.translation = _pt(8.5, 8.5, 0)
             return _ok({"created": True})
 
-        res = kernel.wrap(handler, [p])()
-        assert res["isError"] is True
-        assert "did not propagate" in res["message"].lower()
+        out = _payload(kernel.wrap(handler, [p])())
+        assert out["child_geometry_move_verified"] is False
+        assert out["child_geometry_unverified"] == ["Wrapper:1"]
+
+    @pytest.mark.parametrize('coordinate', [None, float('nan'), True])
+    def test_unreadable_translation_coordinate_is_not_zeroed(self, monkeypatch, coordinate):
+        wrapper = _occ('Wrapper:1', _pt(coordinate, 2.0, 3.0), bodies=[_body(_pt(0, 0, 0))])
+        p = self._wire(monkeypatch, [wrapper])
+        out = _payload(kernel.wrap(lambda **kw: _ok({'created': True}), [p])())
+        assert out['child_geometry_move_verified'] is False
+        assert out['child_geometry_unverified'] == ['Wrapper:1']
+
+    def test_successful_native_local_translation_is_withheld(self, monkeypatch):
+        native = make_occurrence('Leaf:1', transform2=FakeMatrix3D(t=(2.0, 3.0, 4.0)),
+                                 bodies=[_body(_pt(1.0, 3.0, 4.0))])
+        p = self._wire(monkeypatch, [native])
+        out = _payload(kernel.wrap(lambda **kw: _ok({'created': True}), [p])())
+        assert p._translation(native) is None
+        assert out['child_geometry_move_verified'] is False
+        assert out['child_geometry_unverified'] == ['Leaf:1']
+
+    @pytest.mark.parametrize('geometry_follows', [True, False])
+    def test_root_motion_is_judged_against_its_world_geometry(self, monkeypatch, geometry_follows):
+        component = MakeComp(name='RootPart', entity_token='root-part')
+        body = _body(_pt(0, 0, 0))
+        native = make_occurrence('RootPart:1', component=component, bodies=[body],
+                                 transform2=FakeMatrix3D())
+        root = MakeComp(occurrences_by_component={'RootPart': [native]})
+        monkeypatch.setattr(load_tool('_common'), 'design', lambda: MakeDesign(comp=root))
+        condition = self._wire(monkeypatch, [native])
+
+        def handler(**kw):
+            native.transform2.translation = FakeVector3D(5, 0, 0)
+            if geometry_follows:
+                body.boundingBox.minPoint = _pt(5, 0, 0)
+            return _ok({'created': True})
+
+        result = kernel.wrap(handler, [condition])()
+        assert result['isError'] is not geometry_follows
+        if geometry_follows:
+            out = _payload(result)
+            assert out['child_geometry_move_verified'] is True
+            assert out['repositioned_occurrences'] == ['RootPart:1']
 
     def test_an_unreadable_occurrence_walk_is_disclosed_not_silently_passed(self, monkeypatch):
         # no part was sampled before the mutation, so nothing was gated - the flag reports that the
@@ -1014,6 +1092,20 @@ def _sheet(name, free, sealed=0, area=1.0):
                     edges=[_edge(1) for _ in range(free)] + [_edge(2) for _ in range(sealed)])
 
 
+def _owned_row(name, index, component):
+    """A timeline row whose feature lives in `component` - what its address is qualified with."""
+    feature = types.SimpleNamespace(parentComponent=types.SimpleNamespace(name=component))
+    return FakeTimelineObject(name=name, index=index, entity=feature)
+
+
+def _namesake_timeline(monkeypatch, name):
+    """A parametric design whose timeline already holds `name` in another component, at index 0."""
+    tl = FakeTimeline([_owned_row(name, 0, "Sibling")])
+    common = sys.modules[kernel.__package__ + "._common"]
+    _install_design(common, types.SimpleNamespace(designType=1, timeline=tl))
+    return tl
+
+
 class TestFreeEdgesChanged:
     def _wire(self, monkeypatch, census):
         monkeypatch.setattr(kernel, "census_bodies", lambda: census)
@@ -1061,6 +1153,40 @@ class TestFreeEdgesChanged:
         assert res["isError"] is True
         assert "did not rise" in res["message"]
 
+    @pytest.mark.parametrize("design_type", [1, 0])
+    def test_a_refused_stitch_names_its_feature_or_undo_in_direct_mode(self, monkeypatch,
+                                                                         design_type):
+        common = sys.modules[kernel.__package__ + "._common"]
+        _install_design(common, types.SimpleNamespace(designType=design_type))
+        census = [_sheet("A", free=4)]
+        self._wire(monkeypatch, census)
+
+        def handler(**kw):
+            return _ok({"stitched": True, "feature": "Stitch1"})
+        msg = kernel.wrap(handler, [kernel.FreeEdgesChanged("sealed")])()["message"]
+        assert ("design_delete_feature(feature='Stitch1')" in msg) is (design_type == 1)
+        assert ("DIRECT mode" in msg) is (design_type == 0)
+
+    def test_a_refused_stitch_names_the_added_row_beside_a_namesake(self, monkeypatch):
+        tl = _namesake_timeline(monkeypatch, "Stitch1")
+        self._wire(monkeypatch, [_sheet("A", free=4)])
+
+        def handler(**kw):
+            tl._items.append(_owned_row("Stitch1", 1, "Shell"))
+            return _ok({"stitched": True, "feature": "Stitch1"})
+        msg = kernel.wrap(handler, [kernel.FreeEdgesChanged("sealed")])()["message"]
+        assert msg.endswith("design_delete_feature(feature='Shell/Stitch1@1').")
+
+    def test_two_added_namesake_rows_keep_the_bare_name(self, monkeypatch):
+        tl = _namesake_timeline(monkeypatch, "Stitch1")
+        self._wire(monkeypatch, [_sheet("A", free=4)])
+
+        def handler(**kw):
+            tl._items += [_owned_row("Stitch1", 1, "Shell"), _owned_row("Stitch1", 2, "Lid")]
+            return _ok({"stitched": True, "feature": "Stitch1"})
+        msg = kernel.wrap(handler, [kernel.FreeEdgesChanged("sealed")])()["message"]
+        assert msg.endswith("design_delete_feature(feature='Stitch1').") and "@" not in msg
+
     def test_an_edge_whose_face_count_does_not_read_is_disclosed(self, monkeypatch):
         census = [BRepBody(name="A", is_solid=False, edges=[BRepEdge(curve=None)])]
         self._wire(monkeypatch, census)
@@ -1103,7 +1229,46 @@ class TestSurfaceAreaAdded:
         self._wire(monkeypatch, census)
         res = kernel.wrap(self._handler(census, list(census)), [kernel.SurfaceAreaAdded()])()
         assert res["isError"] is True
-        assert "unchanged (3.0 cm2)" in res["message"]
+        assert "changed by 0 cm2" in res["message"]
+
+    def test_small_positive_area_is_disclosed_without_claiming_no_geometry(self, monkeypatch):
+        census = [_sheet("Old", free=4, area=3.0)]
+        self._wire(monkeypatch, census)
+        res = kernel.wrap(self._handler(census, census + [_sheet("Tiny", free=4, area=5e-7)]),
+                          [kernel.SurfaceAreaAdded()])()
+        body = json.loads(res["content"][0]["text"])
+        assert res["isError"] is True and "unchanged" not in res["message"]
+        assert "increase above 1e-06 cm2" in res["message"]
+        assert body["verification_evidence"]["area_change_cm2"] == pytest.approx(5e-7)
+        assert body["verification_evidence"]["area_increase_threshold_cm2"] == 1e-6
+        assert body["handler_reported_unverified_result"]["created"] is True
+
+    def test_a_refused_sheet_names_its_feature_bodies_and_delete_call(self, monkeypatch):
+        census = [_sheet("Old", free=4, area=3.0)]
+        self._wire(monkeypatch, census)
+
+        def handler(**kw):
+            census.append(_sheet("Body2", free=4, area=5e-7))
+            return _ok({"created": True, "feature": "Extrude2", "result_bodies": ["Body2"]})
+        res = kernel.wrap(handler, [kernel.SurfaceAreaAdded()])()
+        assert res["message"].endswith(
+            " Its result bodies: 'Body2'. 'Extrude2' remains in the timeline; remove it with "
+            "design_delete_feature(feature='Extrude2').")
+
+    def test_a_refused_sheet_beside_a_namesake_names_its_own_address(self, monkeypatch):
+        # A bare name another component's feature shares is refused by design_delete_feature.
+        tl = _namesake_timeline(monkeypatch, "Extrude2")
+        census = [_sheet("Old", free=4, area=3.0)]
+        self._wire(monkeypatch, census)
+
+        def handler(**kw):
+            census.append(_sheet("Body2", free=4, area=5e-7))
+            tl._items.append(_owned_row("Extrude2", 1, "H1Surf"))
+            return _ok({"created": True, "feature": "Extrude2", "result_bodies": ["Body2"]})
+        res = kernel.wrap(handler, [kernel.SurfaceAreaAdded()])()
+        assert res["message"].endswith(
+            " Its result bodies: 'Body2'. 'H1Surf/Extrude2@1' remains in the timeline; remove it "
+            "with design_delete_feature(feature='H1Surf/Extrude2@1').")
 
     def test_no_growth_beside_an_unread_area_is_disclosed_not_failed(self, monkeypatch):
         # the sheet may be the body whose area did not read - no conviction from a blind census
@@ -1136,7 +1301,51 @@ def _placed(x, y=0.0, z=0.0, rotation=None):
 _GRID = (("quantity_one", "spacing_one", 2, 10.0), ("quantity_two", "spacing_two", 1, 10.0))
 
 
+class _OccurrenceVector:
+    """An element's occurrences as the live vector answers them: iterable, with no count."""
+
+    def __init__(self, occurrences):
+        self._occurrences = list(occurrences)
+
+    def __iter__(self):
+        return iter(self._occurrences)
+
+
+class _OccurrenceElement:
+    """A pattern element carrying occurrences; `touched` records every read of its transform,
+    which answers the zero translation a circular element reads."""
+
+    def __init__(self, occurrences, touched):
+        self.occurrences = _OccurrenceVector(occurrences)
+        self._touched = touched
+
+    @property
+    def transform(self):
+        self._touched.append(self)
+        return _placed(0).transform
+
+
+def _posed(x=0.0, y=0.0, deg=0.0):
+    """One patterned occurrence at (x, y) cm, turned `deg` about Z."""
+    return make_occurrence(path="Seed:1", transform2=FakeMatrix3D(deg=deg, t=(x, y, 0.0)))
+
+
+def _celled(**cells):
+    """One occurrence whose transform2 is the identity with the given row-major cells replaced."""
+    arr = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    for cell, value in cells.items():
+        arr[int(cell[1:])] = value
+    return types.SimpleNamespace(transform2=types.SimpleNamespace(asArray=lambda: arr))
+
+
 class TestPatternElementsPlaced:
+    def test_face_feature_pattern_does_not_certify_placement_from_one_result_body(self, monkeypatch):
+        post = kernel.PatternElementsPlaced()
+        monkeypatch.setattr(post, "_feature", lambda *_args: pytest.fail("generic placement read used"))
+        for kind in ("faces", "features"):
+            reason, evidence = post.verify({}, {"entity_kind": kind, "pattern_geometry_changed": True}, 0)
+            assert reason == "" and evidence == {"pattern_elements_confirmed": False}
+
     def _wire(self, monkeypatch, tl, **kw):
         p = kernel.PatternElementsPlaced(**kw)
         monkeypatch.setattr(p, "_timeline", lambda: tl)
@@ -1252,6 +1461,85 @@ class TestPatternElementsPlaced:
         out = _payload(kernel.wrap(self._boxed_handler(tl, []), [p])())
         assert out["pattern_elements_confirmed"] is False
 
+    def _occurrence_ring(self, monkeypatch, elements, quantity=None, bodies=(), **payload):
+        """The wrapped reply of a soft bodiless pattern whose elements hold `elements` (a list of
+        occurrence lists), plus the list recording element.transform reads."""
+        tl, touched = FakeTimeline(), []
+        p = self._wire(monkeypatch, tl, severity="soft")
+
+        def handler(**kw):
+            feature = types.SimpleNamespace(
+                patternElements=_coll([_OccurrenceElement(occs, touched) for occs in elements]),
+                bodies=_coll(list(bodies)))
+            tl._items.append(FakeTimelineObject(name="Ring1", entity=feature))
+            return _ok({"patterned": True, "feature": "Ring1", "quantity": quantity, **payload})
+        return _payload(kernel.wrap(handler, [p])()), touched
+
+    def test_an_occurrence_ring_of_distinct_placements_confirms_the_count(self, monkeypatch):
+        ring = [[_posed(4.2, 0)], [_posed(-12.5, -23)], [_posed(-39.6, -14.2)],
+                [_posed(-39.6, 14.2)], [_posed(-12.5, 23)]]
+        out, touched = self._occurrence_ring(monkeypatch, ring, quantity=5)
+        assert out["elements_placed"] == 5 and "pattern_elements_confirmed" not in out
+        assert touched == []                    # the element transform is never the read
+
+    def test_an_occurrence_ring_with_two_copies_at_one_pose_is_not_confirmed(self, monkeypatch):
+        ring = [[_posed(4, 0)], [_posed(0, 4)], [_posed(-4, 0)], [_posed(0, 4)]]
+        out, _touched = self._occurrence_ring(monkeypatch, ring, quantity=4)
+        assert out["pattern_elements_confirmed"] is False
+        assert "elements_placed" not in out and "verified" not in out
+
+    def test_an_on_axis_ring_is_told_apart_by_orientation(self, monkeypatch):
+        ring = [[_posed(deg=d)] for d in (0, 90, 180, 270)]
+        out, _touched = self._occurrence_ring(monkeypatch, ring, quantity=4)
+        assert out["elements_placed"] == 4
+
+    @pytest.mark.parametrize("blind", [
+        [],                                                              # an element holding none
+        [make_occurrence(path="Seed:1", raises_on={"transform2": "3 : no transform"})],
+        [types.SimpleNamespace(transform2=types.SimpleNamespace(asArray=lambda: [0.0] * 12))],
+        [_celled(c3=float("nan"))],
+    ])
+    def test_a_placement_that_does_not_read_is_unknown(self, monkeypatch, blind):
+        out, _touched = self._occurrence_ring(monkeypatch, [[_posed(4, 0)], blind], quantity=2)
+        assert out["pattern_elements_confirmed"] is False and "elements_placed" not in out
+
+    def test_an_element_holding_no_occurrence_is_unknown_not_one_placement(self, monkeypatch):
+        out, _touched = self._occurrence_ring(monkeypatch, [[]])
+        assert out["pattern_elements_confirmed"] is False and "elements_placed" not in out
+
+    def test_fewer_elements_than_the_reported_quantity_is_not_confirmed(self, monkeypatch):
+        ring = [[_posed(4, 0)], [_posed(0, 4)], [_posed(-4, 0)]]
+        out, _touched = self._occurrence_ring(monkeypatch, ring, quantity=4)
+        assert out["pattern_elements_confirmed"] is False and "elements_placed" not in out
+
+    def test_a_reply_with_no_quantity_confirms_the_elements_read(self, monkeypatch):
+        # the path pattern's reply carries quantity null when its own count read fails
+        out, _touched = self._occurrence_ring(monkeypatch, [[_posed(0, 0)], [_posed(3, 0)]])
+        assert out["elements_placed"] == 2
+
+    def test_position_and_orientation_tolerances_include_their_boundary(self, monkeypatch):
+        tol, turn = kernel._PLACE_TOL_CM, kernel._TURN_TOL
+        for pair, placed in (([_celled(), _celled(c3=tol)], None),
+                             ([_celled(), _celled(c3=2 * tol)], 2),
+                             ([_celled(), _celled(c1=turn)], None),
+                             ([_celled(), _celled(c1=2 * turn)], 2)):
+            out, _touched = self._occurrence_ring(monkeypatch, [[o] for o in pair], quantity=2)
+            assert out.get("elements_placed") == placed, pair
+
+    def test_elements_of_several_seeds_differ_when_any_seed_does(self, monkeypatch):
+        ring = [[_posed(0, 0), _posed(5, 0)], [_posed(0, 0), _posed(5, 0, deg=90)]]
+        out, _touched = self._occurrence_ring(monkeypatch, ring, quantity=2)
+        assert out["elements_placed"] == 2
+        uneven = [[_posed(0, 0), _posed(5, 0)], [_posed(9, 0)]]
+        out, _touched = self._occurrence_ring(monkeypatch, uneven, quantity=2)
+        assert out["pattern_elements_confirmed"] is False
+
+    def test_a_body_ring_whose_box_does_not_read_is_never_judged_by_occurrences(self, monkeypatch):
+        blind_body = BRepBody(name="B0", bbox=types.SimpleNamespace(minPoint=None, maxPoint=None))
+        out, _touched = self._occurrence_ring(
+            monkeypatch, [[_posed(4, 0)], [_posed(0, 4)]], quantity=2, bodies=[blind_body])
+        assert out["pattern_elements_confirmed"] is False and "elements_placed" not in out
+
     def test_spacing_keys_the_handler_lacks_are_refused_at_wiring(self):
         p = kernel.PatternElementsPlaced(spacings=_GRID)
 
@@ -1293,7 +1581,7 @@ class _PoisonHealthyItem(FakeTimelineObject):
     AssemblyConstraint (and a caught adsk error has rollback risk in some contexts), which is
     why the walk reads the message only inside the unhealthy branches."""
     def __init__(self, name):
-        FakeTimelineObject.__init__(self, name=name, health=0)
+        FakeTimelineObject.__init__(self, name=name, health=_HEALTHY)
 
     @property
     def errorOrWarningMessage(self):

@@ -13,6 +13,7 @@ Pinned (the DoD):
   - a DIRECT design returns no feature while the flip LANDS; a PARAMETRIC no-feature return stays
     an honest error.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -133,7 +134,7 @@ class TestNegated:
 
 class TestInputGuards:
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(mrn._common, "design", lambda: None)
+        _install_design(mrn, None)
         assert "No active design" in error_message(mrn.handler(mesh="H"))
 
     def test_a_missing_reverse_features_collection_is_an_error(self, monkeypatch):

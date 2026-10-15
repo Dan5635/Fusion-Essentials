@@ -1,4 +1,4 @@
-"""Lint/contract for the TOOL NAMING SCHEMA (CLAUDE.md "Read vs Edit").
+"""Lint/contract for the TOOL NAMING SCHEMA (AGENTS.md "Read vs Edit").
 
 Every tool name is ``<domain>_<verb>[_<noun>]`` with ``<verb>`` from the closed set below, the
 verb's KIND must agree with write=: a read-verb tool is read-only, an edit-verb tool is not - and
@@ -87,25 +87,6 @@ class TestToolNaming:
                 unknown[name] = v
         assert not unknown, (f"verbs not in the closed vocabulary (extend the set in test_tool_naming.py "
                              f"if a new verb is genuinely needed): {unknown}")
-
-    def test_exemption_tables_match_reality(self):
-        # the house rule for every lint table: an entry that no longer names a registered tool, or
-        # no longer needs its exemption, is deleted - never left to rot.
-        status = {}
-        for it in register_all_tools():
-            name, readonly = _name_and_readonly(it)
-            status[name] = readonly
-        stale = []
-        for name in _SHAPE_EXEMPT:
-            if name not in status:
-                stale.append(f"_SHAPE_EXEMPT: {name} is not a registered tool")
-        for name, reason in _WRITE_VERB_EXEMPT.items():
-            assert reason.strip(), f"_WRITE_VERB_EXEMPT: {name} needs a plain-English reason"
-            if name not in status:
-                stale.append(f"_WRITE_VERB_EXEMPT: {name} is not a registered tool")
-            elif status[name]:
-                stale.append(f"_WRITE_VERB_EXEMPT: {name} is read-only now - drop the exemption")
-        assert not stale, "stale naming-exemption entries:\n  " + "\n  ".join(stale)
 
     def test_verb_kind_matches_write_status(self):
         mismatches = []

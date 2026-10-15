@@ -11,38 +11,36 @@ from . import _inputs
 from ._common import timeline_health as _timeline_health
 
 MAP_BLURB = (
-    "DESIGN MODE: get_mode_handler - the 'mode' slice (can{} agreeing with ModeGuards); "
-    "health_handler - the timeline error/warning rollup; run_in_base_feature/"
-    "base_feature_run_wrapper - a mutation in an always-finished base-feature scope; "
-    "timeline_census/timeline_item_key/census_caveat - the census a delete or suppress diffs; "
-    "collapsed_group_hint - a grouped member's miss; no_timeline_reason")
+    "MODE: get_mode_handler/health_handler - mode and health; "
+    "run_in_base_feature/base_feature_run_wrapper - a mutation in an always-finished "
+    "base-feature scope; "
+    "timeline_census/timeline_item_key/census_caveat - an edit census; "
+    "collapsed_group_hint(_for)/hidden_twin_hint - a grouped member's miss (by name or entity) "
+    "or hidden twin; "
+    "unfold_group_members - the group-state census; "
+    "no_timeline_reason")
 
 # A delete or suppress reply appends this when its before/after census could not be diffed.
 CENSUS_UNREAD = ("The timeline could not be listed the same way before and after this call, so "
                  "what else it changed is not named - design_get(include=['timeline']) lists what "
                  "is there now.")
-
-# MEASURED: deleting a Form's body while its edit is open deletes the whole Form and strips the
-# B-Rep from every later Form, all still reading healthy.
-FORM_EDIT_OPEN = ("A Form edit is open, which hides the timeline. Ask the user to click Finish "
-                  "Form. Do not delete bodies while it is open.")
-# The mode read and design_set_mode's refusal while an open Form edit makes the design read direct.
-FORM_EDIT_OPEN_MODE = ("A Form edit is open, so the design reads direct until it ends - ask the "
-                       "user to click Finish Form, then retry.")
+# An open Form or base-feature edit reads direct too and nothing else discriminates it, so the
+# direct-mode remedy (delete bodies directly) is warned off: in a Form edit it deletes the Form.
+OPEN_EDIT_CAVEAT = (" An open Form or base-feature edit also reads direct and nothing else "
+                    "discriminates it: if a Form edit is open, ask the user to click Finish Form; "
+                    "a base-feature scope closes with model_base_feature(action='finish').")
 
 
-def no_timeline_reason(design, direct_text, form_edit=None):
-    """The no-timeline refusal: FORM_EDIT_OPEN when form_edit (read here if None), else direct_text."""
-    if form_edit is None:
-        form_edit = _inputs.in_form_edit(design)
-    return FORM_EDIT_OPEN if form_edit else direct_text
+def no_timeline_reason(direct_text):
+    """The no-timeline refusal text: direct_text plus the open-edit caveat."""
+    return direct_text + OPEN_EDIT_CAVEAT
 
 
 def health_handler() -> dict:
     """The active design's timeline health: feature error/warning rollup + a healthy flag."""
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     errors, warnings, total = _timeline_health(design)
     return ok({"timeline_features": total, "error_count": len(errors),
         "warning_count": len(warnings), "errors": errors, "warnings": warnings,
@@ -90,33 +88,190 @@ def census_caveat(census):
             "them.")
 
 
-def collapsed_group_holding(timeline, want):
-    """The name of the COLLAPSED timeline group holding a member `want` names (bare or
-    '<component>/<name>'), or None - timeline.item() lists such a member only as its group."""
-    comp, feat = _inputs._split_qualified(want)
-    low = (feat or want).strip().lower()
+def _collapsed_groups(timeline):
+    """Yield (name, members) for each collapsed timeline group."""
     for g in _common.iter_collection(safe(lambda: timeline.timelineGroups)):
-        if safe(lambda g=g: g.isCollapsed) is not True:
-            continue
-        for m in _common.iter_collection(g):
-            if (safe(lambda m=m: m.name) or "").lower() != low:
-                continue
-            if comp is None or (_inputs._owner_component_name(m) or "").lower() == comp.lower():
-                return safe(lambda g=g: g.name) or "(unnamed group)"
+        if safe(lambda g=g: g.isCollapsed) is True:
+            yield safe(lambda g=g: g.name) or "(unnamed group)", list(_common.iter_collection(g))
+
+
+def collapsed_group_holding(timeline, want):
+    """The collapsed group holding a member matched by the shared timeline selector, or None."""
+    for holder, members in _collapsed_groups(timeline):
+        if _inputs._match_timeline_objects(members, want):
+            return holder
     return None
+
+
+def hidden_twin_hint(timeline, want, visible):
+    """The refusal for an unindexed selector with visible hits and a collapsed member twin."""
+    unfold_hint = _collapsed_unfold_hint(timeline, want)
+    if unfold_hint:
+        return f"'{want}' also matches {_inputs._candidates_listed(visible)}. " + unfold_hint
+    holder = collapsed_group_holding(timeline, want)
+    if not holder:
+        return None
+    return (f"'{want}' matches {_inputs._candidates_listed(visible)} and also names an item inside "
+            f"the collapsed timeline group '{holder}' - name one exactly as listed, or run "
+            f"design_edit_timeline(action='ungroup', feature='{holder}') and retry.")
+
+
+def _inside_group(label, holder):
+    """The sentence placing `label` (quoted by the caller) inside one collapsed group."""
+    return (f"{label} is inside the collapsed timeline group '{holder}', which the timeline lists "
+            "as one item.")
+
+
+def _ungroup_remedy(holder):
+    """The ungroup call that lists a collapsed group's members again."""
+    return (f" Run design_edit_timeline(action='ungroup', feature='{holder}') - its items "
+            "are kept - then retry.")
 
 
 def collapsed_group_hint(timeline, want, roll=False):
     """The miss sentence for a collapsed group's member (target the group for a roll, else ungroup)."""
+    if not roll:
+        unfold_hint = _collapsed_unfold_hint(timeline, want)
+        if unfold_hint:
+            return unfold_hint
     holder = collapsed_group_holding(timeline, want)
     if not holder:
         return None
-    head = (f"'{want}' is inside the collapsed timeline group '{holder}', which the timeline lists "
-            "as one item.")
     if roll:
-        return head + f" Target '{holder}' itself - rolling to a collapsed group works."
-    return head + (f" Run design_edit_timeline(action='ungroup', feature='{holder}') - its items "
-                   "are kept - then retry.")
+        return (_inside_group(f"'{want}'", holder)
+                + f" Target '{holder}' itself - rolling to a collapsed group works.")
+    return _inside_group(f"'{want}'", holder) + _ungroup_remedy(holder)
+
+
+def collapsed_group_hint_for(timeline, entity, name):
+    """The ungroup hint for the group holding `entity` by identity, else for each holding `name`."""
+    want = _common.native_identity(entity)
+    exact, unproven = [], []
+    for holder, members in _collapsed_groups(timeline):
+        keys = [_common.native_identity(safe(lambda m=m: m.entity)) for m in members]
+        named = _inputs._match_timeline_objects(members, name) if name else []
+        if want is not None and want in keys:
+            exact.append(holder)
+        elif any(want is None or key is None for m, key in zip(members, keys)
+                 if any(m is hit for hit in named)):
+            unproven.append(holder)
+    label = f"'{name}'" if name else "The item"
+    if len(exact) == 1:
+        return _inside_group(label, exact[0]) + _ungroup_remedy(exact[0])
+    holders = exact or unproven
+    if len(holders) == 1:
+        return (f"{label} names an item inside the collapsed timeline group '{holders[0]}', which "
+                "the timeline lists as one item." + _ungroup_remedy(holders[0]))
+    if not holders:
+        return None
+    listed = ", ".join(f"'{h}'" for h in holders)
+    return (f"{label} names an item in each of the collapsed timeline groups {listed}, and which "
+            "one holds it could not be told apart. design_get(include=['timeline'], "
+            "group='<name>') lists a group's members; run design_edit_timeline(action='ungroup', "
+            "feature='<name>') on the one holding it, then retry.")
+
+
+def unfold_group_members(group):
+    """Return a complete canonical owner/member census or its unread/unsupported-shape reason."""
+    count = _common.counted(lambda: group.count)
+    if count is None or count < 0:
+        return None, "member count could not be read"
+    if count not in (1, 2):
+        return None, "group_state supports only one unfold and an optional refold"
+    rows = []
+    for i in range(count):
+        item = safe(lambda i=i: group.item(i))
+        entity = safe(lambda: item.entity)
+        kind = safe(lambda: entity.objectType)
+        name = safe(lambda: item.name)
+        key = _common.native_identity(entity)
+        owner = _common.native_identity(safe(lambda: entity.parentComponent))
+        if key is None or owner is None or not isinstance(name, str) or not name or not isinstance(kind, str):
+            return None, f"member {i} identity/type/name/owner could not be read"
+        if kind.rsplit('::', 1)[-1] not in ('UnfoldFeature', 'RefoldFeature'):
+            return None, "group_state supports only one unfold and an optional refold"
+        rows.append((key, owner, name, kind))
+    if (len({r[0] for r in rows}) != count or len({r[1] for r in rows}) != 1
+            or sum(r[3].endswith('::UnfoldFeature') for r in rows) != 1):
+        return None, "group_state needs one unfold, an optional refold and distinct members with one owner"
+    return rows, None
+
+
+def _collapsed_unfold_hint(timeline, want):
+    """Return safe expansion and qualified retry advice for a matched hidden unfold-group member."""
+    matches = []
+    groups = safe(lambda: timeline.timelineGroups)
+    count = _common.counted(lambda: groups.count)
+    uncertain = ("Hidden feature/group identity could not be read completely. Read "
+                 "design_get(include=['timeline']) to list groups; keep an unfold group intact.")
+    if count is None or count < 0:
+        return uncertain
+    readable_groups = []
+    for i in range(count):
+        group = safe(lambda i=i: groups.item(i))
+        group_name = safe(lambda: group.name)
+        if isinstance(group_name, str) and group_name:
+            readable_groups.append(group_name)
+            reads = "; ".join(f"design_get(include=['timeline'], group={name!r})"
+                              for name in readable_groups[:5])
+            more = f"; {len(readable_groups) - 5} more groups not listed" if len(readable_groups) > 5 else ""
+            uncertain = ("Hidden feature/group identity could not be read completely. Read "
+                         + reads + more + "; keep an unfold group intact.")
+        collapsed = _common.read_flag(lambda: group.isCollapsed)
+        if group is None or collapsed is None:
+            return uncertain
+        if not collapsed:
+            continue
+        n = _common.counted(lambda: group.count)
+        if n is None or n < 0:
+            return uncertain
+        members = [safe(lambda j=j: group.item(j)) for j in range(n)]
+        if any(item is None or not isinstance(safe(lambda item=item: item.name), str)
+               or not safe(lambda item=item: item.name) for item in members):
+            return uncertain
+        base, _index = _inputs._parse_address(want)
+        scope, label = _inputs._split_qualified(base if base is not None else want)
+        if scope is not None and any(safe(lambda item=item: item.name).lower() == label.lower()
+                and not _inputs._owner_component_name(item) for item in members):
+            return uncertain
+        for item in _inputs._match_timeline_objects(members, want):
+            entity = safe(lambda: item.entity)
+            kind = safe(lambda: entity.objectType)
+            if not isinstance(kind, str):
+                return uncertain
+            if kind != 'adsk::fusion::UnfoldFeature' and unfold_group_members(group)[0] is None:
+                continue
+            name = safe(lambda: item.name)
+            owner = _inputs._owner_component_name(item)
+            holder = safe(lambda: group.name)
+            if name and owner and holder:
+                members_read, reason = unfold_group_members(group)
+                if members_read is None and 'could not be read' in reason:
+                    return uncertain
+                matches.append((holder, f"{owner}/{name}", members_read is not None))
+            else:
+                return uncertain
+    if len(matches) > 1:
+        steps = [(f"for '{target}' run design_edit_timeline(action='group_state', "
+                  f"feature='{holder}', collapsed=false)") if supported else
+                 (f"'{target}' sits in '{holder}', outside group_state support - inspect it with "
+                  f"design_get(include=['timeline'], group='{holder}')")
+                 for holder, target, supported in matches]
+        more = f"; {len(steps) - 5} more not listed" if len(steps) > 5 else ""
+        return (f"'{want}' names {len(steps)} hidden unfold-group features in collapsed groups: "
+                + "; ".join(steps[:5]) + more + ". Then retry the original action with that "
+                "qualified reference. Keep the unfold group intact.")
+    if not matches:
+        return None
+    holder, target, supported = matches[0]
+    if not supported:
+        return (f"'{target}' is inside collapsed group '{holder}', whose member shape is outside "
+                "group_state's one-unfold/optional-refold support. Inspect the group with "
+                f"design_get(include=['timeline'], group='{holder}'), expand it in Fusion, then "
+                f"retry the original action with '{target}'. Keep the unfold group intact.")
+    return (f"'{target}' is inside collapsed group '{holder}'. Run design_edit_timeline("
+            f"action='group_state', feature='{holder}', collapsed=false), then retry the original "
+            f"action with qualified reference '{target}'. Keep the unfold group intact.")
 
 
 # ── shared mode reads (all via the ONE true reader) ─────────────────────────
@@ -167,25 +322,23 @@ def _capability_map(mode):
 
 def get_mode_handler() -> dict:
     """Report the active design's modelling mode and its capability map. Read-only."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     mode = _inputs.current_design_type(design)
     tl_count = _timeline_feature_count(design)
-    form_edit = _inputs.in_form_edit(design)
     can = _capability_map(mode)
+    note = ("Capability map is keyed by mode requirement; call design_set_mode to convert, or "
+            "model_base_feature to open a base-feature scope.")
+    if mode == _inputs.MODE_DIRECT:
+        note += OPEN_EDIT_CAVEAT
     return ok({
         "design_type": mode,
         "has_timeline": tl_count is not None,
         "timeline_feature_count": tl_count,
     "base_feature_count": _base_feature_count(design),
-    "in_base_feature_edit": _inputs._in_base_feature_scope(design),
-    "in_form_edit": form_edit,
-    # The open edit is what reads direct, so no capability is keyed off that read.
-    "can": {k: None for k in can} if form_edit else can,
-    "note": (FORM_EDIT_OPEN_MODE if form_edit else
-             "Capability map is keyed by mode requirement; call design_set_mode to convert, or "
-             "model_base_feature to open a base-feature scope."),
+    "can": can,
+    "note": note,
     })
 
 
@@ -197,16 +350,35 @@ def base_feature_run_wrapper(open_scope, inner_op):
     bf, err = open_scope()
     if err is not None:
         return None, err
-    started = bf.startEdit()
-    if started is False:
-        return bf, error("Could not enter base-feature edit (startEdit returned false).")
+    name = safe(lambda: bf.name)
+    try:
+        started = bf.startEdit()
+    except Exception as exc:
+        started = f"raised: {str(exc)[:120]}"
+    if started is False or isinstance(started, str):
+        return bf, error(scope_left_clause(name, "startEdit", started))
     try:
         result = inner_op(bf)
     finally:
         # ALWAYS finish - a leaked open base-feature edit corrupts every later call this session -
         # and on the CAPTURED bf, since a lookup cannot find a scope while designType reads direct.
-        safe(lambda: bf.finishEdit())
+        try:
+            done = bf.finishEdit()
+        except Exception as exc:
+            done = f"raised: {str(exc)[:120]}"
+    if done is False or isinstance(done, str):
+        text = scope_left_clause(name, "finishEdit", done)
+        if isinstance(result, dict) and result.get("isError") is True:
+            text = f"{result.get('message') or ''} {text}".strip()
+        return bf, error(text)
     return bf, result
+
+
+def scope_left_clause(name, call, outcome):
+    """The error for a base-feature startEdit/finishEdit that returned false or raised."""
+    what = "returned false" if outcome is False else outcome
+    return (f"{call} on base feature '{name or '(name unreadable)'}' {what}; the edit scope was "
+            "left as it is. Read design_get(include=['timeline']) before continuing.")
 
 
 def run_in_base_feature(design, comp, inner_op):

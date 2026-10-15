@@ -1,13 +1,12 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""RICH READ: design_get - the active design's structure by zoom level (see CLAUDE.md "Reads are
+"""RICH READ: design_get - the active design's structure by zoom level (see AGENTS.md "Reads are
 RICH"). Default: a cheap orientation slice (design type, feature count, timeline health, content
 fingerprint). include=['tree'|'timeline'|'mode'|'configurations'|'materials'|'appearances'|
-'attributes'] pulls one deeper slice at a time via a thin router over _slice_*() helpers. Read-only.
+'attributes'|'definition'|'datums'] pulls one deeper slice at a time via _slice_*() helpers. Read-only.
 """
 
-import json
 from itertools import islice
 
 import adsk.core
@@ -17,18 +16,26 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe, terse
+from ._common import normalize_include as _normalize_include, unwrap as _unwrap
 from . import _common
+from . import _edit_feature_common
 from . import _cam_common
 from . import _inputs
 from . import _joints
 from . import _materials
+from ._plastic_common import plastic_rule_row as _plastic_rule_row
+from . import _image_common
+from . import _rib_common
+from .design_configure import _CELL_FIELDS, _row_census
 from .model_inspect import _MAX_PER_BODY_ROWS
 
 app = adsk.core.Application.get()
 
 # The deeper slices an agent can opt into (the default returns NONE of these in full - only summaries).
 _SLICES = ("mode", "tree", "timeline", "configurations", "materials", "appearances", "attributes",
-           "metadata")
+           "metadata", "definition", "datums", "plastic_rules", "library_plastic_rules", "reference_images")
+_FEATURE = _inputs.FeatureRef("feature", description="Definition for supported feature types.")
+_DEFINITION_UNREAD = object()
 
 # The orientation slice's name in include=: any deep include omits that slice unless 'default' rides
 # beside it, so a deep read carries what was asked for and not the default again.
@@ -38,17 +45,6 @@ _DEFAULT_NAMES = ("default",)
 # ── slice helpers - each builds one slice's payload ────────────────────────────────────────────────
 # mode/health delegate to get_mode_handler/health_handler; tree/timeline/configurations read
 # directly. _unwrap decodes a handler's ok() result.
-
-def _unwrap(result):
-    """Decode a handler's result -> (payload_dict, None) on ok, or (None, error_result) on error
-    so the caller can surface a slice's own guard (e.g. timeline raises in direct mode)."""
-    if result.get("isError"):
-        return None, result
-    try:
-        return json.loads(result["content"][0]["text"]), None
-    except Exception:
-        return None, result
-
 
 def _slice_mode(design):
     """The modelling-mode + capability map (via _design_common.get_mode_handler)."""
@@ -362,10 +358,7 @@ def _owner_fields(obj):
     the name alone does not say which row it addresses."""
     # MEASURED: a timeline entity answers assemblyContext None - the timeline holds natives - so
     # there is no occurrence path to publish beside the owning component.
-    ent = safe(lambda: obj.entity)
-    if ent is None:
-        return {}
-    name = safe(lambda: ent.parentComponent.name)
+    name = _inputs._owner_component_name(obj)
     return {"component": name} if isinstance(name, str) and name else {}
 
 
@@ -550,8 +543,7 @@ _GROUP_MEMBER_NOTE = "index is null on these rows - address them by name."
 _NESTED_GROUP_NOTE = "This listing holds group row(s); group='{0}' lists what one stands for."
 
 
-def _slice_timeline(design, include_suppressed, group, with_params=False, max_rows=0,
-                    form_edit=None):
+def _slice_timeline(design, include_suppressed, group, with_params=False, max_rows=0):
     """The ordered parametric timeline, with healthy-row noise dropped (a normal row is
     {index,name,type}; a suppressed/errored row keeps its flags and stands out). with_params adds
     each row's own model parameters; max_rows pages it (0 = the default cap)."""
@@ -560,8 +552,7 @@ def _slice_timeline(design, include_suppressed, group, with_params=False, max_ro
     except Exception as e:
         from . import _design_common
         return None, error(_design_common.no_timeline_reason(
-            design, f"This design has no timeline (direct-modeling, or no history): {e}",
-            form_edit))
+            f"This design has no timeline (direct-modeling, or no history): {e}"))
     try:
         cap = max(1, int(max_rows)) if max_rows else _TIMELINE_MAX_ITEMS
     except Exception:
@@ -657,7 +648,91 @@ def _column_summary(col):
             "index": safe(lambda: col.index), "type": safe(lambda: type(col).__name__)}
 
 
-def _slice_configurations(design):
+_CELL_DEFAULT, _CELL_CEILING = 200, 1000
+_PARAMETER_CELL, _PROPERTY_CELL = "ConfigurationParameterCell", "ConfigurationPropertyCell"
+_CELL_CAP_NOTE = (f"Cells past the cap are not listed. Raise max_results (max {_CELL_CEILING}); "
+                  "cell_count is the whole table.")
+
+
+def _cell_record(row, column_index):
+    """One table cell: its kind and the fields that read, or why it is absent or unread."""
+    if column_index is None:
+        return {"kind": None, "value_unread": "the column's index did not read"}
+    try:
+        cell = row.getCellByColumnIndex(column_index)
+    except Exception as exc:
+        return {"kind": None, "raised": str(exc)}
+    if cell is None:
+        return {"absent": True}
+    kind = safe(lambda: cell.objectType.rsplit("::", 1)[-1])
+    if kind is None:
+        return {"kind": None, "value_unread": "the cell's objectType did not read"}
+    if kind == _PROPERTY_CELL:
+        return {"kind": kind, "value_unread": "no value field of this cell kind is read here"}
+    if kind == _PARAMETER_CELL:
+        try:
+            expression = cell.expression
+        except Exception as exc:
+            return {"kind": kind, "expression": None, "raised": str(exc)}
+        record = {"kind": kind, "expression": expression}
+        if expression is None:
+            record["value_unread"] = "the cell's expression read nothing"
+        return record
+    record = {"kind": kind}
+    for key, read in _CELL_FIELDS:
+        value = safe(lambda read=read: read(cell))
+        if value is not None:
+            record[key] = value
+    if len(record) == 1:
+        record["value_unread"] = "none of the fields read here answered on this cell kind"
+    return record
+
+
+def _cell_table(table, max_results):
+    """The slice's cell keys: one record per row x column, addressed by row id and column id."""
+    records, rows, problem = _row_census(table)
+    columns = safe(lambda: table.columns)
+    column_count = _common.counted(lambda: columns.count)
+    if problem or column_count is None:
+        return {"cells": None, "cells_unread": problem or "the table's columns did not count"}
+    cap = _cam_common.clamp_rows(max_results, _CELL_DEFAULT, _CELL_CEILING)
+    total = len(rows) * column_count
+    heads = []
+    for i in range(min(column_count, cap)):
+        column = safe(lambda i=i: columns.item(i))
+        # A cell is fetched by the index its column reads, never by the column's list position.
+        heads.append((safe(lambda: column.id), _common.counted(lambda: column.index)))
+    cells = []
+    for record, row in zip(records, rows):
+        for column_id, column_index in heads:
+            if len(cells) < cap:
+                cells.append({"row_id": record["id"], "column_id": column_id,
+                              **_cell_record(row, column_index)})
+    out = {"cell_count": total, "cells": cells}
+    if total > cap:
+        out["cells_truncated"], out["cells_truncated_note"] = True, _CELL_CAP_NOTE
+    return out
+
+
+_CONFIG_REREAD = " Read include=['configurations'] again."
+
+
+def _config_walk(collection, what, summarize, cap=None):
+    """(records, count, why): the members read up to `cap`, the collection's count, why it fell short."""
+    count = _common.counted(lambda: collection.count)
+    if count is None:
+        return None, None, f"the configuration {what}s did not count." + _CONFIG_REREAD
+    records = []
+    for i in range(count if cap is None else min(count, cap)):
+        member, why = _common.read_optional(lambda i=i: collection.item(i))
+        if why:
+            return records, count, (f"{i} of {count} {what}s read; item {i} did not ({why})."
+                                    + _CONFIG_REREAD)
+        records.append(summarize(member))
+    return records, count, None
+
+
+def _slice_configurations(design, max_results=0):
     """The configuration table, READ side. Returns (payload, error); a non-configured design errors
     (the router degrades that to a {configured: False} marker rather than failing the read)."""
     table = safe(lambda: design.configurationTopTable)
@@ -666,26 +741,20 @@ def _slice_configurations(design):
                            "table) - e.g. a design with Variant A/Variant B style options.")
     active_row = safe(lambda: table.activeRow)
     active_id = safe(lambda: active_row.id) if active_row else None
-    rows, truncated = [], False
-    try:
-        for r in table.rows:
-            if len(rows) >= _CONFIG_MAX_ROWS:
-                truncated = True
-                break
-            rows.append(_row_summary(r, active_id))
-    except Exception:
-        pass
-    columns = []
-    try:
-        for c in table.columns:
-            columns.append(_column_summary(c))
-    except Exception:
-        pass
+    rows, count, rows_unread = _config_walk(safe(lambda: table.rows), "row",
+                                            lambda r: _row_summary(r, active_id), _CONFIG_MAX_ROWS)
+    columns, _column_count, columns_unread = _config_walk(safe(lambda: table.columns), "column",
+                                                          _column_summary)
     out = {"table_name": safe(lambda: table.name), "table_id": safe(lambda: table.id),
            "active_configuration": safe(lambda: active_row.name) if active_row else None,
-           "configuration_count": len(rows), "configurations": rows, "columns": columns}
-    if truncated:
+           "configuration_count": count, "configurations": rows, "columns": columns}
+    if count is not None and count > _CONFIG_MAX_ROWS:
         out["truncated"] = True
+    if rows_unread:
+        out["configurations_unread"] = rows_unread
+    if columns_unread:
+        out["columns_unread"] = columns_unread
+    out.update(_cell_table(table, max_results))
     return out, None
 
 
@@ -830,6 +899,100 @@ def _slice_metadata(design, name_filter, max_results, component=""):
     return out, None
 
 
+_DATUM_COLLECTIONS = (("construction_axis", "constructionAxes"),
+                      ("construction_plane", "constructionPlanes"),
+                      ("construction_point", "constructionPoints"))
+_DATUM_PLACEMENT_CAP = 4
+
+
+def _slice_datums(design, component, name_filter, max_results):
+    """Bounded definition inventory for construction axes, planes and points."""
+    root = safe(lambda: design.rootComponent)
+    if root is None:
+        return None, error("No root component.")
+    scope = (component or "").strip()
+    all_count = _common.counted(lambda: design.allComponents.count)
+    known_components = _common.all_components(design)
+    definitions_complete = (all_count is not None and len(known_components) == all_count)
+    if scope and (safe(lambda: root.name) or "").strip().lower() == scope.lower():
+        pool, serr = known_components, None
+    elif scope:
+        pool, scope_walk, serr = _scoped_components(root, scope)
+        if serr:
+            return None, serr
+        definitions_complete = (scope_walk.complete and not scope_walk.broken
+                                and scope_walk.readable)
+    else:
+        pool, serr = known_components, None
+    if serr:
+        return None, serr
+    cap = _cam_common.clamp_rows(max_results, 25, 200)
+    wanted = (name_filter or "").strip().lower()
+    walk = _common.occurrence_walk(design)
+    placements_complete = walk.readable and walk.complete and not walk.broken
+    definitions_complete = definitions_complete and placements_complete
+    counts = {kind: 0 for kind, _attr in _DATUM_COLLECTIONS}
+    rows = []
+    for comp in pool:
+        owner = safe(lambda comp=comp: comp.name)
+        owner_matches = [(_common.same_component(safe(lambda occ=occ: occ.component), comp),
+                          safe(lambda occ=occ: occ.fullPathName)) for occ in walk.occurrences]
+        paths = [path for match, path in owner_matches if match is True and path is not None]
+        owner_placements_complete = (placements_complete
+                                     and all(match is not None for match, _path in owner_matches)
+                                     and all(path is not None for match, path in owner_matches
+                                             if match is True))
+        for kind, attr in _DATUM_COLLECTIONS:
+            coll = safe(lambda comp=comp, attr=attr: getattr(comp, attr))
+            n = _common.counted(lambda coll=coll: coll.count) if coll is not None else None
+            if n is None:
+                counts[kind] = None
+                continue
+            for i in range(n):
+                datum = safe(lambda coll=coll, i=i: coll.item(i))
+                if datum is None:
+                    counts[kind] = None
+                    continue
+                name = safe(lambda datum=datum: datum.name)
+                if name is None and wanted:
+                    counts[kind] = None
+                    continue
+                if wanted and (not isinstance(name, str) or wanted not in name.lower()):
+                    continue
+                if counts[kind] is not None:
+                    counts[kind] += 1
+                if len(rows) >= cap:
+                    continue
+                row = {"kind": kind, "name": name, "component": owner,
+                       "light_bulb_on": _common.read_flag(lambda datum=datum: datum.isLightBulbOn),
+                       "is_deletable": _common.read_flag(lambda datum=datum: datum.isDeletable),
+                       "is_parametric": _common.read_flag(lambda datum=datum: datum.isParametric),
+                       "timeline_index": _common.counted(lambda datum=datum: datum.timelineObject.index),
+                       "placement_count": (len(paths) if owner_placements_complete else None),
+                       "occurrences": paths[:_DATUM_PLACEMENT_CAP]}
+                if len(paths) > _DATUM_PLACEMENT_CAP:
+                    row["occurrences_truncated"] = True
+                rows.append(row)
+    if not definitions_complete:
+        counts = {kind: None for kind in counts}
+    match_count = (sum(counts.values()) if all(v is not None for v in counts.values()) else None)
+    out = {"counts": counts, "match_count": match_count, "returned": len(rows),
+           "truncated": (match_count > len(rows) if match_count is not None else None),
+           "datums": rows,
+           "occurrences_walk": walk.method,
+           "note": ("Definition inventory only. Use find_geometry(kind=construction_axis/"
+                    "construction_plane/construction_point, target=<occurrence>, name=<exact name>) "
+                    "for world geometry and a placed handle. Narrow with component/name_filter or "
+                    "raise max_results; null counts mean incomplete reads.")}
+    if scope:
+        out["component"] = scope
+    if wanted:
+        out["name_filter"] = name_filter.strip()
+    if not definitions_complete or any(v is None for v in counts.values()):
+        out["incomplete"] = True
+    return out, None
+
+
 # ── material / appearance catalog (both slices, one walk in _materials) ────────────────────────────
 
 def _slice_materials(design, library, name_filter, max_results):
@@ -906,20 +1069,207 @@ def _has_cam(design):
 
 # ── the router ─────────────────────────────────────────────────────────────────────────────────────
 
+def _definition_identity(feature):
+    """The definition's feature identity and owning component as read, without timeline movement."""
+    return {"feature": safe(lambda: feature.name),
+            "component": safe(lambda: (safe(lambda: feature.parentComponent)
+                                       or _inputs.entity_component(feature)).name),
+            "type": safe(lambda: feature.objectType.rsplit("::", 1)[-1]),
+            "timeline_index": _common.counted(lambda: feature.timelineObject.index)}
+
+
+def _definition_thread_info(info):
+    """The actual thread standard, designation, class and internal flag, independently nullable."""
+    return {"thread_type": safe(lambda: info.threadType),
+            "designation": safe(lambda: info.threadDesignation),
+            "thread_class": safe(lambda: info.threadClass),
+            "internal": _common.read_flag(lambda: info.isInternal)}
+
+
+def _definition_thread(feature, factor):
+    """One thread's native definition, with full-length numeric extents marked inapplicable."""
+    full = _common.read_flag(lambda: feature.isFullLength)
+    applicable = None if full is None else not full
+    return {**_definition_identity(feature),
+            "thread_info": _definition_thread_info(safe(lambda: feature.threadInfo)),
+            "modeled": _common.read_flag(lambda: feature.isModeled),
+            "right_handed": _common.read_flag(lambda: feature.isRightHanded),
+            "full_length": full, "length_applicable": applicable, "offset_applicable": applicable,
+            "length": (_common.measured(lambda: feature.threadLength.value, factor)
+                       if full is not True else None),
+            "offset": (_common.measured(lambda: feature.threadOffset.value, factor)
+                       if full is not True else None)}
+
+
+def _definition_loft(feature):
+    """A bounded ordered read of a Loft's current sections and controls."""
+    def alignment(side):
+        actual = safe(lambda: getattr(feature, side + "LoftEdgeAlignment"))
+        family = safe(lambda: adsk.fusion.LoftEdgeAlignments)
+        for key, name in _inputs.LOFT_EDGE_ALIGNMENT_MEMBERS.items():
+            member = safe(lambda n=name: getattr(family, n))
+            if member is not None and actual == member:
+                return key
+        return None
+
+    collection = safe(lambda: feature.loftSections)
+    count = _common.counted(lambda: collection.count)
+    cap = 64
+    rows = []
+    for index in range(min(count or 0, cap)):
+        section = safe(lambda i=index: collection.item(i))
+        entity = safe(lambda s=section: s.entity)
+        sketch = safe(lambda e=entity: e.parentSketch)
+        rows.append({"index": index,
+                     "kind": safe(lambda e=entity: e.objectType.rsplit("::", 1)[-1]),
+                     "profile_handle": safe(lambda e=entity: e.entityToken),
+                     "source_sketch": safe(lambda s=sketch: s.name),
+                     "source_component": safe(lambda s=sketch: s.parentComponent.name),
+                     "end_condition": safe(lambda s=section: s.endCondition.objectType)})
+    return {**_definition_identity(feature), "section_count": count, "sections": rows,
+            "truncated": count is None or count > cap,
+            "operation": safe(lambda: feature.operation),
+            "is_solid": _common.read_flag(lambda: feature.isSolid),
+            "is_closed": _common.read_flag(lambda: feature.isClosed),
+            "start_alignment": alignment("start"),
+            "end_alignment": alignment("end"),
+            "guide_count": _common.counted(lambda: feature.centerLineOrRails.count)}
+
+
+def _slice_plastic_rules(design, scope, name_filter, max_results, units):
+    """Read bounded plastic-rule rows without copying, editing or assigning a rule."""
+    factor, reason = _inputs.UNITS.resolve(units)
+    if reason:
+        return None, error(reason)
+    max_results = _cam_common.clamp_rows(max_results, 50, 200)
+    collection = safe(lambda: design.designPlasticRules if scope == "design" else design.libraryPlasticRules)
+    count = _common.counted(lambda: collection.count)
+    if count is None:
+        return {"available": False, "rules": None, "total": None,
+                "note": "The plastic-rule collection did not read on this design."}, None
+    rows, missing = [], []
+    scanned = min(count, 2000)
+    matches = 0
+    wanted = (name_filter or "").lower()
+    for index in range(scanned):
+        rule = safe(lambda index=index: collection.item(index))
+        name = safe(lambda: rule.name)
+        if rule is None or not isinstance(name, str):
+            missing.append(index)
+            continue
+        if wanted and wanted not in name.lower():
+            continue
+        matches += 1
+        if len(rows) < max_results:
+            rows.append(_plastic_rule_row(rule, scope, index, 1 / factor))
+    complete = not missing and scanned == count
+    return {"available": True, "scope": scope, "rules": rows, "total": count,
+            "matching_count": matches if complete else None, "returned": len(rows),
+            "truncated": matches > max_results or scanned < count,
+            "unread_indices": missing, "walk_complete": complete, "units": units or "mm",
+            "note": "Length values use units; angle values use deg. Null fields are unreadable."}, None
+
+
+def _slice_definition(feature, units):
+    """Read one typed feature definition without moving the timeline."""
+    values, refusal = _inputs.resolve_inputs([_FEATURE, _inputs.UNITS],
+                                            {"feature": feature, "units": units})
+    if refusal:
+        return None, refusal
+    if values["feature"] is None:
+        return None, error("include=['definition'] requires 'feature'; use include=['timeline'] to find it.")
+    entity, label = values["feature"]
+    kind = safe(lambda: entity.objectType)
+    if kind not in _edit_feature_common.FEATURE_EDIT_SUPPORT and kind not in (
+                    "adsk::fusion::HoleFeature", "adsk::fusion::ThreadFeature",
+                    "adsk::fusion::LoftFeature", "adsk::fusion::ExtrudeFeature",
+                    "adsk::fusion::SweepFeature", "adsk::fusion::RibFeature", "adsk::fusion::WebFeature"):
+        return None, error(f"'{label}' has unsupported definition type {kind!r}; use "
+                           "include=['timeline'] or model_inspect.")
+    factor = 1 / _common.scale(values["units"])
+    if kind in ("adsk::fusion::RibFeature", "adsk::fusion::WebFeature"):
+        out = {**_definition_identity(entity), **_rib_common.rib_definition(entity, factor)}
+        out["supported_edits"] = _edit_feature_common.feature_edit_rows(entity, out)
+    elif kind in _edit_feature_common.FEATURE_EDIT_SUPPORT:
+        out = {**_definition_identity(entity), **_edit_feature_common.feature_definition(entity, factor)}
+        if kind == "adsk::fusion::ThreadFeature":
+            thread = _definition_thread(entity, factor)
+            out.update({key: value for key, value in thread.items()
+                        if key not in ("feature", "component", "type", "timeline_index")})
+    elif kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature"):
+        out = {**_definition_identity(entity), **_edit_feature_common.feature_definition(entity, factor)}
+    elif kind == "adsk::fusion::LoftFeature":
+        out = _definition_loft(entity)
+    elif kind == "adsk::fusion::ThreadFeature":
+        out = _definition_thread(entity, factor)
+    else:
+        extent = safe(lambda: entity.extentDefinition)
+        extent_type = safe(lambda: extent.objectType)
+        extent_kind = {"adsk::fusion::AllExtentDefinition": "through",
+                       "adsk::fusion::DistanceExtentDefinition": "blind"}.get(
+                           extent_type, "unsupported" if extent_type is not None else None)
+        tap = safe(lambda: entity.tappedHoleInfo, _DEFINITION_UNREAD)
+        child = safe(lambda: entity.thread, _DEFINITION_UNREAD)
+        out = {**_definition_identity(entity), "extent": extent_kind, "extent_type": extent_type,
+               "depth_applicable": (extent_kind == "blind"
+                                    if extent_kind in ("blind", "through") else None),
+               "depth": (_common.measured(lambda: extent.distance.value, factor)
+                         if extent_kind == "blind" else None),
+               "diameter_parameter": (_common.measured(lambda: entity.holeDiameter.value, factor)
+                                      if tap is None else None),
+               "diameter_parameter_applicable": None if tap is _DEFINITION_UNREAD else tap is None,
+               "tapped": None if tap is _DEFINITION_UNREAD else tap is not None,
+               "tapped_hole_info": (_definition_thread_info(tap)
+                                    if tap is not _DEFINITION_UNREAD and tap is not None else None),
+               "thread_present": None if child is _DEFINITION_UNREAD else child is not None,
+               "thread": (_definition_thread(child, factor)
+                          if child is not _DEFINITION_UNREAD and child is not None else None)}
+    out["units"] = (units or "mm").strip().lower()
+    out.setdefault("note", ("Read at the current marker without rolling. supported_edits gives qualified calls and usable operand handles; reacquire at edit time."
+                   if kind in _edit_feature_common.FEATURE_EDIT_SUPPORT else
+                   "Read at the current marker without rolling. unavailable names unread fields; model_inspect checks retained geometry."
+                   if kind in ("adsk::fusion::RibFeature", "adsk::fusion::WebFeature") else
+                   "Read at the current marker without rolling. Null is unknown unless applicable=false; "
+                   "unavailable gives getter failures. Through-all extent_side_count is its native "
+                   "one/two-side flag; extrude direction is unknown here. Sweep orientation_name gives the readable "
+                   "enum. Use profile_handle as a profile input. Distances are signed; "
+                   "symmetric_full_length=false means distance is per side."
+                   if kind in ("adsk::fusion::ExtrudeFeature", "adsk::fusion::SweepFeature") else
+                   "Loft sections are in order; null fields are unreadable. Use profile_handle "
+                   "with model_edit_loft; model_inspect include=['mass'] reads mass, volume and "
+                   "density, not the assigned material's name."
+                   if kind == "adsk::fusion::LoftFeature" else
+                   "tapped=false or thread_present=false means absent; applicable=false means "
+                   "inapplicable. Other null fields are unknown. Measure tapped bore geometry "
+                   "with find_geometry/model_inspect; full-length threads imply no numeric length."))
+    if out.get("not_read"):
+        out["note"] += " This Extrude definition is partial: not_read lists fields it omits."
+    if out.get("unavailable") and (kind == "adsk::fusion::RipFeature" or
+            kind == "adsk::fusion::HemFeature" and "hem_edge" not in out["unavailable"] or
+            kind == "adsk::fusion::RectangularPatternFeature"
+            and "input_entities" in out["unavailable"]):
+        out["note"] += (" If unreadable, use design_edit_timeline(action='roll', "
+                        "feature=<feature_address>, to='before'), read again, then restore "
+                        "to='end' before editing.")
+    return out, None
+
 def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: bool = False,
             tree_handles: bool = False,
             include_suppressed: bool = True, group: str = "", timeline_params: bool = False,
             library: str = "", name_filter: str = "", max_results: int = 0,
-            attribute_group: str = "", attribute_key: str = "") -> dict:
+            attribute_group: str = "", attribute_key: str = "", feature: str = "",
+            units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     inc = _normalize_include(include)
     bad = [s for s in inc if s not in _SLICES and s not in _DEFAULT_NAMES]
     if bad:
         return error(f"Unknown include {bad}. Valid: {', '.join(_SLICES + _DEFAULT_NAMES)}.")
+    if feature not in (None, "") and "definition" not in inc:
+        return error("'feature' scopes include=['definition']; include that slice to read its definition.")
 
     deep = [s for s in inc if s in _SLICES]
     want_default = not deep or any(s in _DEFAULT_NAMES for s in inc)
@@ -935,14 +1285,17 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
     out = {}
     if want_default:
         health, _herr = _slice_health(design)      # cheap rollup; degrades to None on a direct design
+        has_timeline = safe(lambda: mode_full.get("has_timeline"))
         out = {
             # the headline: what kind of design, how big the build, what's in it. design_type lives
-            # ONCE here (not restated in a sub-dict). in_base_feature_edit only when TRUE.
+            # ONCE here (not restated in a sub-dict).
             "design_type": safe(lambda: mode_full.get("design_type")),
             "feature_count": safe(lambda: mode_full.get("timeline_feature_count")),
             # SCOPE: timeline-only (errored/warned features). Stale references show as is_out_of_date
-            # on tree nodes, and the doc-wide verdict is workspace_orient's is_healthy.
-            "timeline_healthy": safe(lambda: (health or {}).get("healthy")),
+            # on tree nodes, and the doc-wide verdict is workspace_orient's is_healthy. null (not
+            # true) when the timeline itself did not read - an open Form/base-feature edit too.
+            "timeline_healthy": (safe(lambda: (health or {}).get("healthy"))
+                                 if has_timeline else None),
             "contents": _fingerprint(design),      # bodies/sketches/components/joints/parameters
         }
         # for each PRESENT + non-obvious content class, name the tool that acts on it - the inbound
@@ -954,12 +1307,6 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
             ptrs["cam"] = "cam_get for the machining setups/operations (this document has CAM data)"
         if ptrs:
             out["pointers"] = ptrs
-        if mode_full.get("in_base_feature_edit"):
-            out["in_base_feature_edit"] = True
-        if mode_full.get("in_form_edit"):
-            # The open edit hides the timeline, so no health was read from it.
-            out["in_form_edit"] = True
-            out["timeline_healthy"] = None
         # surface health DETAIL only when there's something wrong (else 'healthy' above says it all).
         if health and (health.get("error_count") or health.get("warning_count")):
             out["health"] = {k: v for k, v in health.items()
@@ -975,14 +1322,13 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
             return terr
     if "timeline" in inc:
         out["timeline"], tlerr = _slice_timeline(design, include_suppressed, group,
-                                                 bool(timeline_params), max_results,
-                                                 (mode_full or {}).get("in_form_edit"))
+                                                 bool(timeline_params), max_results)
         if tlerr:
             return tlerr
     if "configurations" in inc:
         # A non-configured design legitimately has no config table - that's not an error of design_get,
         # so degrade to a null + reason rather than failing the whole read.
-        cfg, cerr = _slice_configurations(design)
+        cfg, cerr = _slice_configurations(design, max_results)
         out["configurations"] = cfg if cfg is not None else {
             "configured": False,
             "reason": (cerr.get("message") if cerr else "no configuration table"),
@@ -1003,17 +1349,36 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
         out["metadata"], mderr = _slice_metadata(design, name_filter, max_results, component)
         if mderr:
             return mderr
+    if "definition" in inc:
+        out["definition"], derr = _slice_definition(feature, units)
+        if derr:
+            return derr
+    if "datums" in inc:
+        out["datums"], daterr = _slice_datums(design, component, name_filter, max_results)
+        if daterr:
+            return daterr
+    for name, scope in (("plastic_rules", "design"), ("library_plastic_rules", "library")):
+        if name in inc:
+            out[name], rule_error = _slice_plastic_rules(design, scope, name_filter, max_results, units)
+            if rule_error:
+                return rule_error
+
+    if "reference_images" in inc:
+        out["reference_images"], image_error = _image_common.slice_reference_images(
+            design, max_results, units)
+        if image_error:
+            return error(image_error)
 
     # advertise the slices NOT yet pulled (load-bearing: an un-named flag is invisible to the agent).
     remaining = [s for s in _SLICES if s not in inc]
     if want_default and remaining:
-        out["note"] = ("Orientation slice. Pull deeper with include=" + str(remaining) +
+        out["note"] = ("'default' keeps overview; include=" + str(remaining) +
                        ". 'max_depth'/'component'/'name_filter'/'max_results'/'tree_bodies'/"
                        "'tree_handles' scope the tree; "
                        "'group'/'include_suppressed'/'timeline_params' the timeline; "
                        "'library'/'name_filter'/'max_results' the catalog; 'attribute_group' "
                        "(required)/'attribute_key' the attributes; 'component'/'name_filter'/"
-                       "'max_results' the metadata rows.")
+                       "'max_results' the metadata/datums; 'feature'/'units' the definition.")
     # A census nothing could be read from leaves 'occurrences' out of contents entirely, which reads
     # exactly like a design holding no placed instance. The marker beside it is what tells the two
     # apart, so the unreadable one is stated in words as well.
@@ -1022,50 +1387,42 @@ def handler(include=None, max_depth: int = 3, component: str = "", tree_bodies: 
                        + " contents.occurrences_walk='unreadable': NEITHER root.allOccurrences nor "
                          "the component.occurrences fallback enumerated, so the occurrence count is "
                          "missing because it is UNKNOWN, not because the design holds none.").strip()
+    # An open Form or base-feature edit reads direct too, so a direct-reading orientation carries the
+    # same caveat design_set_mode's not-taken refusal and workspace_orient's verdict do.
+    if want_default and safe(lambda: mode_full.get("design_type")) == _inputs.MODE_DIRECT:
+        from . import _design_common
+        out["note"] = (out.get("note", "") + _design_common.OPEN_EDIT_CAVEAT).strip()
     return ok(out)
 
 
-def _normalize_include(include):
-    """Accept include as a list, a comma-string, or a single slice name; -> a list of slice names."""
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
-
-
 TOOL_DESCRIPTION = (
-    "Read the active design: modelling mode, contents and timeline health by default; 'include' "
-    "pulls one deeper slice."
+    "Design summary and opt-in detail."
 )
 
 tool = (
     Tool.create_simple(name="design_get", description=TOOL_DESCRIPTION)
     .add_input_property("include", {"type": "array",
-            "items": {"type": "string", "enum": list(_SLICES + _DEFAULT_NAMES)},
-            "description": "'default' keeps the orientation slice beside a deeper one."})
+            "items": {"type": "string", "enum": list(_SLICES + _DEFAULT_NAMES)}})
     .add_input_property("max_depth", {"type": "integer",
-            "description": f"include=tree. Max {_TREE_MAX_DEPTH}."})
+            "description": f"Max {_TREE_MAX_DEPTH}."})
     .add_input_property("component", {"type": "string",
-            "description": "Tree/metadata root: a component or occurrence."})
+            "description": "Component/occurrence."})
     .add_input_property("tree_bodies", {"type": "boolean"})
-    .add_input_property("tree_handles", {"type": "boolean",
-            "description": "Adds each node's handle + full_path."})
-    .add_input_property("include_suppressed", {"type": "boolean",
-            "description": "include=timeline."})
+    .add_input_property("tree_handles", {"type": "boolean"})
+    .add_input_property("include_suppressed", {"type": "boolean"})
     .add_input_property("group", {"type": "string"})
-    .add_input_property("timeline_params", {"type": "boolean",
-            "description": "Adds each row's own model parameters."})
+    .add_input_property("timeline_params", {"type": "boolean"})
     .add_input_property("library", {"type": "string",
-            "description": "One catalog library, by exact name or id from the census."})
+            "description": "Exact library name/id."})
     .add_input_property("name_filter", {"type": "string",
-            "description": "Catalog entries or tree TOP-LEVEL nodes containing this."})
+            "description": "Substring: top-level tree, metadata, datums, catalogs."})
     .add_input_property("max_results", {"type": "integer",
-            "description": f"Catalog 50 (max 200); tree children per level "
-                           f"{_TREE_CHILDREN_DEFAULT}; timeline {_TIMELINE_MAX_ITEMS}; "
-                           f"metadata {_METADATA_MAX_ROWS}."})
+            "description": f"Catalog 50 (max 200); tree {_TREE_CHILDREN_DEFAULT}/level; "
+                           f"timeline {_TIMELINE_MAX_ITEMS}; metadata {_METADATA_MAX_ROWS}."})
     .add_input_property("attribute_group", {"type": "string"})
     .add_input_property("attribute_key", {"type": "string"})
+    .add_input_property(*_FEATURE.as_property())
+    .add_input_property(*_inputs.UNITS.as_property())
     .strict_schema()
 )
 item = Item.create_tool_item(tool=tool, write="read", handler=handler, run_on_main_thread=True)

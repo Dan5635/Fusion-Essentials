@@ -8,6 +8,7 @@ guards (unknown anchor/target/keypoint/units, no active design), the
 coordinate-anchor unit scaling, and the created-origin report (frame_axes,
 name override).
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -300,7 +301,7 @@ def _matrix(deg=0.0, t=(0.0, 0.0, 0.0)):
 
 class TestHandlerGuards:
     def test_no_active_design_errors(self, monkeypatch):
-        monkeypatch.setattr(jo._common, "design", lambda: None)
+        _install_design(jo, None)
         res = jo.handler()
         assert res["isError"] is True and "design" in res["message"].lower()
 
@@ -661,6 +662,88 @@ class TestBboxCenterHandler:
         assert "bbox_target" in res["message"]
 
 
+def _install_helper(monkeypatch, injected=(), origin_cm=(5.0, 10.0, 15.0), taken_names=()):
+    """Wire the bbox_center handler to a helper Sketch born 'Sketch7'; returns (helper, joint origin)."""
+    jo_obj = _install_bbox_handler(monkeypatch, origin_cm=origin_cm)
+    helper = Sketch(name="Sketch7", injected=injected, taken_names=taken_names)
+    helper.sketchCurves.sketchLines = _CapLines([])
+    monkeypatch.setattr(jo._common.design().rootComponent.sketches, "add", lambda plane: helper)
+    return helper, jo_obj
+
+
+def _bbox_create():
+    return jo.handler(anchor="bbox_center", bbox_target="BODYH", orient_axis="z", units="mm")
+
+
+class TestHelperSketchReadBack:
+    # Every fault here is INJECTED through the shared Sketch fake; none is a measured platform state.
+
+    def test_a_helper_that_reads_named_and_hidden_is_published_without_a_sentence(self, monkeypatch):
+        _install_helper(monkeypatch)
+        out = _payload(_bbox_create())
+        assert out["helper_sketch"] == {"name": "JointOriginAnchor", "visible": False}
+        assert sorted(out) == ["anchor", "anchored_on", "component", "component_verified",
+                               "computed_anchor", "created", "frame_axes", "helper_sketch",
+                               "joint_origin_count", "joint_origin_name", "note", "origin_readback"]
+        assert "helper sketch" not in out["note"]
+
+    def test_a_second_helper_is_published_under_the_name_it_adopted(self, monkeypatch):
+        # MEASURED: the second bbox_center origin's helper reads 'JointOriginAnchor (1)'.
+        _install_helper(monkeypatch, taken_names=("JointOriginAnchor",))
+        out = _payload(_bbox_create())
+        assert out["helper_sketch"] == {"name": "JointOriginAnchor (1)", "visible": False}
+        assert "helper sketch" not in out["note"]
+
+    def test_a_rename_that_did_not_take_is_disclosed_with_the_name_read(self, monkeypatch):
+        _, jo_obj = _install_helper(monkeypatch, injected=("name_write_ignored",))
+        out = _payload(_bbox_create())
+        assert out["helper_sketch"] == {"name": "Sketch7", "visible": False}
+        assert "name='Sketch7'" in out["note"]
+        # a cosmetic miss on the helper is no reason to fail or roll back a valid origin
+        assert out["created"] is True and jo_obj.deleted is False
+
+    def test_a_hide_that_did_not_take_is_disclosed(self, monkeypatch):
+        _install_helper(monkeypatch, injected=("visible_write_ignored",))
+        out = _payload(_bbox_create())
+        assert out["helper_sketch"] == {"name": "JointOriginAnchor", "visible": True}
+        assert "visible=True" in out["note"]
+
+    def test_an_unreadable_visibility_is_disclosed_as_unread_not_as_hidden(self, monkeypatch):
+        _install_helper(monkeypatch, injected=("visible_unreadable",))
+        out = _payload(_bbox_create())
+        assert out["helper_sketch"] == {"name": "JointOriginAnchor", "visible": None}
+        assert "visible=unread" in out["note"]
+
+    def test_a_failed_create_does_not_call_a_visible_helper_hidden(self, monkeypatch):
+        # the origin lands off its computed anchor, so the call errors with the helper left behind
+        _install_helper(monkeypatch, injected=("visible_write_ignored",),
+                        origin_cm=(99.0, 99.0, 99.0))
+        res = _bbox_create()
+        assert res["isError"] is True
+        text = res["content"][0]["text"]
+        assert "visible=True" in text and "hidden helper" not in text
+        assert text.endswith("It was not removed.")
+
+    def test_a_failed_create_with_an_unread_helper_claims_nothing_about_removal(self, monkeypatch):
+        _install_helper(monkeypatch, injected=("visible_unreadable",), origin_cm=(99.0, 99.0, 99.0))
+        text = _bbox_create()["content"][0]["text"]
+        assert "visible=unread" in text and "not removed" not in text
+
+    def test_the_reply_states_the_helper_as_it_reads_after_the_origin_is_made(self, monkeypatch):
+        # INJECTED later write: the hide takes, then making the origin shows the sketch again.
+        helper, jo_obj = _install_helper(monkeypatch)
+        origins = jo._common.design().rootComponent.jointOrigins
+        made = origins.add
+
+        def add_and_show(jo_input):
+            helper.isVisible = True
+            return made(jo_input)
+        monkeypatch.setattr(origins, "add", add_and_show)
+        out = _payload(_bbox_create())
+        assert out["helper_sketch"] == {"name": "JointOriginAnchor", "visible": True}
+        assert out["created"] is True and jo_obj.deleted is False
+
+
 class TestBboxCenterAmbiguousTarget:
     def test_ambiguous_name_is_refused(self, monkeypatch):
         # component: a real Occurrence always answers it, and the shared census reads it to tell an
@@ -775,11 +858,12 @@ class TestLandingComponent:
         assert sub.jointOrigins.count == 0
 
     def test_unreadable_placement_is_refused_rather_than_assumed(self, monkeypatch):
-        # NEITHER placement matrix reads, so nothing says where the component sits
+        # DECLARED, not measured: transform2 declines on an occurrence whose component reads. The
+        # other placement member answers the identity here, and the refusal does not consult it.
         sub = _comp("Sub")
         unreadable = "3 : the placement of this occurrence is unavailable"
-        occ = make_occurrence(path="Sub:1", component=sub,
-                              raises_on={"transform2": unreadable, "transform": unreadable})
+        occ = make_occurrence(path="Sub:1", component=sub, transform=_matrix(),
+                              raises_on={"transform2": unreadable})
         _install_handler(monkeypatch, design=_design(occurrences=[occ]))
         res = jo.handler(anchor="coordinates", x=10, component="Sub:1")
         assert res["isError"] is True and "could not be read" in res["message"]
@@ -875,7 +959,8 @@ class TestActiveComponentDisclosure:
         res = jo.handler(anchor="coordinates", target="origin", component="Sub:1")
         assert res["isError"] is True
         assert "nothing changed" not in res["message"]
-        assert "may remain" in res["message"] and "design_delete_feature" in res["message"]
+        assert "remains in the timeline" in res["message"]
+        assert "design_delete_feature" in res["message"]
 
     def test_an_unverifiable_landing_is_disclosed_not_claimed(self, monkeypatch):
         # parentComponent unreadable - the WEAKER of the two unknowns, because 'component' then

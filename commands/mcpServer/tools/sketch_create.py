@@ -26,9 +26,9 @@ _PLANE = _inputs.PlaneRef("plane", default="xy",
 
 def handler(plane: str = "xy", name: str = "", on_face: str = "") -> dict:
     """Create a new sketch on an origin/construction plane OR on an existing planar face (on_face)."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # on_face (a GeometryHandle input) takes precedence - closes the 'sketch on a face' gap.
     # The input-kind resolves+validates the handle to a PLANAR face (or returns a clear error),
@@ -36,8 +36,8 @@ def handler(plane: str = "xy", name: str = "", on_face: str = "") -> dict:
     if (on_face or "").strip():
         face, ferr = _ON_FACE.resolve(on_face)
         if ferr:
-            # A construction-plane NAME lands here (find_geometry never returns plane handles), and
-            # the generic stale-handle error would misdirect. Point at the 'plane' parameter instead.
+            # A construction-plane NAME lands here, and the generic stale-handle error would
+            # misdirect. Point at the 'plane' parameter instead.
             named_plane, _ = _PLANE.resolve(on_face.strip())
             if named_plane is not None:
                 return error(f"'on_face' got '{on_face.strip()}', which is a construction PLANE name, "
@@ -74,7 +74,9 @@ def handler(plane: str = "xy", name: str = "", on_face: str = "") -> dict:
 
     face_note = ""
     if support is not None:
-        face_note = " 'plane' is null because this sketch sits on a FACE."
+        face_note = (" 'plane' is null because this sketch sits on a FACE. find_geometry.normal is "
+                     "the outward face normal; its frame.normal is the supporting plane normal. "
+                     "Place geometry using the returned new-sketch frame.")
         face_note += (f" 'on_face' names body '{support['body']}'." if support["body"]
                       else " The body it sits on did not read back.")
         face_note += (" 'on_face' carries that face's handle." if support["handle"]
@@ -82,6 +84,7 @@ def handler(plane: str = "xy", name: str = "", on_face: str = "") -> dict:
     payload = {
         "created": True,
         "sketch_name": final_name,
+        "component": safe(lambda: sketch.parentComponent.name),
         "on": desc,
         "plane": _plane_name(sketch),
         "frame": frame,

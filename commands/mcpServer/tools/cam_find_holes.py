@@ -152,9 +152,9 @@ def handler(bodies=None, include_partial: bool = False, min_diameter: float = No
             max_diameter: float = None, units: str = "mm",
             max_results: int = _HOLES_PER_GROUP_DEFAULT) -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design (open or create a document first).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     values, verr = _inputs.resolve_inputs(
         _SPEC, {"bodies": bodies, "min_diameter": min_diameter,
                 "max_diameter": max_diameter, "units": units})

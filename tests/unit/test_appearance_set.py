@@ -7,8 +7,8 @@ albedo channel only, assign to .appearance), and the guards (bad color, bad opac
 missing target, absent library/base appearance, component with no bodies).
 Fakes capture the assignments so a regression to a wrong attribute fails here.
 """
+from conftest import install as _install_design
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -179,7 +179,7 @@ def _root(name="Root", bodies=(), occurrences=()):
 def _install(root, existing_appearances=(ap._BASE_NAME,), tokens=None):
     apps = FakeAppearances([FakeAppearance(n) for n in existing_appearances])
     design = MakeDesign(comp=root, tokens=tokens, appearances=apps)
-    ap._common.design = lambda: design
+    _install_design(ap, design)
     import adsk.core, adsk.fusion
     adsk.core.Color.create = staticmethod(lambda r, g, b, o: ("color", r, g, b, o))
     # isinstance checks in the handle path need these bound to the fakes
@@ -203,9 +203,7 @@ def _library(name, *appearances):
     return make_material_library(name, appearances=appearances)
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _silent_body(name):
@@ -522,7 +520,7 @@ class TestGuards:
         assert "inherited" not in out["note"] and "ancestor" not in out["note"]
 
     def test_no_active_design_errors(self):
-        ap._common.design = lambda: None
+        _install_design(ap, None)
         res = ap.handler(target="Body1", color="#000000")
         assert res["isError"] is True and "no active design" in res["message"].lower()
 
@@ -587,18 +585,33 @@ class TestGuards:
 # ── occurrence fan-out: where an occurrence-level write actually landed ───────
 
 def _install_mp(monkeypatch, root, existing_appearances=(ap._BASE_NAME,), tokens=None):
-    """The monkeypatch install (tests/CLAUDE.md canonical pattern): every seam is torn down after
+    """The monkeypatch install (tests/AGENTS.md canonical pattern): every seam is torn down after
     the test instead of left poked on the module."""
     apps = FakeAppearances([FakeAppearance(n) for n in existing_appearances])
     design = MakeDesign(comp=root, tokens=tokens, appearances=apps)
     import adsk.core, adsk.fusion
-    monkeypatch.setattr(ap._common, "design", lambda: design)
+    _install_design(ap, design)
     monkeypatch.setattr(adsk.core.Color, "create",
                         staticmethod(lambda r, g, b, o: ("color", r, g, b, o)))
     monkeypatch.setattr(adsk.fusion, "BRepFace", FakeFace)
     monkeypatch.setattr(adsk.fusion, "BRepBody", FakeBody)
     monkeypatch.setattr(ap._inputs, "handle_token", lambda s: s)
     return design, apps
+
+
+@pytest.fixture
+def retained_occurrence_appearance(monkeypatch):
+    comp = MakeComp("Wheel", bodies=[FakeBody("Kept", inherited_opacity=0.3499999940395355)])
+    monkeypatch.setattr(comp, "opacity", 1.0, raising=False)
+    kept = FakeBody("Kept")
+    occ = FanoutOcc("Wheel:1", bodies=[kept], component=comp, keeps_override=["Kept"])
+    monkeypatch.setattr(occ, "appearance", None)
+    kept.appearance.appearanceProperties.itemByName("opaque_albedo").value = FakeColor(255, 0, 0)
+    _design, apps = _install_mp(monkeypatch, _root(occurrences=[occ]))
+    monkeypatch.setattr(ap.adsk.core.Color, "create",
+                        staticmethod(lambda r, g, b, o: FakeColor(r, g, b, o)))
+    monkeypatch.setattr(ap._TARGET, "resolve", lambda raw: ((occ, "occurrence"), None))
+    return comp, occ, apps
 
 
 class TestOccurrenceFanout:
@@ -668,6 +681,27 @@ class TestOccurrenceFanout:
         res = ap.handler(target="Wheel:1", color="#1E8E3E")
         assert res["isError"] is True
         assert "NONE" in res["message"] and "Kept" in res["message"]
+        assert "Document appearance count is" in res["message"]
+        assert "Occurrence appearance" in res["message"]
+
+    def test_occurrence_failure_after_opacity_discloses_retained_writes(self, retained_occurrence_appearance):
+        comp, occ, apps = retained_occurrence_appearance
+        assert comp.opacity == 1.0 and occ.appearance is None
+        result = ap.handler(target="Wheel:1", color="#1E8E3E", opacity=35)
+        assert result["isError"] is True and comp.opacity == 0.35
+        opacity_clause = result["message"].split("Component opacity now reads ", 1)[1]
+        assert float(opacity_clause.split(" ", 1)[0]) == pytest.approx(0.35, abs=1e-6)
+        assert "(before this call: 1.0)" in opacity_clause
+        assert "Occurrence appearance now reads {'name': 'AgentColor_1E8E3E'" in result["message"]
+        assert "Component opacity still reads" not in result["message"]
+        assert "Occurrence appearance still reads" not in result["message"]
+        assert "'name': 'AgentColor_1E8E3E'" in result["message"]
+        assert "'color_rgb': [30, 142, 62]" in result["message"]
+        assert "'id': 'asset:" in result["message"]
+        assert "'name': 'OwnColor_Kept'" in result["message"]
+        assert "'color_rgb': [255, 0, 0]" in result["message"]
+        assert "The occurrence and document entry read the same name and color" in result["message"]
+        assert f"Document appearance count is {apps.count}" in result["message"]
 
     def test_the_note_and_the_key_report_the_observation_not_an_unread_cause(self, monkeypatch):
         # The tool reads WHICH appearance each body carries; it never reads why
@@ -1134,3 +1168,213 @@ class TestDirectAppearanceAssignmentFailure:
         assert "Body1" in res["message"]
         assert "appearance rejected for Body1" in res["message"]
         assert body.appearance is held
+
+
+# -- a library appearance, and clearing a target's own override -------------------------------
+
+
+class _Sourced:
+    """A body (level 1) or face (level 3) whose appearance source follows its own override, as
+    measured: an assignment makes the source its own level, None falls back to the material.
+    `lies`: 'ignores' (the assignment is accepted and dropped), 'sticky' (None is accepted and the
+    override stays), 'wrong_source' (the appearance reads, the source says occurrence)."""
+
+    def __init__(self, name, level, overridden=False, lies=()):
+        self.name, self._level, self.lies = name, level, lies
+        self._fallback = FakeAppearance("Steel - Satin", appearance_id="asset:steel")
+        self._own = FakeAppearance("Old Paint", appearance_id="asset:old") if overridden else None
+
+    @property
+    def appearance(self):
+        return self._own or self._fallback
+
+    @appearance.setter
+    def appearance(self, value):
+        if value is None and "sticky" in self.lies:
+            return
+        if value is not None and "ignores" in self.lies:
+            return
+        self._own = value
+
+    @property
+    def appearanceSourceType(self):
+        types = ap.adsk.core.AppearanceSourceTypes
+        if self._own is None:
+            return types.MaterialAppearanceSource
+        if "wrong_source" in self.lies:
+            return types.OccurrenceAppearanceSource
+        return types.BodyAppearanceSource if self._level == 1 else types.FaceAppearanceSource
+
+
+@pytest.fixture
+def catalog(monkeypatch):
+    """Two libraries: 'Aluminum - Satin' in the first only, 'Shared' in both."""
+    _install(_root())
+    _install_libraries(
+        monkeypatch,
+        _library("Metal Library", FakeAppearance("Aluminum - Satin", appearance_id="asset:alu"),
+                 FakeAppearance("Shared", appearance_id="asset:s1")),
+        _library("Other Library", FakeAppearance("Shared", appearance_id="asset:s2")))
+
+
+class TestLibraryAppearance:
+    def test_a_body_takes_the_named_appearance_as_its_own_override(self, catalog):
+        body = _Sourced("Plate", 1)
+        _resolve_to(body, "body")
+        out = _payload(ap.handler(target="Plate", appearance="Aluminum - Satin"))
+        assert body.appearance.name == "Aluminum - Satin"
+        assert (out["appearance"], out["library"]) == ("Aluminum - Satin", "Metal Library")
+        assert out["appearance_source"] == "BodyAppearanceSource"
+        assert out["appearance_before"] == "Steel - Satin"
+
+    def test_an_assignment_that_is_dropped_is_an_error(self, catalog):
+        _resolve_to(_Sourced("Plate", 1, lies=("ignores",)), "body")
+        res = ap.handler(target="Plate", appearance="Aluminum - Satin")
+        assert res["isError"] is True
+        assert "reads appearance 'Steel - Satin', not 'Aluminum - Satin'" in res["message"]
+
+    def test_a_face_whose_source_is_not_its_own_is_an_error(self, catalog):
+        _resolve_to(_Sourced("", 3, lies=("wrong_source",)), "face")
+        res = ap.handler(target="h", appearance="Aluminum - Satin")
+        assert res["isError"] is True
+        assert "OccurrenceAppearanceSource, not FaceAppearanceSource" in res["message"]
+
+    def test_a_name_in_two_libraries_is_refused_until_library_narrows_it(self, catalog):
+        body = _Sourced("Plate", 1)
+        _resolve_to(body, "body")
+        res = ap.handler(target="Plate", appearance="Shared")
+        assert res["isError"] is True
+        assert "'Metal Library', 'Other Library'. Pass 'library'" in res["message"]
+        out = _payload(ap.handler(target="Plate", appearance="Shared", library="Other Library"))
+        assert out["library"] == "Other Library" and body.appearance.id == "asset:s2"
+
+    def test_an_unknown_name_points_at_the_catalog_read(self, catalog):
+        _resolve_to(_Sourced("Plate", 1), "body")
+        res = ap.handler(target="Plate", appearance="aluminum - satin")
+        assert res["isError"] is True and "named exactly 'aluminum - satin'" in res["message"]
+        assert "design_get(include=['appearances']" in res["message"]
+
+    def test_an_occurrence_reports_the_bodies_it_reached(self, catalog):
+        occ = FanoutOcc("Arm:1", bodies=[FakeBody("A"), FakeBody("B")], keeps_override=("B",))
+        _resolve_to(occ, "occurrence")
+        out = _payload(ap.handler(target="Arm:1", appearance="Aluminum - Satin"))
+        assert out["applied_to"] == ["A"] and out["bodies_not_reached"][0]["body"] == "B"
+        assert out["note"].startswith("PARTIAL")
+
+    @pytest.mark.parametrize("extra, text", [
+        ({"color": "#FF0000"}, "'appearance' is a call of its own; drop 'color'"),
+        ({"clear": True}, "drop 'clear'"),
+        ({"opacity": 50, "name": "X"}, "drop 'opacity', 'name'")])
+    def test_other_inputs_cannot_ride_a_library_appearance(self, catalog, extra, text):
+        body = _Sourced("Plate", 1)
+        _resolve_to(body, "body")
+        res = ap.handler(target="Plate", appearance="Aluminum - Satin", **extra)
+        assert res["isError"] is True and text in res["message"]
+        assert body.appearance.name == "Steel - Satin"
+
+    def test_library_alone_and_a_component_target_are_refused(self, catalog):
+        _resolve_to(_root(bodies=[FakeBody("A")]), "component")
+        assert "pass the appearance name too" in ap.handler(target="x", library="L")["message"]
+        res = ap.handler(target="x", appearance="Aluminum - Satin")
+        assert res["isError"] is True and "resolved to a component" in res["message"]
+
+
+class TestClearOverride:
+    def test_a_face_override_is_cleared_and_the_fallback_is_reported(self, catalog):
+        face = _Sourced("", 3, overridden=True)
+        _resolve_to(face, "face")
+        out = _payload(ap.handler(target="h", clear=True))
+        assert out["cleared"] is True and out["appearance_before"] == "Old Paint"
+        assert (out["appearance"], out["appearance_source"]) == (
+            "Steel - Satin", "MaterialAppearanceSource")
+
+    def test_a_target_with_no_override_of_its_own_is_refused(self, catalog):
+        body = _Sourced("Plate", 1)
+        _resolve_to(body, "body")
+        res = ap.handler(target="Plate", clear=True)
+        assert res["isError"] is True
+        assert "carries no override of its own" in res["message"]
+        assert "reads MaterialAppearanceSource" in res["message"]
+
+    def test_a_clear_that_leaves_the_override_is_an_error(self, catalog):
+        _resolve_to(_Sourced("Plate", 1, overridden=True, lies=("sticky",)), "body")
+        res = ap.handler(target="Plate", clear=True)
+        assert res["isError"] is True and "still reads an override of its own" in res["message"]
+
+    def test_an_occurrence_is_judged_on_its_own_appearance_reading_none(self, catalog):
+        occ = FanoutOcc("Arm:1", bodies=[FakeBody("A")])
+        occ.appearance = FakeAppearance("Old Paint")
+        _resolve_to(occ, "occurrence")
+        out = _payload(ap.handler(target="Arm:1", clear=True))
+        assert out["cleared"] is True and occ.appearance is None
+        res = ap.handler(target="Arm:1", clear=True)
+        assert res["isError"] is True and "nothing to clear" in res["message"]
+
+
+class TestClearReadsThatDoNotAnswer:
+    def test_an_occurrence_getter_that_raises_after_the_clear_is_not_a_clear(self, catalog):
+        state = {"own": FakeAppearance("Old Paint"), "written": False}
+
+        class _Occ:
+            name = fullPathName = "Arm:1"
+
+            @property
+            def appearance(self):
+                if state["written"]:
+                    raise RuntimeError("4 : An API Object refers to a deleted Object")
+                return state["own"]
+
+            @appearance.setter
+            def appearance(self, value):
+                state["written"] = True
+        _resolve_to(_Occ(), "occurrence")
+        res = ap.handler(target="Arm:1", clear=True)
+        assert res["isError"] is True and "so it is unverified" in res["message"]
+
+    def test_an_occurrence_getter_that_raises_before_the_clear_writes_nothing(self, catalog):
+        writes = []
+
+        class _Occ:
+            name = fullPathName = "Arm:1"
+            appearance = property(lambda self: (_ for _ in ()).throw(RuntimeError("unread")),
+                                  lambda self, value: writes.append(value))
+        _resolve_to(_Occ(), "occurrence")
+        res = ap.handler(target="Arm:1", clear=True)
+        assert res["isError"] is True and "nothing was cleared" in res["message"]
+        assert writes == []
+
+
+class TestANameRepeatedInsideOneLibrary:
+    def test_two_entries_of_one_name_in_one_library_are_refused_not_first_matched(
+            self, monkeypatch):
+        _install(_root())
+        _install_libraries(monkeypatch, _library(
+            "Metal Library", FakeAppearance("Twin", appearance_id="asset:t1"),
+            FakeAppearance("Twin", appearance_id="asset:t2")))
+        body = _Sourced("Plate", 1)
+        _resolve_to(body, "body")
+        res = ap.handler(target="Plate", appearance="Twin", library="Metal Library")
+        assert res["isError"] is True
+        assert "'Twin' names 2 appearances in library 'Metal Library'" in res["message"]
+        assert body.appearance.name == "Steel - Satin"
+
+
+class TestAHoledLibraryCensus:
+    def test_one_readable_hit_beside_an_unreadable_entry_is_not_unique(self, monkeypatch):
+        _install(_root())
+        library = _library("Metal Library", FakeAppearance("Twin", appearance_id="asset:t1"),
+                           FakeAppearance("Hidden", appearance_id="asset:h"))
+        real_item = library.appearances.item
+
+        def item(i):
+            if i == 1:
+                raise RuntimeError("4 : An API Object refers to a deleted Object")
+            return real_item(i)
+        library.appearances.item = item
+        _install_libraries(monkeypatch, library)
+        body = _Sourced("Plate", 1)
+        _resolve_to(body, "body")
+        res = ap.handler(target="Plate", appearance="Twin")
+        assert res["isError"] is True
+        assert "Appearance 1 of library 'Metal Library' did not read its name" in res["message"]
+        assert body.appearance.name == "Steel - Satin"

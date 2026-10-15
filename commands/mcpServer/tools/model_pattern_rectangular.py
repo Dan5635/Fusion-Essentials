@@ -15,8 +15,9 @@ from ._common import error, ok, safe, scale
 from . import _common
 from . import _inputs
 from . import _assert
-from ._pattern_common import (_BODIES, _OCCURRENCES, _direction_entity, _direction_label,
-                              _owning_component, _resolve_input_entities)
+from ._pattern_common import (_BODIES, _OCCURRENCES, _FEATURES, _FACES, _seed_property,
+                              _seed_kind, _seed_shapes, _seed_effect, _direction_entity,
+                              _direction_label, _owning_component, _resolve_input_entities)
 
 app = adsk.core.Application.get()
 
@@ -28,13 +29,15 @@ _DIR_TWO = _inputs.AxisRef("direction_two", entity_only=True, default="y")
 
 def handler(occurrences: str = "", bodies=None, quantity_one: int = 2, spacing_one: float = 10.0,
             direction_one: str = "x", quantity_two: int = 1, spacing_two: float = 10.0,
-            direction_two: str = "y", units: str = "mm") -> dict:
+            direction_two: str = "y", units: str = "mm", features=None, faces=None) -> dict:
     """Pattern component occurrences OR bodies in a rectangular grid."""
     k = scale(units)
     if k is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
     if int(quantity_one) < 1:
         return error("quantity_one must be >= 1.")
+    if int(quantity_two) < 1:
+        return error(f"quantity_two={quantity_two!a} must be >= 1. Use 1 for a single row.")
     # spacing_one=0 stacks every instance on the seed and the platform reports a clean pattern.
     if int(quantity_one) > 1 and float(spacing_one) == 0:
         return error("spacing_one=0 would stack every instance exactly on the seed (coincident "
@@ -42,16 +45,19 @@ def handler(occurrences: str = "", bodies=None, quantity_one: int = 2, spacing_o
     if int(quantity_two) > 1 and float(spacing_two) == 0:
         return error("spacing_two=0 would stack the second-direction instances exactly on the "
                      "first row (coincident duplicates). Provide a non-zero spacing_two.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document with components first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
-    coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies)
+    coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies, features, faces)
     if rerr:
         return error(rerr)
 
     # The axis and the feature must share a component or Fusion raises getObjectPath.
-    owner = _owning_component(design, coll, bodies)
+    kind = _seed_kind(occurrences, bodies, features, faces)
+    owner = _owning_component(design, coll, bodies, features, faces)
+    if owner is None:
+        return error("Pattern seed owner did not read; reacquire its feature or face before retrying.")
     d1, d1err = _direction_entity(_DIR_ONE, direction_one, owner, design)
     if d1err:
         return error(d1err)
@@ -59,6 +65,10 @@ def handler(occurrences: str = "", bodies=None, quantity_one: int = 2, spacing_o
     d2, d2err = _direction_entity(_DIR_TWO, direction_two, owner, design)
     if d2err:
         return error(d2err)
+
+    before, berr = _seed_shapes(coll, kind)
+    if berr:
+        return error(berr)
 
     try:
         dist_type = adsk.fusion.PatternDistanceType.SpacingPatternDistanceType
@@ -68,7 +78,7 @@ def handler(occurrences: str = "", bodies=None, quantity_one: int = 2, spacing_o
 
         # Direction two is ALWAYS set: a fresh createInput carries quantityTwo=3, so a single-row
         # request that leaves it alone builds three coincident rows.
-        q2 = adsk.core.ValueInput.createByReal(max(1, int(quantity_two)))
+        q2 = adsk.core.ValueInput.createByReal(int(quantity_two))
         s2 = adsk.core.ValueInput.createByReal(float(spacing_two) * k)
         if not pin.setDirectionTwo(d2, q2, s2):
             return error("Fusion refused the second pattern direction (setDirectionTwo returned "
@@ -80,20 +90,25 @@ def handler(occurrences: str = "", bodies=None, quantity_one: int = 2, spacing_o
     if not feature:
         return error(_common.no_feature_error(design, "Rectangular pattern"))
 
+    effect, eerr = _seed_effect(feature, before)
+    if eerr:
+        return error(eerr)
+
     # Verify the effect: the REAL instance count read off the created feature, never the request.
-    requested_total = int(quantity_one) * max(1, int(quantity_two))
+    requested_total = int(quantity_one) * int(quantity_two)
     real_total = safe(lambda: feature.patternElements.count)
     if real_total is not None and int(real_total) != requested_total:
         return error(
             f"Pattern '{safe(lambda: feature.name)}' created {int(real_total)} instances but "
-            f"{requested_total} were requested ({quantity_one} x {max(1, int(quantity_two))}). The "
+            f"{requested_total} were requested ({quantity_one} x {int(quantity_two)}). The "
             "feature is left in the timeline for inspection - design_delete_feature removes it.")
     return ok({
         "patterned": True,
         "type": "rectangular",
         "feature": safe(lambda: feature.name),
         "entities": resolved,
-        "entity_kind": "bodies" if bodies not in (None, "", []) else "occurrences",
+        "entity_kind": kind,
+        **effect,
         "direction_one": _direction_label(_DIR_ONE, direction_one, d1),
         "quantity_one": int(quantity_one),
         "spacing_one": round(float(spacing_one), 6),
@@ -103,18 +118,20 @@ def handler(occurrences: str = "", bodies=None, quantity_one: int = 2, spacing_o
         "units": units,
         # the read-back count when available (the verified value); the computed request otherwise
         "total_instances": int(real_total) if real_total is not None else requested_total,
-        "note": ("Bodies" if bodies not in (None, "", []) else "Occurrences")
+        "note": kind.capitalize()
                 + " patterned in a grid. Pair with view_screenshot to view.",
     })
 
 
 TOOL_DESCRIPTION = (
-"Pattern occurrences or bodies in a rectangular grid."
+"Pattern occurrences or bodies in a rectangular grid. Also faces/features; one seed kind per call."
 )
 tool = (
     Tool.create_simple(name="model_pattern_rectangular", description=TOOL_DESCRIPTION)
     .add_input_property(*_OCCURRENCES.as_property())
     .add_input_property("bodies", _BODIES.schema())
+    .add_input_property(*_seed_property(_FEATURES))
+    .add_input_property(*_seed_property(_FACES))
     .add_input_property("quantity_one", {"type": "integer"})
     .add_input_property("spacing_one", {"type": "number",
             "description": "Distance between instances."})

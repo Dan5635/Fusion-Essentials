@@ -1,32 +1,126 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""The layout and framing engine: where each chunk builds, and what the camera is looking at.
-
-Two passes verify_program.py drives over the act program at import, plus the sketch hoisting that
-runs before them:
-
-  `_sketches_first` lifts every sketch that can be drawn on a bare origin plane into one phase, and
-  `_sketch_reading_order` walks that phase left to right;
-  `_place_slots` deals every chunk a cell of its own in a field laid out in narrative order, and
-  `_placed`/`_place_shift` translate each step's authored coordinates into it - a rigid translation,
-  which is why a read-back asserts a landing position through `_px`/`_py` rather than against the
-  authored number;
-  `_framed` inserts a camera row wherever the next subject is not already on screen, sized off the
-  chunk footprints `_placed_boxes` measured, widened by any `_MEASURED_BOX` row a run recorded.
-
-A chunk is the unit all three share: the sketch or component a step works on, named by
-`_place_owner`. tool_verify.py re-exports this surface.
-"""
+"""Authored chunk anchors, local placement, sketch ordering, and camera framing."""
 
 import re
 
 from verify_core import _JOINT_STATIONS, _group_of, _watch
 
-# The cell each chunk was dealt, filled by verify_program.py once the acts are defined - THE
-# object the placement pass, _px/_py and the layout lint all read, so it is updated in place
-# rather than rebound.
-_SLOTS = {}
+# Authored positions for movable chunks; each family takes only its own entries.
+_SLOTS = {
+    'EditTrim': (-400.0, 270.0),
+    'EditExt': (-240.0, 240.0),
+    'EditSplit': (-100.0, 270.0),
+    'EditCorner': (60.0, 220.0),
+    'EditChamfer': (180.0, 220.0),
+    'EditOffset': (300.0, 220.0),
+    'XformSrc': (-400.0, -120.0),
+    'CopyComp': (-1090.0, 380.0),
+    'ConBench': (-180.0, -100.0),
+    'ConBench2': (-274.0, -100.0),
+    'PtBench': (-274.0, 84.0),
+    'OffOne': (66.0, -350.0),
+    'OffTwo': (-760.0, -90.0),
+    'CircPat': (-560.0, -234.0),
+    'DimBench': (-614.0, 160.0),
+    'RetainedDims': (-584.0, 90.0),
+    'AutoCon': (146.0, 80.0),
+    'AutoCon2': (186.0, 80.0),
+    'PatExtent': (-395.0, 265.0),
+    'PatSupp': (-231.0, 104.0),
+    'AutoStrat': (-211.0, 100.0),
+    'W3Curves': (-51.0, 940.0),
+    'W3Conic': (119.0, 840.0),
+    'W3Earc': (149.0, 850.0),
+    'CoincTrap': (-1280.0, 1105.0),
+    'TextPaths': (-860.0, 1085.0),
+    'TextBinding': (-700.0, 965.0),
+    'FontProbe': (-640.0, 965.0),
+    'TextDel': (-480.0, 1005.0),
+    'DimDel': (-520.0, 985.0),
+    'SlotA': (-1500.0, 330.0),
+    'SlotB': (-1335.0, 235.0),
+    'SlotC': (-1220.0, 135.0),
+    'SlotD': (-1110.0, 30.0),
+    'SlotE': (-990.0, -70.0),
+    'SlotF': (-870.0, -170.0),
+    'SlotG': (-750.0, -270.0),
+    'SlotH': (-665.0, -370.0),
+    'PolyHex': (-1480.0, -335.0),
+    'ProjMaster': (-1600.0, 1345.0),
+    'ProjTargetRoot': (-1490.0, 1305.0),
+    'LoftCameo': (286.0, 1361.0),
+    'GuideRail': (208.0, 1361.0),
+    'GuideDupe': (184.0, 1345.0),
+    'HoleHostB': (-1836.0, 1345.0),
+    'BayCameo': (644.0, 445.0),
+    'RadiusFilterBench': (-1303.31776, 1350.0),
+    'Blend': (-1286.0, 1285.0),
+    'Msh': (454.0, 1165.0),
+    'ThreadBore': (191.0, 1467.0),
+    'PipeChain': (-27.0, 1465.0),
+    'PipeJoinMiss': (-47.0, 1465.0),
+    'PipeSplit': (-900.0, 1620.0),
+    'BlanketBox': (-1840.0, 1600.0),
+    'ArrP1': (240.0, 1250.0),
+    'ArrP2': (260.0, 1250.0),
+    'ArrP3': (306.0, 1257.0),
+    'ArrB': (552.0, 1220.0),
+    'GrpA': (-1200.0, 1900.0),
+    'GrpB': (-1160.0, 1900.0),
+    'PinCameo': (65.0, 1905.0),
+    'AsbPin': (-360.0, 1610.0),
+    'AsbPlate': (-360.0, 1610.0),
+    'JointBase': (-330.0, 1600.0),
+    'IndRev': (-330.0, 1600.0),
+    'IndSld': (-330.0, 1600.0),
+    'IndCyl': (-330.0, 1600.0),
+    'IndPin': (-330.0, 1600.0),
+    'IndBal': (-330.0, 1600.0),
+    'IndPla': (-330.0, 1600.0),
+    'IndRig': (-330.0, 1600.0),
+    'LnkA': (-476.0, 1780.0),
+    'LnkB': (-476.0, 1780.0),
+    'AmbP': (-1360.0, 2055.0),
+    'AmbQ': (-1310.0, 2055.0),
+    'PoseCameo': (60.0, 1955.0),
+    'ConA': (80.0, 2055.0),
+    'ConB': (80.0, 2055.0),
+    'MateSeat': (60.0, 2055.0),
+    'MateArm': (60.0, 2055.0),
+    'SwarfFrustum': (-496.0, 1683.0),
+    'DihedralL': (-406.0, 1455.0),
+    'TwinCameo': (-486.0, 1855.0),
+    'DatumBench': (0.0, 2163.0),
+    'ActiveA': (-2330.0, 2163.0),
+    'Surf': (200.0, 1963.0),
+    'SAlign': (-200.0, 1963.0),
+    'ThkSym': (-160.0, 1963.0),
+    'SDel': (390.0, 1963.0),
+    'PatchRail': (470.0, 1953.0),
+    'Cascade': (-250.0, 1963.0),
+    'FormDemo': (-330.0, 1963.0),
+    'Ruled': (-700.0, 2263.0),
+    'RuledSolid': (-680.0, 2063.0),
+    'Spl': (0.0, 2063.0),
+    'Stc': (0.0, 2063.0),
+    'HolderPart': (-20.0, 2063.0),
+    'MeshPose': (500.0, 2083.0),
+    'ShellCap': (360.0, 2263.0),
+    'TwoSideCap': (380.0, 2263.0),
+    'TwicePlaced': (-960.0, 2063.0),
+    'ThreadPost': (495.0, 2258.0),
+    'ThreadPost2': (525.0, 2258.0),
+    'RmScratch': (-900.0, 2363.0),
+    'TangentRun': (-1620.0, 2363.0),
+    'TangentLoop': (-1600.0, 2363.0),
+    'FullRound': (-1580.0, 2363.0),
+    'W3Pt': (-420.0, 2263.0),
+    'BoreCameo': (448.0, 2371.0),
+    'SoloColor': (-684.0, 2163.0),
+    'SM Sweep Rip Box': (706.0, 2363.0),
+}
 
 
 # The steps that first put a BODY in a freshly created component - the moment there is something to
@@ -181,22 +275,7 @@ def _sketches_first(program, after):
     return hoisted, kept_acts
 
 def _sketch_reading_order(phase, slots):
-    """The sketch phase re-ordered so the camera reads the field once instead of commuting.
-
-    The packer already deals cells left to right in the order the sketches are drawn, so the field
-    IS in reading order - rows marching across and stepping down. What breaks the walk is that some
-    sketches cannot be dealt a cell at all: one anchored to the world origin (a scale or a mirror is
-    origin-relative, and an angular dimension's contract is stated against the sketch origin) stays
-    in the origin band while the field sits a metre away. Interleaved with the placed ones, every
-    such sketch costs a round trip out to the origin and back.
-
-    So the pinned ones are drawn together, ahead of the field. Relative order is preserved inside
-    each group, which is what keeps this safe to run AFTER the cells are dealt: the packer's order
-    over the PLACED chunks is untouched, so 'slots' stays true.
-
-    A block is one sketch: its create, the component create hoisted with it, and its drawing steps.
-    Blocks move whole - a sketch separated from the component it belongs to lands in the wrong one.
-    """
+    """Return local sketch blocks with anchored blocks before translated blocks."""
     # The owner is READ OFF the phase as built, never re-derived: a sketch whose component was
     # created outside this phase has no create to look at, and guessing 'root' for it drops the
     # sketch into the root component - where the geometry it feeds is then missing by name.
@@ -258,8 +337,7 @@ _RELATION_TOOLS = ("joint_create", "joint_create_as_built", "joint_edit", "joint
                    "joint_motion_link", "assembly_ground", "assembly_move", "assembly_rigid_group",
                    "assembly_constrain", "assembly_capture_position")
 
-# {chunk: [x0, x1, y0, y1]} in the PLACED world, and {entity name: its chunk} - both filled beside
-# _SLOTS, once the acts are defined.
+# Diagnostic unions of family-local placed boxes and entity homes, filled after compilation.
 _PLACED_BOX = {}
 _CHUNK_OF = {}
 # {chunk: [x0, x1, y0, y1]} in the placed world, off a run's model_inspect reads. The authored box
@@ -353,7 +431,7 @@ _PATTERNED = set()
 _FRAME_PATTERN_WIDEN = 3.0
 
 
-def _framed(steps):
+def _framed(steps, layout=None):
     """Insert the camera rows an act plays in, and settle the ones the act module already wrote.
 
     SKIP - a subject already inside the standing frame gets no row, so the camera stops bouncing.
@@ -363,9 +441,18 @@ def _framed(steps):
     A component or sketch that never gets geometry before the next entity starts gets no row at
     all - there is nothing to frame yet.
     """
+    from verify_core import (declared_allows, step_conditions, condition_expect,
+                             replace_inner_expect, compatible_neighbour, _unparked)
+    home = _CHUNK_OF if layout is None else layout["home"]
+    components = _COMPONENTS if layout is None else layout["components"]
+    patterned = _PATTERNED if layout is None else layout["patterned"]
+    planes = None if layout is None else layout["planes"]
     ready = {}                       # group -> (last step index it is ready at, [member names])
+    subject_conditions = {}
     hand_framed = set()
     for k, step in enumerate(steps):
+        if not declared_allows(step[2]):
+            continue
         a = steps[k][1] if isinstance(steps[k][1], dict) else {}
         if steps[k][0] == "view_set" and a.get("focus"):
             f = a["focus"]
@@ -373,6 +460,7 @@ def _framed(steps):
                 hand_framed.add(_group_of(str(nm)))
 
     def note(name, at, member):
+        subject_conditions[member] = step_conditions(steps[at][2])
         g = _group_of(name)
         if g in hand_framed:
             return
@@ -383,6 +471,8 @@ def _framed(steps):
         ready[g] = (max(at, cur[0]) if cur else at, members)
 
     for i, step in enumerate(steps):
+        if not declared_allows(step[2]):
+            continue
         args = step[1] if isinstance(step[1], dict) else {}
         if step[0] == "sketch_create" and args.get("name"):
             name = args["name"]
@@ -398,7 +488,7 @@ def _framed(steps):
             # sketch phase would draw everything off camera with nothing following to frame it.
             covered = any(s[0] in _BODY_MAKERS and isinstance(s[1], dict)
                           and s[1].get("sketch_name") == name for s in steps)
-            fixture = covered and _CHUNK_OF.get(name, name) != name
+            fixture = covered and home.get(name, name) != name
             if drawn is not None and not fixture:
                 note(name, drawn, name)
         elif step[0] == "model_create_component" and args.get("activate") and args.get("name"):
@@ -406,17 +496,17 @@ def _framed(steps):
             # the chunk runs to the NEXT create: a later part's body is not this part's body, and
             # framing this occurrence on it would aim the camera at the wrong slot.
             end = next((j for j in range(i + 1, len(steps))
-                        if steps[j][0] == "model_create_component"), len(steps))
+                        if steps[j][0] in ("model_create_component", "doc_new", "doc_activate", "doc_close")), len(steps))
             body = next((k for k in range(i + 1, end) if steps[k][0] in _BODY_MAKERS), None)
             if body is not None:
                 note(comp, body, comp + ":1")
-        elif step[0] in _BODY_MAKERS and args.get("sketch_name") in _CHUNK_OF:
+        elif step[0] in _BODY_MAKERS and args.get("sketch_name") in home:
             # The moment a solid appears, whether or not this act is where its component and sketch
             # were made. Once the sketch phase hoists those away, a creation-only trigger leaves a
             # whole act - the finale among them - with no camera row at all, playing out at
             # whatever zoom the previous act left behind.
-            owner = _CHUNK_OF.get(args["sketch_name"], args["sketch_name"])
-            note(owner, i, owner + ":1" if owner in _COMPONENTS else owner)
+            owner = home.get(args["sketch_name"], args["sketch_name"])
+            note(owner, i, owner + ":1" if owner in components else owner)
 
     inserts = {}
     for _g, (at, members) in ready.items():
@@ -428,7 +518,7 @@ def _framed(steps):
     # left. These frame on their own operands, at the step that does the work.
     relation_at = set()
     for i, step in enumerate(steps):
-        if step[0] not in _RELATION_TOOLS or not isinstance(step[1], dict):
+        if not declared_allows(step[2]) or step[0] not in _RELATION_TOOLS or not isinstance(step[1], dict):
             continue
         operands = []
         for key in ("occurrence", "occurrences", "occurrence_one", "occurrence_two"):
@@ -449,6 +539,8 @@ def _framed(steps):
     # story renames and deletes as it goes, and view_set refuses a focus it cannot resolve.
     retired = {}
     for k, step in enumerate(steps):
+        if not declared_allows(step[2]):
+            continue
         a = step[1] if isinstance(step[1], dict) else {}
         if step[0] in ("design_set_name", "design_delete_occurrence", "design_move_occurrence",
                        "design_delete_feature", "mesh_delete", "cam_delete"):
@@ -456,29 +548,34 @@ def _framed(steps):
                 if isinstance(a.get(key), str):
                     retired.setdefault(re.sub(r":\d+$", "", a[key]), k)
 
-    out, frame, built = [], None, []
+    out, frame, built, frame_conditions = [], None, [], ()
     for i, step in enumerate(steps):
         out.append(step)
+        if not declared_allows(step[2]):
+            continue
+        if not compatible_neighbour(step_conditions(step[2]), frame_conditions):
+            frame = None
         # A scratch document opened mid-act holds none of the story's parts: nothing built before
         # it is a neighbour there, and the standing frame belongs to the other document.
         if step[0] in ("doc_new", "doc_activate"):
-            built, frame = [], None
+            built, frame, frame_conditions = [], None, ()
             continue
         if step[0] == "view_set" and isinstance(step[1], dict) and step[1].get("focus"):
             f = step[1]["focus"]
             # An act module writes its camera rows as it imports, before any sketch plane is known,
             # so a flat subject falls back to iso and renders edge-on. Rewriting the row here - and
             # only a row _watch itself wrote - shoots that sketch down its own normal.
-            fresh = _watch(f)
-            if (step[2] in ("ok", fresh[2]) and step[3:] == fresh[3:]
+            fresh = _watch(f, planes=planes)
+            if (_unparked(step[2]) in ("ok", fresh[2]) and step[3:] == fresh[3:]
                     and step[1] == dict(fresh[1], orientation="iso-top-right")):
-                out[-1] = fresh
+                out[-1] = (fresh[0], fresh[1], replace_inner_expect(step[2], fresh[2]), fresh[3])
             # A hand-authored row that FITS on its focus IS the standing frame from here on.
             # Tracking only the rows this pass inserts leaves the frame where the camera no longer
             # is, and the next subject then tests as already on screen - the act plays off camera.
             if step[1].get("action") == "orient" and step[1].get("fit") is not False:
-                held = _frame_box(f if isinstance(f, list) else [f])
+                held = _frame_box(f if isinstance(f, list) else [f], layout)
                 frame = _expand(held, _FRAME_MARGIN) if held else None
+                frame_conditions = step_conditions(step[2])
         members = inserts.get(i)
         if not members:
             continue
@@ -492,8 +589,9 @@ def _framed(steps):
         solid = any(str(n).endswith(":1") for n in members)
         if i not in relation_at:
             keep = _FRAME_MAX_SUBJECTS if solid else _FRAME_SKETCH_GROUP
-            members = _frame_cluster(members, None if solid else _FRAME_SKETCH_SPAN)[-keep:]
-        subject = _frame_box(members)
+            members = _frame_cluster(members, None if solid else _FRAME_SKETCH_SPAN,
+                                     layout)[-keep:]
+        subject = _frame_box(members, layout)
         built.append((members, subject))
         if subject and frame and _inside(subject, frame):
             continue                     # already on screen - moving would only jog the view
@@ -503,11 +601,11 @@ def _framed(steps):
         # wants space around it, because a mate is watched rather than inspected.
         # from the LARGEST single subject, never the union: a union of two far-apart parts is a
         # measure of their SEPARATION, and zooming to 2.2x that is the whole-field photograph again.
-        each = [_frame_box([m]) for m in members]
+        each = [_frame_box([m], layout) for m in members]
         own = max((max(b[1] - b[0], b[3] - b[2]) for b in each if b), default=0.0)
-        pattern_names = [str(_CHUNK_OF.get(str(m), str(m))) for m in members]
-        if any(name in _PATTERNED
-               or (name.endswith(":1") and name[:-2] in _PATTERNED)
+        pattern_names = [str(home.get(str(m), str(m))) for m in members]
+        if any(name in patterned
+               or (name.endswith(":1") and name[:-2] in patterned)
                for name in pattern_names):
             own *= _FRAME_PATTERN_WIDEN
         span = max(own * _FRAME_CONTEXT, _FRAME_MIN_SPAN)
@@ -521,9 +619,18 @@ def _framed(steps):
             span, cap = _FRAME_SKETCH_SPAN, _FRAME_SKETCH_GROUP
         else:
             cap = _FRAME_MAX_SUBJECTS
-        focus, box = _frame_neighbourhood(members, subject, built, span, cap)
+        primary = tuple(dict.fromkeys(condition for member in members
+                                     for condition in subject_conditions.get(member, ())))
+        neighbours = [(names, bounds) for names, bounds in built
+                      if compatible_neighbour(primary, tuple(condition for member in names
+                                                   for condition in subject_conditions.get(member, ())))]
+        focus, box = _frame_neighbourhood(members, subject, neighbours, span, cap)
         frame = _expand(box, _FRAME_MARGIN) if box else None
-        out.append(_watch(focus))
+        camera = _watch(focus, planes=planes)
+        conditions = tuple(condition for member in focus
+                           for condition in subject_conditions.get(member, ()))
+        frame_conditions = tuple(dict.fromkeys(conditions))
+        out.append((camera[0], camera[1], condition_expect(conditions, camera[2]), camera[3]))
     return out
 
 
@@ -534,11 +641,12 @@ def _union(a, b):
     return [min(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), max(a[3], b[3])]
 
 
-def _chunk_box(chunk):
+def _chunk_box(chunk, layout=None):
     """The world box one chunk occupies: its authored box WIDENED by the measured extents where a
     run recorded them. A union, never a replacement - a measurement of one body does not bound a
     chunk whose other bodies were never read."""
-    return _union(_PLACED_BOX.get(chunk), _MEASURED_BOX.get(chunk))
+    boxes = _PLACED_BOX if layout is None else layout["boxes"]
+    return _union(boxes.get(chunk), _MEASURED_BOX.get(chunk))
 
 
 def measured_boxes(inspected):
@@ -560,9 +668,8 @@ def measured_boxes(inspected):
 
 
 # The drift gate ACT 9 runs, one row per chunk. These four travel furthest from their authored
-# cell - a joint carries one clear of the packed field, a pattern and a mirror overrun two more -
-# so a re-pack that moves anything moves one of them. 5 mm sits two orders above the read-to-read
-# agreement measured (0.05 mm) and an order below the smallest move that matters (_FIELD_GUTTER).
+# cell - a joint carries one clear of its anchor, and patterns enlarge the others. 5 mm is above
+# the read-to-read agreement measured (0.05 mm) but below the authored spacing.
 _DRIFT_CHUNKS = ("MateArm", "TorusRing", "BallSphere", "FeatureCameo")
 _DRIFT_TOL_MM = 5.0
 
@@ -590,34 +697,35 @@ def drift_row(chunk):
             lambda p: layout_placed_as_measured(chunk, p["min_point"], p["max_point"]), None)
 
 
-def _frame_box(names):
+def _frame_box(names, layout=None):
     """The world box the named entities occupy, or None when none of them is placed. A name is
     resolved through _CHUNK_OF first: a sketch rides on the body that owns it, and it is that body's
     box the camera will see."""
     stems = [re.sub(r":\d+$", "", str(n)) for n in names]
-    got = [b for b in (_chunk_box(_CHUNK_OF.get(s, s)) for s in stems) if b]
+    home = _CHUNK_OF if layout is None else layout["home"]
+    got = [b for b in (_chunk_box(home.get(s, s), layout) for s in stems) if b]
     if not got:
         return None
     return [min(b[0] for b in got), max(b[1] for b in got),
             min(b[2] for b in got), max(b[3] for b in got)]
 
 
-def _frame_cluster(members, limit=None):
+def _frame_cluster(members, limit=None, layout=None):
     """The members that actually fit in one shot together, keeping the ones nearest the LAST one
     built - the work just done. A family is framed as a family, but a family whose members ended up
     in different rows of the field (SlotA..SlotH, or a profile pinned at the origin beside the post
     it revolved) does not fit in any one frame, and stretching to cover both leaves every member a
     speck."""
-    if len(members) < 2 or _frame_box(members) is None:
+    if len(members) < 2 or _frame_box(members, layout) is None:
         return members
-    anchor = _frame_box([members[-1]]) or _frame_box(members)
+    anchor = _frame_box([members[-1]], layout) or _frame_box(members, layout)
     # what the group may grow to is set by the anchor's OWN size, so a family of small sketches
     # stays tight and a family of large parts is allowed the room it needs
     own = max(anchor[1] - anchor[0], anchor[3] - anchor[2])
     limit = limit or max(own * _FRAME_CONTEXT, _FRAME_MIN_SPAN) * _FRAME_STRETCH
     kept, box = [], list(anchor)
     for name in members:
-        b = _frame_box([name])
+        b = _frame_box([name], layout)
         if b is None:
             # Where this one sits is unknown, so it cannot be shown to fit - and keeping it anyway
             # is what let a member at the far end of the field back into a trimmed frame.
@@ -698,18 +806,7 @@ def _frame_neighbourhood(members, subject, built, target=None, cap=None):
     return focus, box
 
 
-# --- physical layout: one slot per scratch chunk, laid out in narrative order --------------------
-# A chunk's coordinates as written are LOCAL to that chunk: two chunks may be authored on the same
-# patch of the XY plane, and this pass translates each one into a cell of its own, in the order the
-# acts build them. So a camera framed on a chunk contains its subject, and the neighbours in shot
-# are the steps that ran just before and just after it.
-#
-# Rigid translation is what makes it safe: a chunk's internal offsets, sizes and probe points all
-# move with it, so nothing inside a chunk can be broken by the move. What could break is a world
-# point one chunk aims at another - so the chunk is the COMPONENT, which is the unit those points
-# are shared within, and the part/billet/vise world at the origin never moves at all. A world
-# point that DOES cross a component boundary fails the layout gate in test_tool_verify_complete.py
-# rather than drifting quietly: put the geometry in one component, or pin it.
+# --- coordinate placement -----------------------------------------------------------------------
 
 # Key PAIRS that pin a step to a PLACE. A key holding a delta (dx, dy, distance, spacing) or a size
 # (radius, slot_length, depth) is deliberately absent - a rigid translation leaves those alone. Both
@@ -744,63 +841,18 @@ _PLACE_NAMES = ("sketch_name", "target", "occurrence", "component", "body", "bod
 # revolve profile off its axis, which turns a sphere into a torus and passes every count check.
 _PLACE_FRAMES = {"xy": ("x", "y"), "xz": ("x", None), "yz": ("y", None)}
 
-# Chunks the layout cannot see are one rigid body. Both are components in their own right - which is
-# what lets one find_geometry name each without ambiguity - but they are stacked on purpose, and the
-# call that joins them reaches for both through run-time handles no static read can follow. Sharing
-# ground is NOT the test: half the scratch field is authored on the same patch of XY by chance.
-_PLACE_WITH = {
-    "ReplBlock": "ReplRoof",     # the open sheet that replaces the block's top face sits above it
-}
-
-# Chunks a JOINT or an assembly CONSTRAINT co-locates. Both move a part onto the other's geometry,
-# so the
-# cell the layout dealt the mover is abandoned the instant the joint lands, and the mover arrives in
-# the PARTNER's cell - on top of whatever the packer had already put there. Measured on the finished
-# document: the ball/axis/rigid post chain piled five bodies into one cell and spilled into the next,
-# which is what a viewer sees as cameos sitting inside older ones.
-# Each group is dealt ONE cell and every member takes the SAME offset, so the group travels as the
-# rigid assembly it is about to become and keeps its authored relative positions. The joint then
-# moves parts WITHIN that cell, which is the only place it was ever going to move them.
+# Separate components that a joint intentionally co-locates.
 _JOINT_GROUPS = (
     ("BallSphere", "BallPost", "AxisPost", "RigidPost"),
     ("TorusRing", "TorusPost"),
     ("AsbPin", "AsbPlate"),
-    ("ConA", "ConB"),            # the single-relationship constrain pair
-    ("MateSeat", "MateArm"),     # the multi-relationship one - a seat AND a turn in one feature
-    ("LnkA", "LnkB"),            # the motion link's fresh revolute pair
-    ("RstBase", "RstArm"),       # the recompute-reset pair, on its own scratch document
-    # the joint bench: the base and every indicator arm its stations carry into place
+    ("ConA", "ConB"),
+    ("MateSeat", "MateArm"),
+    ("LnkA", "LnkB"),
+    ("RstBase", "RstArm"),
     ("JointBase",) + tuple("Ind" + s[0] for s in _JOINT_STATIONS),
 )
 _JOINT_FAMILY = {c: g[0] for g in _JOINT_GROUPS for c in g}
-
-# Chunks whose READ-BACK is relative to the world origin, so moving them changes the answer. The
-# angular-dimension contract is "the wedge FACING THE SKETCH ORIGIN", which flips to the supplement
-# once the crossing point moves to the other side of it - a 60 degree beat silently becomes 120.
-_PLACE_ANCHORED = ("W3Dims",)
-
-# Tools whose RESULT is measured from the world origin, so the further out the chunk sits the
-# further its result is thrown: a mirror about an origin plane reflects to the far side (joined,
-# that is ONE body spanning both), and a scale multiplies the distance along with the size. Measured
-# on a placed field: EmbossBlock mirrored+joined at y 720 became a single body 1480 mm long, and
-# ScaleBlock scaled at y 720 ended up at y 1594. A chunk either of these acts on stays put.
-_ORIGIN_RELATIVE_TOOLS = ("model_mirror", "model_scale")
-
-_PIN_HALF = 160.0        # half-width of the origin neighbourhood, which never moves
-_FIELD_X0 = 200.0        # the scratch field starts clear of it
-# ...and starts ABOVE the band the anchored chunks occupy (every one of them sits at y <= 140), so
-# the packer never has to step around an obstacle. Stepping around one is what made the sequence
-# jump: a row would skip a gap, and the eye loses the order the acts were built in.
-_FIELD_Y0 = 220.0
-_FIELD_WIDTH = 900.0     # a row wraps past here - narrow keeps the field a BLOCK, not a long strip
-# Empty millimetres between one chunk's cell and the next. This is ALSO the packer's only margin for
-# error, and it needs one: a cell is measured from the coordinates the steps are WRITTEN with, which
-# under-counts the body that grows from them - a circle contributes its centre, not its radius, and
-# an extrude contributes nothing at all in the third axis. So the real geometry routinely reaches
-# past its cell by a radius or two, and at 18 mm that reach landed in the neighbour. Measured on the
-# finished document: widening this from 18 to 60 is what separates the cameos that were touching.
-# The cost is a taller field, which nothing pays for - every chunk is framed on itself.
-_FIELD_GUTTER = 60.0
 
 
 def _place_owner(args):
@@ -988,141 +1040,15 @@ def _place_shift(args, dx, dy, frame="xy", tool=""):
     return out
 
 
-def _place_slots(program):
-    """Measure every chunk, then deal each movable one a cell of its own; return {chunk: (dx, dy)}.
-
-    Cells are dealt left to right in the order the acts build them, wrapping into a new row past
-    _FIELD_WIDTH, so the camera walks the field in the order the story runs.
-
-    Anything reaching into the origin neighbourhood stays exactly where it is: that is the machined
-    part, the billet and the vise built around it, and the fallback world, which are addressed by
-    scripts and by each other."""
-    box, order, locked = {}, [], set()
-    for _name, _pre, narr, _fb in program:
-        for step, chunk, _cursor, frame in _place_walk(narr):
-            args = step[1]
-            if chunk is None or not isinstance(args, dict):
-                continue
-            pinned = _place_points(args, frame, step[0])
-            # A sketch on a GLOBAL origin plane is nailed to that plane: an XZ sketch is at y=0, so
-            # a chunk holding one stays where it was authored rather than being carried in y.
-            # Any pinned position locks it, a coordinate list as much as a pair key.
-            if frame in ("xz", "yz") and pinned:
-                locked.add(chunk)
-            for x, y in pinned:
-                if chunk not in box:
-                    box[chunk] = [None, None, None, None]
-                    order.append(chunk)
-                b = box[chunk]
-                if x is not None:
-                    b[0] = x if b[0] is None else min(b[0], x)
-                    b[1] = x if b[1] is None else max(b[1], x)
-                if y is not None:
-                    b[2] = y if b[2] is None else min(b[2], y)
-                    b[3] = y if b[3] is None else max(b[3], y)
-    # a chunk drawn only on an edge-on plane constrains one axis; the other reads as zero extent at
-    # the origin, which is where that plane sits.
-    for b in box.values():
-        for i in (0, 1, 2, 3):
-            if b[i] is None:
-                b[i] = 0.0
-
-    # Cells are dealt a FAMILY at a time - SlotA..SlotH together - and a family that will not fit in
-    # what is left of the row starts the next one, so the frame _framed puts around a family never
-    # straddles a row break.
-    locked.update(c for c in _PLACE_ANCHORED if c in box)
-    for _name, _pre, narr, _fb in program:
-        for step, _chunk, cursor, _frame in _place_walk(narr):
-            if step[0] in _ORIGIN_RELATIVE_TOOLS:
-                named = [n for n in ((step[1].get("bodies") or []) if isinstance(step[1], dict)
-                                     else []) if isinstance(n, str)]
-                for c in [_CHUNK_OF.get(n, n) for n in named] + ([cursor] if cursor else []):
-                    if c in box:
-                        locked.add(c)
-    for chunk, (x0, x1, y0, y1) in box.items():
-        if x0 <= _PIN_HALF and -_PIN_HALF <= x1 and y0 <= _PIN_HALF and -_PIN_HALF <= y1:
-            locked.add(chunk)
-    for a, b in _PLACE_WITH.items():
-        if a in locked or b in locked:
-            locked |= {a, b}
-    for group in _JOINT_GROUPS:
-        if any(c in locked for c in group):
-            locked.update(c for c in group if c in box)
-
-    families, welded = {}, {}
-    for chunk in order:
-        if chunk in locked:
-            continue
-        # a joint group is ONE cell: its members are collapsed to a single pseudo-chunk here and
-        # handed the same offset below, so the packer never deals a cell to a part a joint is about
-        # to move out of it.
-        lead = _JOINT_FAMILY.get(chunk)
-        if lead:
-            # the pseudo-chunk is prefixed so it can never collide with a real chunk name - the
-            # group's leader IS a real chunk, and reusing its name would make the group's cell and
-            # the leader's own cell the same entry.
-            weld = "~" + lead
-            welded.setdefault(weld, []).append(chunk)
-            if weld in box:
-                continue
-            box[weld] = list(box[chunk])
-            families.setdefault(_group_of(lead), []).append(weld)
-            continue
-        families.setdefault(_group_of(chunk), []).append(chunk)
-    # the welded cell has to hold every member's authored ground, or the joint group overflows it
-    for weld, members in welded.items():
-        for c in members:
-            b = box[c]
-            w = box[weld]
-            box[weld] = [min(w[0], b[0]), max(w[1], b[1]), min(w[2], b[2]), max(w[3], b[3])]
-
-    # The field starts beside the part and steps AROUND what cannot move, rather than being
-    # exiled to a band of its own - a scene twice as tall is not easier to watch. The obstacles are
-    # small and clustered (the origin world, and the strip of chunks nailed to an origin plane), so
-    # stepping past one costs a gap in a row, not a row.
-    blocked = [(box[c][0] - _FIELD_GUTTER, box[c][1] + _FIELD_GUTTER,
-                box[c][2] - _FIELD_GUTTER, box[c][3] + _FIELD_GUTTER) for c in locked]
-
-    def clear(cx, cy, w, h):
-        """The leftmost x at or after cx where a w x h cell at cy hits nothing, or None past the
-        row's end."""
-        while cx + w <= _FIELD_X0 + _FIELD_WIDTH:
-            hit = next((b for b in blocked
-                        if cx <= b[1] and b[0] <= cx + w and cy <= b[3] and b[2] <= cy + h), None)
-            if hit is None:
-                return cx
-            # a zero-width obstacle sits exactly at cx, so step past it, never onto it
-            cx = max(hit[1], cx + _FIELD_GUTTER)
-        return None
-
-    offsets, x, y, row_h = {}, _FIELD_X0, _FIELD_Y0, 0.0
-    for members in families.values():
-        span = sum(box[c][1] - box[c][0] + _FIELD_GUTTER for c in members) - _FIELD_GUTTER
-        if x > _FIELD_X0 and x + min(span, _FIELD_WIDTH) > _FIELD_X0 + _FIELD_WIDTH:
-            x, y, row_h = _FIELD_X0, y + row_h + _FIELD_GUTTER, 0.0
-        for chunk in members:
-            x0, x1, y0, y1 = box[chunk]
-            w, h = x1 - x0, y1 - y0
-            at = clear(x, y, w, h)
-            if at is None:
-                x, y, row_h = _FIELD_X0, y + row_h + _FIELD_GUTTER, 0.0
-                at = clear(x, y, w, h)
-                if at is None:
-                    raise ValueError(
-                        f"layout cannot place {chunk!r} collision-free within "
-                        f"{_FIELD_WIDTH:g} mm field width")
-            shift = (at - x0, y - y0)
-            # one offset for the whole welded group - the members keep their authored relative
-            # positions, so the assembly arrives in its cell already put together.
-            for c in welded.get(chunk, [chunk]):
-                offsets[c] = shift
-            x = at + w + _FIELD_GUTTER
-            row_h = max(row_h, h)
-    return offsets
+def _family_slots(family, program):
+    """Return authored offsets used by one family's local rows."""
+    used = {chunk for _name, _pre, rows, _fallback in program
+            for _step, chunk, _cursor, _frame in _place_walk(rows) if chunk}
+    return {chunk: offset for chunk, offset in _SLOTS.items() if chunk in used}
 
 
 def _placed(steps, offsets):
-    """steps with every chunk translated into the slot _place_slots gave it."""
+    """Return steps translated by their authored chunk offsets."""
     out = []
     for step, chunk, _cursor, frame in _place_walk(steps):
         off = offsets.get(chunk)

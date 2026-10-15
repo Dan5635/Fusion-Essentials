@@ -71,9 +71,9 @@ def _census(design, host, kind, label):
 
 def handler(body: str = "", occurrence: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     good_mode, mode_err = _MODE_GUARD.check(design)
     if not good_mode:
         return mode_err
@@ -139,14 +139,17 @@ def handler(body: str = "", occurrence: str = "") -> dict:
         return error(f"Remove failed (removeFeatures.add raised): {e}")
 
     n_after = _census(design, host, kind, label)
+    left = lambda: (" " + _common.failed_effect_remedy(design, feat) if feat else
+                    " removeFeatures.add returned no feature object; not measured whether a Remove "
+                    "feature was added - re-read with design_get(include=['timeline']).")
     if n_after is None:
         return error(f"removeFeatures.add ran for '{label}', but the collection re-scan that "
                      "confirms it could not be read - the removal may or may not have taken. Check "
-                     "with design_get(include=['tree']) before acting on this result.")
+                     "with design_get(include=['tree']) before acting on this result." + left())
     if n_after != n_before - 1:
         return error(f"Remove reported success but '{label}' is still present in "
                      f"'{host_name}' ({n_before} before, {n_after} after) - treat the removal as "
-                     "failed.")
+                     "failed." + left())
 
     feature_name = safe(lambda: feat.name) if feat else None
     # itemByName over the SAME collection the feature was added to - the feature's own read-back,

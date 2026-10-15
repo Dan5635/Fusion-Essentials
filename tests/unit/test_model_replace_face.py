@@ -6,6 +6,9 @@ regression goes red), the single-body guard, the two platform refusals surfacing
 effect gate - volume OR face count must move on the one owning body, and a call that moves neither
 must be an error rather than a false ok.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import types
 
@@ -63,7 +66,7 @@ class ReplaceFaceFeatures:
     `signals_unreadable` drops the read-backs, leaving the call with no evidence at all;
     `removable` False models a feature whose rollback the platform refuses."""
 
-    def __init__(self, body, volume_delta=8.0, face_delta=1, return_feature=True, health=0,
+    def __init__(self, body, volume_delta=8.0, face_delta=1, return_feature=True, health=_HEALTHY,
                  raises=None, signals_unreadable=False, input_none=False, area_delta=None,
                  removable=True):
         self.body = body
@@ -269,7 +272,7 @@ class TestHonesty:
 
     def test_health_error_reported_not_false_ok(self, monkeypatch):
         body = BRepBody(name="Block", volume=100.0, face_count=6, entity_token="tok-a")
-        feats = ReplaceFaceFeatures(body, health=2)
+        feats = ReplaceFaceFeatures(body, health=_ERROR)
         _wire(monkeypatch, feats, [_face_of(body)])
         res = rf.handler(faces=["h"], target="Patch1")
         assert res["isError"] is True

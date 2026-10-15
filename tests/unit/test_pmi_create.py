@@ -1,7 +1,7 @@
 """Tests for `pmi_create` - the guards (one entity per note, faces-only hole notes, the closed
 {symbol} vocabulary), the leader-extension pin, and the create-then-read-back composition."""
+from conftest import install as _install_design
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +14,7 @@ from conftest import (load_tool, error_message, BRepEdge, BRepFace, FakePMIAnnot
 pc = load_tool("pmi_create")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _face(comp):
@@ -37,7 +35,7 @@ def rig(monkeypatch):
     comp = MakeComp("Root")
     comp.pmiAnnotations = FakePMIAnnotations(leader_notes=notes, hole_notes=hole_notes)
     design = MakeDesign(comp=comp)
-    monkeypatch.setattr(pc._common, "design", lambda: design)
+    _install_design(pc, design)
     monkeypatch.setattr(pc._pmi, "segments_markup", lambda a: None)
 
     def stub_geometry(ents):
@@ -63,7 +61,7 @@ class TestNoteGuards:
         assert "'{bogus}'" in msg and "flatness" in msg
 
     def test_no_active_design_is_an_error(self, monkeypatch):
-        monkeypatch.setattr(pc._common, "design", lambda: None)
+        _install_design(pc, None)
         assert "No active design" in error_message(
             pc.handler(kind="note", geometry=["a"], text="X"))
 
@@ -80,7 +78,7 @@ class TestEntitlement:
         rig.stub_geometry([_face(rig.comp)])
         rig.notes.add = self._refuse
         msg = error_message(pc.handler(kind="note", geometry=["a"], text="X"))
-        assert "Extension is required" in msg and "entitlement" in msg and "pmi_get" in msg
+        assert "Extension is required" in msg and "This operation requires" in msg and "pmi_get" in msg
 
     def test_another_raise_carries_no_entitlement_clause(self, rig):
         rig.stub_geometry([_face(rig.comp)])
@@ -125,6 +123,14 @@ class TestHoleNoteGuards:
         msg = error_message(pc.handler(kind="hole_note", geometry=["a"],
                                        flags={"bogus_flag": True}))
         assert "bogus_flag" in msg and "quantity_note" in msg
+
+    def test_a_string_flag_value_is_refused_before_the_note_is_created(self, rig):
+        rig.stub_geometry([_face(rig.comp)])
+        msg = error_message(pc.handler(kind="hole_note", geometry=["a"],
+                                       flags={"threaded": "false"}))
+        assert "Invalid Boolean for 'flags.threaded': 'false'." in msg
+        assert "No annotation was created." in msg
+        assert rig.hole_notes._added is None and not hasattr(rig.hole_ann, "isThreaded")
 
     def test_unknown_value_key_is_refused(self, rig):
         rig.stub_geometry([_face(rig.comp)])
@@ -254,11 +260,30 @@ class TestCreate:
                             display={"precision": 2, "secondary": {"precision": 4}}))
         assert seen == [(rig.hole_ann, {"precision": 2, "secondary": {"precision": 4}})]
 
-    def test_a_display_refusal_reports_the_annotation_as_created(self, rig):
+    @pytest.mark.parametrize("extra,fragment", [
+        ({"display": {"units": "furlong"}}, "display.units must be one of"),
+        ({"display": {"precision": 2, "secondary": {"leading_zeros": "false"}}},
+         "display.secondary: Invalid Boolean for 'display.leading_zeros': 'false'."),
+        ({"display": "precision=2"}, "'display' must be an object"),
+        ({"display": {"precision": 2.5}}, "display.precision must be an integer, got 2.5."),
+        ({"display": {"secondary": [4]}}, "'display.secondary' must be an object: {precision"),
+        ({"values": {"diameter": {"value": 6, "tolerance": {"type": "wonky"}}}},
+         "'diameter'.tolerance: Unknown tolerance type 'wonky'"),
+        ({"values": {"diameter": {"value": 6, "tolerance": {"type": "symmetric", "value": "abc"}}}},
+         "'diameter'.tolerance: Tolerance 'symmetric' needs a number for 'value', got 'abc'."),
+        ({"values": {"diameter": {"value": 6, "tolerance": {"type": "deviation", "upper": "nan"}}}},
+         "Tolerance 'deviation' needs a number for 'upper', got 'nan'."),
+        ({"values": {"depth": "deep"}}, "'depth' must be a number"),
+        ({"values": {"depth": True}}, "'depth' must be a number (in 'units'), got True."),
+        ({"values": {"depth": float("nan")}}, "'depth' must be a number (in 'units'), got nan."),
+        ({"values": {"depth": float("inf")}}, "'depth' must be a number (in 'units'), got inf.")])
+    def test_a_bad_display_or_value_is_refused_before_the_note_is_created(self, rig, extra,
+                                                                          fragment):
         rig.stub_geometry([_face(rig.comp)])
-        msg = error_message(pc.handler(kind="hole_note", geometry=["a"],
-                                       display={"units": "furlong"}))
-        assert "must be one of" in msg and "WAS created" in msg
+        msg = error_message(pc.handler(kind="hole_note", geometry=["a"], **extra))
+        assert fragment in msg and msg.endswith("No annotation was created.")
+        assert "WAS created" not in msg
+        assert rig.hole_notes._added is None and rig.hole_notes.count == 0
 
     def test_bad_text_point_reports_but_names_the_created_annotation(self, rig):
         rig.stub_geometry([_face(rig.comp)])

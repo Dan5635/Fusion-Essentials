@@ -2,6 +2,8 @@
 the router's composition (default light records, include= slices, truncation, geometry narrowing),
 the {symbol} markup codec, and find_annotation's ambiguity refusal."""
 
+from conftest import install as _install_design
+
 import json
 import math
 from types import SimpleNamespace
@@ -53,7 +55,7 @@ def two_notes(monkeypatch):
     anns = [_ann("Note1"), _ann("Hole Note1", suffix="PMIHoleThreadNote", text="QTY",
                  quantity=2, isThrough=True, isThreaded=False,
                  diameter=SimpleNamespace(hasValue=True, value=0.6))]
-    monkeypatch.setattr(pg._common, "design", lambda: object())
+    _install_design(pg, object())
     monkeypatch.setattr(pg._pmi, "walk_annotations",
                         lambda d, stats=None: iter((comp, a) for a in anns))
     return comp, anns
@@ -81,7 +83,7 @@ class TestDefaultSlice:
     def test_out_of_date_and_warning_surface(self, monkeypatch):
         comp = MakeComp("Root")
         bad = _ann("Note9", out_of_date=True, warning="reference lost")
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter([(comp, bad)]))
         rec = _payload(pg.handler())["annotations"][0]
@@ -107,7 +109,7 @@ class TestSlices:
     def test_component_filter_narrows(self, monkeypatch):
         c1 = SimpleNamespace(name="A")
         c2 = SimpleNamespace(name="B")
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter([(c1, _ann("N1")), (c2, _ann("N2"))]))
         out = _payload(pg.handler(component="B"))
@@ -129,7 +131,7 @@ class TestHoleValueUnits:
         ann = _ann("Hole Note1", suffix="PMIHoleThreadNote", text="QTY",
                    countersinkAngle=_gv(math.radians(90), _tol(math.radians(1))),
                    diameter=_gv(0.6, _tol(0.05)))
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter([(comp, ann)]))
         return ann
@@ -326,7 +328,7 @@ class TestHoleFlagReads:
         # A default of True publishes "this callout annotates a hole" as though it were measured.
         comp = MakeComp("Root")
         ann = _ann("Hole Note1", suffix="PMIHoleThreadNote")
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter([(comp, ann)]))
         rec = _payload(pg.handler(include=["detail"]))["annotations"][0]
@@ -335,7 +337,7 @@ class TestHoleFlagReads:
     def test_a_readable_is_hole_false_is_published(self, monkeypatch):
         comp = MakeComp("Root")
         ann = _ann("Hole Note1", suffix="PMIHoleThreadNote", isHoleAnnotation=False)
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter([(comp, ann)]))
         rec = _payload(pg.handler(include=["detail"]))["annotations"][0]
@@ -367,7 +369,7 @@ class TestRowCap:
     def test_an_over_cap_request_is_not_refused_end_to_end(self, monkeypatch):
         comp = MakeComp("Root")
         anns = [_ann(f"N{i}") for i in range(3)]
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter((comp, a) for a in anns))
         out = _payload(pg.handler(max_results=99999))          # an error() here would raise
@@ -378,19 +380,18 @@ class TestBoundsAndGuards:
     def test_truncates_at_max_results_but_counts_all(self, monkeypatch):
         comp = MakeComp("Root")
         anns = [_ann(f"N{i}") for i in range(5)]
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter((comp, a) for a in anns))
         out = _payload(pg.handler(max_results=2))
         assert out["total"] == 5 and len(out["annotations"]) == 2 and out["truncated"] is True
 
-    @pytest.mark.parametrize("raw", [None, "", [], "segments", "SEGMENTS, Detail",
-                                     ["Detail"], ["segments", "detail"], "  detail  "])
-    def test_include_normalizes_exactly_like_its_sibling_reads(self, raw):
-        # Seven <domain>_get reads carry this same normalization; a divergent copy here means an
-        # include= form that works against design_get silently does something else against pmi_get.
-        sibling = load_tool("design_get")
-        assert pg._normalize_include(raw) == sibling._normalize_include(raw)
+    @pytest.mark.parametrize("raw, expected", [(None, []), ("", []), ([], []),
+        ("segments", ["segments"]), ("SEGMENTS, Detail", ["segments", "detail"]),
+        (["Detail"], ["detail"]), (["segments", "detail"], ["segments", "detail"]),
+        ("  detail  ", ["detail"])])
+    def test_include_normalizes_slice_names(self, raw, expected):
+        assert pg._normalize_include(raw) == expected
 
     def test_a_comma_string_include_is_split_and_lowercased(self, two_notes, monkeypatch):
         monkeypatch.setattr(pg._pmi, "segments_markup", lambda a: "{flatness}0.05")
@@ -404,7 +405,7 @@ class TestBoundsAndGuards:
             assert "segments" in out["note"]
 
     def test_no_active_design_is_an_error(self, monkeypatch):
-        monkeypatch.setattr(pg._common, "design", lambda: None)
+        _install_design(pg, None)
         assert "No active design" in error_message(pg.handler())
 
     def test_bad_units_refused(self, two_notes):
@@ -419,7 +420,7 @@ class TestBoundsAndGuards:
         drop = _ann("Dropped")
         coll = SimpleNamespace(itemsByEntities=lambda ents: [keep])
         comp = SimpleNamespace(name="Root", pmiAnnotations=coll)
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._common, "all_components", lambda d: [comp])
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter([(comp, keep), (comp, drop)]))
@@ -435,7 +436,7 @@ class TestGeometryFilterIdentity:
     def _rig(self, monkeypatch, walk, matched):
         coll = SimpleNamespace(itemsByEntities=lambda ents: matched)
         comp = SimpleNamespace(name="Root", pmiAnnotations=coll)
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._common, "all_components", lambda d: [comp])
         monkeypatch.setattr(pg._pmi, "walk_annotations",
                             lambda d, stats=None: iter((comp, a) for a in walk))
@@ -478,7 +479,7 @@ class TestWalkHolesArePublished:
                 stats["components_unreadable"] = holes[0]
                 stats["items_unreadable"] = holes[1]
             return iter((comp, a) for a in anns)
-        monkeypatch.setattr(pg._common, "design", lambda: object())
+        _install_design(pg, object())
         monkeypatch.setattr(pg._pmi, "walk_annotations", walk)
 
     def test_unreadable_components_and_items_ride_beside_the_tallies(self, monkeypatch):

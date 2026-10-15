@@ -51,9 +51,9 @@ def _project():
     return config["project"]
 
 
-def _run_steps(steps, ctx):
+def _run_steps(steps, ctx, stop_on_failure=False):
     """tool_verify.run_steps with a per-step printed line - same engine, same vocabulary."""
-    return run_steps(steps, ctx,
+    return run_steps(steps, ctx, stop_on_failure=stop_on_failure,
                      on_result=lambda tool, status, note:
                      print(f"  {status:18} {tool:26} {note}", flush=True))
 
@@ -253,14 +253,11 @@ def run():
          lambda p: p.get("added") is True and p.get("sheet_count") == p.get("sheet_count_before") + 1,
          None),
         # the second add runs on a drawing that ALREADY holds two sheets, so this is where the
-        # listing has to be read: 'sheets' comes back 1-based and contiguous - the numbering
-        # drawing_export's sheet_range takes, obtainable nowhere else - with the new sheet directly
-        # after the one that was active (the previous add left that one last, so here the position
-        # after the active is also the last index).
+        # listing has to be read: collection_index is 1-based and contiguous; export order is unknown.
         ("drawing_edit_sheet", {"action": "add", "new_name": "SweepSheetA"},
          lambda p: p.get("sheet") == "SweepSheetA" and p.get("sheet_count_before", 0) >= 2
-         and [s["export_index"] for s in p["sheets"]] == list(range(1, len(p["sheets"]) + 1))
-         and next(s["export_index"] for s in p["sheets"] if s["name"] == "SweepSheetA")
+         and [s["collection_index"] for s in p["sheets"]] == list(range(1, len(p["sheets"]) + 1))
+         and next(s["collection_index"] for s in p["sheets"] if s["name"] == "SweepSheetA")
          == p["sheet_count_before"] + 1, None),
         ("drawing_edit_sheet", {"action": "add", "new_name": "SweepDup"},
          lambda p: p.get("sheet") == "SweepDup", None),
@@ -357,17 +354,17 @@ def run():
 
 def get_only():
     """READ-ONLY drawing_get beats against whatever drawing is ACTIVE - no staging, nothing
-    written. The read tool's live verification: sheets listed by export_index, per-view rows,
+    written. The read tool's live verification: sheets listed by collection_index, per-view rows,
     the one-sheet scope, and the miss refusal naming the available sheets."""
     health_gate()
     ctx = {}
     steps = [
         ("drawing_get", {}, "ok",
          ("sheet_names", lambda p: [s.get("name") for s in (p.get("sheets") or []) if s])),
-        # the payload's own shape claims: contiguous 1-based export indices, exactly one active
+        # the payload's own shape claims: contiguous 1-based collection indices, exactly one active
         ("drawing_get", {}, lambda p: isinstance(p.get("sheet_count"), int), None),
         ("drawing_get", {}, lambda p: (
-            [s.get("export_index") for s in p.get("sheets") or []]
+            [s.get("collection_index") for s in p.get("sheets") or []]
             == list(range(1, len(p.get("sheets") or []) + 1))), None),
         ("drawing_get", {}, lambda p: (
             sum(1 for s in p.get("sheets") or [] if s.get("is_active")) == 1), None),
@@ -385,6 +382,28 @@ def get_only():
     return _report(rows, "get-only")
 
 
+def auto_dimension_guard():
+    """Verify write refusals with an operator holding the Auto Dimensions chooser open."""
+    before_health = health_gate()
+    command = "FusionDrawingAutoDimensionEditCommand"
+    failed, before = call("drawing_get", {})
+    if failed or not isinstance(before, dict) or before.get("active_command_id") != command:
+        sys.exit("Open Auto Dimensions on an owned scratch drawing before --auto-dimension-guard.")
+    path = os.path.join(OUT_DIR, "refused_" + str(time.time_ns()) + ".pdf")
+    refusal = _refused(command, "Finish or cancel", "auto_dimension='off'")
+    rows = _run_steps([
+        ("drawing_export", {"format": "pdf", "file_path": path}, refusal, None),
+        ("drawing_edit_sheet", {"action": "add", "new_name": "RefusedGuardSheet"}, refusal, None),
+        ("sys_reload_addin", {}, refusal, None),
+        ("drawing_get", {}, lambda p: p.get("active_command_id") == command
+         and p.get("sheet_count") == before.get("sheet_count")
+         and health_gate()["attestation"]["load_id"] == before_health["attestation"]["load_id"]
+         and not os.path.exists(path), None),
+    ], {}, stop_on_failure=True)
+    print("Leave the chooser for the operator to cancel; no automatic UI recovery is attempted.")
+    return _report(rows, "auto-dimension-guard")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -392,5 +411,9 @@ if __name__ == "__main__":
     g.add_argument("--run", action="store_true")
     g.add_argument("--get-only", action="store_true", dest="get_only",
                    help="read-only drawing_get beats against the ACTIVE drawing (no staging)")
+    g.add_argument("--auto-dimension-guard", action="store_true",
+                   help="operator-present refusal checks with Auto Dimensions already open")
     args = ap.parse_args()
+    if args.auto_dimension_guard:
+        sys.exit(auto_dimension_guard())
     sys.exit(stage() if args.stage else (get_only() if args.get_only else run()))

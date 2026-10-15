@@ -19,6 +19,7 @@ from ._common import ok, error, safe
 from . import _assert
 from . import _common
 from . import _cam_common
+from . import _design_common
 from . import _inputs
 from . import _joints
 from . import _relations
@@ -107,8 +108,7 @@ def _data_identity(doc):
 
 
 def _overall_bbox(root, design):
-    """The whole-design world-aligned bounding box - size and center in the design's display units,
-    or None when nothing measurable is modelled yet."""
+    """Return native root-component summary bounds in display units, or None when unreadable."""
     bb = safe(lambda: root.boundingBox)
     mn = safe(lambda: bb.minPoint) if bb is not None else None
     mx = safe(lambda: bb.maxPoint) if bb is not None else None
@@ -138,9 +138,7 @@ def _overall_bbox(root, design):
         "units": units,
         "size": size,
         "center": center,
-        # Component.boundingBox SWEEPS sketch + construction geometry (an orphaned datum inflates
-        # it); model_inspect's bbox is solids-only - the two legitimately disagree.
-        "scope": "all geometry incl. sketches/construction - solids-only extents: model_inspect",
+        "scope": "Fusion component summary; may omit hidden geometry. Body extents: model_inspect.",
     }
     if any(v is None for v in list(size.values()) + list(center.values())):
         out["unreadable_values"] = True
@@ -211,14 +209,11 @@ def _selection_echo():
 
 
 def _timeline_rollup(design):
-    """(errors, warnings, suppressed, markers, total) timeline COUNTS by healthState (2/1/3). A
-    null/other state is a non-computing MARKER - a Snapshot has none - counted distinctly so it is
-    never folded into an implied healthy; the total reconciles as errors+warnings+suppressed+
-    markers+healthy."""
+    """Return timeline state counts, or null counts when the timeline is unavailable."""
     errors = warnings = suppressed = markers = total = 0
     tl = safe(lambda: design.timeline)
     if tl is None:
-        return errors, warnings, suppressed, markers, total   # direct-mode designs have no timeline
+        return (None,) * 5
     for o in _common.iter_collection(tl):
         total += 1
         hs = safe(lambda o=o: o.healthState)
@@ -264,12 +259,15 @@ def _relation_rollup(design):
     return broken, unknown
 
 
-def _grounded_count(root):
-    grounded = 0
+def _ground_counts(root):
+    """(grounded, ground_to_parent) over the top-level occurrences - each flag counted apart, so a
+    parent-locked occurrence never adds to the grounded count."""
+    grounded = parent_locked = 0
     for o in _common.iter_collection(safe(lambda: root.occurrences)):
-        if safe(lambda o=o: o.isGrounded, False):
-            grounded += 1
-    return grounded
+        flags = _common.ground_flags(o)
+        grounded += flags["grounded"]
+        parent_locked += flags["ground_to_parent"]
+    return grounded, parent_locked
 
 
 def _unresolved_descendants(walk, name):
@@ -283,8 +281,9 @@ def _unresolved_descendants(walk, name):
 
 def _browser_digest(root, walk):
     """A DEPTH-1 digest of the top-level occurrences - name, component, child and body counts,
-    grounded, is_xref (which describes THAT ROW only) - plus unresolved_descendants, the one
-    subtree-wide number, read off the shared census rather than a second walk."""
+    grounded, ground_to_parent where it reads true, is_xref (which describes THAT ROW only) - plus
+    unresolved_descendants, the one subtree-wide number, read off the shared census rather than a
+    second walk."""
     digest = []
     occs = safe(lambda: root.occurrences)
     count = safe(lambda: occs.count, 0) if occs else 0
@@ -297,13 +296,17 @@ def _browser_digest(root, walk):
             digest.append({"name": name if name else "(unreadable name)",
                            "unresolved": True, "detail": detail})
             continue
+        flags = _common.ground_flags(o)
         digest.append({
         "name": name,
         "component": safe(lambda o=o: o.component.name),
         "children": safe(lambda o=o: o.childOccurrences.count, 0),
         "unresolved_descendants": _unresolved_descendants(walk, name),
         "bodies": safe(lambda o=o: o.bRepBodies.count, 0),
-        "grounded": bool(safe(lambda o=o: o.isGrounded, False)),
+        "grounded": flags["grounded"],
+        # Only on a row it reads true for: the health count is the always-present statement, and
+        # a false on every row is paid on every orient.
+        **({"ground_to_parent": True} if flags["ground_to_parent"] else {}),
         "is_xref": bool(safe(lambda o=o: o.isReferencedComponent, False)),
         })
     return digest, (count or 0)
@@ -493,11 +496,9 @@ def _cam_pointer(cam):
 # 50, and these four sit in the 17 the extension adds. The probe needs no document, CAM product or
 # setup (64 probes measured at 0.7ms), so it rides every orient.
 _CAPABILITY_NOTE = (
-    "observed_generation[strategy] is that strategy's isGenerationAllowed flag, probed with no "
-    "document or setup - it describes the INSTALLATION, not the open document. false = the "
-    "entitlement reads absent (measured: creation succeeds, then generation silently declines); "
-    "null = the probe could not read it. entitled: their one verdict. No license tier or SKU is "
-    "asserted (Fusion exposes no license API).")
+    "observed_generation[strategy] is isGenerationAllowed: true/false reports that strategy's "
+    "generation permission; null = unread. entitled is their aggregate generation permission, not "
+    "subscription or license verification.")
 
 # Appended only where cam_get is registered: cam is a gateable family, and a tool named mid-note
 # bypasses _drop_unregistered_pointers, which only sees the 'pointers' dict.
@@ -522,8 +523,7 @@ def _sentinel_flags():
 
 
 def _capability_block():
-    """One observed_generation entry per sentinel (_cam_common.CAPABILITY_SENTINELS), the single
-    entitled verdict over them, plus the note - the flags probed ONCE for both."""
+    """One observed_generation entry per sentinel and their aggregate generation permission."""
     flags = _sentinel_flags()
     return {"observed_generation": flags,
             "entitled": _cam_common.entitled_over(flags.values()),
@@ -595,16 +595,16 @@ def handler() -> dict:
     body_total, sketch_total = _common.design_wide_counts(design)
     # null, never 0, when the read raises - it does inside an open Form edit.
     param_total = _common.counted(lambda: design.userParameters.count)
-    form_edit = _inputs.in_form_edit(design)
 
     errors, warnings, suppressed, markers, tl_total = _timeline_rollup(design)
     marker_pos, marker_count = _common.timeline_marker(design)
-    rolled_back = bool(marker_pos is not None and marker_count and marker_pos < marker_count)
+    rolled_back = (None if tl_total is None else
+                   bool(marker_pos is not None and marker_count and marker_pos < marker_count))
     joint_count, broken_joints, joints_unknown = _joint_rollup(design)
     # MEASURED: a failed assembly constraint left this read healthy while only a deeper
     # include=['relations'] slice named it, so relation health rides the first call.
     broken_relations, relations_unknown = _relation_rollup(design)
-    grounded = _grounded_count(root)
+    grounded, parent_locked = _ground_counts(root)
     digest, top_level = _browser_digest(root, occ_walk)
     has_cam, cam = _cam_summary(doc)
 
@@ -634,6 +634,7 @@ def handler() -> dict:
         "broken_joints": broken_joints,
         "broken_relations": broken_relations,
         "grounded_occurrences": grounded,
+        "ground_to_parent_occurrences": parent_locked,
         # Features after a rolled-back marker are NOT in the current model - they revert to home.
         "timeline_rolled_back": rolled_back,
         "out_of_date_references": out_of_date,
@@ -641,18 +642,9 @@ def handler() -> dict:
         # so no isOutOfDate read can carry it (measured: a template holding one read is_healthy
         # true under a note declaring the document clean).
         "unresolved_references": unresolved,
-        "is_healthy": (errors == 0 and not broken_joints and not broken_relations
-                       and not out_of_date and not rolled_back and not unresolved),
+        "is_healthy": (False if errors or broken_joints or broken_relations or out_of_date or rolled_back or unresolved
+                       else None if tl_total is None else True),
     }
-    if form_edit:
-        # The open edit hides the timeline, so none of its counts and no verdict over them read;
-        # the workspace is re-read because in_form_edit pumped until the Form workspace arrived.
-        out["workspace"] = safe(lambda: app.userInterface.activeWorkspace.name)
-        out["design"]["in_form_edit"] = True
-        out["health"].update({k: None for k in ("timeline_features", "timeline_errors",
-                                                "timeline_warnings", "timeline_suppressed",
-                                                "timeline_markers", "timeline_rolled_back",
-                                                "is_healthy")})
     # Present only when a compute state did NOT read, so the two lists above are never taken for a
     # complete census - is_healthy is a verdict over the entities that HAVE a state.
     if joints_unknown:
@@ -680,7 +672,8 @@ def handler() -> dict:
         f"find_geometry(target='<occurrence/body>') - {body_total} bodies; always scope by target "
         "(filter by kind/radius/nearest_to) rather than scanning the whole design."
         if body_total > _BIG_BODIES else
-        "find_geometry(target='<part>', kind=...) to get stable handles for jointing/filleting.")
+        "find_geometry(target='<part>', kind=...) for short-lived handles to joint/fillet; "
+        "re-find if stale.")
     if joint_count or grounded:
         pointers["kinematics"] = "assembly_get() for full per-occurrence position/ground/joint state."
     if param_total:
@@ -741,14 +734,12 @@ def handler() -> dict:
         verdict = (f"Attention ({', '.join(bits)}) - see health + the fix_* pointer(s). These CAN be "
                    "intentional on a fixture/CAM template (parked alternates, pinned refs) or a "
                    "deliberate mid-history roll; confirm before treating as broken. ")
-    elif form_edit:
-        verdict = ""
+    elif tl_total is None:
+        verdict = "Timeline health is unavailable; no failed joints, relations, or stale references were observed. "
     else:
         verdict = "No compute errors, failed joints, or stale references. "
-    if form_edit:
-        verdict = ("A Form edit is open: it hides the timeline and the user parameters until the "
-                   "user clicks Finish Form, so their counts, timeline_rolled_back and is_healthy "
-                   "read null. " + verdict)
+    if tl_total is None:
+        verdict += "Timeline counts and rolled-back state are null, not observed zero/healthy history. "
     # A timeline warning is stated distinctly, never folded into a clean bill and never counted as
     # unhealthy.
     if warnings:
@@ -778,6 +769,10 @@ def handler() -> dict:
     elif occ_walk.method == _common.WALK_RECURSED:
         verdict += ("occurrences_walk='recursed': root.allOccurrences raised, so total_occurrences "
                     "was rebuilt from component.occurrences. ")
+    # An open Form or base-feature edit also reads direct, so a direct-reading mode carries the
+    # remedy - this reading alone cannot tell "genuinely direct" from "an edit is open".
+    if mode == _inputs.MODE_DIRECT:
+        verdict += _design_common.OPEN_EDIT_CAVEAT.strip() + " "
     out["note"] = (
         verdict +
         "browser_digest is DEPTH-1: is_xref describes each row ITSELF, so a reference nested below "

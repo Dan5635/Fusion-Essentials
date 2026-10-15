@@ -53,8 +53,9 @@ def handler(edges=None, against: str = "", samples: int = 9, units: str = "mm") 
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
     if isinstance(samples, bool) or not isinstance(samples, int) or not 1 <= samples <= MAX_SAMPLES:
         return error(f"'samples' is a whole number from 1 to {MAX_SAMPLES} - got {samples!r}.")
-    if not _common.design():
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     ents, err = _EDGES.resolve(edges)
     if err:
         return error(err)

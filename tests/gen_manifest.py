@@ -20,6 +20,7 @@ Run from the repo root:
 
 import argparse
 import inspect
+import json
 import os
 import sys
 
@@ -38,6 +39,7 @@ if COMMANDS_DIR not in sys.path:
     sys.path.insert(0, COMMANDS_DIR)
 
 MANIFEST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated", "TOOL_MANIFEST.md")
+README_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "README.md")
 
 # Tool name prefix -> family label. The order here is the manifest's section order; a tool falls into
 # the FIRST prefix it matches (so 'design_get' -> design, 'sys_find_tool' -> sys). A tool matching
@@ -47,8 +49,8 @@ _FAMILY_PREFIXES = [
     ("sketch_", "sketch"),
     ("cam_", "cam"), ("assembly_", "assembly"), ("joint_", "joint"), ("design_", "design"),
     ("doc_", "doc"), ("data_", "data"), ("drawing_", "drawing"), ("param_", "param"), ("pmi_", "pmi"),
-    ("view_", "view"), ("find_", "find"), ("workspace_", "workspace"), ("appearance_", "appearance"),
-    ("save_", "save"), ("sys_", "sys"),
+    ("view_", "view"), ("render_", "render"), ("find_", "find"), ("workspace_", "workspace"),
+    ("appearance_", "appearance"), ("save_", "save"), ("sheet_", "sheet"), ("sys_", "sys"),
 ]
 
 
@@ -56,7 +58,7 @@ def _first_sentence(text: str, limit: int = 160) -> str:
     """First sentence of a description (mirrors sys_find_tool's summary), trimmed."""
     if not text:
         return ""
-    s = text.split(". ")[0].strip()
+    s = " ".join(text.split()).split(". ")[0]
     return s[:limit] + ("..." if len(s) > limit else "")
 
 
@@ -160,7 +162,7 @@ def _collect_kinds():
         if cls is base or not issubclass(cls, base):
             continue
         doc = (inspect.getdoc(cls) or "").strip().split("\n")[0]
-        # MAP_HINT (a curated one-liner ON the kind) drives the terse CLAUDE.md map; the docstring's
+        # MAP_HINT (a curated one-liner ON the kind) drives the terse AGENTS.md map; the docstring's
         # first line is the fuller summary for TOOL_MANIFEST.md. A blank MAP_HINT shows up blank in the map
         # — the signal to a kind-author to fill it in.
         out.append({"kind": cname, "summary": doc[:160], "hint": getattr(cls, "MAP_HINT", "")})
@@ -233,13 +235,14 @@ def render(data) -> str:
         "## Input kinds — reference EXISTING geometry/structure with these (don't hand-roll a name/index)",
         "",
         "Before adding a tool input that points at a face/edge/body/plane/axis/profile/occurrence, use"
-        " one of these (extend the kind if it's close). See `CLAUDE.md` 'Input kinds'.",
+        " one of these (extend the kind if it's close). See `AGENTS.md` 'Input kinds'.",
         "",
         "| Kind | What it references |",
         "|---|---|",
     ]
     for k in kinds:
-        lines.append(f"| `{k['kind']}` | {k['summary']} |")
+        summary = k["summary"].replace("|", "\\|")
+        lines.append(f"| `{k['kind']}` | {summary} |")
     lines.append("")
     lines.append("## Tools by family")
     lines.append("")
@@ -258,32 +261,35 @@ def render(data) -> str:
         lines.append("| | Tool | Summary |")
         lines.append("|---|---|---|")
         for t in sorted(items, key=lambda x: x["name"]):
-            lines.append(f"| {_MARK[t['write']]} | `{t['name']}` | {t['summary']} |")
+            summary = t["summary"].replace("|", "\\|")
+            lines.append(f"| {_MARK[t['write']]} | `{t['name']}` | {summary} |")
         lines.append("")
     return "\n".join(lines)
 
 
-# ── the token-efficient MAP spliced into CLAUDE.md (for a tool-AUTHOR agent at session start) ──────
+# ── the token-efficient MAP spliced into AGENTS.md (for a tool-AUTHOR agent at session start) ──────
 #
-# TOOL_MANIFEST.md (above) is the full browse-everything file. The CLAUDE.md map is the OPPOSITE: the
+# TOOL_MANIFEST.md (above) is the full browse-everything file. The AGENTS.md map is the OPPOSITE: the
 # shape of the space, tiny enough to sit in a code-author agent's context the moment they open the repo —
 # the kinds catalog (the invisible abstraction they must not re-invent) + family names+counts (so they
 # know roughly where to point sys_find_tool / which TOOL_MANIFEST.md section to read). Spliced between
 # markers so the surrounding hand-written prose is untouched and the block can't rot.
 
-CLAUDE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "CLAUDE.md")
-TOOLS_CLAUDE_PATH = os.path.join(os.path.dirname(CLAUDE_PATH), "commands", "mcpServer", "tools", "CLAUDE.md")
-# Root CLAUDE.md carries only the tiny families census (orientation for ANY session). The full
-# kinds + helpers catalog is an authoring concern, so it lives in tools/CLAUDE.md - loaded only when
+AGENTS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "AGENTS.md")
+TOOLS_AGENTS_PATH = os.path.join(os.path.dirname(AGENTS_PATH), "commands", "mcpServer", "tools", "AGENTS.md")
+# Root AGENTS.md carries only the tiny families census (orientation for ANY session). The full
+# kinds + helpers catalog is an authoring concern, so it lives in tools/AGENTS.md - loaded only when
 # you work in tools/. Both are generated from the same source, so neither can drift.
 _FAM_BEGIN = "<!-- BEGIN GENERATED FAMILIES (py -3 tests/gen_manifest.py) -->"
 _FAM_END = "<!-- END GENERATED FAMILIES -->"
 _CAT_BEGIN = "<!-- BEGIN GENERATED CATALOG (py -3 tests/gen_manifest.py) -->"
 _CAT_END = "<!-- END GENERATED CATALOG -->"
+_DEP_BEGIN = "<!-- BEGIN GENERATED ACT DEPENDENCIES (py -3 tests/gen_manifest.py) -->"
+_DEP_END = "<!-- END GENERATED ACT DEPENDENCIES -->"
 
 
 def render_families(data) -> str:
-    """The one-line families census for root CLAUDE.md: name(count), in section order."""
+    """The one-line families census for root AGENTS.md: name(count), in section order."""
     fam = families(data["tools"])
     order = [name for _, name in _FAMILY_PREFIXES]
     for extra in sorted(fam):
@@ -297,7 +303,7 @@ def render_families(data) -> str:
 
 
 def render_catalog(data) -> str:
-    """The kinds catalog + shared-helper table for tools/CLAUDE.md - the abstraction surface an author
+    """The kinds catalog + shared-helper table for tools/AGENTS.md - the abstraction surface an author
     must reuse rather than re-roll. Both tables are generated, so they can't drift from the code."""
     lines = [_CAT_BEGIN,
              "| Kind | References (use this — don't hand-roll a name/index) |",
@@ -313,6 +319,45 @@ def render_catalog(data) -> str:
         blurb = (h["blurb"] or "").replace("|", "\\|")
         lines.append(f"| `{h['module']}` | {blurb} |")
     lines.append(_CAT_END)
+    return "\n".join(lines)
+
+
+def render_act_dependencies():
+    """Render the authored sweep act and local-producer map from the current program tables."""
+    live = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live")
+    if live not in sys.path:
+        sys.path.insert(0, live)
+    from verify_families import ACT_PRODUCER_OVERRIDES, FAMILY_DEPENDENCIES, PRODUCER_SLOTS
+    from verify_program import ACT_DEPENDENCIES
+
+    def labels(value):
+        return (value,) if isinstance(value, str) else value
+
+    lines = [_DEP_BEGIN, "### Family inputs and local producers", "",
+             "| Family | Default producers | Requires -> provides | Declared save slots | Camera cue |",
+             "|---|---|---|---|---|"]
+    for family, row in FAMILY_DEPENDENCIES.items():
+        producers = tuple(row["producers"])
+        slots = tuple(dict.fromkeys(slot for producer in producers
+                                    for slot in PRODUCER_SLOTS[producer]))
+        lines.append(f"| `{family}` | {', '.join(producers) or 'none'} | "
+                     f"{', '.join(labels(row['requires']))} -> {', '.join(labels(row['provides']))} | "
+                     f"{', '.join(slots) or 'none'} | {row['camera']} |")
+    lines.extend(["", "### Act policy readbacks", "",
+                  "Producer additions list late act-local setup beyond the family default. "
+                  "Entitlement and poll cells read the existing `ACT_NEEDS` and `POLL_AFTER` tables.", "",
+                  "| Act | Family | Producer additions | Workspace transitions | Precondition | Entitlement | Poll |",
+                  "|---|---|---|---|---|---|---|"])
+    for name, row in ACT_DEPENDENCIES.items():
+        additions = [", ".join(ACT_PRODUCER_OVERRIDES.get(name, ()))]
+        additions.extend(f"when {gate}: {', '.join(producers)}"
+                         for gate, producers in row.get("conditional_producers", {}).items())
+        producers = "; ".join(value for value in additions if value) or "family default"
+        gate = row["entitlement"] or "always"
+        generation = json.dumps(row["generation"], ensure_ascii=True, separators=(",", ":"))
+        lines.append(f"| `{name}` | `{row['family']}` | {producers} | {row['workspace']} | "
+                     f"`{row['precondition'] or 'none'}` | `{gate}` | `{generation}` |")
+    lines.append(_DEP_END)
     return "\n".join(lines)
 
 
@@ -342,13 +387,14 @@ def _splice(path, begin, end, block, *, check=False):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true",
-                        help="Exit 1 if TOOL_MANIFEST.md or the CLAUDE.md map block is out of date (no write).")
+                        help="Exit 1 if TOOL_MANIFEST.md or the AGENTS.md map block is out of date (no write).")
     args = parser.parse_args()
 
     data = collect()
     rendered = render(data)
     fam_block = render_families(data)
     cat_block = render_catalog(data)
+    dependencies = render_act_dependencies()
 
     if args.check:
         stale = []
@@ -358,10 +404,12 @@ def main():
                 existing = fh.read()
         if existing.strip() != rendered.strip():
             stale.append("tests/generated/TOOL_MANIFEST.md")
-        if not _splice(CLAUDE_PATH, _FAM_BEGIN, _FAM_END, fam_block, check=True):
-            stale.append("CLAUDE.md (families census)")
-        if not _splice(TOOLS_CLAUDE_PATH, _CAT_BEGIN, _CAT_END, cat_block, check=True):
-            stale.append("tools/CLAUDE.md (kinds+helpers catalog)")
+        if not _splice(AGENTS_PATH, _FAM_BEGIN, _FAM_END, fam_block, check=True):
+            stale.append("AGENTS.md (families census)")
+        if not _splice(TOOLS_AGENTS_PATH, _CAT_BEGIN, _CAT_END, cat_block, check=True):
+            stale.append("tools/AGENTS.md (kinds+helpers catalog)")
+        if not _splice(README_PATH, _DEP_BEGIN, _DEP_END, dependencies, check=True):
+            stale.append("tests/README.md (sweep act dependencies)")
         if stale:
             print("Stale — run `py -3 tests/gen_manifest.py` and commit: " + ", ".join(stale),
                   file=sys.stderr)
@@ -371,9 +419,10 @@ def main():
 
     with open(MANIFEST_PATH, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(rendered + "\n")
-    _splice(CLAUDE_PATH, _FAM_BEGIN, _FAM_END, fam_block)
-    _splice(TOOLS_CLAUDE_PATH, _CAT_BEGIN, _CAT_END, cat_block)
-    print(f"Wrote {MANIFEST_PATH}, the CLAUDE.md families census, and the tools/CLAUDE.md catalog "
+    _splice(AGENTS_PATH, _FAM_BEGIN, _FAM_END, fam_block)
+    _splice(TOOLS_AGENTS_PATH, _CAT_BEGIN, _CAT_END, cat_block)
+    _splice(README_PATH, _DEP_BEGIN, _DEP_END, dependencies)
+    print(f"Wrote {MANIFEST_PATH}, the AGENTS.md families census, and the tools/AGENTS.md catalog "
           f"({len(data['tools'])} tools, {len(data['kinds'])} kinds).")
 
 

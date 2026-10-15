@@ -10,7 +10,6 @@ include_suppressed=true counts them), the empty-setup answer (a setup with no op
 not an exception), and the guards (the shared no-CAM gate, a non-boolean verdict, a raising check).
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -22,9 +21,7 @@ mod = load_tool("cam_inspect_toolpaths")
 cc = load_tool("_cam_common")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _cam(*setups, verdict=True, scoped_verdict=None, raises=None, all_raises=None,
@@ -599,6 +596,27 @@ class TestSuppressedScoping:
         assert out["tolerance_used"]["tally_counts"] == "active_operations"
         assert out["tolerance_used"]["verdict_counts"] == "active_operations"
         assert "1 suppressed op(s) excluded from the tally and from 'passed'." in out["note"]
+
+    def test_document_active_verdict_keeps_empty_setup_and_manual_nc_disclosed(self, wire):
+        suppressed = FakeOperation("SuppressMe", has_toolpath=False, operation_state=2,
+                                   suppressed=True)
+        manual = FakeOperation("ManualNote", has_toolpath=False, strategy="manual")
+        work = FakeSetup("Work", ops=[suppressed, manual])
+        empty = FakeSetup("Empty")
+        cam = wire(_cam(work, empty, all_raises=_NOT_CAM_OBJECTS))
+
+        out = _payload(mod.handler())
+
+        assert out["passed"] is True
+        assert out["checked"] == "per-active-operation check"
+        assert len(cam.checked) == 1 and cam.checked[0].name == "ManualNote"
+        assert out["measured"]["states"]["valid"] == 1
+        assert out["measured"]["states"]["total"] == 1
+        assert out["measured"]["suppressed_excluded"] == 1
+        assert out["measured"]["empty_toolpath_count"] == 0
+        assert out["measured"]["empty_toolpaths"] == []
+        assert out["measured"]["empty_setups_excluded"] == 1
+        assert out["measured"]["empty_setups"] == ["Empty"]
 
     def test_counting_the_suppressed_operations_takes_cams_own_verdict(self, wire):
         # the other side of the same job: include_suppressed=true puts them back in the tally, and

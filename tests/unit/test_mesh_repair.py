@@ -18,6 +18,7 @@ Pinned (the DoD):
   - close_holes that changes the mesh but leaves it open reports PARTIAL, not plain success.
   - a mesh that cannot be read back at all is reported as unverified, not as success.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -293,7 +294,7 @@ class TestInputGuards:
         assert rig.feats.add_called is False
 
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(mr._common, "design", lambda: None)
+        _install_design(mr, None)
         assert "No active design" in error_message(mr.handler(mesh="H", repair_type="rebuild"))
 
     def test_missing_repair_features_collection_is_an_error(self, monkeypatch):
@@ -603,7 +604,8 @@ class TestGuardsAndFailurePathsBite:
              feature_offset=0.9)
         msg = error_message(mr.handler(mesh="H", repair_type="rebuild",
                                        rebuild_method="accurate", offset=10, units="mm"))
-        assert "created with offset = 0.9" in msg and "requested" in msg
+        # both values in the caller's units: the feature's 0.9 cm against the 10 mm requested
+        assert "created with offset = 9.0 mm, but 10.0 mm was requested" in msg
 
     def test_an_unreadable_density_is_reported_as_unverified_not_as_the_request(self, monkeypatch):
         mesh = _mesh(tri=1000, nodes=502, is_closed=False)

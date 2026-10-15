@@ -13,6 +13,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe, iter_collection
+from ._common import normalize_include as _normalize_include
 from . import _outputs
 
 app = adsk.core.Application.get()
@@ -91,9 +92,9 @@ FLAT_GROUPS = (
         Member("degreeDisplayFormat", enum=_family("DegreeDisplayFormats")),
         Member("materialDisplayUnit", enum=_family("MaterialDisplayUnits")),
     )),
-    # Measured raising members on this build: autoThrottleEffects, degradedSelectionDisplayStyle and
-    # isLimitEffectsDuringNavigation all raise RuntimeError on READ, which is why every member read
-    # here goes through safe() and reports unreadable rather than a value.
+    # Measured raising member on this build: degradedSelectionDisplayStyle raises RuntimeError on
+    # READ, which is why every member read here goes through safe() and reports unreadable rather
+    # than a value.
     ("graphics", "graphicsPreferences", (
         Member("graphicsPreset", enum=_family("GraphicsPresets")),
         Member("minimumFramesPerSecond"),
@@ -101,8 +102,6 @@ FLAT_GROUPS = (
         Member("selectionDisplayStyle", enum=_family("SelectionDisplayStyles")),
         Member("degradedSelectionDisplayStyle", enum=_family("DegradedSelectionDisplayStyles")),
         Member("transparencyEffects", enum=_family("TransparencyDisplayEffects")),
-        Member("autoThrottleEffects"),
-        Member("isLimitEffectsDuringNavigation"),
         Member("isSurfaceNormalDisplayDisabled"),
         Member("isWoodBumpEnabled"),
         Member("isDynamic"),
@@ -168,9 +167,6 @@ COLLECTION_GROUPS = (
         Member("isGhostedResultBodyShown"),
         Member("isDimensionEditedWhenCreated"),
         Member("isAutoLookAtSketch2", enum=_family("AutoLookAtSketchSettings")),
-        Member("isAutoLookAtSketch", TIER_REFUSED,
-               "isAutoLookAtSketch2 is the same setting with more values - set that one, so the two "
-               "cannot be given contradicting values"),
         Member("isAutoProjectGeometry"),
         Member("isAutoProjectEdgesOnReference"),
         Member("isAutoHideSketchOnFeatureCreation"),
@@ -323,15 +319,6 @@ def _slice_collection(prefs, key, wanted, unreadable, unknown=None):
         return None
     return {name: _read_into(obj, key, wanted, unreadable, f"{key}.{name}", unknown)
             for name, obj in items}
-
-
-def _normalize_include(include):
-    """Accept include as a list, a comma-string, or a single group name; -> a list of group names."""
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
 
 
 def handler(include=None) -> dict:

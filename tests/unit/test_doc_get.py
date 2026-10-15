@@ -4,6 +4,7 @@ Pins the handler's job: surface the active document's URN/save-state, list the o
 razor (a healthy doc collapses to {name, is_active}; an unsaved/modified one keeps its flag), and the
 no-active-doc guard. The adsk Document fakes capture the read so a regression to a wrong attribute fails.
 """
+from conftest import install as _install_design
 
 import json
 import time
@@ -22,9 +23,7 @@ da = load_tool("doc_activate")
 dcl = load_tool("doc_close")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _DataFile(urn="urn:lineage:abc", vnum=3, latest=3):
@@ -308,6 +307,24 @@ class TestGuards:
 
 
 class TestCaps:
+    @pytest.mark.parametrize("cap", [1, 50])
+    def test_active_after_cap_replaces_last_row_with_original_address(self, _install, cap):
+        clean = [_Doc(f"D{i}", data_file=_DataFile()) for i in range(cap)]
+        dirty = _Doc("Dirty", modified=True, data_file=_DataFile())
+        active = _Doc("Active", saved=False, data_file=None)
+        _install(active, clean + [dirty, active])
+        out = _payload(dg.handler(**({"max_results": cap} if cap == 1 else {})))
+        rows = out["open_documents"]
+        expected_handle = dg._write_guard.document_handle(active)
+        assert len(rows) == cap
+        assert [r["open_index"] for r in rows] == list(range(cap - 1)) + [cap + 1]
+        assert rows[-1]["name"] == "Active" and rows[-1]["is_active"] is True
+        assert rows[-1]["document_handle"] == expected_handle
+        assert out["active"]["document_handle"] == expected_handle
+        assert out["open_count"] == out["summary"]["open_count"] == cap + 2
+        assert out["truncated"] is True
+        assert {e["name"] for e in out["summary"]["exceptions"]} == {"Dirty", "Active"}
+
     def test_under_cap_untruncated_and_unchanged(self, _install):
         active = _Doc("Main", data_file=_DataFile())
         others = [_Doc(f"D{i}", data_file=_DataFile()) for i in range(5)]
@@ -643,7 +660,11 @@ def _Root(occs, name="Root", derive_feats=None):
 
 
 def _use_design(monkeypatch, root):
-    monkeypatch.setattr(dg, "design", lambda: MakeDesign(comp=root))
+    app = dg.app
+    common_app = dg._common.app
+    _install_design(dg, MakeDesign(comp=root))
+    monkeypatch.setattr(dg, "app", app)
+    monkeypatch.setattr(dg._common, "app", common_app)
 
 
 class TestXrefTree:
@@ -799,7 +820,7 @@ class TestXrefTreeWalkGuards:
     an unwalked branch never reads as an examined-and-clean one."""
 
     def test_no_active_design_is_unavailable_not_an_empty_walk(self, monkeypatch):
-        monkeypatch.setattr(dg, "design", lambda: None)
+        _install_design(dg, None)
         out = dg._slice_xref_tree()
         assert out["available"] is False
         assert "needs a design document" in out["note"]
@@ -808,7 +829,7 @@ class TestXrefTreeWalkGuards:
     def test_a_design_with_no_root_component_is_unavailable(self, monkeypatch):
         rootless = MakeDesign()
         rootless.rootComponent = None      # the walk has nothing to start from
-        monkeypatch.setattr(dg, "design", lambda: rootless)
+        _install_design(dg, rootless)
         out = dg._slice_xref_tree()
         assert out["available"] is False
         assert "no root component" in out["note"]

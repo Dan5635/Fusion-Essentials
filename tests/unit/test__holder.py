@@ -177,6 +177,17 @@ def _body(faces):
 
 
 class TestGetToolProfile:
+    def test_enclosed_void_does_not_shrink_tapered_envelope(self, wire_geometry):
+        cone = _coaxial_face(Cone(FakeVector3D(0, 0, 1), FakePoint(0, 0, 0)),
+                             [_circ_edge(0, 1.0), _circ_edge(3, 2.0)])
+        cavity = _coaxial_face(Cylinder(FakeVector3D(0, 0, 1), FakePoint(0, 0, 1)),
+                               [_circ_edge(1, 0.8), _circ_edge(2, 0.8)])
+        control = hold.get_tool_profile(_body([cone]), _z_axis(), FakePoint(0, 0, 0))
+        hollow = hold.get_tool_profile(_body([cone, cavity]), _z_axis(), FakePoint(0, 0, 0))
+        assert hollow == control == [[0.0, 3.0, 1.0, 2.0]]
+        assert hold.build_holder_data(hollow, "Taper")["segments"] == [
+            {"height": 30.0, "lower-diameter": 20.0, "upper-diameter": 40.0}]
+
     def test_cylinder_plus_cone_reduce_to_two_segments(self, wire_geometry):
         # A straight shank (r=1cm, z 0..2) under a taper (r 1 -> 0.5, z 2..3), both coaxial with
         # z: the reduction must express them as [z0, z1, r0, r1] segments in order.

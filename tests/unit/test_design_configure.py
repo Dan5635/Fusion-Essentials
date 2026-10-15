@@ -12,6 +12,7 @@ appearance-theme) including:
 
 Fakes are NAMED to match the real adsk classes where the handler reads type(x).__name__.
 """
+from conftest import install as _install_design
 
 import json
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ class _Param:
     def __init__(self, name, expr="80 mm"):
         self.name = name
         self.expression = expr
+        self.unit = "mm"
 
 
 class ConfigurationParameterCell:
@@ -80,6 +82,8 @@ class _Col:
         return self._cells[rowname]
     def getCellByRowName(self, name):
         return self._cell(name)
+    def getCellByRowId(self, row_id):
+        return self._cell(row_id.removeprefix("row-"))
     def getCell(self, idx):
         # NOT the addressing the tool should use - the index runs over the COLUMN's own rowCount,
         # so this hands back a scratch cell unrelated to the by-name cells the assertions read.
@@ -87,6 +91,13 @@ class _Col:
         return self._scratch[idx]
     def classType(self):
         return self._cls.__name__
+
+
+class ConfigurationParameterColumn(_Col):
+    def __init__(self, parameter):
+        super().__init__(ConfigurationParameterCell, "param")
+        self.parameter = parameter
+        self.param = parameter
 
 
 class _Row:
@@ -353,7 +364,7 @@ class _Columns:
         return c
 
     def addParameterColumn(self, p):
-        c = _Col(ConfigurationParameterCell, "param"); c.param = p; return self._own(c)
+        return self._own(ConfigurationParameterColumn(p))
     def addSuppressColumn(self, f):
         c = _Col(ConfigurationSuppressCell, "suppress"); c.feature = f; self.added.append(c); return c
     def addVisibilityColumn(self, e):
@@ -476,14 +487,12 @@ class _Design(MakeDesign):
 
 
 def _install(monkeypatch, design, saved=True):
-    monkeypatch.setattr(dc._common, "design", lambda: design)
+    _install_design(dc, design)
     monkeypatch.setattr(dc, "_doc_is_saved", lambda: saved)      # default: pretend the doc is saved
     return design
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards / dispatch ────────────────────────────────────────────────────────
@@ -495,7 +504,7 @@ class TestGuards:
         assert res["isError"] is True and "action" in res["message"].lower()
 
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(dc._common, "design", lambda: None)
+        _install_design(dc, None)
         res = dc.handler(action="create")
         assert res["isError"] is True and "design" in res["message"].lower()
 
@@ -543,6 +552,13 @@ class TestCreate:
         _install(monkeypatch, _Design(configured=False), saved=True)
         note = _payload(dc.handler(action="create"))["note"]
         assert "System Project - CONFIG" in note and "leaves behind" in note
+
+    def test_the_note_names_the_key_a_save_reports_a_moved_lineage_in(self, monkeypatch):
+        # doc_save compares the lineage on every save, so the note points at that key and does
+        # not name one save as the only one that can move the document.
+        _install(monkeypatch, _Design(configured=False), saved=True)
+        note = _payload(dc.handler(action="create"))["note"]
+        assert "lineage_changed" in note and "first save" not in note
 
 
 # ── add_configuration (row) ─────────────────────────────────────────────────
@@ -625,6 +641,84 @@ class TestAddParameter:
         assert res["isError"] is True and "Nonexistent" in res["message"]
 
 
+class TestSetParameter:
+    def _scene(self, monkeypatch):
+        design = _install(monkeypatch, _Design(configured=True, params=[_Param("plate_len")]))
+        _payload(dc.handler(action="add_configuration", name="Large"))
+        _payload(dc.handler(action="add_parameter", parameter="plate_len",
+                            values={"Default": "10 mm", "Large": "20 mm"}))
+        return design, design.configurationTopTable.columns.added[0]
+
+    def test_edits_only_the_named_inactive_cell(self, monkeypatch):
+        design, column = self._scene(monkeypatch)
+        before = column.getCellByRowName("Large").expression
+        result = _payload(dc.handler(action="set_parameter", parameter="plate_len",
+                                     values={"Default": "12 mm"}))
+        assert result["changed"] is True
+        assert result["configuration"]["id"] == "row-Default"
+        assert result["previous_expression"] == "10 mm"
+        assert result["expression"] == column.getCellByRowName("Default").expression == "12 mm"
+        assert column.getCellByRowName("Large").expression == before == "20 mm"
+        assert design.configurationTopTable.activeRow.name == "Large"
+
+    def test_refuses_active_or_ambiguous_parameter_target_without_write(self, monkeypatch):
+        design, column = self._scene(monkeypatch)
+        active = dc.handler(action="set_parameter", parameter="plate_len",
+                            values={"Large": "25 mm"})
+        assert active["isError"] is True and "active" in active["message"]
+        duplicate = design.configurationTopTable.columns.addParameterColumn(_Param("plate_len"))
+        ambiguous = dc.handler(action="set_parameter", parameter="plate_len",
+                               values={"Default": "12 mm"})
+        assert ambiguous["isError"] is True and "found 2" in ambiguous["message"]
+        assert column.getCellByRowName("Default").expression == "10 mm"
+        assert duplicate.getCellByRowName("Default").expression is None
+
+    def test_silent_cell_write_returns_error_with_read_back(self, monkeypatch):
+        _design, column = self._scene(monkeypatch)
+
+        class SilentCell:
+            @property
+            def expression(self):
+                return "10 mm"
+
+            @expression.setter
+            def expression(self, _value):
+                pass
+
+        column._cells["Default"] = SilentCell()
+        result = dc.handler(action="set_parameter", parameter="plate_len",
+                            values={"Default": "12 mm"})
+        assert result["isError"] is True
+        assert "reads '10 mm'" in result["message"]
+
+    def test_unread_column_refuses_before_mutation(self, monkeypatch):
+        design, column = self._scene(monkeypatch)
+        columns = design.configurationTopTable.columns
+        columns.addParameterColumn(_Param("other"))
+        original_item = columns.item
+        monkeypatch.setattr(columns, "item", lambda i: None if i == 1 else original_item(i))
+        result = dc.handler(action="set_parameter", parameter="plate_len",
+                            values={"Default": "12 mm"})
+        assert result["isError"] is True and "column 1 did not read" in result["message"]
+        assert column.getCellByRowName("Default").expression == "10 mm"
+
+    def test_targets_row_id_even_when_name_lookup_would_alias(self, monkeypatch):
+        design, column = self._scene(monkeypatch)
+        table = design.configurationTopTable
+        default = table.rows.item(0)
+        large = table.rows.item(1)
+        default.name = large.name
+        default.id = "row-unique-default"
+        selected = ConfigurationParameterCell()
+        selected.expression = "10 mm"
+        monkeypatch.setattr(column, "getCellByRowId", lambda row_id: selected)
+        result = _payload(dc.handler(action="set_parameter", parameter="plate_len",
+                                     values={"row-unique-default": "12 mm"}))
+        assert result["configuration"]["id"] == "row-unique-default"
+        assert selected.expression == "12 mm"
+        assert column.getCellByRowName("Large").expression == "20 mm"
+
+
 # ── suppress / visibility (need a resolvable feature/body) ──────────────────
 
 class TestSuppressVisibility:
@@ -653,12 +747,12 @@ class TestSuppressVisibility:
         d = _install(monkeypatch, _Design(configured=True, features={}))
         monkeypatch.setattr(dc._FEATURE, "resolve",
                             lambda raw: (None, "'feature': 'Extrude1' matches 2 timeline objects "
-                                              "(Extrude1@3, Extrude1@7) - name one with the "
-                                              "'name@index' form."))
+                                              "(A/Extrude1@3, B/Extrude1@7) - name one exactly "
+                                              "as listed."))
         dc.handler(action="add_configuration", name="Small")
         res = dc.handler(action="add_suppress", feature="Extrude1", suppressed_in=["Small"])
         assert res["isError"] is True
-        assert "name@index" in res["message"] and "Extrude1@3" in res["message"]
+        assert "exactly as listed" in res["message"] and "A/Extrude1@3" in res["message"]
         assert d.configurationTopTable.columns.added == []   # nothing mutated on a refusal
 
     def test_visibility_sets_is_visible(self, monkeypatch):
@@ -1193,7 +1287,7 @@ class _ActDesign(MakeDesign):
 class TestActivate:
     def test_switches_configuration_clean(self, monkeypatch):
         d = _ActDesign(_ActTable(["Default", "Large"]))
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         out = _payload(dc.handler(action="activate", name="Large"))
         assert out["activated"] is True and out["now_active"] == "Large"
         assert out["previous"] == "Default"
@@ -1203,13 +1297,13 @@ class TestActivate:
         # add_configuration publishes the row's id beside its name, so an agent can hold that id;
         # a target matching no NAME has to reach the row whose id it is.
         d = _ActDesign(_ActTable(["Default", "Large"]))
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         out = _payload(dc.handler(action="activate", name="row-Large"))
         assert out["activated"] is True and out["now_active"] == "Large"
 
     def test_unknown_configuration_errors(self, monkeypatch):
         d = _ActDesign(_ActTable(["Default", "Large"]))
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         res = dc.handler(action="activate", name="Ghost")
         assert res["isError"] is True and "Ghost" in res["message"]
 
@@ -1217,7 +1311,7 @@ class TestActivate:
         # the rebuilt configuration over/under-constrains the model: the switch stands, but the new
         # timeline error must be reported rather than a clean success over a broken model.
         d = _ActDesign(_ActTable(["Default", "Large"]), errors_before=0, errors_after=1)
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         out = _payload(dc.handler(action="activate", name="Large"))
         assert out["activated"] is True
         assert "timeline_warning" in out and "new error" in out["timeline_warning"].lower()
@@ -1353,6 +1447,18 @@ def _top(design):
     return design.configurationTopTable
 
 
+@pytest.fixture
+def rejecting_parameter_cells(monkeypatch, col_design):
+    def assign(cell, value):
+        if value in ("NoSuchProbe * 2", "5 kg"):
+            raise RuntimeError("3 : invalid expression")
+        cell._expression = "10 mm" if value is None else value
+
+    monkeypatch.setattr(ConfigurationParameterCell, "expression",
+                        property(lambda cell: cell._expression, assign), raising=False)
+    return col_design
+
+
 # ── create: the refusals around the conversion itself ────────────────────────
 
 class TestCreateRefusals:
@@ -1367,7 +1473,7 @@ class TestCreateRefusals:
     def test_the_saved_gate_reads_the_active_documents_own_flag(self, monkeypatch):
         # the guard is only worth its wording if it reads isSaved off the active document
         d = _Design(configured=False)
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         monkeypatch.setattr(dc, "app",
                             SimpleNamespace(activeDocument=SimpleNamespace(isSaved=False)))
         res = dc.handler(action="create")
@@ -1380,7 +1486,7 @@ class TestCreateRefusals:
 class TestActivateRefusals:
     def _design(self, monkeypatch, table=None):
         d = _ActDesign(_ActTable(["Default", "Large"]) if table is None else table)
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         return d
 
     def test_activate_without_a_name_is_refused(self, monkeypatch):
@@ -1406,7 +1512,7 @@ class TestActivateRefusals:
         # a rebuild that only WARNS still leaves the switch standing, so the warnings ride along in
         # the success payload rather than being reported as a new error
         d = _ActDesign(_ActTable(["Default", "Large"]), warnings_after=2)
-        monkeypatch.setattr(dc._common, "design", lambda: d)
+        _install_design(dc, d)
         out = _payload(dc.handler(action="activate", name="Large"))
         assert out["activated"] is True and out["timeline_warnings"] == ["W0", "W1"]
         assert "timeline_warning" not in out
@@ -1452,6 +1558,46 @@ class TestRenameConfigurationRefusals:
 # ── add_parameter: the refusals around the parameter column ────────────────
 
 class TestAddParameterRefusals:
+    @pytest.mark.parametrize("expression,prefix", [("NoSuchProbe * 2", {}),
+                                                   ("5 kg", {"Default": "13 mm"})])
+    def test_setter_exception_removes_only_new_column_and_reports_prior_cells(self, rejecting_parameter_cells,
+                                                                            expression, prefix):
+        table = _top(rejecting_parameter_cells)
+        kept = table.columns.addParameterColumn(rejecting_parameter_cells.allParameters.itemByName("plate_len"))
+        kept.id = "kept"
+        kept.getCellByRowName("Default").expression = "10 mm"
+        result = dc.handler(action="add_parameter", parameter="plate_len", values={**prefix, "Small": expression})
+        assert result["isError"] is True
+        message = result["message"]
+        assert f"Setting 'plate_len' cell 'Small' to {expression!r} failed: 3 : invalid expression" in message
+        assert "The new column was removed." in message
+        assert "design_get(include=['configurations'])" in message
+        assert ("1 earlier cell(s) read back" in message) is bool(prefix)
+        assert table.columns.added == [kept]
+        assert kept.getCellByRowName("Default").expression == "10 mm"
+
+    @pytest.mark.parametrize("outcome", ["false", "ignored", "unread"])
+    def test_setter_exception_cannot_claim_unverified_column_removal(self, rejecting_parameter_cells,
+                                                                  monkeypatch, outcome):
+        table = _top(rejecting_parameter_cells)
+        real = table.columns.addParameterColumn
+        def build(parameter):
+            column = real(parameter)
+            if outcome == "false":
+                monkeypatch.setattr(column, "deleteMe", lambda: False)
+            elif outcome == "ignored":
+                column.delete_lands = False
+            else:
+                monkeypatch.setattr(_Columns, "count", property(lambda columns: None))
+            return column
+        monkeypatch.setattr(table.columns, "addParameterColumn", build)
+        result = dc.handler(action="add_parameter", parameter="plate_len", values={"Small": "5 kg"})
+        assert result["isError"] is True
+        assert "New-column removal is unconfirmed." in result["message"]
+        assert "The new column was removed." not in result["message"]
+        assert "design_get(include=['configurations'])" in result["message"]
+        assert len(table.columns.added) == (0 if outcome == "unread" else 1)
+
     def test_a_missing_parameter_name_is_refused(self, col_design):
         res = dc.handler(action="add_parameter", parameter="", values={"Default": "5 mm"})
         assert res["isError"] is True and "Provide 'parameter'" in res["message"]
@@ -1908,3 +2054,554 @@ class TestDataFileResolution:
         res = dc.handler(action="add_insert", insert_part="Bracket")
         assert res["isError"] is True and "name(s) were unreadable" in res["message"]
         assert design.rootComponent.occurrences.count == before
+
+
+# ── copy_configuration / delete_configuration: judged by the row census ─────
+
+class _CensusRow:
+    """A top-table row with copy() and deleteMe(). `index` counts from the table's index_base, the
+    copy lands directly after its source under an adopted name, the first row refuses its delete
+    and deleting the active row activates the row above it."""
+    def __init__(self, name, table, row_id=None):
+        self.name = name
+        self.id = row_id or "row-" + name
+        self._table = table
+
+    @property
+    def index(self):
+        return self._table.rows._items.index(self) + self._table.index_base
+
+    def copy(self, name):
+        table, items = self._table, self._table.rows._items
+        taken = {r.name for r in items}
+        made = _CensusRow(name if name not in taken else name + " (1)", table)
+        if table.copy_mode == "none":
+            return None
+        if table.copy_mode == "unlisted":
+            return made
+        items.insert(items.index(self) + 1, made)
+        for col in table.columns.added:
+            if self.name in col._cells:
+                col._cells[made.name] = col._cells[self.name]
+        if table.copy_mode == "activates":
+            table._active = made
+        return made
+
+    def deleteMe(self):
+        table, items = self._table, self._table.rows._items
+        at = items.index(self)
+        if at == 0:
+            raise RuntimeError("3 : Cannot delete the first row.")
+        if table.delete_mode == "false":
+            return False
+        if table.delete_mode == "false_gone":
+            items.remove(self)
+            return False
+        if table.delete_mode == "stays":
+            return True
+        if table._active is self:
+            table._active = items[at - 1]
+        items.remove(self)
+        return True
+
+
+class _CensusTable:
+    """A top table of _CensusRow rows; the first is active unless `active` names another."""
+    def __init__(self, names, active=None, index_base=1):
+        self.rows = _NamedCollection([_CensusRow(n, self) for n in names])
+        self.columns = _Columns()
+        self.index_base = index_base
+        self.copy_mode = self.delete_mode = "honest"
+        self._active = next(r for r in self.rows._items if r.name == (active or names[0]))
+
+    @property
+    def activeRow(self):
+        return self._active
+
+    def census(self):
+        return [(r.name, r.id) for r in self.rows._items]
+
+
+def _census_design(monkeypatch, names=("A", "B", "C"), active=None):
+    table = _CensusTable(list(names), active=active)
+    design = _ActDesign(table)
+    _install_design(dc, design)
+    return table
+
+
+class TestRowResolution:
+    @pytest.mark.parametrize("action", ["copy_configuration", "delete_configuration"])
+    def test_a_name_matching_no_row_is_refused_listing_the_names(self, monkeypatch, action):
+        table = _census_design(monkeypatch)
+        before = table.census()
+        res = dc.handler(action=action, name="Ghost", new_name="G2")
+        assert res["isError"] is True
+        assert "'Ghost'" in res["message"] and "A, B, C" in res["message"]
+        assert table.census() == before
+
+    @pytest.mark.parametrize("action", ["copy_configuration", "delete_configuration"])
+    def test_a_name_two_rows_carry_is_refused_naming_their_ids(self, monkeypatch, action):
+        table = _census_design(monkeypatch)
+        table.rows._items.append(_CensusRow("B", table, row_id="row-B-twin"))
+        before = table.census()
+        res = dc.handler(action=action, name="B", new_name="B2")
+        assert res["isError"] is True
+        assert "matches 2 configurations" in res["message"]
+        assert "row-B, row-B-twin" in res["message"]
+        assert table.census() == before
+
+    def test_an_id_reaches_the_row_no_name_matches(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        out = _payload(dc.handler(action="delete_configuration", name="row-C"))
+        assert out["deleted"]["name"] == "C" and table.census() == [("A", "row-A"), ("B", "row-B")]
+
+    def test_a_census_that_does_not_read_refuses_before_the_write(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        table.rows._items[1].id = None
+        res = dc.handler(action="delete_configuration", name="C")
+        assert res["isError"] is True and "Nothing was deleted" in res["message"]
+        assert len(table.rows._items) == 3
+
+
+class TestCopyConfiguration:
+    def test_the_copy_is_reported_by_its_reread_id_name_and_index(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        out = _payload(dc.handler(action="copy_configuration", name="B", new_name="B2"))
+        assert out["source"] == {"name": "B", "id": "row-B", "index": 2}
+        assert (out["configuration"], out["id"], out["index"]) == ("B2", "row-B2", 3)
+        assert "adopted_differs" not in out
+        assert out["active_changed"] is False and out["active_after"]["name"] == "A"
+        assert out["configurations"] == ["A", "B", "B2", "C"]
+
+    def test_an_adopted_name_is_published_instead_of_the_requested_one(self, monkeypatch):
+        _census_design(monkeypatch)
+        out = _payload(dc.handler(action="copy_configuration", name="B", new_name="B"))
+        assert out["configuration"] == "B (1)" and out["id"] == "row-B (1)"
+        assert out["adopted_differs"] is True and out["requested_name"] == "B"
+        assert "'B (1)'" in out["note"]
+
+    @pytest.mark.parametrize("mode, said", [("none", "returned no row"),
+                                            ("unlisted", "a row whose id reads 'row-B2'")])
+    def test_a_copy_the_census_does_not_list_is_an_error(self, monkeypatch, mode, said):
+        table = _census_design(monkeypatch)
+        table.copy_mode = mode
+        res = dc.handler(action="copy_configuration", name="B", new_name="B2")
+        assert res["isError"] is True
+        assert said in res["message"] and "0 new row(s)" in res["message"]
+
+    def test_a_copy_that_moved_the_active_row_says_so_without_failing(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        table.copy_mode = "activates"
+        out = _payload(dc.handler(action="copy_configuration", name="B", new_name="B2"))
+        assert out["active_changed"] is True
+        assert out["active_before"]["name"] == "A" and out["active_after"]["name"] == "B2"
+        assert "'B2' now (was 'A')" in out["note"]
+
+    def test_each_column_compares_the_copy_cell_and_an_unread_cell_is_not_equal(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        width = table.columns.addParameterColumn(_Param("PP_W"))
+        width.title = "PP_W"
+        for name, expression in (("A", "10 mm"), ("B", "20 mm"), ("C", "30 mm")):
+            width.getCellByRowName(name).expression = expression
+        blank = table.columns.addParameterColumn(_Param("Part Number"))
+        blank.cell_factory = object                  # a cell carrying none of the known fields
+        out = _payload(dc.handler(action="copy_configuration", name="B", new_name="B2"))
+        first, second = out["cells"]
+        assert first == {"column": "PP_W", "column_id": "col-param", "equal": True,
+                         "source": {"expression": "20 mm"}, "copy": {"expression": "20 mm"}}
+        assert second["equal"] is None and second["source"] is None and second["copy"] is None
+        assert second["unread"] == "no known field read on the source and the copy cell"
+
+    def test_an_unread_cell_alone_leaves_the_copy_ok(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        blank = table.columns.addParameterColumn(_Param("Part Number"))
+        blank.cell_factory = object                  # a cell carrying none of the known fields
+        out = _payload(dc.handler(action="copy_configuration", name="B", new_name="B2"))
+        assert out["copied"] is True and out["cells"][0]["equal"] is None
+        assert "verified" not in out and "cells_differ" not in out
+
+    def test_a_copy_cell_that_differs_from_its_source_is_a_partial_error(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        width = table.columns.addParameterColumn(_Param("PP_W"))
+        width.title = "PP_W"
+        blank = table.columns.addParameterColumn(_Param("Part Number"))
+        blank.cell_factory = object
+        width.getCellByRowName("B").expression = "20 mm"
+        row = table.rows._items[1]
+        honest = row.copy
+
+        def copy_then_drift(name):
+            made = honest(name)
+            cell = ConfigurationParameterCell()
+            cell.expression = "21 mm"
+            width._cells[made.name] = cell
+            return made
+        row.copy = copy_then_drift
+        res = dc.handler(action="copy_configuration", name="B", new_name="B2")
+        assert res["isError"] is True
+        assert "1 copied cell(s) read differently from the source in column(s) PP_W" in res["message"]
+        assert "design_get(include=['configurations'])" in res["message"]
+        assert "action='delete_configuration', name='row-B2'" in res["message"]
+        out = json.loads(res["content"][0]["text"])
+        assert out["error"] == res["message"]
+        assert (out["configuration"], out["id"], out["index"]) == ("B2", "row-B2", 3)
+        assert out["verified"] is False and out["cells_differ"] == ["PP_W"]
+        assert out["active_before"]["name"] == "A" and out["active_after"]["name"] == "A"
+        assert [c["equal"] for c in out["cells"]] == [False, None]
+        assert [name for name, _id in table.census()] == ["A", "B", "B2", "C"]
+
+
+class TestDeleteConfiguration:
+    def test_a_non_active_row_is_deleted_and_the_rest_keep_their_ids(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        out = _payload(dc.handler(action="delete_configuration", name="C"))
+        assert out["deleted"] == {"name": "C", "id": "row-C", "index": 3}
+        assert out["remaining"] == [{"name": "A", "id": "row-A", "index": 1},
+                                    {"name": "B", "id": "row-B", "index": 2}]
+        assert out["active_changed"] is False and out["active_after"]["name"] == "A"
+        assert "cannot restore" in out["note"] and "active now" not in out["note"]
+        assert table.census() == [("A", "row-A"), ("B", "row-B")]
+
+    def test_the_first_row_refusal_passes_through_with_the_unchanged_census(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        res = dc.handler(action="delete_configuration", name="A")
+        assert res["isError"] is True
+        assert "3 : Cannot delete the first row." in res["message"]
+        assert "reads unchanged (rows 'A', 'B', 'C'; active 'A')" in res["message"]
+        assert len(table.rows._items) == 3
+
+    def test_deleting_the_active_row_names_the_row_active_now(self, monkeypatch):
+        _census_design(monkeypatch, active="C")
+        out = _payload(dc.handler(action="delete_configuration", name="C"))
+        assert out["active_before"]["name"] == "C" and out["active_after"]["name"] == "B"
+        assert out["active_changed"] is True
+        assert "It was the active one: 'B' is active now" in out["note"]
+        assert "design_get / param_get" in out["note"]
+        assert "rebuil" not in out["note"] and "recomput" not in out["note"]
+
+    def test_a_true_answer_with_the_row_still_listed_is_an_error(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        table.delete_mode = "stays"
+        res = dc.handler(action="delete_configuration", name="C")
+        assert res["isError"] is True
+        assert "answered True" in res["message"] and "'row-C' is still listed" in res["message"]
+
+    @pytest.mark.parametrize("mode, listed, state", [
+        ("false", "is still listed", "reads unchanged (rows 'A', 'B', 'C'; active 'A')"),
+        ("false_gone", "is no longer listed", "now reads rows 'A', 'B'; active 'A'")])
+    def test_a_false_answer_is_an_error_saying_what_stayed(self, monkeypatch, mode, listed, state):
+        table = _census_design(monkeypatch)
+        table.delete_mode = mode
+        res = dc.handler(action="delete_configuration", name="C")
+        assert res["isError"] is True
+        assert "answered False" in res["message"] and listed in res["message"]
+        assert state in res["message"]
+
+    def test_indexes_are_published_as_read_whatever_their_base(self, monkeypatch):
+        table = _census_design(monkeypatch)
+        table.index_base = 7
+        out = _payload(dc.handler(action="delete_configuration", name="B"))
+        assert out["deleted"]["index"] == 8
+        assert [r["index"] for r in out["remaining"]] == [7, 8]
+
+
+class TestExistingActionsKeepTheirReplies:
+    def test_rename_answers_the_same_payload_as_before_the_row_actions(self, monkeypatch):
+        _install(monkeypatch, _Design(configured=True))
+        out = _payload(dc.handler(action="rename_configuration", name="Default", new_name="Medium"))
+        assert out == {"renamed": True, "from": "Default", "to": "Medium",
+                       "configurations": ["Medium"],
+                       "note": "Configuration renamed. Address it by the new name from now on."}
+        assert dc._ACTIONS[:10] == ("create", "activate", "add_configuration",
+                                    "rename_configuration", "add_parameter", "add_suppress",
+                                    "add_visibility", "set_appearance", "add_material", "add_insert")
+
+
+# ── add_suppress on a timeline group: a column known by id and title ────────
+
+class ConfigurationSuppressColumn:
+    """A group's suppress column: id, title and one cell per row id. `feature_reads` counts reads
+    of .feature, which answers nothing for a group column."""
+    def __init__(self, col_id, title, rows, cell):
+        self.id, self.title = col_id, title
+        self._cells = {r.id: cell() for r in rows}
+        self.feature_reads = 0
+
+    @property
+    def feature(self):
+        self.feature_reads += 1
+        return None
+
+    def getCellByRowId(self, row_id):
+        return self._cells.get(row_id)
+
+
+class _GroupColumns(_Columns):
+    """Columns whose addSuppressColumn hands back the column a target already has. `cells` maps a
+    row name to its cell class, `listed` False keeps the new column out of the walk."""
+    def __init__(self, table):
+        super().__init__()
+        self._table, self.cells, self.listed = table, {}, True
+        self.made = ConfigurationSuppressColumn
+
+    def addSuppressColumn(self, target):
+        for col in self.added:
+            if getattr(col, "target", None) is target:
+                return col
+        col = self.made("col-%d" % len(self.added), target.name, self._table.rows._items,
+                        ConfigurationSuppressCell)
+        for row in self._table.rows._items:
+            if row.name in self.cells:
+                col._cells[row.id] = self.cells[row.name]()
+        col.target = target
+        if self.listed:
+            self.added.append(col)
+        return col
+
+
+class _Group:
+    """A collapsed timeline group: name, index, counted members and no feature entity.
+    `health_reads` counts reads of the group row's healthState."""
+    def __init__(self, name="PP_Grp", index=2, suppressed=(False, False)):
+        self.name, self.index, self.isCollapsed, self.entity = name, index, True, None
+        self._members = [FakeTimelineObject("PP_Cut%d" % (i + 1), index + i, suppressed=s)
+                         for i, s in enumerate(suppressed)]
+        self.health_reads = 0
+
+    @property
+    def count(self):
+        return len(self._members)
+
+    def item(self, i):
+        return self._members[i]
+
+    @property
+    def healthState(self):
+        self.health_reads += 1
+        return 5
+
+
+@pytest.fixture
+def group_rig(monkeypatch):
+    """(table, group): rows A (active) and B, and the feature seam resolving 'PP_Grp' to a group."""
+    table = _census_design(monkeypatch, names=("A", "B"))
+    table.columns = _GroupColumns(table)
+    group = _Group()
+    monkeypatch.setattr(dc._FEATURE, "resolve", lambda raw: ((group, group.name), None))
+    return table, group
+
+
+class TestAddSuppressGroup:
+    def test_the_feature_input_accepts_a_group(self):
+        assert dc._FEATURE.allow_group is True
+        assert dc.tool.to_dict()["inputSchema"]["properties"]["feature"] == {
+            "type": "string", "description": "Feature/group name or index; qualify features."}
+
+    def test_the_column_is_reported_by_id_and_title_without_reading_its_feature(self, group_rig):
+        table, group = group_rig
+        out = _payload(dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["B"]))
+        col = table.columns.added[0]
+        assert col.feature_reads == 0
+        assert out == {
+            "target_kind": "group",
+            "group": {"name": "PP_Grp", "index": 2, "member_count": 2,
+                      "members": ["PP_Cut1", "PP_Cut2"]},
+            "column_id": "col-0", "column_title": "PP_Grp", "column_existed": False,
+            "suppressed_in": ["B"],
+            "cells": [{"configuration": "A", "id": "row-A", "suppressed": False},
+                      {"configuration": "B", "id": "row-B", "suppressed": True}],
+            "active_configuration": {"name": "A", "id": "row-A"},
+            "note": "Suppress column 'PP_Grp' was added for timeline group 'PP_Grp'; a group "
+                    "column is linked to its group by title only. The model changes for 'B' "
+                    "when that configuration is activated (action='activate')."}
+
+    def test_a_listed_row_that_is_not_active_makes_no_claim_about_the_model(self, group_rig):
+        out = _payload(dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["B"]))
+        assert "members_suppressed_now" not in out
+        assert "The model changes for 'B' when that configuration is activated" in out["note"]
+
+    def test_an_existing_column_is_reported_as_existing(self, group_rig):
+        table, _group = group_rig
+        dc.handler(action="add_suppress", feature="PP_Grp")
+        out = _payload(dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["B"]))
+        assert out["column_existed"] is True and out["column_id"] == "col-0"
+        assert len(table.columns.added) == 1 and "was already in the table" in out["note"]
+
+    def test_a_column_the_table_does_not_list_is_an_error(self, group_rig):
+        table, _group = group_rig
+        table.columns.listed = False
+        res = dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["B"])
+        assert res["isError"] is True
+        assert ("returned a ConfigurationSuppressColumn whose id reads 'col-0', and the table "
+                "lists 0 new column id(s)") in res["message"]
+
+    def test_a_column_of_another_kind_is_an_error(self, group_rig):
+        table, _group = group_rig
+        table.columns.made = type("ConfigurationPropertyColumn", (ConfigurationSuppressColumn,), {})
+        res = dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["B"])
+        assert res["isError"] is True
+        assert "returned a ConfigurationPropertyColumn" in res["message"]
+
+    def test_a_cell_that_does_not_take_is_a_partial_error_naming_it(self, group_rig):
+        table, _group = group_rig
+        table.columns.cells = {"B": _StubbornSuppressCell}
+        res = dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["A", "B"])
+        assert res["isError"] is True
+        assert ("was added and stays, but 1 of 2 requested cell(s) do not read suppressed: "
+                "'B' (reads False). Cells that do: 'A'.") in res["message"]
+        out = json.loads(res["content"][0]["text"])
+        assert out["error"] == res["message"]
+        assert out["suppressed_in"] == ["A"] and out["cells_failed"] == ["'B' (reads False)"]
+        assert len(table.columns.added) == 1
+
+    def test_an_unknown_configuration_is_refused_before_any_write(self, group_rig):
+        table, _group = group_rig
+        res = dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["B", "Ghost"])
+        assert res["isError"] is True
+        assert "suppressed_in: No configuration matched 'Ghost'. Available: A, B." in res["message"]
+        assert table.columns.added == []
+
+    def test_a_name_two_configurations_share_is_refused_before_any_write(self, group_rig):
+        table, _group = group_rig
+        table.rows._items.append(_CensusRow("B", table, row_id="row-B-twin"))
+        res = dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["B"])
+        assert res["isError"] is True
+        assert "Pass one row's id in 'suppressed_in'." in res["message"]
+        assert table.columns.added == []
+
+    def test_the_active_row_reports_the_members_as_read_after_the_write(self, group_rig):
+        _table, group = group_rig
+        for member in group._members:
+            member.isSuppressed = True
+        out = _payload(dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["A"]))
+        assert out["members_suppressed_now"] is True
+        assert "'A' is active" in out["note"] and "The model changes" not in out["note"]
+
+    def test_members_that_disagree_under_the_active_row_are_an_error(self, group_rig):
+        _table, group = group_rig
+        group._members[0].isSuppressed = True
+        res = dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["A"])
+        assert res["isError"] is True
+        assert ("reads half applied under the active configuration 'A': suppressed PP_Cut1; "
+                "not suppressed PP_Cut2.") in res["message"]
+        out = json.loads(res["content"][0]["text"])
+        assert out["error"] == res["message"]
+        assert out["members_suppressed_now"] == "mixed"
+        assert out["members_differ"] == {"suppressed": ["PP_Cut1"], "not_suppressed": ["PP_Cut2"]}
+
+    def test_the_group_rows_health_is_never_read_or_reported(self, group_rig):
+        _table, group = group_rig
+        res = dc.handler(action="add_suppress", feature="PP_Grp", suppressed_in=["A"])
+        assert res["isError"] is False and group.health_reads == 0
+        assert "health" not in res["content"][0]["text"]
+
+    def test_a_feature_keeps_the_reply_it_had(self, col_design):
+        out = _payload(dc.handler(action="add_suppress", feature="Fillet1",
+                                  suppressed_in=["Small"]))
+        assert out == {"feature": "Fillet1", "suppressed_in": ["Small"],
+                       "note": "Suppress column added; the feature is suppressed in the listed "
+                               "configurations (present in the others)."}
+        col = _top(col_design).columns.added[0]
+        assert col.feature is col_design._features["Fillet1"]
+
+
+# -- switch_occurrence: one inserted configured occurrence, followed through its wrapper -------
+
+from types import SimpleNamespace
+
+
+class _SwitchOcc:
+    """An inserted configuration: named after its row (measured), switched through its own
+    table. `lies`: 'stays' (answers true, keeps the row), 'moves', 'twin' (a second occurrence
+    already carries the row switched to, so the new path is not unique), 'refuses' (false)."""
+
+    def __init__(self, lies=()):
+        self.lies, self.isConfiguration, self.isValid, self.x = lies, True, True, 3.0
+        self.switched = []
+        self.rows = [SimpleNamespace(name=n, volume=v) for n, v in (("Narrow", 4.0), ("Wide", 8.0))]
+        for row in self.rows:
+            row.parentTable = SimpleNamespace(rows=_NamedCollection(self.rows))
+        self.configurationRow = self.rows[0]
+
+    @property
+    def fullPathName(self):
+        return f"{self.configurationRow.name}:1"
+
+    @property
+    def component(self):
+        body = SimpleNamespace(volume=self.configurationRow.volume)
+        return SimpleNamespace(bRepBodies=SimpleNamespace(count=1, item=lambda i: body))
+
+    @property
+    def transform2(self):
+        return SimpleNamespace(asArray=lambda: [1.0, 0, 0, self.x, 0, 1.0, 0, 0, 0, 0, 1.0, 0,
+                                                0, 0, 0, 1.0])
+
+    def switchConfiguration(self, row):
+        self.switched.append(row.name)
+        if "refuses" in self.lies:
+            return False
+        if "stays" not in self.lies:
+            self.configurationRow = row
+        if "moves" in self.lies:
+            self.x += 1.0
+        return True
+
+
+def _switch_world(monkeypatch, lies=(), configured=True):
+    occ = _SwitchOcc(lies)
+    occ.isConfiguration = configured
+    others = [SimpleNamespace(fullPathName="Wide:1")] if "twin" in lies else []
+    design = _Design()
+    design.rootComponent.allOccurrences = _NamedCollection([occ] + others)
+    _install(monkeypatch, design)
+    monkeypatch.setattr(dc._OCCURRENCE, "resolve", lambda raw: (occ, None))
+    return occ
+
+
+class TestSwitchOccurrence:
+    def test_a_host_that_is_not_configured_can_switch_an_inserted_row(self, monkeypatch):
+        occ = _switch_world(monkeypatch)
+        out = _payload(dc.handler(action="switch_occurrence", occurrence="Narrow:1", name="Wide"))
+        assert occ.switched == ["Wide"]
+        assert (out["occurrence"], out["path_before"]) == ("Wide:1", "Narrow:1")
+        assert (out["row"], out["row_before"]) == ("Wide", "Narrow")
+        assert (out["volume_cm3_before"], out["volume_cm3"]) == (4.0, 8.0)
+        assert out["old_path_resolves"] is False
+
+    @pytest.mark.parametrize("lie, text", [
+        ("stays", "it reads row 'Narrow', not 'Wide'"),
+        ("moves", "it did not keep its placement"),
+        ("twin", "the path 'Wide:1' is not unique")])
+    def test_a_switch_that_went_wrong_says_it_was_made(self, monkeypatch, lie, text):
+        _switch_world(monkeypatch, lies=(lie,))
+        res = dc.handler(action="switch_occurrence", occurrence="Narrow:1", name="Wide")
+        assert res["isError"] is True and text in res["message"]
+        assert "WAS made" in res["message"]
+
+    def test_a_false_answer_is_an_error(self, monkeypatch):
+        _switch_world(monkeypatch, lies=("refuses",))
+        res = dc.handler(action="switch_occurrence", occurrence="Narrow:1", name="Wide")
+        assert res["isError"] is True and "answered False" in res["message"]
+
+    @pytest.mark.parametrize("args, text", [
+        ({"occurrence": "Narrow:1", "name": "Tall"}, "Got 'Tall'. Rows: Narrow, Wide."),
+        ({"occurrence": "Narrow:1", "name": "Narrow"}, "already on row 'Narrow'"),
+        ({"name": "Wide"}, "needs 'occurrence'")])
+    def test_switch_guards_refuse_before_the_call(self, monkeypatch, args, text):
+        occ = _switch_world(monkeypatch)
+        res = dc.handler(action="switch_occurrence", **args)
+        assert res["isError"] is True and text in res["message"]
+        assert occ.switched == []
+
+    def test_an_occurrence_that_is_not_a_configuration_is_refused(self, monkeypatch):
+        occ = _switch_world(monkeypatch, configured=False)
+        res = dc.handler(action="switch_occurrence", occurrence="Narrow:1", name="Wide")
+        assert res["isError"] is True and "is not an inserted configuration" in res["message"]
+        assert occ.switched == []
+
+    def test_occurrence_on_another_action_is_refused(self, monkeypatch):
+        _install(monkeypatch, _Design(configured=True))
+        res = dc.handler(action="add_configuration", name="X", occurrence="Narrow:1")
+        assert res["isError"] is True
+        assert "'occurrence' belongs to action='switch_occurrence'" in res["message"]

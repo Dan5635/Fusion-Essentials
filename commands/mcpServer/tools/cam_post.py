@@ -20,6 +20,9 @@ from ._common import named_with_remainder, ok, error, safe
 from . import _assert
 from . import _inputs
 from . import _outputs
+from . import _cam_common
+from . import _export
+from ._write_guard import active_document_handle
 from ._cam_common import (get_cam, library_assets, live_readiness, resolve_cam_node,
                           setups as cam_setups, operations_under, toolpath_present_tally,
                           quote_expression as _quote, unquote_expression as _unquote)
@@ -129,7 +132,21 @@ def _resolve_library_post(post, post_scope):
     def leaf(a):
         return safe(lambda a=a: a.leafName) or ""
 
-    matches = [a for a in assets if _norm_post_name(leaf(a)) == want]
+    matches = [a for a in assets if safe(lambda a=a: a.toString()) == post]
+    if not matches:
+        matches = [a for a in assets if _norm_post_name(leaf(a)) == want]
+        if truncated:
+            urls = [str(safe(lambda a=a: a.toString())) for a in matches]
+            available = sorted({str(safe(lambda a=a: a.toString())) for a in assets
+                                if safe(lambda a=a: a.toString())})
+            hint = (f"Enumerated post URLs: {named_with_remainder(available, cap=_NAMES_LISTED)}. "
+                    if available else "No post URLs were enumerated; use post_scope='local' with a full .cps path. ")
+            return None, None, (f"Cannot resolve {post_scope} post '{post}': the search "
+                                "was capped, so uniqueness or absence is unknown. "
+                                + (f"Known matching urls: {', '.join(urls)}. " if urls else "")
+                                + hint
+                                + ("Choose an enumerated post URL instead; URLs outside this walk "
+                                   "cannot be resolved." if available else ""))
     if not matches:
         # The shipped library answers with hundreds of names, so what the listing cannot carry is
         # COUNTED by the shared renderer rather than dropped.
@@ -312,7 +329,7 @@ def _apply_output_params(params, number, out_dir, comment, units_key):
 
 def _cam_log_root(temp_dir):
     """The Fusion360CAM tree post logs land in: temp_dir's own 'Fusion360CAM' ancestor when the process
-    temp dir already sits inside one, else <temp_dir>/Neutron/Fusion360CAM where a Neutron tree
+    temp dir already sits inside one, else <temp_dir>/Neutron/Fusion360CAM where that folder
     exists, else <temp_dir>/Fusion360CAM."""
     path = os.path.normpath(temp_dir)
     while True:
@@ -323,14 +340,16 @@ def _cam_log_root(temp_dir):
             break
         path = parent
     # On macOS the process temp dir is the bare $TMPDIR and the logs sit under its Neutron tree.
+    # A Windows 2706.0.116 temp dir holds a Neutron folder with no Fusion360CAM in it.
     neutron = os.path.join(os.path.normpath(temp_dir), "Neutron")
-    base = neutron if os.path.isdir(neutron) else os.path.normpath(temp_dir)
+    in_neutron = os.path.isdir(os.path.join(neutron, "Fusion360CAM"))
+    base = neutron if in_neutron else os.path.normpath(temp_dir)
     return os.path.join(base, "Fusion360CAM")
 
 
-# The DETAILED post error is in <program>.log under the Fusion360CAM tree, not the output folder (a
-# '.failed' stub there says "See log"). In-process gettempdir() is <TEMP>/Fusion360CAM/<session> on
-# Windows 2705.1.11 and the bare $TMPDIR on macOS 2705.1.30 (logs under its Neutron tree), measured.
+# The DETAILED post error is in <program>.log under this tree; the output folder gets a '.failed'
+# stub. In-process gettempdir() is <TEMP>/Fusion360CAM/<session> on Windows 2705.1.11, the bare
+# <TEMP> on Windows 2706.0.116, the bare $TMPDIR on macOS 2705.1.30 (logs under its Neutron tree).
 _CAM_LOG_ROOT = _cam_log_root(tempfile.gettempdir())
 
 
@@ -339,10 +358,10 @@ def _is_failure_marker(path):
     return path.lower().endswith(".failed")
 
 
-def _post_log_errors(program_name, since):
+def _post_log_errors(program_number, since):
     """Best-effort Error/Warning lines from THIS post's log, so a failure is actionable, not a guess.
-    Finds the newest <program>.log under the Fusion CAM temp tree touched since the post started."""
-    base = os.path.basename(str(program_name).strip())
+    Finds the newest <emitted number>.log under Fusion's CAM temp tree touched since the post started."""
+    base = os.path.basename(str(program_number).strip())
     if not base:
         return []
     try:
@@ -373,15 +392,59 @@ def _post_log_errors(program_name, since):
 _PROGRAM_NUMBER_MARK = "program number"
 
 
-def _program_number_clause(log_errors, prog_name):
-    """The clause a post-log line naming the PROGRAM NUMBER earns when the name passed was not a
-    number; '' otherwise."""
-    if prog_name.isdigit():
-        return ""
+def _program_number_clause(log_errors, prog_name, program_number, retained):
+    """Give a number remedy only when this post's log identifies a program-number error."""
     if not any(_PROGRAM_NUMBER_MARK in (line or "").lower() for line in log_errors):
         return ""
-    return (f" The post's message names the PROGRAM NUMBER, and program_name '{prog_name}' is not a "
-            "number - retry with a numeric program_name such as '1001'.")
+    shown = f"'{program_number}'" if program_number else "the stored emitted number"
+    if retained:
+        return (f" The post log rejected emitted number {shown}; this NC Program remains. Correct it "
+                f"with cam_set_nc_comment(program='{prog_name}', "
+                f"set_number='<number accepted by this post>'), then retry "
+                f"cam_post(program_name='{prog_name}').")
+    return (f" The post log rejected emitted number {shown}. Retry creation with a program_name that "
+            "is a number accepted by this post. If rollback says the failed program remains, remove "
+            "it with cam_delete first.")
+
+
+def _give_setup_machine(program, targets, kind, node=None):
+    """Give one additive scope's owning setup machine to the NC program."""
+    if len(targets or ()) != 1:
+        return None, None
+    if kind == "operation":
+        setup = _cam_common.owning_setup(node) if node is not None and node.obj is targets[0] else None
+        if setup is None:
+            return None, ("The operation's owning setup could not be verified. Posting was not "
+                          "attempted. Re-read cam_get(include=['operations']) and pass its exact "
+                          "operation path as 'scope'.")
+    elif kind in ("setup", "setups"):
+        setup = targets[0]
+    else:
+        return None, None
+    if not _cam_common.is_additive_setup(setup):
+        return None, None
+    name = safe(lambda: setup.name)
+    machine = safe(lambda: setup.machine)
+    if machine is None:
+        return None, (f"Additive setup '{name}' reads no machine, and its post takes the machine "
+                      "configuration from it. Posting was not attempted. Assign one with "
+                      "cam_edit_setup(machine=...), then post again.")
+    wanted = safe(lambda: machine.id)
+    if not wanted:
+        return None, (f"The machine of additive setup '{name}' did not read its identity, so giving it "
+                      "to the NC Program could not be verified. Posting was not attempted. Re-read "
+                      "cam_get(include=['machine'], setup=...) and post again.")
+    try:
+        program.machine = machine
+    except Exception as e:
+        return None, (f"The NC Program did not take the machine of additive setup '{name}': {e}. "
+                      "Posting was not attempted.")
+    held = safe(lambda: program.machine.id)
+    if held != wanted:
+        return None, (f"The NC Program's machine is unverified after it was given the machine of additive "
+                      f"setup '{name}': it reads {held!r}, the setup's reads {wanted!r}. Posting was not "
+                      "attempted. cam_get(include=['nc_programs']) reads the program; post again.")
+    return " ".join(filter(None, (safe(lambda: machine.vendor), safe(lambda: machine.model)))) or wanted, None
 
 
 def _operations_collection(cam, targets):
@@ -533,6 +596,133 @@ def _rollback_program(cam, program, prog_name, reused):
     return f" The just-created NC Program '{prog_name}' was removed."
 
 
+
+_FLAT_POST_WAIT_S = 30.0
+
+
+def _flat_path_ready(cam, ops):
+    """Return ready requested flat operations, or a named blocker."""
+    ready = 0
+    for op in ops:
+        facts = _cam_common.op_state_facts(op, cam)
+        if (_cam_common.op_is_suppressed(facts)
+                or facts.get("strategy") == "manual"):
+            continue
+        if (facts.get("operation_state") != 0 or facts.get("has_toolpath") is not True
+                or facts.get("is_toolpath_valid") is not True or facts.get("has_error")
+                or _cam_common.is_empty_toolpath(facts)
+                or facts.get("nonfinite_toolpath")):
+            return ready, f"operation '{safe(lambda op=op: op.name)}' has no verified current nonempty path"
+        ready += 1
+    return ready, None
+
+
+def _refresh_generate_flat_scope(cam, items):
+    """Refresh flat setups in the requested scope and await their own new paths."""
+    operations = _expand_ops(items)
+    direct_setups = []
+    for item in items or []:
+        if safe(lambda item=item: item.operationType) is None:
+            continue
+        expected_raw = safe(lambda item=item: item.allOperations)
+        expected = (len(expected_raw) if isinstance(expected_raw, (list, tuple))
+                    else _cam_common.counted(lambda raw=expected_raw: raw.count)
+                    if expected_raw is not None else None)
+        observed = operations_under(item)
+        if expected is None or len(observed) != expected:
+            return None, (f"Setup '{safe(lambda item=item: item.name)}' operations could not "
+                          "be read completely; no flat refresh or NC post was attempted.")
+        direct_setups.append(item)
+    setups, why = _cam_common.flat_setups_for_operations(operations)
+    if why:
+        return None, why + " No NC program was written."
+    flat_setups, refreshed = [], 0
+    known = {(safe(lambda setup=setup: setup.name) or "").lower() for setup in setups}
+    setups.extend(setup for setup in direct_setups
+                  if (safe(lambda setup=setup: setup.name) or "").lower() not in known)
+    for setup in setups:
+        count, merr = _cam_common.refresh_flat_setup_models(setup)
+        if merr:
+            return None, (f"Setup '{safe(lambda: setup.name)}': {merr} "
+                          f"{refreshed} flat model(s) were already refreshed; no NC file was posted.")
+        if count:
+            flat_setups.append(setup)
+            refreshed += count
+    if not flat_setups:
+        return {"flat_models_refreshed": 0, "flat_setups_regenerated": 0}, None
+
+    expected_document = active_document_handle()
+    if not expected_document:
+        return None, (f"{refreshed} flat model(s) were refreshed, but the active document handle "
+                      "did not read; no generation or post was attempted.")
+    started = time.monotonic()
+    futures, handles, requested = [], [], []
+    for setup in flat_setups:
+        name = safe(lambda setup=setup: setup.name)
+        selected = [op for op in operations if safe(lambda op=op: op.parentSetup.name) == name]
+        selected = [op for op in selected if safe(lambda op=op: op.isSuppressed) is not True
+                    and safe(lambda op=op: op.strategy) != "manual"]
+        if not selected:
+            continue
+        collection = adsk.core.ObjectCollection.create()
+        for op in selected:
+            collection.add(op)
+        try:
+            future = cam.generateToolpath(collection)
+        except Exception as exc:
+            return None, (f"Flat generation failed for '{name}': {exc}. "
+                          f"{refreshed} flat model(s) were refreshed; launched handles: {handles}. "
+                          "No NC file was posted.")
+        if not future:
+            return None, (f"Flat generation returned no future for '{name}'. "
+                          f"{refreshed} flat model(s) were refreshed; launched handles: {handles}. "
+                          "No NC file was posted.")
+        handle, _ = _cam_common.register_future(
+            future, f"selected operations in setup '{name}'", "flat_post", False)
+        futures.append(future)
+        handles.append(handle)
+        requested.extend(selected)
+
+    def probe():
+        if active_document_handle() != expected_document:
+            return True, ("document_changed", 0, None)
+        if all(safe(lambda f=f: f.isGenerationCompleted) is True for f in futures):
+            ready, blocker = _flat_path_ready(cam, requested)
+            return True, ("invalid" if blocker else "ready", ready, blocker)
+        return False, ("pending", 0, None)
+
+    remaining = _FLAT_POST_WAIT_S - (time.monotonic() - started)
+    settled, reading = (_export.pump_until(probe, remaining, 0.01)
+                        if remaining > 0 else (False, ("pending", 0, None)))
+    state, ready_count, blocker = reading
+    if state == "document_changed":
+        return None, (f"Active document changed during flat generation; handles {handles} "
+                      "remain pollable for Future progress with document-wide readiness. "
+                      "No NC file was posted.")
+    if state == "invalid":
+        return None, ("Flat generation finished, but requested " + blocker
+                      + f". Handles {handles} remain pollable for Future progress with "
+                      "document-wide readiness. Check cam_get(include=['operations']) "
+                      "for selected health. No NC file was posted.")
+    if not settled:
+        return None, (f"Flat generation did not complete with verified nonempty paths within "
+                      f"{_FLAT_POST_WAIT_S:g}s. {refreshed} flat model(s) were refreshed; "
+                      f"handles {handles} remain pollable for Future progress, with document-wide "
+                      "readiness. Check cam_get(include=['operations']) for selected health. "
+                      "No NC file was posted.")
+    if active_document_handle() != expected_document:
+        return None, (f"Active document changed after flat generation; handles {handles} "
+                      "remain pollable for Future progress with document-wide readiness. "
+                      "No NC file was posted.")
+    from .cam_get_status import _release
+    for handle in handles:
+        entry = _cam_common._GENERATIONS.get(handle)
+        if entry is not None:
+            _release(handle, entry, time.time() - entry["started_at"])
+    return {"flat_models_refreshed": refreshed,
+            "flat_setups_regenerated": len(futures),
+            "flat_operations_ready": ready_count}, None
+
 def handler(scope: str = "", post: str = "", post_scope: str = "local", output_folder: str = "",
             program_name: str = "", units: str = "document", program_comment: str = "",
             overwrite: bool = False, setups=None) -> dict:
@@ -575,7 +765,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
 
     # Resolve the scope up front so a bad name fails before we touch the NC Program. Stays None/
     # "document" for as-is (scope and setups are guaranteed blank by the as_is check above).
-    targets, kind = (None, "document")
+    targets, kind, node = None, "document", None
     want = (scope or "").strip()
     if setup_names and want:
         return error("Pass 'scope' or 'setups', not both - 'scope' names ONE setup/folder/operation "
@@ -591,18 +781,17 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         if serr:
             return error(serr + " Omit 'scope' to post the whole document.")
         targets, kind = [node.obj], node.kind
-
-    # Up-front refusal: nothing valid to post. live_readiness is the one CAM health signal; the post
-    # omits invalid/empty operations, so zero valid ops -> no file. Applies to as-is too - a stale
-    # program still writes wrong G-code.
-    live, lerr = live_readiness()
-    if lerr:
-        return error(lerr)
-    live = live or {}
-    if not live.get("valid"):
-        return error("No valid toolpaths to post - every operation is out-of-date, errored, or "
-                     "ungenerated. Run cam_generate (in the Manufacture workspace) first. "
-                     f"({live.get('readiness', '')})")
+        if kind == "operation":
+            owner = _cam_common.owning_setup(node)
+            if owner is None:
+                return error(f"Operation '{want}' has no readable owning setup. No NC program was "
+                             "created. Re-read cam_get(include=['operations']) and retry with its "
+                             "exact operation path.")
+            owner_type = safe(lambda: owner.operationType, _MISSING)
+            if owner_type is _MISSING or owner_type is None:
+                return error(f"The owning setup of operation '{want}' has no readable operation type. "
+                             "No NC program was created. Re-read cam_get(include=['setups']) "
+                             "before posting.")
 
     # OVERWRITE GUARD: reconfiguring an EXISTING program whose STORED operations differ from the
     # REQUESTED scope would clobber a program that may be machinist-curated. Each refusal names
@@ -629,25 +818,50 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
                 "stored, or pass overwrite=true to reconfigure it.")
 
     if as_is:
-        # Post the program EXACTLY as stored: no operations/postConfiguration/parameter writes - just
-        # postProcess() against its own configuration.
-        program = existing
-        out_dir = _stored_str_param(program.parameters, _P_FOLDER)
+        out_dir = _stored_str_param(existing.parameters, _P_FOLDER)
         if not out_dir:
             return error(f"NC Program '{prog_name}' has no stored '{_P_FOLDER}' output folder to post "
                          "as-is against - configure it once with 'output_folder' and 'post'.")
-        post_label = (safe(lambda: program.postConfiguration.description)
-                     if safe(lambda: program.postConfiguration) else None)
-        applied, unresolved, unit_note, membership = {}, [], None, {}
+        post_label = (safe(lambda: existing.postConfiguration.description)
+                      if safe(lambda: existing.postConfiguration) else None)
+        stored = safe(lambda: existing.operations, _MISSING)
+        if stored is _MISSING:
+            return error(f"NC Program '{prog_name}' stored operations could not be read; "
+                         "no flat refresh or post was attempted.")
+        try:
+            refresh_items = list(stored) if stored is not None else []
+        except Exception:
+            return error(f"NC Program '{prog_name}' stored operations could not be enumerated; "
+                         "no flat refresh or post was attempted.")
     else:
-        # Resolve the post AFTER the cheap guards - a cloud/hub lookup is network-slow, so a bad
-        # output_folder/program_name/scope or an empty document fails fast without touching the network.
         post_config, post_label, perr = _resolve_post_config(cam, post, post_scope_key)
         if perr:
             return error(perr)
-
         out_dir = os.path.abspath(output_folder.strip())
+        refresh_items = _operations_collection(cam, targets)
+    flat_result, flat_error = _refresh_generate_flat_scope(cam, refresh_items)
+    if flat_error:
+        return error(flat_error)
 
+    # Check readiness AFTER flat generation; the prior document-wide valid count may have
+    # belonged to a different setup while the requested flat path was stale.
+    live, lerr = live_readiness()
+    if lerr:
+        return error(lerr)
+    live = live or {}
+    if not live.get("valid"):
+        return error("No valid toolpaths to post - every operation is out-of-date, errored, or "
+                     "ungenerated. Run cam_generate (in the Manufacture workspace) first. "
+                     f"({live.get('readiness', '')})")
+
+    retained = (" Existing-program configuration edits remain where applied: operations, post configuration, "
+                "output folder or comment. Inspect cam_get(include=['nc_programs']) before retrying."
+                if reused and not as_is else "")
+    if as_is:
+        # Post the program exactly as stored: no configuration writes.
+        program = existing
+        applied, unresolved, unit_note, membership = {}, [], None, {}
+    else:
         # UPDATE IN PLACE rather than delete+recreate: operations, postConfiguration and the output
         # parameters are all settable, so the program keeps its identity. ONE resolve of the scope
         # serves both the assignment and the membership read-back below.
@@ -674,21 +888,27 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
                 program.postConfiguration = post_config
         except Exception as e:
             return error(f"Could not {'update' if reused else 'create'} the NC Program '{prog_name}': {e}. "
-                         f"(Post config: {post_label}.)")
+                         f"(Post config: {post_label}.)"
+                         + (" Reconfiguration may be partial." if reused else "") + retained)
 
         if program is None:
             return error(f"NC Program '{prog_name}' was not {'updated' if reused else 'created'} "
-                         "(the API returned null).")
+                         "(the API returned null)." + retained)
 
         # What the program's OWN operations read back as - the assignment is not taken on trust.
         membership, merr = _membership_facts(program, prog_name, requested_ops)
         if merr:
-            return error(merr + _rollback_program(cam, program, prog_name, reused))
+            return error(merr + retained + _rollback_program(cam, program, prog_name, reused))
+
+        machine_label, machine_error = _give_setup_machine(program, targets, kind, node)
+        if machine_label or machine_error:
+            # from here a refusal on a reused program may leave its machine changed as well
+            retained = retained.replace("post configuration, ", "post configuration, machine configuration, ")
+        if machine_error:
+            return error(machine_error + retained + _rollback_program(cam, program, prog_name, reused))
 
         if units_key != "document" and (_P_UNIT in unresolved or unit_note):
             reason = (unit_note or f"The NC Program has no '{_P_UNIT}' parameter, so output units could not be set.")
-            retained = (" Existing-program configuration edits remain; inspect the program before retrying."
-                        if reused else "")
             return error(reason + retained + _rollback_program(cam, program, prog_name, reused))
 
         if unresolved and _P_FOLDER in unresolved:
@@ -696,8 +916,10 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             # the file-landed gate below can't see it - fail loudly and name the missing parameter.
             return error(f"The NC Program has no '{_P_FOLDER}' parameter, so the output folder could not be "
                          f"set to '{out_dir}'. Unresolved parameters: {', '.join(unresolved)}."
-                         + _rollback_program(cam, program, prog_name, reused))
+                         + retained + _rollback_program(cam, program, prog_name, reused))
 
+    program_number = safe(lambda: _stored_str_param(program.parameters, _P_NUMBER))
+    post_log_key = program_number or prog_name
     before = _dir_snapshot(out_dir)
     started = time.time()
 
@@ -705,12 +927,20 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         # postProcess(None) RAISES "Options must not be null" (live-verified, Fusion 2704.1.39) - the
         # API docstring's "Can be null" does not hold in this build; always pass a real options object.
         options = adsk.cam.NCProgramPostProcessOptions.create()
+        if flat_result["flat_setups_regenerated"]:
+            fail_mode = adsk.cam.PostProcessExecutionBehaviors.PostProcessExecutionBehavior_Fail
+            landed, _changed = _export.applied_pair(
+                options, "postProcessExecutionBehavior", fail_mode, fail_mode)
+            if landed is None:
+                return error("Flat paths were generated, but fail-on-post behavior did not read back; "
+                             "no NC file was posted."
+                             + retained + _rollback_program(cam, program, prog_name, reused))
         posted = program.postProcess(options)
     except Exception as e:
         # Do not leave a just-created program behind a failed post - and say which way that went.
         return error(f"Post processing raised: {e}. (Post config: {post_label}; check the post matches "
                      "the machine/operations.)"
-                     + _rollback_program(cam, program, prog_name, reused))
+                     + retained + _rollback_program(cam, program, prog_name, reused))
 
     # Honesty gate: postProcess returning true is NOT proof a file landed - diff the folder. A '.failed'
     # stub is a failure marker, NOT a deliverable - keep the two apart so a failed post never lists a
@@ -730,12 +960,13 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         # (a reused program pre-existed, leave it). Surface the post LOG's error lines - the real,
         # actionable reason (a '.failed' stub in the folder only says "see log").
         rolled = _rollback_program(cam, program, prog_name, reused)
-        log_errors = _post_log_errors(prog_name, started)
+        log_errors = _post_log_errors(post_log_key, started)
         msg = (f"NC Program '{prog_name}' did not post a usable NC file to '{out_dir}' "
                f"(postProcess={bool(posted)}, failed_stub={bool(failed_markers)})."
-               + rolled + " ")
+               + rolled + retained + " ")
         if log_errors:
-            msg += "Post log: " + " | ".join(log_errors) + _program_number_clause(log_errors, prog_name)
+            msg += ("Post log: " + " | ".join(log_errors)
+                    + _program_number_clause(log_errors, prog_name, program_number, reused))
         else:
             msg += "Check the output folder path, the program number/name, and that the post matches the ops."
         return error(msg)
@@ -751,6 +982,7 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         "mode": "as_is" if as_is else "configured",
         "scope": "as_is" if as_is else kind,
         "program_name": prog_name,
+        "program_number": program_number,
         "program_reused": reused,
         "nc_program": program_verb,
         "post_config": post_label,
@@ -762,6 +994,8 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         # of its own, since a note that inlined it could not be bounded.
         "readiness": live.get("readiness", ""),
     }
+    if flat_result["flat_setups_regenerated"]:
+        result.update(flat_result)
     # The held/posted counts come off ONE builder on both arms, so what they mean cannot depend on
     # which arm posted; as-is compared no scope, so it carries counts and no membership verdict.
     if as_is:
@@ -771,13 +1005,10 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             "post_scope": post_scope_key,
             "units": units_key,
             "params_applied": applied,
-            # What the post will EMIT as the program number, read off the parameter either way -
-            # written here only on a create seeded from an all-digit program_name, so a caller
-            # meets the remedy on the 'program_name' input rather than in every post's note.
-            "program_number": (applied[_P_NUMBER] if _P_NUMBER in applied
-                               else _stored_str_param(program.parameters, _P_NUMBER)),
         })
         result.update(membership)
+        if machine_label:
+            result["machine"] = machine_label
         if kind == "setups":
             # The names the multi-setup scope was asked for, beside what the program read back.
             result["scope_setups"] = setup_names
@@ -789,14 +1020,18 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
         # the post log's error lines so the caller sees the real reason, not just "review the output".
         result["partial"] = True
         result["program_error"] = safe(lambda: program.error) if program_error else None
-        log_errors = _post_log_errors(prog_name, started)
+        log_errors = _post_log_errors(post_log_key, started)
         if log_errors:
             result["post_log"] = log_errors
         if failed_markers:
             result["failed_stubs"] = failed_markers
         reason = (" ".join(log_errors) if log_errors
                   else f"postProcess={bool(posted)}, program_error={program_error}")
-        result["note"] = (f"Post did not report clean success - review before running. {reason}")
+        result["note"] = (f"Post did not report clean success - review before running. {reason}" + retained)
+        if log_errors:
+            result["note"] += _program_number_clause(log_errors, prog_name, program_number, True)
+        if program_number is None:
+            result["note"] += " The stored emitted program number is unavailable; verify it before retrying."
         return ok(result)
 
     if as_is:
@@ -810,6 +1045,9 @@ def handler(scope: str = "", post: str = "", post_scope: str = "local", output_f
             # The program's own membership read disagreed with the scope, or could not be compared -
             # stated beside the file rather than left in a key the note never mentions.
             result["note"] += " Membership: " + membership["membership_note"]
+    if program_number is None:
+        result["partial"] = True
+        result["note"] += " Stored emitted program number is unavailable; verify it before relying on numbering."
     return ok(result)
 
 
@@ -824,7 +1062,7 @@ tool = (
     Tool.create_simple(name="cam_post", description=TOOL_DESCRIPTION)
     .add_input_property("scope", {"type": "string"})
     .add_input_property("post", {"type": "string",
-            "description": "post_scope=local: a .cps path or a name in the post folder. Otherwise a post NAME in that library."})
+            "description": "local: .cps path or post-folder name. Otherwise a post name or exact library asset URL."})
     .add_input_property(_POST_SCOPE_CHOICE.name, _POST_SCOPE_CHOICE.schema())
     .add_input_property("output_folder", {"type": "string"})
     .add_input_property("program_name", {"type": "string",

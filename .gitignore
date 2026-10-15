@@ -153,13 +153,17 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Claude Code: machine-local and session scaffolding never ship. The exemplar skill and the shared
-# settings.json (a worked example of scoping agent tool-call approvals) are deliberately tracked;
-# agent definitions are owner-local working machinery, not part of the product.
+# Claude Code: machine-local and session scaffolding never ship. Workflow skills in .agents/skills/
+# and their .claude/skills/ copies, the shared
+# settings.json (a worked example of scoping agent tool-call approvals) and the role files under
+# .agents/roles/ (how the team of agents that built the server works) and the thin client files in
+# .claude/agents/ that point at them are deliberately tracked.
 .claude/settings.local.json
-.claude/agents/
 .claude/skills/fe-review-*/
 CLAUDE.local.md
+# The project rules are the AGENTS.md files. A CLAUDE.md is a local file for a client that does not
+# read AGENTS.md (CONTRIBUTING.md says when) and is never committed.
+CLAUDE.md
 
 # Local backlog and short-lived plans are private; keep open work in plans/backlog.md.
 # Agent scratch files and task artifacts are private.
@@ -178,6 +182,9 @@ commands/mcpServer/.wire_bare
 # private and machine-local. Without it the cloud_tier capability probe answers false and ACT 11a-c
 # are skipped - see tests/live/cloud_config.py for the shape.
 tests/live/cloud_config.local.json
+# Portable sweep operator input and machine-scoped records are private.
+tests/live/sweep_config.local.json
+tests/live/records/
 
 # measure_api / tool_verify run archives: per-run records; the durable state they feed
 # (tests/live/CONTRACTS.md + tests/live_api_facts.py + tests/live/VERIFIED_TOOLS.md) is tracked,

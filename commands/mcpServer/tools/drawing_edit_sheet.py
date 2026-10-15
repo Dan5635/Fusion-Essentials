@@ -22,8 +22,7 @@ app = adsk.core.Application.get()
 
 _ACTIONS = ("add", "copy", "delete", "rename", "set_size", "set_orientation", "tidy_up")
 
-_ACTION = _inputs.Choice("action", list(_ACTIONS), required=True,
-                         description="The sheet operation to perform.")
+_ACTION = _inputs.Choice("action", list(_ACTIONS), required=True)
 _SHEET_SIZE = _inputs.Choice("sheet_size", list(SHEET_SIZE_MAP),
                              description="For set_size.")
 _ORIENTATION = _inputs.Choice("orientation", ["landscape", "portrait"],
@@ -234,7 +233,8 @@ def _do_set_size(dwg, sheet, size_key):
         "width_height_unit": _drawing_common.SHEET_EXTENT_UNIT,
         "sheet_units": _drawing_common.sheet_units(dwg),
         "note": ("Sheet size set and read back - width and height follow the size and cannot be set "
-                 "directly. action='tidy_up' lays the sheet's views out again."),
+                 "directly. action='tidy_up' requests a view-layout adjustment; use drawing_export "
+                 "to inspect its visual effect."),
     })
 
 
@@ -276,7 +276,8 @@ def _do_set_orientation(dwg, sheet, orientation_key):
         "width_height_unit": _drawing_common.SHEET_EXTENT_UNIT,
         "sheet_units": _drawing_common.sheet_units(dwg),
         "note": ("Orientation set and read back - the sheet's width and height swap with it. "
-                 "action='tidy_up' lays the sheet's views out again."),
+                 "action='tidy_up' requests a view-layout adjustment; use drawing_export to inspect "
+                 "its visual effect."),
     })
 
 
@@ -295,7 +296,8 @@ def _do_tidy_up(sheet):
     modified_after = safe(lambda: app.activeDocument.isModified)
     if modified_before is False and modified_after is False:
         return error(f"Tidy up reported success for '{name}' but the document is still unmodified - "
-                     "nothing on the sheet changed.")
+                     "the visual effect is unverified. Use drawing_export(format='pdf', "
+                     "file_path=...) to inspect the sheet.")
     out = {
         "tidied": True,
         "sheet": name,
@@ -304,9 +306,9 @@ def _do_tidy_up(sheet):
         # The flag only CONFIRMS this tidy when the document was clean beforehand: tidying an
         # already-modified document returns true with isModified already true.
         "modified_confirmed": modified_before is False and bool(modified_after),
-        "note": ("Sheet tidied (tidyUp returned true); the view COUNT does not change. The drawing "
-                 "is modified in-session but NOT saved - doc_save persists it, drawing_export shows "
-                 "the result."),
+        "note": ("Fusion accepted the tidy-up request (tidyUp returned true); the view count does "
+                 "not change. The drawing is modified in-session but NOT saved - doc_save persists "
+                 "it, drawing_export lets you inspect the visual effect."),
     }
     if not out["modified_confirmed"]:
         out["note"] = ("The document was already modified before this call, so the modified flag "
@@ -358,15 +360,14 @@ def handler(action: str = "", sheet: str = "", new_name: str = "", sheet_size: s
 
 
 TOOL_DESCRIPTION = (
-    "Manage the active 2D drawing's sheets - add, copy, delete, rename, set_size, set_orientation, "
-    "or tidy_up (lay a sheet's views out again)."
+    "Manage drawing sheets. tidy_up requests layout changes; inspect the result with drawing_export."
 )
 
 tool = (
     Tool.create_simple(name="drawing_edit_sheet", description=TOOL_DESCRIPTION)
     .add_input_property(*_ACTION.as_property())
     .add_input_property("sheet", {"type": "string",
-            "description": "By name; omit for the active sheet."})
+            "description": "Omit for the active sheet."})
     .add_input_property("new_name", {"type": "string",
             "description": "For add, copy or rename."})
     .add_input_property(*_SHEET_SIZE.as_property())

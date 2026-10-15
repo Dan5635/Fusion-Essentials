@@ -53,9 +53,9 @@ def handler(profiles=None, faces=None, depth: float = 0.0, units: str = "mm",
     if derr:
         return error(derr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     prof_ents, perr = _PROFILES.resolve(profiles, component)
@@ -145,7 +145,8 @@ def handler(profiles=None, faces=None, depth: float = 0.0, units: str = "mm",
     if not any_readable:
         return error("Emboss raised no error, but the affected body's volume could not be read back "
                      "afterwards - whether the profile was raised or engraved is UNVERIFIED, so it "
-                     "is reported as a failure. Re-read the body with model_inspect.")
+                     "is reported as a failure. Re-read the body with model_inspect. "
+                     + _common.failed_effect_remedy(design, feature))
     if abs(delta_total) < _common.NO_VOLUME_CHANGE_CM3:
         return error("Emboss reported success but the body's volume is unchanged - nothing was "
                      "raised or engraved. " + _common.failed_effect_remedy(design, feature))

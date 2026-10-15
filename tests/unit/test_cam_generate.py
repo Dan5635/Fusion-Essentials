@@ -8,7 +8,6 @@ status read this launch hands completion to is pinned in test_cam_get_status.py.
 """
 
 import ast
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -26,9 +25,7 @@ _GENERATIONS = gen._cam_common._GENERATIONS
 _HANDLE_SEQ = gen._cam_common._HANDLE_SEQ
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── target resolution (via the shared _cam_common.resolve_cam_node) ─────────────────────────────────
@@ -509,6 +506,28 @@ class TestEntitlementPreflight:
         assert "Manufacturing Extension" in out["note"]      # the remedy cam_create_operation uses
         assert "cam_get_status" in out["note"]               # this launch claims no completion either
 
+    def test_flat_refresh_split_keeps_valid_milling_out_of_launch(self, monkeypatch):
+        laser = SharedOp("Laser", operation_state=0, has_toolpath=True,
+                         strategy="profile2d")
+        mill = SharedOp("Mill", operation_state=0, has_toolpath=True,
+                        strategy="face")
+        blocked = SharedOp("Cham", operation_state=1, strategy="chamfer")
+        setups = [SharedSetup("Sheet", ops=[laser]), SharedSetup("MillSetup", ops=[mill]),
+                  SharedSetup("Blocked", ops=[blocked])]
+        cam = self._install(monkeypatch, setups,
+                            {"profile2d": True, "face": True, "chamfer": False})
+        def refresh(setup):
+            if setup.name == "Sheet":
+                laser._operation_state = 1
+                return 1, None
+            return 0, None
+        monkeypatch.setattr(gen._cam_common, "refresh_flat_setup_models", refresh)
+        out = _payload(gen.handler(skip_valid=True))
+        assert self._launched(cam) == ["Laser"]
+        assert out["operations_to_generate"] == 1
+        assert out["flat_models_refreshed"] == 1
+        assert out["entitlement_blocked"] == [{"name": "Cham", "strategy": "chamfer"}]
+
     def test_the_split_launch_covers_a_nonfinite_op_skip_valid_would_pass_over(self, monkeypatch):
         # The per-operation walk's OWN gate: this arm launches each operation itself, so skip_valid
         # narrows here - and an op reading IsValid with a saturated machining time is the one the
@@ -697,6 +716,43 @@ class TestEntitlementPreflight:
         assert out["live_states"]["out_of_date"] == 2
         assert out["live_states"]["generating"] == 0
         assert out["readiness"] == readiness
-        assert out["live_states"]["readiness"] == readiness
+        # the nested tally keeps its own verdict beside the top-level poll directive
+        assert out["live_states"]["readiness"] == ("0 of 2 active ops valid; 1 of them read "
+                                                   "isGenerationAllowed false")
         assert "handle 'gen1' is still incomplete" in out["note"]
         _GENERATIONS.clear()
+
+
+def test_flat_refresh_bypasses_valid_skip_and_discloses_it(monkeypatch):
+    op = SharedOp("Laser", operation_state=0, has_toolpath=True, valid=True)
+    setup = SharedSetup("Sheet", ops=[op])
+    cam = _FakeCAM([setup])
+    monkeypatch.setattr(gen._cam_common, "get_cam", lambda **_: (cam, None))
+    def refresh(_):
+        op._operation_state = 1
+        return 1, None
+    monkeypatch.setattr(gen._cam_common, "refresh_flat_setup_models", refresh)
+    out = _payload(gen.handler(target="Laser", skip_valid=True))
+    assert out["launched"] is True
+    assert out["flat_models_refreshed"] == 1
+    assert out["skip_valid_applied"] is False
+    assert cam.generate_calls == [("target", op)]
+
+
+def test_document_flat_refresh_keeps_skip_valid_for_other_setups(monkeypatch):
+    laser = SharedOp("Laser", operation_state=0, has_toolpath=True, valid=True)
+    mill = SharedOp("Face", operation_state=0, has_toolpath=True, valid=True)
+    sheet, ordinary = SharedSetup("Sheet", ops=[laser]), SharedSetup("Mill", ops=[mill])
+    cam = _FakeCAM([sheet, ordinary])
+    monkeypatch.setattr(gen._cam_common, "get_cam", lambda **_: (cam, None))
+    def refresh(setup):
+        if setup.name == "Sheet":
+            laser._operation_state = 1
+            return 1, None
+        return 0, None
+    monkeypatch.setattr(gen._cam_common, "refresh_flat_setup_models", refresh)
+    out = _payload(gen.handler(skip_valid=True))
+    assert out["flat_models_refreshed"] == 1
+    assert cam.generate_calls == [("all", True)]
+    assert out["operations_to_generate"] == 1
+    assert "skip_valid_applied" not in out

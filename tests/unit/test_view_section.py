@@ -10,8 +10,8 @@ a live session. ``auto_view`` camera aiming is a viewport side-effect (no pure
 logic) — left to live testing; we keep auto_view=false here so handler() returns
 without touching a camera.
 """
+from conftest import install as _install_design
 
-import json
 
 import pytest
 
@@ -113,6 +113,7 @@ def _install(occurrences=(), existing_sections=()):
     root = MakeComp(name="Root", occurrences=occurrences,
                     origin_planes=("PLANE_XY", "PLANE_XZ", "PLANE_YZ"))
     design = MakeDesign(comp=root, analyses=FakeAnalyses(sections))
+    _install_design(sv, design)
     sv.app = FakeApplication(
         active_product=design,
         # _aim_at_cut reads eye/target (for distance) and writes eye/upVector/isFitView.
@@ -122,14 +123,11 @@ def _install(occurrences=(), existing_sections=()):
     adsk.fusion.Design.cast = lambda x: x if isinstance(x, MakeDesign) else None
     # the bare-plane path uses PlaneRef, which resolves via _common.design()/target_component()
     # (the app-reference seam) — point them at the fake root so an origin alias resolves.
-    sv._inputs._common.design = lambda: design
     sv._inputs._common.target_component = lambda d: root
     return sections
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards / validation ─────────────────────────────────────────────────────
@@ -377,8 +375,6 @@ class TestListClear:
         def install_sections(rows):
             sections = _install(existing_sections=rows)
             design = sv.app.activeProduct
-            monkeypatch.setattr(sv._common, "design", lambda: design)
-            monkeypatch.setattr(sv._inputs._common, "design", lambda: design)
             return sections
         return install_sections
 

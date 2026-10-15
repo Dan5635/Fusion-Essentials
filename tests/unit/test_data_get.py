@@ -11,17 +11,12 @@ import json
 
 import pytest
 
-from conftest import FakeDataFolder, error_message, load_tool, stub_tool_module
+from conftest import FakeDataFolder, error_message, load_tool, payload as _payload, stub_tool_module
 
 dge = load_tool("data_get")
 # The real folder walk the router hands its depth to. Loaded here, before any test stubs
 # 'mcpServer.tools._data_read' in sys.modules, so the depth test drives the walk and not a stub.
 dops = load_tool("_data_read")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 def _ok(payload):

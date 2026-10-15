@@ -44,7 +44,7 @@ _SETUP_TIMEOUT_S = 10.0     # the setup/cleanup marshal only - NOT wait_seconds
 # One wait at a time, process-wide. A Fusion event handler needs a strong reference or it is
 # garbage-collected and silently stops firing, so 'handler' is held here too.
 _pending_lock = threading.Lock()
-_pending = {"active": False, "handler": None, "started": None}
+_pending = {"active": False, "handler": None, "wait": None, "wait_started": None}
 
 
 def _task_manager():
@@ -115,6 +115,8 @@ def _on_selection_changed(args, box, done):
     if not len(sels):
         return    # a clear/deselect, not a pick - keep waiting for a real one; done stays unset
     try:
+        # Read here, on the main thread at the pick: the user may have switched documents.
+        box["picked_in"] = (_write_guard._active_identity()[0], _write_guard.active_document_handle())
         box["result"] = {
             "selection_count": len(sels),
             "selections": [_selection_record(s) for s in sels],
@@ -153,7 +155,8 @@ def _begin_request(kind, clear_current, wait_seconds, expect_document):
     one of 'refused' (return as-is), 'immediate' (the full answer), or 'box'+'done' (wait, then
     read box['result'])."""
     doc_name, doc_urn = _write_guard._active_identity()
-    out = {"doc_name": doc_name, "doc_urn": doc_urn}
+    out = {"doc_name": doc_name, "doc_urn": doc_urn,
+           "doc_handle": _write_guard.active_document_handle()}
     # The same gate every wrapped write tool gets, called here because the auto-wrap is skipped
     # (write=None) and _document_refusal's read is only legal on the main thread.
     if expect_document:
@@ -258,6 +261,17 @@ def _completed_pick(box, kind, setup, extra_note=""):
     wait was expiring."""
     if "error" in box:
         return error(f"Could not read the completed selection: {box['error']}")
+    picked_name, picked_handle = box.get("picked_in") or (None, None)
+    asked = setup.get("doc_handle")
+    if not asked or not picked_handle:
+        return error("A pick landed, but the document it was made in could not be read, so no "
+                     "handle is returned. Read it with doc_get, then sys_get_selection.")
+    if picked_handle != asked:
+        return error(
+            f"The pick was made in '{picked_name}' ({picked_handle}), not in "
+            f"'{setup.get('doc_name')}' ({asked}) where it was requested, so no handle is "
+            "returned. doc_activate the document you want, then request the pick again; or read "
+            "this pick in its own document with sys_get_selection.")
     payload = dict(box["result"])
     payload.update({
         "status": "picked",
@@ -283,13 +297,24 @@ def handler(what: str = "any", clear_current: bool = True,
 
     with _pending_lock:
         if _pending["active"]:
-            started = _pending["started"] or time.monotonic()
-            elapsed = time.monotonic() - started
+            wait = _pending["wait"] or 0.0
+            since = _pending["wait_started"]
+            if since is None:
+                return error(
+                    f"A sys_request_selection call (wait_seconds={wait:g}) is already running and "
+                    "has not begun waiting for a pick. Only one runs at a time, and this call does "
+                    "not cancel it. Request again.")
+            elapsed = time.monotonic() - since
+            left = max(0.0, wait - elapsed)
             return error(
-                f"A sys_request_selection call is already waiting ({elapsed:.1f}s so far) - only one "
-                "can be pending at a time. Wait for it to finish or time out, then retry.")
+                f"A sys_request_selection call is already waiting ({elapsed:.1f}s into its "
+                f"wait_seconds={wait:g}, {left:.1f}s left). Only one hold runs at a time, and "
+                "this call does not cancel it: its caller may still be waiting. A click made while "
+                "it waits is taken by that hold, which does not clear it - read it with "
+                "sys_get_selection. Once the hold ends, request again; clear_current=false keeps a "
+                "pick already made.")
         _pending["active"] = True
-        _pending["started"] = time.monotonic()
+        _pending["wait"] = wait_s
 
     try:
         setup = _call_on_main_thread(_begin_request, {
@@ -306,6 +331,8 @@ def handler(what: str = "any", clear_current: bool = True,
             return _write_guard._stamp_acted_on(setup["immediate"], setup.get("doc_name"), setup.get("doc_urn"))
 
         box, done = setup["box"], setup["done"]
+        with _pending_lock:
+            _pending["wait_started"] = time.monotonic()
         if done.wait(timeout=wait_s):
             return _completed_pick(box, kind, setup)
 
@@ -323,11 +350,11 @@ def handler(what: str = "any", clear_current: bool = True,
             "requested_kind": kind,
             "waited_seconds": wait_s,
             "active_document": setup.get("doc_name"),
-            "note": (f"No selection was made within {wait_s:g}s. Nothing was picked - an expected "
-                "outcome, not a tool defect. Do NOT re-fire this tool in a loop: an unanswered hold "
-                "usually means the user is not at the Fusion window or never learned a pick was "
-                "wanted. Tell the user what to click and that Fusion will wait, get their go-ahead, "
-                "then request once more. (sys_get_selection reads a pick made after this hold ended.)"),
+            "note": (f"No selection was made within {wait_s:g}s - an expected outcome, not a tool "
+                "defect. Do NOT re-fire in a loop: an unanswered hold usually means the user is not "
+                "at the Fusion window or never learned a pick was wanted. Tell the user what to "
+                "click and that Fusion will wait, get their go-ahead, then request once more. Read a "
+                "later pick with sys_get_selection, or request with clear_current=false to keep it."),
         }
         cancel_error = cancel.get("error") if isinstance(cancel, dict) else "the cleanup did not run"
         if cancel_error:
@@ -340,11 +367,13 @@ def handler(what: str = "any", clear_current: bool = True,
     finally:
         with _pending_lock:
             _pending["active"] = False
-            _pending["started"] = None
+            _pending["wait"] = None
+            _pending["wait_started"] = None
 
 
 TOOL_DESCRIPTION = (
-    "Hand the pick to the USER: holds the call, and by default clears their current selection.\n"
+    "Hand the pick to the USER: holds the call, and by default clears their selection. After a "
+    "client timeout, read sys_get_selection first.\n"
     + _outputs.produces_block(RETURNS)
 )
 tool = (

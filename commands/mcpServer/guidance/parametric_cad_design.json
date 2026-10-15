@@ -2,8 +2,8 @@
   "guidance_id": "parametric-cad-design",
   "name": "parametric-cad-design",
   "title": "Designing in Fusion",
-  "description": "Use when designing or modelling in Fusion through the fusion-essentials tools - building a part, a surfaced product, an assembly, or a machining job, not running a fixed procedure. Practice read out of Autodesk's own sample designs: what to settle before the first feature, how a sketch carries intent, the feature order of a moulded or surfaced part, how an assembly's freedom is structured, and which machining strategy fits. Rules say when they apply and what to read back; recipes are ordered tool sequences with a bar for done and an exemplar to X-ray.",
-  "summary": "Rules for judgment, recipes for sequence, a bar for done - read out of the designs Autodesk ships as samples.",
+  "description": "Use when designing or modelling in Fusion through the fusion-essentials tools - building a part, a surfaced product, an assembly, or a machining job, not running a fixed procedure. Rules are conditional strategies unless marked as a safety invariant; recipes demonstrate one construction with stated prerequisites, and their exemplars are examples, not requirements.",
+  "summary": "Choose constructions by intended behavior and verify their effects. Recipes are worked examples: follow their dependencies, allowing companion reads, intermediate calls and justified alternatives.",
   "scenarios": [
     "configurable_template",
     "fixed_mechanism",
@@ -33,37 +33,37 @@
           "id": "sequence-is-the-design",
           "section": "kernel",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "imported_audit", "machining_job", "parametric_family", "simple_part", "surfaced_product"],
-          "when": "the first feature is next",
-          "do": "decide the feature order before drawing: form, then fillets, then shell, then bosses and holes, then cosmetics - a timeline built in that order edits cleanly, one built by accretion does not",
-          "except": "a one-feature part",
-          "prove": [{"tool": "design_get", "observe": "the timeline reads as the order you planned"}]
+          "when": "choosing a construction",
+          "do": "treat a sample sequence as one option; choose references and feature order for the interfaces and edits they must preserve",
+          "except": "a one-feature part with no downstream dependency",
+          "prove": [{"tool": "design_get", "observe": "the relevant feature expressions and health after a representative intended edit"}, {"tool": "param_get", "observe": "with trace=true, parameter-expression dependents; geometric references need separate checks"}]
         },
         {
           "id": "encode-intended-changeability",
           "section": "kernel",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "imported_audit", "machining_job", "parametric_family", "simple_part", "surfaced_product"],
           "when": "a value carries a decision",
-          "do": "type a wall thickness or a pitch ONCE and reference it by name everywhere else; promote it to a named parameter only when a family or a configuration is expected",
-          "except": "a measured value, held in one parameter saying so",
-          "prove": [{"tool": "sketch_get", "observe": "dimensions whose expression is another dimension's name, not a repeated literal"}]
+          "do": "share a dimension when values must track; keep independent decisions independent; name important drivers so later edits express intent",
+          "except": "a fixed reference whose source and role are stated",
+          "prove": [{"tool": "sketch_get", "observe": "the intended expressions and their evaluated dimensions"}]
         },
         {
           "id": "build-and-observe-in-milestones",
           "section": "kernel",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "imported_audit", "machining_job", "parametric_family", "simple_part", "surfaced_product"],
           "when": "a milestone lands",
-          "do": "read it back against intent before the next feature: a bounding box, a volume, a screenshot - never only at the end",
-          "except": "a milestone a write already verified",
-          "prove": [{"tool": "model_inspect", "observe": "bounding box and volume against the numbers you wrote down"}]
+          "do": "treat a successful call or healthy feature as partial evidence; check the actual effect against intent with relevant measurements and a useful view",
+          "except": "an effect already independently checked at this milestone",
+          "prove": [{"tool": "model_inspect", "observe": "bounds and volume of the changed body and relevant neighbors"}]
         },
         {
           "id": "compare-the-artifact-with-acceptance",
           "section": "kernel",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "imported_audit", "machining_job", "parametric_family", "simple_part", "surfaced_product"],
           "when": "the design looks finished",
-          "do": "compare it with the acceptance you wrote and say what you could not meet; a screenshot that reads as the object is part of the acceptance",
-          "except": "acceptance the brief left open",
-          "prove": [{"tool": "view_screenshot", "observe": "does it read as the object it should be"}]
+          "do": "compare the result with requirements and declared choices; distinguish what was created, computed, measured and tested from what remains unverified",
+          "except": "a disposable probe that makes no product claim",
+          "prove": [{"tool": "view_screenshot", "observe": "a view supporting the measured interfaces and intended form"}]
         }
       ],
       "recipes": []
@@ -89,7 +89,7 @@
           "when": "the brief names several variants",
           "do": "author them as configurations of one document driven by a few named parameters and a part-number property; check the active row before calling a failed compute a defect",
           "except": "a single variant",
-          "prove": [{"tool": "design_get", "observe": "the configuration table, its columns and the active row"}],
+          "prove": [{"tool": "design_get", "observe": "the configuration table, its columns and the active row"}, {"tool": "model_inspect", "observe": "body bounds of the active variant against its intended size"}],
           "example": "the Configured Dumbbell: 14 rows varying weight_width, weight_length, weight_text and a Part Number"
         },
         {
@@ -99,7 +99,7 @@
           "when": "a purchased, imported or generative body enters the design",
           "do": "hold it as a base feature in its own component and re-cut only the interfaces on top of it with hole and chamfer features; never edit the frozen body",
           "except": "a body you are modelling yourself",
-          "prove": [{"tool": "design_get", "observe": "the timeline: a BaseFeature row, then Hole rows on the same component"}]
+          "prove": [{"tool": "design_get", "observe": "the imported definition and later interface features, as construction diagnostics"}, {"tool": "model_measure_between", "observe": "interface dimensions against their requirements"}, {"tool": "model_inspect", "observe": "body bounds and volume against the expected interface modifications; these totals alone do not prove unchanged shape"}]
         }
       ],
       "recipes": []
@@ -116,7 +116,7 @@
           "when": "a profile has symmetry, equal spacing or a family of equal features",
           "do": "draw the construction line, then constrain: symmetry about it, midpoint on it, equal between the members; dimensions pin only what remains",
           "except": "a one-off reference sketch",
-          "prove": [{"tool": "sketch_get", "observe": "more constraints than dimensions, and is_fully_constrained true"}],
+          "prove": [{"tool": "sketch_get", "observe": "the intended relations, evaluated dimensions and remaining freedom; test symmetry or spacing after a relevant edit"}],
           "example": "a knife layout: 43 constraints, 5 dimensions; a handle profile: ten symmetry constraints, six expressions"
         },
         {
@@ -153,7 +153,7 @@
           "when": "a clip, rib or pocket must follow an existing wall",
           "do": "project the wall's edges into the sketch and dimension the detail by offset from them; projected geometry has no freedom, so few constraints fully constrain the sketch",
           "except": "detail on a plane no body touches",
-          "prove": [{"tool": "sketch_get", "observe": "fixed_spline or projected entities plus offset dimensions, is_fully_constrained true"}]
+          "prove": [{"tool": "sketch_get", "observe": "projected references, evaluated offset dimensions and remaining freedom; full constraint is a diagnostic"}, {"tool": "model_measure_between", "observe": "the resulting detail offset from its supporting wall after a relevant edit"}]
         },
         {
           "id": "driven-dimensions-are-checks",
@@ -169,20 +169,21 @@
         {
           "id": "sketch-anchored-profile",
           "section": "sketch",
-          "title": "An anchored, symmetric profile",
+          "title": "One anchored, symmetric profile",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "parametric_family", "simple_part"],
-          "use_when": "a bracket, plate or revolved profile that must resize by intent",
+          "use_when": "a planar profile whose halves must track; choose its component, sketch plane and intended symmetry first",
           "steps": [
-            {"tool": "sketch_create", "do": "create the sketch on the origin plane the part is symmetric about", "read_back": "the sketch name and plane"},
-            {"tool": "sketch_add_geometry", "do": "draw one construction line through the origin as the symmetry axis", "read_back": "its entity id"},
-            {"tool": "sketch_add_geometry", "do": "draw the outline as lines and arcs on ONE side, plus the circles for bores", "read_back": "entity ids per curve"},
-            {"tool": "sketch_constrain", "do": "midpoint of the base line on the origin; symmetry of each mirrored pair about the axis; tangent between arcs and their lines; equal between features meant to match", "read_back": "each constraint accepted"},
-            {"tool": "sketch_dimension", "do": "one dimension per independent size; write repeated sizes as another dimension's name", "read_back": "the dimension names"},
-            {"tool": "sketch_get", "do": "X-ray the sketch", "read_back": "is_fully_constrained true; constraints outnumber dimensions; the profile areas you expect"}
+            {"tool": "sketch_create", "do": "create the profile sketch on the chosen plane", "read_back": "the sketch identity and frame"},
+            {"tool": "sketch_add_geometry", "do": "draw construction references and both outline halves with approximate placement", "read_back": "curve identities and closed regions where intended"},
+            {"tool": "sketch_constrain", "do": "apply the required anchor, symmetry, tangency and equality relations", "read_back": "the accepted relations"},
+            {"tool": "sketch_dimension", "do": "dimension independent sizes and reference shared values by expression", "read_back": "the dimension names and evaluated values"},
+            {"tool": "sketch_get", "do": "inspect the solved profile", "read_back": "dimensions, expected profiles and any unexplained freedom"},
+            {"tool": "param_set", "do": "change one driver within its intended range", "read_back": "sketch_get shows both halves following the intended relationship"},
+            {"tool": "param_set", "do": "restore the driver", "read_back": "sketch_get confirms the baseline dimensions and healthy profile"}
           ],
           "bar": {
-            "measure": "sketch_get reports is_fully_constrained true and changing one dimension moves both symmetric halves",
-            "eyes": "the profile reads as the part's silhouette with the origin on its symmetry line"
+            "measure": "the profile meets its dimensions and intended symmetry through the change and restore",
+            "eyes": "the profile has the intended silhouette and placement"
           },
           "exemplar": {
             "document": "Configured Dumbbell",
@@ -194,20 +195,20 @@
         {
           "id": "sketch-link-between-bores",
           "section": "sketch",
-          "title": "A link profile between bores",
+          "title": "One tangent link profile",
           "scenarios": ["fixed_mechanism", "floating_mechanism", "simple_part"],
-          "use_when": "a rocker, lever, connecting link or any web joining round bosses",
+          "use_when": "a web joining bosses; first create a sketch with resolved pivot references and decide which dimensions must track",
           "steps": [
-            {"tool": "sketch_add_geometry", "do": "one circle per bore at each pivot, and a concentric outer circle per boss", "read_back": "entity ids"},
-            {"tool": "sketch_constrain", "do": "concentric each bore with its boss; coincident the bore centres with construction points or projected pivot geometry", "read_back": "each constraint accepted"},
-            {"tool": "sketch_add_geometry", "do": "two lines per web, roughly tangent between neighbouring bosses, and one large arc closing the outer edge", "read_back": "entity ids"},
-            {"tool": "sketch_constrain", "do": "tangent each web line to both bosses it joins; tangent the closing arc to its lines", "read_back": "each constraint accepted"},
-            {"tool": "sketch_dimension", "do": "bore and boss diameters, the closing arc radius, and the pivot spacing", "read_back": "dimension names"},
-            {"tool": "sketch_get", "do": "X-ray", "read_back": "fully constrained; the web profiles are closed regions between bosses"}
+            {"tool": "sketch_add_geometry", "do": "draw bore and boss circles plus construction references", "read_back": "the curve identities"},
+            {"tool": "sketch_constrain", "do": "anchor bore centers to the pivot references and make each boss concentric", "read_back": "the accepted relations"},
+            {"tool": "sketch_add_geometry", "do": "draw web flanks and any closing arcs required by the chosen outline", "read_back": "the curve identities"},
+            {"tool": "sketch_constrain", "do": "constrain intended tangencies and endpoint connections", "read_back": "the accepted relations"},
+            {"tool": "sketch_dimension", "do": "dimension bores, bosses, spacing and required arc radii", "read_back": "the evaluated dimensions"},
+            {"tool": "sketch_get", "do": "inspect the regions to be used by the feature", "read_back": "the intended closed regions, dimensions and remaining freedom"}
           ],
           "bar": {
-            "measure": "sketch_get: is_fully_constrained true and one closed profile per web plus one per boss annulus",
-            "eyes": "the outline is the classic link: round ends joined by tangent flanks"
+            "measure": "the selected regions form the intended web and bores at their required positions",
+            "eyes": "the outline connects the bosses without unintended gaps or material"
           },
           "exemplar": {
             "document": "bike frame",
@@ -219,20 +220,20 @@
         {
           "id": "sketch-organic-outline",
           "section": "sketch",
-          "title": "An organic outline that edits by intent",
+          "title": "One controlled organic outline",
           "scenarios": ["surfaced_product"],
-          "use_when": "a mouse, handle or shell silhouette that must stay smooth while its proportions change",
+          "use_when": "a free outline needing controlled end tangency; first create its sketch and decide which parts of the shape must be editable",
           "steps": [
-            {"tool": "sketch_add_geometry", "do": "draw a cv_spline (degree 5) through the silhouette's control points - it lays its control polygon down as construction lines", "read_back": "the built degree (a degree the API cannot honour is clamped) and the polygon line ids"},
-            {"tool": "sketch_add_geometry", "do": "one construction guide line at each end, in the tangent direction", "read_back": "their entity ids"},
-            {"tool": "sketch_constrain", "do": "at each end: coincident the guide line's end with the spline's end FIRST, then smooth between them - a smooth moves the end point, so smooth without coincident fails at the second end", "read_back": "each constraint accepted"},
-            {"tool": "sketch_dimension", "do": "angle each guide line and dimension the polygon's spacing", "read_back": "dimension names"},
-            {"tool": "sketch_dimension", "do": "the overall length as a DRIVEN dimension", "read_back": "driving=false with the value expected"},
-            {"tool": "sketch_get", "do": "X-ray", "read_back": "degree 5 and two smooth constraints; only the spline's interior is free"}
+            {"tool": "sketch_add_geometry", "do": "create a control-point spline with enough controls for the shape", "read_back": "the actual degree and control polygon identities"},
+            {"tool": "sketch_add_geometry", "do": "create construction guides for the required end directions", "read_back": "the guide identities"},
+            {"tool": "sketch_constrain", "do": "connect the guide endpoints to the curve and apply the supported smoothness relations", "read_back": "the accepted relations; investigate a refusal before dependent edits"},
+            {"tool": "sketch_dimension", "do": "dimension the guides and independent control sizes", "read_back": "their evaluated values"},
+            {"tool": "sketch_dimension", "do": "add a driven check where a derived dimension matters", "read_back": "the driven value"},
+            {"tool": "sketch_get", "do": "inspect the outline and its constraints", "read_back": "the intended controls and any deliberate remaining freedom"}
           ],
           "bar": {
-            "measure": "sketch_get lists smooth constraints at both ends and the driven overall length matches the brief",
-            "eyes": "the curve reads as one continuous sweep with no kink where it meets a guide"
+            "measure": "dimensions and end directions meet the requirement; claim only the continuity actually measured",
+            "eyes": "the curve has the intended silhouette and no unintended kink"
           },
           "exemplar": {
             "document": "Mouse ASM",
@@ -246,16 +247,16 @@
     {
       "id": "model",
       "title": "Model",
-      "use_when": "turning sketches into a part - order, carving, patterns, frozen bodies",
+      "use_when": "turning sketches into a part - order, carving, patterns, threads, sheet metal, frozen bodies",
       "rules": [
         {
           "id": "form-fillets-shell-then-detail",
           "section": "model",
           "scenarios": ["configurable_template", "parametric_family", "simple_part", "surfaced_product"],
           "when": "a moulded or cast part is built",
-          "do": "build the outer form, fillet its edges, shell it LAST among the form features, then add bosses, ribs, drafts and holes, then cosmetic split faces",
-          "except": "a machined block, where holes may precede fillets",
-          "prove": [{"tool": "design_get", "observe": "Shell after the fillets and before the bosses in the timeline"}]
+          "do": "consider shaping and filleting the outer envelope before shelling, then adding interfaces; choose the order for the wall and edits you need",
+          "except": "geometry or dependencies better served by another order",
+          "prove": [{"tool": "model_measure_between", "observe": "the wall and interface dimensions after creation and a relevant size change"}]
         },
         {
           "id": "carve-do-not-accrete",
@@ -271,9 +272,9 @@
           "section": "model",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "parametric_family", "simple_part", "surfaced_product"],
           "when": "the part is symmetric",
-          "do": "model one half against the symmetry plane, mirror it, combine into one body",
-          "except": "asymmetric detail added after the mirror",
-          "prove": [{"tool": "design_get", "observe": "a Mirror row followed by a Combine row"}]
+          "do": "use a mirrored half when both sides must track, combining only a single physical part; otherwise express symmetry through suitable sketch or feature relationships",
+          "except": "features whose independent requirements merely produce a symmetric shape today",
+          "prove": [{"tool": "model_measure_between", "observe": "corresponding dimensions and positions remain symmetric after an intended change"}]
         },
         {
           "id": "pattern-only-identical-intent",
@@ -282,25 +283,34 @@
           "when": "the same feature repeats",
           "do": "build one and pattern it; copies answering different requirements are modelled apart",
           "except": "copies that merely share a shape",
-          "prove": [{"tool": "design_get", "observe": "the pattern feature in the timeline with the count you asked for"}]
+          "prove": [{"tool": "design_get", "observe": "the repeated feature's definition"}, {"tool": "model_measure_between", "observe": "member dimensions and spacing after a relevant count or size change"}]
         },
         {
           "id": "let-the-process-shape-the-part",
           "section": "model",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "machining_job", "parametric_family", "simple_part", "surfaced_product"],
           "when": "the part will be manufactured",
-          "do": "take draft, wall thickness, minimum internal radius and hole sizes from the process; a 0.05 mm face offset is a fit clearance, a chord-length fillet is a cosmetic edge",
+          "do": "choose draft, walls, radii, holes and fit clearance from the intended process and interfaces; identify provisional values rather than borrowing sample dimensions",
           "except": "an unsettled process, which is stated rather than assumed",
-          "prove": [{"tool": "find_geometry", "observe": "face normals show the draft; fillet radii meet the minimum"}]
+          "prove": [{"tool": "find_geometry", "observe": "the relevant face normals, radii and interfaces against the stated process requirements"}]
         },
         {
           "id": "threads-by-intent",
           "section": "model",
           "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "machining_job", "parametric_family", "simple_part"],
           "when": "a thread is needed",
-          "do": "use the thread feature for a standard thread that a drawing or a tap will define; sweep a section along a helix with a pipe only when the ridge itself must be solid geometry",
-          "except": "a cosmetic thread nothing mates with",
-          "prove": [{"tool": "design_get", "observe": "a Thread row, or a Sweep plus Pipe pair, not both"}]
+          "do": "create a tapped hole with model_hole(tap=...); thread an existing cylindrical face with model_thread. Request modeled=true when helical geometry is required; reserve custom helices for a nonstandard form or a demonstrated capability gap",
+          "except": "a thread represented only as an explicitly labelled envelope",
+          "prove": [{"tool": "design_get", "observe": "the Hole or Thread definition, designation and modeled state"}, {"tool": "model_measure_between", "observe": "mating dimensions of the claimed thread geometry"}]
+        },
+        {
+          "id": "sheet-metal-by-intent",
+          "section": "model",
+          "scenarios": ["configurable_template", "fixed_mechanism", "floating_mechanism", "machining_job", "parametric_family", "simple_part"],
+          "when": "the part is sheet metal",
+          "do": "read sheet_get for rules and sheet state; use sheet_create_flange for a base or edge flange, or sheet_convert for an existing uniform solid. sheet_create_flat_pattern creates a native flat, not verified development; inspect sheet_get(include=['features']) and the design_export cutting contours before fabrication",
+          "except": "a reference envelope with no fabrication claim",
+          "prove": [{"tool": "sheet_get", "observe": "the applied rule, sheet bodies and flat-pattern state"}, {"tool": "model_inspect", "observe": "the formed part's intended envelope"}]
         },
         {
           "id": "components-when-the-count-is-known",
@@ -309,30 +319,29 @@
           "when": "bodies are still being carved out of one another",
           "do": "stay in bodies until the part count settles, then promote each body to a named component before any joint",
           "except": "a part known from the brief, which starts as its own component",
-          "prove": [{"tool": "design_get", "observe": "no unnamed 'Component' rows; every joint follows the component rows"}]
+          "prove": [{"tool": "assembly_get", "observe": "named parts, their ownership and the intended joint relationships"}, {"tool": "model_measure_between", "observe": "the intended interface positions after a relevant edit"}]
         }
       ],
       "recipes": [
         {
           "id": "model-moulded-part",
           "section": "model",
-          "title": "A moulded shell part in the right order",
+          "title": "One moulded shell construction",
           "scenarios": ["configurable_template", "parametric_family", "simple_part", "surfaced_product"],
-          "use_when": "a basket, cover, drawer front or housing with a wall, bosses and clips",
+          "use_when": "a shell whose outer envelope is conveniently built before its wall; prepare the dimensioned sketches and choose a pull direction",
           "steps": [
-            {"tool": "model_extrude", "do": "extrude the footprint into a block taller than the part", "read_back": "one body, its volume"},
-            {"tool": "model_loft", "do": "loft the crowned form between two sections (a rectangle with one edge a large tangent arc)", "read_back": "is_solid true"},
-            {"tool": "model_split", "do": "split the block by the form and remove the waste", "read_back": "one body, the expected volume"},
-            {"tool": "model_fillet", "do": "fillet the outer edges, largest radius first", "read_back": "face count grew"},
-            {"tool": "model_shell", "do": "shell to the wall thickness, opening the open face", "read_back": "volume dropped to about wall area times thickness"},
-            {"tool": "model_extrude", "do": "bosses and ribs from a sketch on a plane inside the wall", "read_back": "each joined to the shell"},
-            {"tool": "model_draft", "do": "draft the bosses toward the pull direction", "read_back": "normals tilted by the angle"},
-            {"tool": "model_hole", "do": "screw holes sized for the fastener", "read_back": "hole count and diameter"},
-            {"tool": "view_section", "do": "section through a boss", "read_back": "one uniform wall, boss root filleted"}
+            {"tool": "model_extrude", "do": "build the initial envelope from the prepared profile", "read_back": "its dimensions and intended body"},
+            {"tool": "model_fillet", "do": "apply envelope radii that should precede the wall", "read_back": "the radii and resulting shape"},
+            {"tool": "model_shell", "do": "open the required face and form the wall", "read_back": "the intended opening and remaining body"},
+            {"tool": "model_measure_between", "do": "measure representative wall locations", "read_back": "thickness matches the requirement"},
+            {"tool": "model_extrude", "do": "add required bosses or ribs from prepared sketches", "read_back": "the intended connections and affected bodies"},
+            {"tool": "model_draft", "do": "apply required draft with the chosen pull direction", "read_back": "the resulting face directions"},
+            {"tool": "model_hole", "do": "create the required interface holes", "read_back": "their size, position and depth"},
+            {"tool": "view_section", "do": "section a wall and boss", "read_back": "view_screenshot shows the material connections; dimensions come from the measurements"}
           ],
           "bar": {
-            "measure": "model_inspect volume is wall area times thickness within 10 percent and view_section shows one uniform wall",
-            "eyes": "smooth and crowned outside; bosses and ribs on a thin wall inside"
+            "measure": "measured walls and interfaces meet the requirements; added bosses and ribs are accounted for",
+            "eyes": "the outside and section show the intended shell and connected details"
           },
           "exemplar": {
             "document": "Basket - Part",
@@ -344,23 +353,25 @@
         {
           "id": "model-frozen-body-with-interfaces",
           "section": "model",
-          "title": "A frozen body with re-cut interfaces",
+          "title": "One imported body with added interfaces",
           "scenarios": ["fixed_mechanism", "floating_mechanism", "machining_job", "simple_part"],
-          "use_when": "a purchased part, an imported STEP or a generative outcome that needs holes and seats",
+          "use_when": "an imported part whose supplied form should remain a reference; choose its component, placement and permitted interface changes first",
           "steps": [
-            {"tool": "model_create_component", "do": "make a component named by the part's spec", "read_back": "the component name"},
-            {"tool": "model_base_feature", "do": "start a base feature in it", "read_back": "the scope is open"},
-            {"tool": "doc_insert_import", "do": "import the STEP or other file into that component", "read_back": "one body in the component"},
-            {"tool": "model_base_feature", "do": "finish the base feature", "read_back": "the timeline shows one BaseFeature row"},
-            {"tool": "model_move", "do": "align the body to the origin and the interface axes", "read_back": "model_inspect bounding box centred where intended"},
-            {"tool": "sketch_create", "do": "sketch the hole pattern on the mounting face", "read_back": "profiles at the bolt centres"},
-            {"tool": "model_hole", "do": "cut the holes as hole features, counterbored where a screw head seats", "read_back": "hole count and depth"},
-            {"tool": "model_chamfer", "do": "chamfer the interface edges", "read_back": "face count grew"},
-            {"tool": "design_get", "do": "read the timeline", "read_back": "BaseFeature, Move, Sketch, Hole, Chamfer - nothing edits the frozen body itself"}
+            {"tool": "model_create_component", "do": "create the receiving component", "read_back": "its identity and ownership"},
+            {"tool": "model_base_feature", "do": "open a base feature for the import", "read_back": "the active scope"},
+            {"tool": "doc_insert_import", "do": "import into that scope", "read_back": "the actual imported bodies"},
+            {"tool": "model_base_feature", "do": "close the base feature", "read_back": "the feature state"},
+            {"tool": "model_move", "do": "apply the chosen placement if needed", "read_back": "model_inspect shows the intended position and bounds"},
+            {"tool": "sketch_create", "do": "create a sketch on the intended interface support", "read_back": "its identity and frame"},
+            {"tool": "sketch_add_geometry", "do": "draw the required interface layout", "read_back": "the curve identities"},
+            {"tool": "sketch_dimension", "do": "dimension the required spacing and sizes", "read_back": "the evaluated dimensions"},
+            {"tool": "model_hole", "do": "create the specified holes", "read_back": "their actual placement, size and depth"},
+            {"tool": "model_chamfer", "do": "apply specified interface chamfers", "read_back": "the affected edges and resulting dimensions"},
+            {"tool": "model_measure_between", "do": "check the interfaces", "read_back": "the required spacing and seating relationships"}
           ],
           "bar": {
-            "measure": "design_get shows the base feature followed only by interface features; model_measure_between gives the hole spacing the brief asked for",
-            "eyes": "the organic or bought body is untouched; the holes sit on flat pads"
+            "measure": "the permitted changes meet the interface dimensions and unrelated supplied geometry is preserved",
+            "eyes": "the placed part retains its reference shape outside the intended edits"
           },
           "exemplar": {
             "document": "Main Support Skeleton",
@@ -372,23 +383,23 @@
         {
           "id": "model-parametric-family",
           "section": "model",
-          "title": "A parametric family with configurations",
+          "title": "One family using configurations",
           "scenarios": ["configurable_template", "parametric_family"],
-          "use_when": "one part in several sizes",
+          "use_when": "variants share a useful parametric definition and configurations are available; prepare the component and profile sketch first",
           "steps": [
-            {"tool": "param_add", "do": "the driving sizes as named parameters (length_handle, diameter_thread), the derived ones as ratios (chamfer_size = weight_width / 8)", "read_back": "each expression evaluates"},
-            {"tool": "sketch_dimension", "do": "write every profile dimension as a parameter expression, halves as diameter / 2", "read_back": "expressions, not literals"},
-            {"tool": "model_revolve", "do": "revolve the profile, or extrude with a profile offset for a coating", "read_back": "is_solid true"},
-            {"tool": "sketch_set_text", "do": "create the label, then bind it with parameter=<the text parameter>", "read_back": "bound_to naming the parameter"},
-            {"tool": "model_emboss", "do": "emboss that bound text", "read_back": "the text lands raised or engraved by the signed depth"},
-            {"tool": "doc_save_as", "do": "save the document - a configuration table refuses an unsaved one", "read_back": "a document id"},
-            {"tool": "design_configure", "do": "create the table, a column per varying size, a row per variant; a text column takes no per-row value, so relabel by param_set", "read_back": "configured true, then each column id"},
-            {"tool": "design_configure", "do": "activate a different row", "read_back": "the activate reports the row"},
-            {"tool": "design_get", "do": "read the configurations slice and the timeline", "read_back": "the row reads active and the timeline is healthy"}
+            {"tool": "param_add", "do": "create independent drivers and derived relationships", "read_back": "the expressions evaluate"},
+            {"tool": "sketch_dimension", "do": "bind the intended profile dimensions to those drivers", "read_back": "the evaluated dimensions"},
+            {"tool": "model_revolve", "do": "create the revolved form from the prepared profile", "read_back": "the intended solid and dimensions"},
+            {"tool": "doc_save_as", "do": "save into the agreed destination before configuring", "read_back": "the saved document identity"},
+            {"tool": "design_configure", "do": "create the required table, columns and variant rows", "read_back": "the declared rows and their values"},
+            {"tool": "design_configure", "do": "activate another variant", "read_back": "the active row"},
+            {"tool": "model_inspect", "do": "inspect the active variant", "read_back": "body bounds; design_get with tree_bodies=true confirms solid state, and model_measure_between checks other dimensions"},
+            {"tool": "design_get", "do": "inspect dependent feature health", "read_back": "the intended features remain healthy"},
+            {"tool": "design_configure", "do": "restore the required handoff variant", "read_back": "the active row and independently checked dimensions"}
           ],
           "bar": {
-            "measure": "param_get shows only named parameters and ratios; design_get reports healthy on each configuration row",
-            "eyes": "switching rows changes size and label together with no broken feature"
+            "measure": "the selected variants meet their dimensions and shared interfaces; health alone is not dimensional proof",
+            "eyes": "the variants visibly express the intended differences; labels are included only if required"
           },
           "exemplar": {
             "document": "Configured Dumbbell",
@@ -402,43 +413,43 @@
     {
       "id": "surface",
       "title": "Surface",
-      "use_when": "a shell, skin or product form that no extrude or revolve describes",
+      "use_when": "a shell, skin or product form that is not required to be manifold",
       "rules": [
         {
           "id": "skin-first-solid-later",
           "section": "surface",
           "scenarios": ["surfaced_product"],
           "when": "the outer form is the product",
-          "do": "build the skin as surfaces - sweep, loft, patch - then trim, stitch once with a stated tolerance and thicken once; the solid comes last",
-          "except": "a form one solid feature already describes",
-          "prove": [{"tool": "design_get", "observe": "Stitch and Thicken rows after every surface row, not between them"}]
+          "do": "consider surfaces when their sections and boundaries express the form well; stitch or thicken at boundaries that support the intended edits",
+          "except": "a solid or Form representation that better serves the same requirements",
+          "prove": [{"tool": "design_get", "observe": "with tree_bodies=true, the selected body is_solid after relevant edits"}, {"tool": "model_inspect", "observe": "body bounds against the intended dimensions"}]
         },
         {
           "id": "extend-before-trim",
           "section": "surface",
           "scenarios": ["surfaced_product"],
           "when": "one surface will trim another",
-          "do": "extend the cutting surface a few millimetres past the body first, so the trim never lands on an edge",
+          "do": "provide enough intersection for the intended trim and possible edits; extend only when the existing cutter does not provide it",
           "except": "a cutter that already overhangs",
-          "prove": [{"tool": "design_get", "observe": "an Extend row immediately before the Trim row"}]
+          "prove": [{"tool": "model_inspect", "observe": "the retained body's bounds against the intended extent"}, {"tool": "find_geometry", "observe": "retained face and edge locations; preservation beyond these observations remains unverified"}, {"tool": "view_screenshot", "observe": "the retained region against the intended boundary"}]
         },
         {
           "id": "blend-by-split-and-loft",
           "section": "surface",
           "scenarios": ["surfaced_product"],
           "when": "two skins must meet with a smooth transition",
-          "do": "split the faces where the blend starts, delete the faces between, and loft between the split edges; a fillet only where the transition is a constant radius",
-          "except": "a constant-radius corner",
-          "prove": [{"tool": "find_geometry", "observe": "no crease: adjacent face normals agree along the seam"}]
+          "do": "consider split-and-loft or a radius-controlled fillet; choose the construction for the required continuity and shape controls",
+          "except": "a transition with no smoothness requirement",
+          "prove": [{"tool": "model_measure_continuity", "observe": "gap, normal angle and curvature jump sampled along the seam against the required continuity"}]
         },
         {
           "id": "master-skin-derived-into-parts",
           "section": "surface",
           "scenarios": ["surfaced_product"],
           "when": "several parts share one outer form",
-          "do": "keep the skin in a master document with named skeleton sketches; each part derives it and closes it with a boundary fill, then adds its own walls, bosses and clips",
-          "except": "a single-part shell",
-          "prove": [{"tool": "design_get", "observe": "each part's timeline starts with a derive row then a BoundaryFill row"}]
+          "do": "consider a shared master skin when several parts must follow the same form; choose same-document or derived ownership for the intended reuse and revision process",
+          "except": "independently designed forms that merely touch",
+          "prove": [{"tool": "model_measure_between", "observe": "the mating surfaces still agree after a shared-form change and update"}]
         },
         {
           "id": "peel-a-solid-to-a-skin",
@@ -454,25 +465,23 @@
         {
           "id": "surface-swept-bottle",
           "section": "surface",
-          "title": "A swept and surfaced bottle",
+          "title": "One bottle skin assembled from surfaces",
           "scenarios": ["surfaced_product"],
-          "use_when": "a container whose section changes along a curved spine, its neck narrower than the body",
+          "use_when": "a changing-section container; prepare compatible body/neck profiles, rails, a crown profile and any required closure surfaces",
           "steps": [
-            {"tool": "sketch_create", "do": "'Bottle_Bottom' on XY: an ellipse dimensioned by its radii", "read_back": "fully constrained"},
-            {"tool": "sketch_create", "do": "'Bottle_Profiles' on XZ: spine arc, offset rail, cv_spline neck", "read_back": "the arc and offset dimensions"},
-            {"tool": "model_loft", "do": "loft the ellipse to the neck section with the rails, as_surface true", "read_back": "is_solid false"},
-            {"tool": "sketch_create", "do": "'Bottle_Crown' on XZ: the shoulder profile, body radius to neck", "read_back": "fully constrained"},
-            {"tool": "surface_revolve", "do": "revolve the profile about the bottle axis", "read_back": "a second surface body"},
-            {"tool": "surface_extend", "do": "extend the NECK until it crosses the crown", "read_back": "the distance"},
-            {"tool": "surface_trim", "do": "trim ONLY where the crown crosses the body, keeping that cell", "read_back": "the cells removed"},
-            {"tool": "model_stitch", "do": "stitch the two at 0.1 mm", "read_back": "became_solid true"},
-            {"tool": "model_shell", "do": "shell to the wall, opening the mouth", "read_back": "volume dropped"},
-            {"tool": "model_fillet", "do": "chord-length fillets on the shoulder", "read_back": "face count grew"},
-            {"tool": "model_offset_face", "do": "offset the mouth face -0.05 mm", "read_back": "the distance landed"}
+            {"tool": "model_loft", "do": "loft the body skin from the prepared sections and rails with as_surface=true", "read_back": "the surface body and its intended boundaries"},
+            {"tool": "surface_revolve", "do": "form the crown from its prepared profile and axis", "read_back": "the crown surface"},
+            {"tool": "surface_extend", "do": "extend the cutter only if the intended intersection needs it", "read_back": "the resulting reach"},
+            {"tool": "surface_trim", "do": "trim to the intended meeting boundary", "read_back": "the retained regions"},
+            {"tool": "model_stitch", "do": "stitch enclosing surfaces within the permitted joining error", "read_back": "whether it closed and the free edges left; resolve missing boundaries before shelling"},
+            {"tool": "model_measure_continuity", "do": "measure any seam whose continuity is required", "read_back": "sampled gap, normal angle and curvature jump against that requirement"},
+            {"tool": "model_shell", "do": "form the required wall and mouth opening", "read_back": "the resulting body and opening"},
+            {"tool": "model_measure_between", "do": "check wall and mouth interfaces", "read_back": "the dimensions against the requirement"},
+            {"tool": "view_screenshot", "do": "inspect the form", "read_back": "the intended silhouette and visible transitions"}
           ],
           "bar": {
-            "measure": "became_solid true, a Shell row after the stitch, one body",
-            "eyes": "a smooth leaning body with a crowned shoulder and no facet at the crown"
+            "measure": "the enclosing body and wall meet the chosen dimensions; claim continuity only where model_measure_continuity has measured the seam",
+            "eyes": "the skin and crown meet without an unintended visible break"
           },
           "exemplar": {
             "document": "Bottle",
@@ -484,23 +493,23 @@
         {
           "id": "surface-skin-into-parts",
           "section": "surface",
-          "title": "One skin, several parts",
+          "title": "One shared skin derived into parts",
           "scenarios": ["surfaced_product"],
-          "use_when": "a product whose top, base and middle share one outer surface",
+          "use_when": "separate part documents must follow one master skin; prepare the master's sections/rails and each part's closing boundaries",
           "steps": [
-            {"tool": "sketch_create", "do": "named skeleton sketches in the master: side, top and section profiles as cv_splines smooth to dimensioned guides", "read_back": "each sketch named; zero profiles is expected"},
-            {"tool": "model_loft", "do": "loft the skin between the section profiles with the side and top profiles as rails", "read_back": "a surface body"},
-            {"tool": "model_mirror", "do": "mirror the half skin about the symmetry plane", "read_back": "two surface bodies"},
-            {"tool": "model_stitch", "do": "stitch the halves", "read_back": "one surface body; became_solid false is fine for a skin"},
-            {"tool": "doc_insert_derive", "do": "in each part document, derive the master's skin body", "read_back": "the derived body and its source version"},
-            {"tool": "surface_extrude", "do": "extrude the parting line into a surface through the skin", "read_back": "a surface body"},
-            {"tool": "surface_fill", "do": "boundary fill with the skin and the parting surface as the tools, keeping the part's cell", "read_back": "one solid body"},
-            {"tool": "model_shell", "do": "shell to the wall thickness", "read_back": "the volume dropped as expected"},
-            {"tool": "model_offset_face", "do": "offset the mating faces for fit clearance", "read_back": "the distance landed"}
+            {"tool": "model_loft", "do": "create the master skin from the prepared references with as_surface=true", "read_back": "the intended surface body"},
+            {"tool": "model_mirror", "do": "mirror a half skin when this construction uses symmetry", "read_back": "the matching skin geometry"},
+            {"tool": "model_stitch", "do": "join the required skin pieces", "read_back": "the intended body and open boundaries"},
+            {"tool": "doc_save_as", "do": "save the master in the agreed destination", "read_back": "the source document identity"},
+            {"tool": "doc_insert_derive", "do": "derive the skin into each prepared part document", "read_back": "the body and source identity"},
+            {"tool": "surface_extrude", "do": "create a closing surface from the prepared boundary", "read_back": "the surface intersects the intended skin region"},
+            {"tool": "surface_fill", "do": "keep the intended enclosed cell", "read_back": "the resulting solid"},
+            {"tool": "model_shell", "do": "form the required wall", "read_back": "the wall and openings"},
+            {"tool": "model_measure_between", "do": "measure mating interfaces", "read_back": "the intended fit; revise only where its specified clearance requires it"}
           ],
           "bar": {
-            "measure": "each part's design_get starts with a derive row and a BoundaryFill row, and model_inspect gives one solid",
-            "eyes": "the parts assemble into the skin with no step at the parting line"
+            "measure": "parts meet their wall and interface requirements; verify shared-form changes if that dependency is claimed",
+            "eyes": "the parts assemble into the intended form with the specified interface gaps"
           },
           "exemplar": {
             "document": "Mouse ASM",
@@ -514,16 +523,16 @@
     {
       "id": "assemble",
       "title": "Assemble",
-      "use_when": "more than one component - how they are held, joined and moved",
+      "use_when": "more than one component - how they are referenced, joined and moved",
       "rules": [
         {
           "id": "one-assembly-idiom",
           "section": "assemble",
           "scenarios": ["fixed_mechanism", "floating_mechanism", "machining_job"],
-          "when": "the first part is placed",
-          "do": "pick one idiom for the document - joints, or assembly constraints plus rigid groups - and keep it; mixing them is why large timelines read as noise",
-          "except": "a rigid group over an already-joined sub-mechanism",
-          "prove": [{"tool": "assembly_get", "observe": "joint_count and relations agree with the idiom you chose"}]
+          "when": "defining relationships within a mechanism",
+          "do": "choose relations for its actual freedoms and reference path; avoid duplicate constraints, while allowing independently organized subassemblies to use different constructions",
+          "except": "a placement study that makes no kinematic claim",
+          "prove": [{"tool": "assembly_get", "observe": "the intended freedoms, health and component poses rather than a preferred joint count"}]
         },
         {
           "id": "connected-reference-path",
@@ -539,9 +548,9 @@
           "section": "assemble",
           "scenarios": ["fixed_mechanism", "floating_mechanism"],
           "when": "a part was modelled against its neighbours where it sits",
-          "do": "join it with as-built joints - nothing moves - and let the joint limits carry the stroke",
-          "except": "a part placed from elsewhere, which takes a joint with joint origins",
-          "prove": [{"tool": "assembly_get", "observe": "the joint's limits hold the travel the brief named"}]
+          "do": "consider as-built joints to retain a deliberate placement; choose geometric joint references where they better express how interfaces must follow edits",
+          "except": "a static placement with no required joint relationship",
+          "prove": [{"tool": "assembly_get", "observe": "the intended relative pose and motion limits"}, {"tool": "model_measure_between", "observe": "mating dimensions after relevant edits"}]
         },
         {
           "id": "align-knobs-not-spacers",
@@ -576,23 +585,24 @@
         {
           "id": "assemble-part-modelled-in-place",
           "section": "assemble",
-          "title": "A part modelled in place and joined as built",
+          "title": "One in-place part with an as-built joint",
           "scenarios": ["fixed_mechanism", "floating_mechanism"],
-          "use_when": "a rocker, bracket or lever designed between parts that already sit where they belong",
+          "use_when": "a part is designed in its intended assembled pose; prepare its component/sketch and identify the actual members and required freedoms",
           "steps": [
-            {"tool": "model_create_component", "do": "a new component named for the part, activated", "read_back": "the component is active"},
-            {"tool": "sketch_project", "do": "project the neighbours' bores and faces into the new sketch", "read_back": "projected entities present"},
-            {"tool": "sketch_add_geometry", "do": "the link profile between the projected bores (see the link recipe)", "read_back": "closed profiles"},
-            {"tool": "model_extrude", "do": "extrude the profile to the part thickness", "read_back": "one body in the new component"},
-            {"tool": "model_hole", "do": "counterbored holes for the screws", "read_back": "hole count"},
-            {"tool": "joint_create_as_built", "do": "a revolute as-built joint to each bearing it pivots on; a cylindrical one where it also slides", "read_back": "the joint reports its motion type"},
-            {"tool": "joint_edit", "do": "set the limits to the stroke the brief names", "read_back": "limits read back"},
-            {"tool": "joint_drive", "do": "drive to each extreme", "read_back": "the value at each pose"},
-            {"tool": "assembly_inspect_interference", "do": "check at each pose", "read_back": "no unintended overlap"}
+            {"tool": "sketch_project", "do": "project the relevant interface geometry into the prepared sketch", "read_back": "the intended references and links"},
+            {"tool": "sketch_add_geometry", "do": "draw the chosen profile around those interfaces", "read_back": "the intended regions"},
+            {"tool": "sketch_constrain", "do": "apply the required interface and shape relations", "read_back": "the accepted relations"},
+            {"tool": "sketch_dimension", "do": "dimension the independent sizes", "read_back": "the solved dimensions"},
+            {"tool": "model_extrude", "do": "create the part at its intended thickness", "read_back": "the body and affected scope"},
+            {"tool": "joint_create_as_built", "do": "join the actual member pair with the intended freedom, without redundant bearing joints", "read_back": "the joint type and retained pose"},
+            {"tool": "joint_edit", "do": "set the required travel limits", "read_back": "the limits"},
+            {"tool": "joint_drive", "do": "exercise a representative pose", "read_back": "assembly_get shows the intended component motion"},
+            {"tool": "assembly_inspect_interference", "do": "inspect that pose", "read_back": "overlaps classified against intended fits"},
+            {"tool": "joint_drive", "do": "restore the handoff pose", "read_back": "assembly_get shows the restored position"}
           ],
           "bar": {
-            "measure": "assembly_get lists the as-built joints with the limits set, and joint_drive reaches both extremes without interference",
-            "eyes": "the link sits on its bearings and swings through its arc"
+            "measure": "the member has its intended motion and interfaces at the tested poses; untested travel remains unverified",
+            "eyes": "the part engages its interfaces and moves as intended"
           },
           "exemplar": {
             "document": "bike frame",
@@ -604,26 +614,21 @@
         {
           "id": "assemble-screw-motion",
           "section": "assemble",
-          "title": "A screw cap that turns and travels",
+          "title": "Coupled rotation and travel on separate members",
           "scenarios": ["fixed_mechanism", "floating_mechanism"],
-          "use_when": "a threaded cap, lead screw or any turn-to-advance pair",
+          "use_when": "distinct rotating and translating members need an ideal pitch relationship; this does not model one cap both turning and advancing",
           "steps": [
-            {"tool": "assembly_ground", "do": "ground the body part to its parent", "read_back": "ground_to_parent true"},
-            {"tool": "joint_create_as_built", "do": "a revolute joint between the turning part and the body on the thread axis", "read_back": "dof 1"},
-            {"tool": "joint_create_as_built", "do": "a slider joint between the advancing part and the body along the same axis - a second joint on the SAME pair is refused as over-constrained", "read_back": "dof 1"},
-            {"tool": "joint_edit", "do": "slide limits equal to the travel", "read_back": "limits read back"},
-            {"tool": "joint_motion_link", "do": "link the revolute to the slider with ratio = pitch / 360 (mm of slide per degree)", "read_back": "linked true, ratio_applied true"},
-            {"tool": "joint_drive", "do": "drive the revolute 90 deg - a full 360 is an equivalent pose and moves nothing", "read_back": "value_now on both joints"}
+            {"tool": "assembly_get", "do": "identify the reference member, moving members and existing freedoms", "read_back": "distinct members with the intended placements"},
+            {"tool": "assembly_ground", "do": "anchor the chosen reference if the mechanism requires it", "read_back": "isGroundToParent confirms the chosen reference is anchored to its parent"},
+            {"tool": "joint_create_as_built", "do": "give the rotating member its required revolute relationship", "read_back": "the joint type and retained pose"},
+            {"tool": "joint_create_as_built", "do": "give the translating member its required slider relationship", "read_back": "the joint type and retained pose"},
+            {"tool": "joint_motion_link", "do": "couple the two using the intended pitch and the tool's stated ratio units", "read_back": "the actual link and ratio; assembly_get records both starting joint values and member poses"},
+            {"tool": "joint_drive", "do": "change the rotating joint from its recorded starting angle within the intended travel", "read_back": "assembly_get reports both member poses and the travel change"},
+            {"tool": "joint_drive", "do": "drive that same joint back to its starting angle", "read_back": "assembly_get confirms both members restored"}
           ],
           "bar": {
-            "measure": "after a 90 deg drive assembly_get's value_now reads 90 on the revolute and a quarter pitch on the slider",
-            "eyes": "the advancing part moves along the axis as the other turns"
-          },
-          "exemplar": {
-            "document": "End Mill Case",
-            "urn": "urn:adsk.wipprod:dm.lineage:bp5koQG0RD-wHFxJHo2mUQ",
-            "look_at": "Motion Link 5 over two cylindrical joints on one pair - made in the UI; through the API one pair takes one joint",
-            "access": "Autodesk Design Samples, read only"
+            "measure": "measured rotation and translation match the declared pitch; the ideal motion link does not prove a physical drive train",
+            "eyes": "each actual member moves as specified without substituting one member for another"
           }
         }
       ]
@@ -676,7 +681,7 @@
           "when": "a write reports success",
           "do": "confirm the effect through a read other than the tool's claim; read a refusal's reason before retrying",
           "except": "a deferred write, confirmed through the poller it names",
-          "prove": [{"tool": "design_get", "observe": "the timeline entry the write claims"}]
+          "prove": [{"tool": "design_get", "observe": "the affected design identity and state"}, {"tool": "model_inspect", "observe": "the changed body's bounds and volume against the expected modelling effect"}]
         },
         {
           "id": "leave-the-artifact-openable",
@@ -709,9 +714,10 @@
           "section": "manufacture",
           "scenarios": ["machining_job"],
           "when": "finishing a 3D form",
-          "do": "parallel finishes shallow areas and skips steep ones by default; 3D contour does the opposite; one flag on each takes the other's areas, and scallop finishes both at a constant stepover a tenth of the tool",
+          "do": "parallel skips steep areas by default and 3D contour skips shallow ones; machineSteepAreas and machineShallowAreas extend their coverage; consider scallop for both, choosing its stepover for the tool and required finish",
           "except": "a flat part, where face and 2D contour suffice",
-          "prove": [{"tool": "cam_compare_operations", "observe": "machineSteepAreas or machineShallowAreas is the only difference between the pair"}]
+          "prove": [{"tool": "cam_compare_operations", "observe": "the machineSteepAreas or machineShallowAreas difference in the pair"}, {"tool": "cam_get", "observe": "the coverage controls and tool carried by each operation"}, {"tool": "cam_show_toolpath", "observe": "the intended operation is shown in isolation"}, {"tool": "view_screenshot", "observe": "visible passes on the intended regions"}],
+          "example": "a stepover of a tenth of the tool is a sample setting, not a universal finish requirement"
         },
         {
           "id": "pocket-or-adaptive",
@@ -720,7 +726,7 @@
           "when": "roughing a pocket",
           "do": "adaptive takes deep stepdowns at a light radial load and needs no leads or compensation; 2D pocket takes shallow stepdowns with a finishing pass and cutter compensation - pick adaptive for bulk removal, pocket when the wall finish comes from the same operation",
           "except": "a slot, which wants the slot strategy on a closed slot contour",
-          "prove": [{"tool": "cam_compare_operations", "observe": "optimalLoad and maximumStepdown on adaptive; finishing passes and compensation on pocket"}]
+          "prove": [{"tool": "cam_compare_operations", "observe": "optimalLoad and maximumStepdown on adaptive; finishing passes and compensation on pocket"}, {"tool": "cam_get", "observe": "the geometry selections carried by each operation"}]
         },
         {
           "id": "geometry-selection-is-half-the-operation",
@@ -735,10 +741,11 @@
           "id": "turning-lead-out-gouges-the-remaining-stock",
           "section": "manufacture",
           "scenarios": ["machining_job"],
-          "when": "a turning profile finishing cycle generates carrying a warning",
-          "do": "'Lead-Out has been modified due to a gouge with the remaining stock' says the exit move ran into stock the cycle leaves behind, and Fusion moved it rather than refusing. Measured on a turned flange, each remedy cleared it: doLeadOut false, or useStockToLeave true with xStockToLeave and zStockToLeave at 0.5mm. Take the allowance on a cycle a later pass follows; turn the lead-out off on the last one",
+          "when": "a turning profile finishing cycle reports 'Lead-Out has been modified due to a gouge with the remaining stock'",
+          "do": "inspect the exit move and the stock the cycle leaves; turn the lead-out off, or leave allowance where a later pass removes it; regenerate and assess the result",
           "except": "a cycle whose exit move has to clear a face, where the lead-out is the point",
-          "prove": [{"tool": "cam_get_status", "observe": "operations_with_warnings is empty for that setup and none of its operations is in empty_toolpaths"}]
+          "prove": [{"tool": "cam_get_status", "observe": "the warning after the change and whether the result is empty"}, {"tool": "cam_show_toolpath", "observe": "the intended operation is shown in isolation"}, {"tool": "view_screenshot", "observe": "the exit path against the part and displayed stock"}],
+          "example": "measured on a turned flange: doLeadOut false, or useStockToLeave true with xStockToLeave and zStockToLeave at 0.5 mm, each cleared this warning"
         },
         {
           "id": "rest-stock-is-what-the-setup-before-left",
@@ -759,20 +766,21 @@
           "section": "manufacture",
           "title": "Choosing a strategy for a feature",
           "scenarios": ["machining_job"],
-          "use_when": "a face, pocket, wall, hole or free-form surface needs an operation",
+          "use_when": "a prepared setup and tool library need a cutting operation for a known feature; choose from available strategies",
           "steps": [
-            {"tool": "cam_get", "do": "read the setup's allowed strategies", "read_back": "allowed true for the candidates; a false one cannot be created"},
-            {"tool": "find_geometry", "do": "classify the feature: flat top (face), pocket floor, wall (2D contour), hole (drill, bore, thread), curved surface (parallel, contour, scallop), edge (chamfer)", "read_back": "the face kinds and normals"},
-            {"tool": "cam_create_operation", "do": "create the candidate with a named tool", "read_back": "its name and state"},
-            {"tool": "cam_select_geometry", "do": "give it the chains or faces, with the chain extension where the cut runs past the wall", "read_back": "the selection count"},
-            {"tool": "cam_generate", "do": "generate", "read_back": "a handle, then cam_get_status until completed"},
-            {"tool": "cam_inspect_toolpaths", "do": "inspect the result", "read_back": "the operation is not among empty_toolpaths; an empty one is the wrong strategy or selection"},
-            {"tool": "cam_get", "do": "read the time slice", "read_back": "machining time above zero"},
-            {"tool": "cam_compare_operations", "do": "when unsure between two strategies, compare the pair: pocket and adaptive differ in 114 parameters, optimalLoad and stepdown among them", "read_back": "the parameters that differ name the trade-off"}
+            {"tool": "cam_get", "do": "read available strategies and setup context", "read_back": "the allowed candidates, model, stock and frame"},
+            {"tool": "find_geometry", "do": "inspect the intended feature and access", "read_back": "its dimensions, geometry and directions"},
+            {"tool": "cam_create_operation", "do": "create a candidate with a suitable tool", "read_back": "the operation and tool it carries"},
+            {"tool": "cam_select_geometry", "do": "select the intended feature and boundary", "read_back": "the resolved selection"},
+            {"tool": "cam_generate", "do": "generate the candidate", "read_back": "the handle; poll cam_get_status to completion and inspect errors"},
+            {"tool": "cam_inspect_toolpaths", "do": "inspect validity and emptiness", "read_back": "the observed state; an empty result does not diagnose its cause"},
+            {"tool": "cam_get", "do": "read warnings, heights and the time slice", "read_back": "the height settings and motion estimates"},
+            {"tool": "cam_show_toolpath", "do": "show the candidate in isolation", "read_back": "view_screenshot supports coverage of the intended feature"},
+            {"tool": "cam_compare_operations", "do": "compare a separately prepared alternative when the trade-off remains unclear", "read_back": "setting differences, with selection and coverage checked separately"}
           ],
           "bar": {
-            "measure": "cam_inspect_toolpaths lists no empty toolpath, the time slice reads above zero, and the operation is valid with no warning",
-            "eyes": "the toolpath covers the feature and nothing else"
+            "measure": "the operation computes and evidence supports intended coverage; unexplained emptiness or warnings remain findings",
+            "eyes": "passes reach the intended feature with the planned entry and clearance"
           },
           "exemplar": {
             "document": "2D - Overview of toolpaths",
@@ -784,42 +792,43 @@
         {
           "id": "manufacture-prove-a-toolpath",
           "section": "manufacture",
-          "title": "Proving a toolpath before posting",
+          "title": "Checking a generated cutting operation",
           "scenarios": ["machining_job"],
-          "use_when": "an operation generated and must be trusted",
+          "use_when": "a cutting operation expected to remove stock needs review before a demonstration post; machine release requires its own process checks",
           "steps": [
-            {"tool": "cam_get", "do": "read the operation with its parameters and tool", "read_back": "state valid, no warning text, the tool it uses"},
-            {"tool": "cam_inspect_toolpaths", "do": "read the toolpath census", "read_back": "the operation is valid and not empty"},
-            {"tool": "cam_get", "do": "read the time slice", "read_back": "machining time above zero, feed and rapid distances"},
-            {"tool": "cam_show_toolpath", "do": "show the toolpath and take a screenshot", "read_back": "the passes lie on the feature, inside the stock"},
-            {"tool": "cam_post", "do": "post to a scratch folder with the machine's post", "read_back": "the file landed with a size above zero"},
-            {"tool": "cam_get", "do": "re-read after posting", "read_back": "no operation went out of date"}
+            {"tool": "cam_get", "do": "read the operation, tool, selections, heights and stock source", "read_back": "the actual settings and any freshness limits"},
+            {"tool": "cam_inspect_toolpaths", "do": "read state and emptiness", "read_back": "the operation's computed state and whether it has a path"},
+            {"tool": "cam_get", "do": "read warnings and motion estimates", "read_back": "time and distances; nonzero time alone does not prove stock removal"},
+            {"tool": "cam_show_toolpath", "do": "show the operation alone", "read_back": "the visibility selection"},
+            {"tool": "view_screenshot", "do": "inspect it against the feature, stock and fixture", "read_back": "visible coverage and clearance; unseen collisions remain unverified"},
+            {"tool": "cam_post", "do": "post to the agreed output destination with the selected post", "read_back": "the reported file path and size, or refusal"},
+            {"tool": "cam_get", "do": "re-read operation and program state", "read_back": "the delivered scope and any outstanding warning or stale state"}
           ],
           "bar": {
-            "measure": "the time slice reads above zero, the census lists the operation as not empty, and the posted file exists with a size",
-            "eyes": "the shown toolpath stays on the feature, inside the stock and clear of the fixture"
+            "measure": "report computation, coverage evidence and output delivery separately; a nonempty file is not proof of controller suitability",
+            "eyes": "the isolated path agrees with measured feature positions and heights; disclose what the view cannot establish"
           }
         },
         {
           "id": "manufacture-radial-hole-across-the-axis",
           "section": "manufacture",
-          "title": "Drilling across the turned axis",
+          "title": "Choosing a cross-hole approach",
           "scenarios": ["machining_job"],
-          "use_when": "a hole whose axis runs across the part axis - a cross-drilling, or a hole through a boss on a turned part",
+          "use_when": "a known hole crosses a turned axis; decide through/blind intent, entry side, access and required depth before selecting a setup",
           "steps": [
-            {"tool": "find_geometry", "do": "find the hole's own cylindrical face", "read_back": "its 'axis', which is not the milling setup's Z"},
-            {"tool": "cam_create_setup", "do": "give that axis a setup of its own: one per hole axis, so opposed holes are two setups, never one bore through both", "read_back": "the setup name and zero operations"},
-            {"tool": "cam_edit_setup", "do": "bind the setup's Z to that face: wcs={'z_axis': <the handle>}", "read_back": "wcs_set.z_axis.bound_entities reads 1"},
-            {"tool": "cam_create_operation", "do": "create the drilling cycle", "read_back": "the name it landed under"},
-            {"tool": "cam_select_geometry", "do": "aim it with selection='holes' and the same face", "read_back": "selection_param 'holeFaces' and the face count"},
-            {"tool": "cam_generate", "do": "generate, then read the status", "read_back": "on world Z it errors 'Cylindrical face not in tool orientation!'; bound to the face it errors 'Selected face may not be safe for cutting at current tool orientation!' - the bound axis points into the material"},
-            {"tool": "cam_edit_setup", "do": "turn the axis round: parameters={'wcs_orientation_flipZ': 'true'}", "read_back": "the parameter reads back true"},
-            {"tool": "cam_generate", "do": "regenerate", "read_back": "operations_with_errors is empty"},
-            {"tool": "cam_get", "do": "read the time slice", "read_back": "machining time above zero for the drill"}
+            {"tool": "find_geometry", "do": "inspect the hole and available entry geometry", "read_back": "the axis, position and relevant dimensions"},
+            {"tool": "cam_get", "do": "inspect the available setup frames", "read_back": "whether an existing frame supports the intended approach"},
+            {"tool": "cam_create_setup", "do": "create a dedicated setup only if the required approach needs one", "read_back": "the intended model and setup identity"},
+            {"tool": "cam_edit_setup", "do": "bind the selected setup's orientation for that approach", "read_back": "the bindings and available frame values"},
+            {"tool": "cam_create_operation", "do": "create a drilling cycle with the appropriate tool", "read_back": "the operation and tool"},
+            {"tool": "cam_select_geometry", "do": "select the intended hole faces", "read_back": "the resolved faces"},
+            {"tool": "cam_edit_operation", "do": "set the required heights and drilling depth", "read_back": "the actual height and depth settings"},
+            {"tool": "cam_generate", "do": "generate and poll cam_get_status", "read_back": "the actual completion state and warnings; change orientation only if the evidence requires it"},
+            {"tool": "cam_show_toolpath", "do": "show the operation in isolation", "read_back": "view_screenshot shows entry and depth against the measured hole"}
           ],
           "bar": {
-            "measure": "the operation carries no error and its machining time reads above zero",
-            "eyes": "the drill enters square to its face and stops in the material, not through to the far side"
+            "measure": "the generated approach and depth agree with the intended hole; through and blind cases have different acceptance",
+            "eyes": "the drill enters from the chosen side and reaches the specified depth"
           }
         }
       ]

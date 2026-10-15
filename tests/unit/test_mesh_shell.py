@@ -15,6 +15,7 @@ Pinned (the DoD):
   - the thickness that landed is read back off the feature's ModelParameter, never echoed.
   - a mesh nothing can be read off afterwards is reported UNVERIFIED, not as success.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -194,7 +195,7 @@ class TestInputGuards:
         assert rig.feats.add_called is False
 
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(ms._common, "design", lambda: None)
+        _install_design(ms, None)
         assert "No active design" in error_message(ms.handler(mesh="H", thickness=2.0))
 
     def test_a_missing_shell_features_collection_is_an_error(self, monkeypatch):

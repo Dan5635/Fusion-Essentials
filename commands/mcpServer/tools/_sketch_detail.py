@@ -16,14 +16,15 @@ from ._common import ok, error, safe, find_sketch, all_sketch_names
 from . import _common
 from . import _geom
 from . import _inputs
+from . import _view_common
 
 app = adsk.core.Application.get()
 
 MAP_BLURB = (
-    "sketch_get's X-ray; sketch_world_frame/frame_space_note - a sketch's frame + sentence; "
-    "curve_id - a curve's '<type>:<index>'; scope_component/scope_components/COMPONENT_SCOPE/"
-    "component_scope/scoped_sketch/scoped_or_recent_sketch/scope_remedy - the 'component' scope "
-    "+ wire form; _sketch_summary - a sketch's row; _prepare/_transform - move/copy matrix; "
+    "sketch_get's X-ray; sketch_world_frame/frame_space_note - frame; curve_id/entity_id/"
+    "dimension_entities - ids; point_census/moved_points/point_ends - what a solve moved; "
+    "scope_component(s)/COMPONENT_SCOPE/component_scope/scoped_sketch/scoped_or_recent_sketch/"
+    "scope_remedy - the scope; _sketch_summary - a sketch row; _prepare/_transform - move/copy; "
     "unquote_text/font_read_back - SketchText.")
 
 
@@ -61,9 +62,10 @@ COMPONENT_LOCAL_SPACE = "component_local"
 # The one sentence each space owes the caller, keyed by frame['space'].
 FRAME_SPACE_NOTE = {
     WORLD_SPACE: (
-        "'frame' maps sketch coords to WORLD (frame.space='world'): sketch (0,0) sits at "
-        "frame.origin_mm, +X runs along frame.x_world, +Y along frame.y_world, and frame.normal is "
-        "the plane's world normal - place geometry from those, not by eye."),
+        "'frame' maps sketch coords to WORLD (frame.space='world'): origin_mm is sketch (0,0); "
+        "x_world/y_world are its axes, normal is its plane normal. Use this frame for geometry. "
+        "A datum point need not equal this origin; compare normals and signed offsets. "
+        "'component' is sketch owner, not necessarily datum owner."),
     COMPONENT_LOCAL_SPACE: (
         "'frame' is COMPONENT-LOCAL, not world (frame.space='component_local'): no single "
         "placement of this sketch resolved, so the in-plane axes are published as frame.x_local / "
@@ -165,7 +167,7 @@ _font_read_back = font_read_back
 # holding its referenced SKETCH entities. A surface-side attribute is a model face or construction
 # plane, outside this sketch's id space, so listing it would only add a '?'.
 _CONSTRAINT_REFS = {
-    "PerpendicularConstraint": ("perpendicular", ("lineOne", "lineTwo")),
+    "PerpendicularConstraint": ("perpendicular", ("line", "curve")),
     "ParallelConstraint": ("parallel", ("lineOne", "lineTwo")),
     "CollinearConstraint": ("collinear", ("lineOne", "lineTwo")),
     "TangentConstraint": ("tangent", ("curveOne", "curveTwo")),
@@ -184,7 +186,7 @@ _CONSTRAINT_REFS = {
     "MidPointConstraint": ("midpoint", ("point", "midPointCurve")),
     "SmoothConstraint": ("smooth", ("curveOne", "curveTwo")),
     "OffsetConstraint": ("offset", ("parentCurves", "childCurves")),
-    "PolygonConstraint": ("polygon", ("lines",)),          # 'lines' is a vector (many)
+    "PolygonConstraint": ("polygon", ("points",)),         # the vertices; published as the sides
     "CircularPatternConstraint": ("circular_pattern", ("centerPoint", "entities")),
     "RectangularPatternConstraint": ("rectangular_pattern",
                                      ("entities", "directionOneEntity", "directionTwoEntity")),
@@ -221,21 +223,135 @@ def curve_id(sketch, curve):
     return None
 
 
-def _build_token_map(sketch):
-    """Map entityToken -> '<type>:<index>' for every entity kind resolve_entity_ref addresses -
-    _curve_collections' kinds plus 'point'."""
-    tok2id = {}
+def entity_id(sketch, entity):
+    """'<type>:<index>' for one curve or sketch point, matched by IDENTITY, or None."""
+    ref = curve_id(sketch, entity)
+    if ref is not None:
+        return ref
+    pts = safe(lambda: sketch.sketchPoints)
+    for i in range(safe(lambda: pts.count, 0) if pts else 0):
+        if safe(lambda i=i: pts.item(i) == entity) is True:
+            return f"point:{i}"
+    return None
+
+
+# ── the sketch-point census a solve's moves are read from ─────────────────────────────────────────
+
+MOVE_TOL_CM = 1e-4       # a point that moved no further than this (0.001 mm) is reported as held
+
+
+def point_cm(geo):
+    """(x, y, z) in cm off a point geometry, or None when it does not read."""
+    x = safe(lambda: float(geo.x))
+    y = safe(lambda: float(geo.y))
+    if x is None or y is None:
+        return None
+    return (x, y, safe(lambda: float(geo.z), 0.0) or 0.0)
+
+
+def point_mm(p):
+    """A cm point as the [x, y, z] mm list a payload publishes."""
+    return [round(v * _common.CM_TO_UNIT["mm"], 4) for v in p]
+
+
+def distance_cm(a, b):
+    """The straight-line distance between two cm points."""
+    return sum((p - q) ** 2 for p, q in zip(a, b)) ** 0.5
+
+
+def moved_cm(before, after):
+    """The furthest one entity's sampled points moved, in cm, or None when the reads do not pair."""
+    if not before or not after or len(before) != len(after):
+        return None
+    return max(distance_cm(a, b) for a, b in zip(before, after))
+
+
+def point_census(sketch):
+    """{'point:<i>': (x, y, z) cm} for every sketch point, or None when any one does not read."""
+    pts = safe(lambda: sketch.sketchPoints)
+    count = _common.counted(lambda: pts.count)
+    if count is None:
+        return None
+    census = {f"point:{i}": point_cm(safe(lambda i=i: pts.item(i).geometry)) for i in range(count)}
+    return None if None in census.values() else census
+
+
+def moved_points(before, after):
+    """[(id, from, to)] for the points that moved more than MOVE_TOL_CM, None when unpaired."""
+    if before is None or after is None or set(before) != set(after):
+        return None
+    return [(ref, was, after[ref]) for ref, was in before.items()
+            if distance_cm(was, after[ref]) > MOVE_TOL_CM]
+
+
+def point_ends(sketch, refs):
+    """{point id: ['<curve id> start' or '<curve id> end', ...]} for the curves ending there."""
+    points = [(ref, _common.resolve_entity_ref(sketch, ref)) for ref in refs]
+    ends = {ref: [] for ref in refs}
     for kind, coll in _curve_collections(sketch):
+        for i in range(safe(lambda coll=coll: coll.count, 0) if coll else 0):
+            curve = safe(lambda coll=coll, i=i: coll.item(i))
+            for end in ("start", "end"):
+                at = safe(lambda: getattr(curve, end + "SketchPoint"))
+                for ref, point in points:
+                    if at is not None and point is not None and safe(lambda: at == point) is True:
+                        ends[ref].append(f"{kind}:{i} {end}")
+    return ends
+
+
+def _entity_handles(sketch, rows, occurrence, placed):
+    """Stamp each point/curve row with its 'handle' through `occurrence`, None when not `placed`."""
+    for rec in rows:
+        kind = str(rec.get("id", "")).rpartition(":")[0]
+        if kind not in _common.ENTITY_REF_KINDS:
+            continue
+        ent = _common.resolve_entity_ref(sketch, rec["id"]) if placed else None
+        rec["handle"] = (_inputs.placed_handle(ent, "sketch_" + kind, occurrence)
+                         if ent is not None else None)
+
+
+def sketch_token_ids(sketch):
+    """entityToken -> every '<type>:<index>' carrying it, over the curve kinds plus 'point'."""
+    ids = {}
+    for kind, coll in list(_curve_collections(sketch)) + [("point", safe(lambda: sketch.sketchPoints))]:
         for i in range(safe(lambda coll=coll: coll.count, 0) if coll else 0):
             tok = safe(lambda coll=coll, i=i: coll.item(i).entityToken)
             if tok:
-                tok2id[tok] = f"{kind}:{i}"
-    pts = safe(lambda: sketch.sketchPoints)
-    for i in range(safe(lambda: pts.count, 0) if pts else 0):
-        tok = safe(lambda i=i: pts.item(i).entityToken)
-        if tok:
-            tok2id[tok] = f"point:{i}"
-    return tok2id
+                ids.setdefault(tok, []).append(f"{kind}:{i}")
+    return ids
+
+
+# Dimension class -> the getters naming its sketch entities, in getter order (measured); any other
+# class publishes entities null (a surface dimension anchors on a face or construction plane).
+_DIMENSION_REFS = {
+    "SketchLinearDimension": ("entityOne", "entityTwo"),
+    "SketchOffsetDimension": ("line", "entityTwo"),
+    "SketchAngularDimension": ("lineOne", "lineTwo"),
+    "SketchDiameterDimension": ("entity",),
+    "SketchConcentricCircleDimension": ("circleOne", "circleTwo"),
+    "SketchRadialDimension": ("entity",),
+    "SketchEllipseMajorRadiusDimension": ("ellipse",),
+    "SketchEllipseMinorRadiusDimension": ("ellipse",),
+    "SketchTangentDistanceDimension": ("entityOne", "circleOrArc"),
+    "SketchLinearDiameterDimension": ("line", "entityTwo"),
+}
+
+
+def _identical_id(sketch, entity, token_ids):
+    """The one id among those `entity`'s token maps to that resolves IDENTICAL to it, else '?'."""
+    tok = safe(lambda: entity.entityToken)
+    hits = [ref for ref in token_ids.get(tok, ())
+            if safe(lambda r=ref: _common.resolve_entity_ref(sketch, r) == entity) is True]
+    return hits[0] if len(hits) == 1 else "?"
+
+
+def dimension_entities(sketch, dimension, token_ids):
+    """A dimension's sketch-entity ids in getter order ('?' unmatched), None for an unprobed class."""
+    getters = _DIMENSION_REFS.get(type(dimension).__name__)
+    if getters is None:
+        return None
+    return [_identical_id(sketch, safe(lambda g=g: getattr(dimension, g)), token_ids)
+            for g in getters]
 
 
 _Z_EPS = 1e-6   # cm; a sketch point within this of the plane is on-plane and its z is omitted
@@ -292,10 +408,21 @@ def _texts(sketch, f):
 _CV_POINT_CAP = 64
 
 
-def _projected(curve) -> dict:
-    """{'reference': True} for a curve Fusion projected in from model geometry, else {} - MEASURED:
-    isReference reads True on a projected copy and False on a drawn one."""
-    return {"reference": True} if _common.read_flag(lambda: curve.isReference) else {}
+def _curve_state(curve) -> dict:
+    """The curve's independent fixed/reference/linked flags, null when unreadable."""
+    return {"fixed": _common.read_flag(lambda: curve.isFixed),
+            "reference": _common.read_flag(lambda: curve.isReference),
+            "linked": _common.read_flag(lambda: curve.isLinked)}
+
+
+def _curve_state_counts(sketch):
+    """Uncapped curve-only state totals, null per flag when its census is incomplete."""
+    curves = safe(lambda: list(sketch.sketchCurves))
+    states = [_curve_state(curve) for curve in curves] if curves is not None else None
+    return {f"{key}_curve_count": (sum(state[key] is True for state in states)
+                                  if states is not None
+                                  and all(state[key] is not None for state in states) else None)
+            for key in ("fixed", "reference", "linked")}
 
 
 def _entities(sketch, f):
@@ -310,7 +437,8 @@ def _entities(sketch, f):
         ln = lines.item(i)
         con = bool(safe(lambda ln=ln: ln.isConstruction, False))
         construction += 1 if con else 0
-        rec = {"id": f"line:{i}", "type": "line", "construction": con, **_projected(ln)}
+        rec = {"id": f"line:{i}", "type": "line", "construction": con,
+               "centerline": _common.read_flag(lambda ln=ln: ln.isCenterLine), **_curve_state(ln)}
         rec.update(_line_geo(ln, f))
         out.append(rec)
 
@@ -320,7 +448,7 @@ def _entities(sketch, f):
         con = bool(safe(lambda a=a: a.isConstruction, False))
         construction += 1 if con else 0
         c = safe(lambda: a.centerSketchPoint.geometry)
-        out.append({"id": f"arc:{i}", "type": "arc", "construction": con, **_projected(a),
+        out.append({"id": f"arc:{i}", "type": "arc", "construction": con, **_curve_state(a),
         "center": _xy(c, f),
         "radius": _round(safe(lambda: a.radius), f)})
 
@@ -330,7 +458,7 @@ def _entities(sketch, f):
         con = bool(safe(lambda cc=cc: cc.isConstruction, False))
         construction += 1 if con else 0
         c = safe(lambda: cc.centerSketchPoint.geometry)
-        out.append({"id": f"circle:{i}", "type": "circle", "construction": con, **_projected(cc),
+        out.append({"id": f"circle:{i}", "type": "circle", "construction": con, **_curve_state(cc),
         "center": _xy(c, f),
         "radius": _round(safe(lambda: cc.radius), f)})
 
@@ -340,7 +468,7 @@ def _entities(sketch, f):
         con = bool(safe(lambda el=el: el.isConstruction, False))
         construction += 1 if con else 0
         c = safe(lambda: el.centerSketchPoint.geometry)
-        out.append({"id": f"ellipse:{i}", "type": "ellipse", "construction": con, **_projected(el),
+        out.append({"id": f"ellipse:{i}", "type": "ellipse", "construction": con, **_curve_state(el),
         "center": _xy(c, f),
         "major_radius": _round(safe(lambda: el.majorAxisRadius), f),
         "minor_radius": _round(safe(lambda: el.minorAxisRadius), f)})
@@ -352,7 +480,7 @@ def _entities(sketch, f):
         construction += 1 if con else 0
         c = safe(lambda: ea.centerSketchPoint.geometry)
         out.append({"id": f"elliptical_arc:{i}", "type": "elliptical_arc", "construction": con,
-        **_projected(ea), "center": _xy(c, f),
+        **_curve_state(ea), "center": _xy(c, f),
         "major_radius": _round(safe(lambda: ea.majorAxisRadius), f),
         "minor_radius": _round(safe(lambda: ea.minorAxisRadius), f)})
 
@@ -363,7 +491,7 @@ def _entities(sketch, f):
         construction += 1 if con else 0
         # A conic is shaped by an APEX and a rho, not by a centre and a radius.
         apex = safe(lambda: cn.apexSketchPoint.geometry)
-        out.append({"id": f"conic:{i}", "type": "conic", "construction": con, **_projected(cn),
+        out.append({"id": f"conic:{i}", "type": "conic", "construction": con, **_curve_state(cn),
         "apex": _xy(apex, f), "rho": _round(safe(lambda: cn.rhoValue), 1.0)})
 
     splines = safe(lambda: curves.sketchFittedSplines)
@@ -372,7 +500,7 @@ def _entities(sketch, f):
         con = bool(safe(lambda sp=sp: sp.isConstruction, False))
         construction += 1 if con else 0
         fit_pts = safe(lambda sp=sp: sp.fitPoints)
-        out.append({"id": f"spline:{i}", "type": "spline", "construction": con, **_projected(sp),
+        out.append({"id": f"spline:{i}", "type": "spline", "construction": con, **_curve_state(sp),
         "is_closed": safe(lambda sp=sp: bool(sp.isClosed)),
         "fit_point_count": safe(lambda fit_pts=fit_pts: fit_pts.count) if fit_pts is not None else None})
 
@@ -390,7 +518,7 @@ def _entities(sketch, f):
         # empty read publishes unknown rather than a 0 a caller would compare against.
         described = bool(ctrl_pts)
         # SketchControlPointSpline has no isClosed (live-verified).
-        rec = {"id": f"cv_spline:{i}", "type": "cv_spline", "construction": con, **_projected(cv),
+        rec = {"id": f"cv_spline:{i}", "type": "cv_spline", "construction": con, **_curve_state(cv),
                "degree": safe(lambda cv=cv: cv.degree),
                "control_point_count": len(ctrl_pts) if described else None,
                "control_points": ([_xy(safe(lambda p=p: p.geometry), f)
@@ -406,7 +534,7 @@ def _entities(sketch, f):
         construction += 1 if con else 0
         # SketchFixedSpline exposes no isClosed/fitPoints/degree (live-verified).
         out.append({"id": f"fixed_spline:{i}", "type": "fixed_spline", "construction": con,
-                    **_projected(fx)})
+                    **_curve_state(fx)})
 
     pts = safe(lambda: sketch.sketchPoints)
     origin = safe(lambda: sketch.originPoint)
@@ -425,14 +553,8 @@ def _entities(sketch, f):
     return out, construction
 
 
-def _ent_id(ent, tok2id):
-    tok = safe(lambda: ent.entityToken)
-    return tok2id.get(tok, "?") if tok else "?"
-
-
-def _describe_constraint(c, tok2id):
-    """Map one geometric constraint to {type, entities:[ids]}. An attribute may be a single entity
-    or a VECTOR of entities (e.g. PolygonConstraint.lines) - both are expanded to ids."""
+def _describe_constraint(c, sketch, token_ids):
+    """Return a constraint's type and native-identity-matched sketch entity ids."""
     cls = type(c).__name__
     friendly, attrs = _CONSTRAINT_REFS.get(cls, (cls.replace("Constraint", "").lower(), ()))
     ids = []
@@ -441,18 +563,52 @@ def _describe_constraint(c, tok2id):
         if ent is None:
             continue
         items = _vector_items(ent)
-        if items is not None:        # a vector of entities (e.g. PolygonConstraint.lines)
+        if items is not None and cls == "PolygonConstraint":
+            # Published by its SIDES, the lines sketch_constrain takes; by its vertex points where
+            # the sides do not read.
+            ids.extend(_polygon_sides(sketch, items, token_ids)
+                       or [_identical_id(sketch, sub, token_ids) for sub in items])
+        elif items is not None:      # a vector of entities (e.g. OffsetConstraint.childCurves)
             for sub in items:
-                ids.append(_ent_id(sub, tok2id))
+                ids.append(_identical_id(sketch, sub, token_ids))
         else:
-            ids.append(_ent_id(ent, tok2id))
+            ids.append(_identical_id(sketch, ent, token_ids))
     return {"type": friendly, "entities": ids}
+
+
+# Two side lengths within this share of the shortest are one length.
+_SIDE_LENGTH_REL = 1e-6
+
+
+def _polygon_sides(sketch, points, token_ids):
+    """The ids of the lines joining a polygon's vertex points - its sides, in id order - or None
+    when they do not read as one side per vertex."""
+    def vertex(point):
+        return point is not None and any(safe(lambda v=v: v == point) is True for v in points)
+
+    lengths = {}
+    for point in points:
+        for ent in _vector_items(safe(lambda point=point: point.connectedEntities)) or []:
+            ref = _identical_id(sketch, ent, token_ids)
+            if (ref.startswith("line:") and ref not in lengths
+                    and vertex(safe(lambda ent=ent: ent.startSketchPoint))
+                    and vertex(safe(lambda ent=ent: ent.endSketchPoint))):
+                lengths[ref] = _common.finite_number(safe(lambda ent=ent: ent.length))
+    known = [n for n in lengths.values() if n is not None]
+    if not known:
+        return None
+    # A longer line between two vertices is a diagonal: the sides are the shortest such lines.
+    longest_side = min(known) * (1.0 + _SIDE_LENGTH_REL)
+    sides = [ref for ref, n in lengths.items() if n is not None and n <= longest_side]
+    if len(sides) != len(points):
+        return None
+    return sorted(sides, key=lambda ref: int(ref.rpartition(":")[2]))
 
 
 def _vector_items(ent):
     """If ent is a vector/collection of entities, return a list of them; else None. Handles both the
-    .count/.item collection idiom AND the SketchLineVector len()/[i] idiom (used by PolygonConstraint
-    .lines). A single BRep/sketch entity is NOT a vector - so a plain SketchLine returns None."""
+    .count/.item collection idiom AND the SWIG vector len()/[i] idiom (PolygonConstraint.points).
+    A single BRep/sketch entity is NOT a vector - so a plain SketchLine returns None."""
     # A single sketch entity exposes entityToken; treat that as NOT a vector even if it has len.
     if safe(lambda: ent.entityToken) is not None:
         return None
@@ -498,9 +654,9 @@ def _profiles(sketch, f):
         # same point; it doubles as the handle's locator.
         pos = (c.x, c.y, c.z) if c else None
         loops = safe(lambda p=p: p.profileLoops.count)
-        # findEntityByToken resolves NOTHING for a sub-component sketch profile's token, so the
-        # locator is the handle's real resolution path. It carries the RAW cm area, which tells
-        # same-centroid profiles apart; a ':' or ',' in the name would garble its parse.
+        # MEASURED: a multi-loop profile's token answers nothing in the root and itself plus its
+        # island profiles in a component, so the locator settles it; its RAW cm area tells
+        # same-centroid profiles apart. A ':' or ',' in the name would garble its parse.
         safe_name = sk_name if (":" not in sk_name and "," not in sk_name) else ""
         kind = f"profile[{safe_name}~{area:.4f}]" if area is not None else "profile"
         out.append({
@@ -516,6 +672,12 @@ def _profiles(sketch, f):
 
 
 _XRAY_CAP = 200   # a dense sketch can carry hundreds of entities/constraints/dimensions; bound each
+_ENTITY_PAGE_DEFAULT = 50
+_ENTITY_COLLECTIONS = (("line", "lines"), ("arc", "arcs"), ("circle", "circles"),
+                       ("ellipse", "ellipses"), ("elliptical_arc", "elliptical_arcs"),
+                       ("conic", "conics"), ("spline", "splines"),
+                       ("cv_spline", "cv_splines"), ("fixed_spline", "fixed_splines"),
+                       ("point", "points"), ("text", "texts"))
 
 
 def _dimension_value(raw, is_angle, f):
@@ -526,17 +688,15 @@ def _dimension_value(raw, is_angle, f):
     return _round(math.degrees(raw), 1.0) if is_angle else _round(raw, f)
 
 
-def _entity_xray(sketch, f, unit, max_results=_XRAY_CAP):
-    """(entities, constraints, dimensions, construction_count, driving_dim_count, truncated), each
-    array independently capped at max_results and the two counts taken over the UNCAPPED walk.
-    f is the cm -> display-unit factor applied to every length value, `unit` its name."""
-    tok2id = _build_token_map(sketch)
+def _entity_xray(sketch, f, unit, counts, entity_offset=0, entity_limit=_ENTITY_PAGE_DEFAULT):
+    """Entity pages, capped constraint/dimension rows, and uncapped construction/driving counts."""
+    token_ids = sketch_token_ids(sketch)
     entities, construction_count = _entities(sketch, f)
 
     constraints = []
     gc = safe(lambda: sketch.geometricConstraints)
     for i in range(safe(lambda: gc.count, 0) if gc else 0):
-        constraints.append(_describe_constraint(gc.item(i), tok2id))
+        constraints.append(_describe_constraint(gc.item(i), sketch, token_ids))
 
     dimensions = []
     sd = safe(lambda: sketch.sketchDimensions)
@@ -546,6 +706,12 @@ def _entity_xray(sketch, f, unit, max_results=_XRAY_CAP):
         raw_value = safe(lambda: par.value) if par else None
         # An ANGULAR dimension's value is radians, not a length, so it takes its own conversion.
         is_angle = type(d).__name__ == "SketchAngularDimension"
+        driving, driving_unread = _common.read_optional(lambda d=d: d.isDriving)
+        if driving is not None and type(driving) is not bool:
+            driving, driving_unread = None, "isDriving did not read a boolean"
+        label = point_cm(safe(lambda d=d: d.textPosition))
+        if label is not None and not all(math.isfinite(v) for v in label):
+            label = None
         dimensions.append({
             "name": safe(lambda: par.name) if par else None,
             "value": _dimension_value(raw_value, is_angle, f),
@@ -553,18 +719,29 @@ def _entity_xray(sketch, f, unit, max_results=_XRAY_CAP):
             "value_units": "deg" if is_angle else unit,
             "expression": safe(lambda: par.expression) if par else None,
             # driving = constrains geometry; a driven/reference dim just MEASURES (doesn't lock).
-            "driving": bool(safe(lambda d=d: d.isDriving, True)),
+            "driving": driving,
+            "text_position": ({"x": _round(label[0], f), "y": _round(label[1], f),
+                               "z": _round(label[2], f)} if label is not None else None),
             "type": type(d).__name__.replace("SketchDimension", "").replace("Dimension", "").lower(),
+            "entities": dimension_entities(sketch, d, token_ids) if i < _XRAY_CAP else None,
         })
-    driving_dims = sum(1 for d in dimensions if d.get("driving"))
+        if driving_unread:
+            dimensions[-1]["driving_unread"] = driving_unread
+    driving_dims = (None if any(d["driving"] is None for d in dimensions)
+                    else sum(1 for d in dimensions if d["driving"]))
 
-    cap = max(1, int(max_results))
-    entities_out = entities[:cap]
-    constraints_out = constraints[:cap]
-    dimensions_out = dimensions[:cap]
+    end = entity_offset + entity_limit
+    entities_out = [row for row in entities
+                    if entity_offset <= int(row["id"].rpartition(":")[2]) < end]
+    entity_pages = {plural: {"count": counts[plural], "offset": entity_offset,
+                             "next_offset": end if end < counts[plural] else None}
+                    for _kind, plural in _ENTITY_COLLECTIONS}
+    constraints_out = constraints[:_XRAY_CAP]
+    dimensions_out = dimensions[:_XRAY_CAP]
     truncated = (len(entities_out) < len(entities) or len(constraints_out) < len(constraints)
                  or len(dimensions_out) < len(dimensions))
-    return (entities_out, constraints_out, dimensions_out, construction_count, driving_dims, truncated)
+    return (entities_out, constraints_out, dimensions_out, construction_count, driving_dims,
+            truncated, entity_pages)
 
 
 # The occurrence half of the 'component' scope's vocabulary, resolved through the SHARED
@@ -652,12 +829,12 @@ def scope_remedy(input_name="component"):
 # The vocabulary half of the scope's description: what it accepts. Shared by every spelling of the
 # input, so a second scope on one tool cannot drift from the first. WHY it exists, and the
 # design_get pointer that mints an occurrence path, are in scope_component's refusals.
-_SCOPE_VOCABULARY = "a name, occurrence path or 'handle'."
+_SCOPE_VOCABULARY = "name, occurrence path or handle."
 
 # The ONE wire declaration of that input: tool.add_input_property(*_sketch_detail.COMPONENT_SCOPE),
 # resolved through scoped_sketch / scoped_or_recent_sketch below.
 COMPONENT_SCOPE = ("component", {"type": "string", "description":
-                   "The sketch's component: " + _SCOPE_VOCABULARY})
+                   "Sketch component: " + _SCOPE_VOCABULARY})
 
 
 def component_scope(input_name, narrows=""):
@@ -665,7 +842,7 @@ def component_scope(input_name, narrows=""):
     'component' already names something else, or that scopes a SECOND sketch reference.
     ``narrows`` names the sketch input this scope applies to."""
     lead = (f"The component of '{narrows}': " if narrows
-            else "The sketch's component: ")
+            else "Sketch component: ")
     return input_name, {"type": "string", "description": lead + _SCOPE_VOCABULARY}
 
 
@@ -782,6 +959,8 @@ def _sketch_summary(sketch) -> dict:
     "point_count": safe(lambda: sketch.sketchPoints.count, 0),
     "profile_count": safe(lambda: sketch.profiles.count, 0),
     "is_visible": safe(lambda: sketch.isVisible),
+    "constraint_count": _common.counted(lambda: sketch.geometricConstraints.count),
+    **_curve_state_counts(sketch),
     }
     # While compute is deferred the profile_count above is the pre-deferral one, and no read of
     # this sketch resumes compute.
@@ -799,13 +978,20 @@ _DX = _inputs.Distance("dx", allow_zero=True, default=0.0,
                        description="Translation along sketch X.")
 _DY = _inputs.Distance("dy", allow_zero=True, default=0.0,
                        description="Translation along sketch Y.")
+_DZ = _inputs.Distance("dz", allow_zero=True, default=0.0,
+                       description="Translation along sketch Z, off the plane.")
 _CENTER_X = _inputs.Distance("center_x", allow_zero=True, default=0.0,
                              description="Rotate/scale anchor X.")
 _CENTER_Y = _inputs.Distance("center_y", allow_zero=True, default=0.0,
                              description="Rotate/scale anchor Y.")
+_CENTER_Z = _inputs.Distance("center_z", allow_zero=True, default=0.0,
+                            description="Rotation pivot Z.")
 
 _TRANSFORM_INPUTS = (
     ("rotation_deg", {"type": "number", "description": "Rotation about the anchor, degrees CCW."}),
+    ("rotation_axis", {"type": "array", "items": {"type": "number"},
+                       "minItems": 3, "maxItems": 3,
+                       "description": "Local axis [x,y,z]; default [0,0,1]."}),
     ("scale_factor", {"type": "number", "description": "Uniform scale about the anchor; > 0."}),
 )
 
@@ -821,27 +1007,68 @@ def _object_collection(ents, refs):
     return coll, None
 
 
-def _transform(dx_cm, dy_cm, angle_deg, factor, cx_cm, cy_cm):
-    """(Matrix3D, error) for a sketch-space uniform SCALE by `factor` and ROTATION by `angle_deg`
-    about (cx, cy), followed by a TRANSLATION of (dx, dy). Assembled as ONE matrix - linear part
-    factor*R, translation column c + d - factor*R*c - so the result never depends on which way round
-    Matrix3D.transformBy composes."""
+def _transform(dx_cm, dy_cm, angle_deg, factor, cx_cm, cy_cm, dz_cm=0.0,
+               axis=(0.0, 0.0, 1.0), cz_cm=0.0):
+    """Return a sketch-space scale/rotation about a 3D pivot, then XYZ translation."""
     theta = math.radians(float(angle_deg or 0.0))
-    cos_t, sin_t = math.cos(theta), math.sin(theta)
     m = adsk.core.Matrix3D.create()
-    applied = [m.setToRotation(theta, adsk.core.Vector3D.create(0.0, 0.0, 1.0),
+    applied = [m.setToRotation(theta, adsk.core.Vector3D.create(*axis),
                                adsk.core.Point3D.create(0.0, 0.0, 0.0))]
+    pivot = (cx_cm, cy_cm, cz_cm)
+    turned = [sum(m.getCell(r, c) * pivot[c] for c in range(3)) for r in range(3)]
     if factor != 1.0:
         # scaling the whole 3x3 linear block is symmetric in row/column, so it needs no assumption
         # about which index of the 4x4 holds the translation.
         applied += [m.setCell(r, c, m.getCell(r, c) * factor)
                     for r in range(3) for c in range(3)]
-    m.translation = adsk.core.Vector3D.create(
-        cx_cm + dx_cm - factor * (cos_t * cx_cm - sin_t * cy_cm),
-        cy_cm + dy_cm - factor * (sin_t * cx_cm + cos_t * cy_cm), 0.0)
+    m.translation = adsk.core.Vector3D.create(*(
+        pivot[r] + (dx_cm, dy_cm, dz_cm)[r] - factor * turned[r] for r in range(3)))
     if not all(applied):
         return None, "Fusion refused a cell of the transform matrix, so nothing was transformed."
     return m, None
+
+
+def _rotation_axis(raw, angle):
+    """A finite unit sketch-space axis, or an input error."""
+    if raw is None:
+        return (0.0, 0.0, 1.0), None
+    if not angle:
+        return None, "'rotation_axis' needs a nonzero 'rotation_deg'; it would be ignored."
+    if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+        return None, f"'rotation_axis' needs three numbers [x,y,z]; got {raw!r}."
+    try:
+        values = tuple(float(v) for v in raw)
+    except (TypeError, ValueError):
+        return None, f"'rotation_axis' needs three numbers [x,y,z]; got {raw!r}."
+    if not all(math.isfinite(v) for v in values):
+        return None, f"'rotation_axis' must be finite; got {raw!r}."
+    length = math.hypot(*values)
+    if length <= 1e-12 or not math.isfinite(length):
+        return None, f"'rotation_axis' must be nonzero and finite; got {raw!r}."
+    return tuple(v / length for v in values), None
+
+
+def transform_points_match(before, after, matrix, tolerance=1e-6):
+    """Whether readable endpoint samples landed at the matrix's expected XYZ positions."""
+    if before is None or after is None:
+        return None
+    pairs = []
+    for a, b in zip(before[2:], after[2:]):
+        if a is not None:
+            if b is None:
+                return None
+            pairs.append((a, b))
+    if not pairs:
+        return None
+    offset = matrix.translation
+    shifts = (offset.x, offset.y, offset.z)
+    return all(abs(sum(matrix.getCell(r, c) * a[c] for c in range(3)) + shifts[r] - b[r])
+               <= tolerance for a, b in pairs for r in range(3))
+
+
+def transform_points_readable(position):
+    """Whether a sketch entity has an endpoint or own geometry for XYZ verification."""
+    return position is not None and any(mark is not None for mark in position[2:])
 
 
 def _identity_still_copies(design, sketch, target_sketch, target_component):
@@ -858,19 +1085,18 @@ def _identity_still_copies(design, sketch, target_sketch, target_component):
 
 
 def _prepare(sketch_name, entities, units, dx, dy, rotation_deg, center_x, center_y, scale_factor,
-             component="", target_sketch="", target_component=""):
-    """Everything both tools need before the mutation: (design, sketch, ents, refs, coll, matrix,
-    unit, error_result). target_sketch/target_component let a same-sketch identity refusal stand
-    aside for a copy landing in a genuinely different sketch."""
+             component="", target_sketch="", target_component="", dz=None,
+             rotation_axis=None, center_z=None):
+    """Return resolved transform operands and matrix, or a refusal before mutation."""
     blank = (None,) * 7
     k, uerr = _inputs.UNITS.resolve(units)
     if uerr:
         return blank + (error(uerr),)
     unit = (units or "mm").strip().lower()
 
-    design = _common.design()
-    if not design:
-        return blank + (error("No active design. Create or open a document first (see doc_new)."),)
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return blank + (design_refusal,)
     sketch, requested, refusal = scoped_or_recent_sketch(design, sketch_name, component)
     if refusal:
         return blank + (error(refusal),)
@@ -892,40 +1118,60 @@ def _prepare(sketch_name, entities, units, dx, dy, rotation_deg, center_x, cente
         factor = float(scale_factor if scale_factor is not None else 1.0)
     except (TypeError, ValueError):
         return blank + (error(f"'scale_factor' must be a number, got {scale_factor!r}."),)
-    if factor <= 0:
+    if not math.isfinite(factor) or factor <= 0:
         return blank + (error(f"'scale_factor' must be greater than 0, got {factor}. A uniform "
-                              "scale cannot mirror geometry - draw the mirrored curves instead."),)
+                              "scale cannot mirror geometry; use sketch_copy with mirror_line."),)
     try:
         angle = float(rotation_deg if rotation_deg is not None else 0.0)
     except (TypeError, ValueError):
         return blank + (error(f"'rotation_deg' must be a number, got {rotation_deg!r}."),)
+    if not math.isfinite(angle):
+        return blank + (error(f"'rotation_deg' must be finite; got {rotation_deg!r}."),)
+    axis, aerr = _rotation_axis(rotation_axis, angle)
+    if aerr:
+        return blank + (error(aerr),)
+    if (center_z is not None and factor == 1.0
+            and (not angle or abs(axis[0]) + abs(axis[1]) <= 1e-12)):
+        return blank + (error("'center_z' needs scaling or rotation about an axis with X/Y "
+                              "direction; it would be ignored."),)
 
     lengths = {}
-    for kind, raw in ((_DX, dx), (_DY, dy), (_CENTER_X, center_x), (_CENTER_Y, center_y)):
+    for kind, raw in ((_DX, dx), (_DY, dy), (_DZ, dz), (_CENTER_X, center_x),
+                      (_CENTER_Y, center_y), (_CENTER_Z, center_z)):
         value, lerr = kind.resolve_scaled(raw, k)
         if lerr:
             return blank + (error(lerr),)
         lengths[kind.name] = float(value or 0.0)
-    if not (lengths["dx"] or lengths["dy"] or angle or factor != 1.0) and not _identity_still_copies(
+    if not (lengths["dx"] or lengths["dy"] or lengths["dz"] or angle
+            or factor != 1.0) and not _identity_still_copies(
             design, sketch, target_sketch, target_component):
-        return blank + (error("Nothing to apply: give a 'dx'/'dy' translation, a 'rotation_deg', "
+        return blank + (error("Nothing to apply: give a 'dx'/'dy'/'dz' translation, a 'rotation_deg', "
                               "or a 'scale_factor' other than 1."),)
 
     coll, cerr = _object_collection(ents, refs)
     if cerr:
         return blank + (error(cerr),)
     matrix, merr = _transform(lengths["dx"], lengths["dy"], angle, factor,
-                              lengths["center_x"], lengths["center_y"])
+                              lengths["center_x"], lengths["center_y"], lengths["dz"],
+                              axis, lengths["center_z"])
     if merr:
         return blank + (error(merr),)
     return design, sketch, ents, refs, coll, matrix, unit, None
 
 
-def _requested(unit, dx, dy, rotation_deg, scale_factor):
-    """The transform the caller asked for, echoed in the caller's own units."""
-    return {"units": unit, "dx": float(dx or 0.0), "dy": float(dy or 0.0),
-            "rotation_deg": float(rotation_deg or 0.0),
-            "scale_factor": float(scale_factor if scale_factor is not None else 1.0)}
+def _requested(unit, dx, dy, rotation_deg, scale_factor, dz=None,
+               rotation_axis=None, center_z=None):
+    """Return requested transform values in caller units, including nonzero dz."""
+    out = {"units": unit, "dx": float(dx or 0.0), "dy": float(dy or 0.0),
+           "rotation_deg": float(rotation_deg or 0.0),
+           "scale_factor": float(scale_factor if scale_factor is not None else 1.0)}
+    if dz:
+        out["dz"] = float(dz)
+    if rotation_axis is not None:
+        out["rotation_axis"] = list(rotation_axis)
+    if center_z is not None:
+        out["center_z"] = float(center_z)
+    return out
 
 
 def _transform_wire(tool):
@@ -934,15 +1180,17 @@ def _transform_wire(tool):
                 .add_required_input("entities")
                 .add_input_property(*_DX.as_property())
                 .add_input_property(*_DY.as_property())
+                .add_input_property(*_DZ.as_property())
                 .add_input_property(*_CENTER_X.as_property())
                 .add_input_property(*_CENTER_Y.as_property()))
+    tool = tool.add_input_property(*_CENTER_Z.as_property())
     for name, schema in _TRANSFORM_INPUTS:
         tool = tool.add_input_property(name, dict(schema))
     return tool.add_input_property(*_inputs.UNITS.as_property()).strict_schema()
 
 
 def handler(sketch_name: str = "", include_entities: bool = False, units: str = "mm",
-            component: str = "") -> dict:
+            component: str = "", entity_offset: int = 0, max_results: int = 0) -> dict:
     """Read one sketch: light overview by default, the full entity/constraint/dimension X-ray with
     include_entities=true. 'component' scopes the name to one component. Lengths/areas are reported
     in 'units' (mm default; area = units^2)."""
@@ -951,9 +1199,9 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
     if f is None:
         return error(f"Unknown units '{units}'. Valid: mm, cm, in.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     name = (sketch_name or "").strip()
     if not name:
@@ -998,20 +1246,25 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
     "texts": safe(lambda: sketch.sketchTexts.count, 0),
     }
     fully = safe(lambda: sketch.isFullyConstrained)
-    constraint_count = safe(lambda: sketch.geometricConstraints.count, 0)
+    constraint_count = _common.counted(lambda: sketch.geometricConstraints.count)
     dim_count = safe(lambda: sketch.sketchDimensions.count, 0)
 
     profiles = _profiles(sketch, f)
     # ONE sketch was named, so ONE roll names the face it sits on rather than leaving plane null.
     sits_on_a_face = on_a_face(sketch)
+    clean_before = sits_on_a_face and _view_common.document_modified() is False
     face, marker_clause = face_support(sketch, design) if sits_on_a_face else (None, None)
+    # MEASURED: that roll flips a saved, clean document to isModified true.
+    dirtied = clean_before and _view_common.document_modified() is True
     out = {
         "sketch": safe(lambda: sketch.name),
+        "component": safe(lambda: sketch.parentComponent.name),
         "plane": _plane_name(sketch),
         # The only DOF signal the API exposes - no DOF count, no over-constrained flag.
         "is_fully_constrained": bool(fully) if fully is not None else None,
         "counts": counts,
         "constraint_count": constraint_count,
+        **_curve_state_counts(sketch),
         "dimension_count": dim_count,
         "profile_count": safe(lambda: sketch.profiles.count, 0),
         "units": unit,
@@ -1040,6 +1293,10 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
     if marker_clause:
         out["timeline_marker_unrestored"] = True
         face_note += " " + marker_clause + "."
+    if dirtied:
+        out["document_modified"] = True
+        face_note += (" The document read unmodified before this read rolled the timeline to the "
+                      "sketch and back to name its face, and reads modified after it.")
     lead = DEFERRED_NOTE + " " if profiles is None else ""
 
     if not include_entities:
@@ -1049,8 +1306,13 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
                        "include_entities=true.")
         return ok(out)
 
-    entities, constraints, dimensions, construction_count, driving_dims, truncated = _entity_xray(
-        sketch, f, unit)
+    entity_limit = min(max_results or _ENTITY_PAGE_DEFAULT, _XRAY_CAP)
+    entities, constraints, dimensions, construction_count, driving_dims, truncated, entity_pages = (
+        _entity_xray(sketch, f, unit, counts, entity_offset, entity_limit))
+    framed = safe(lambda: _frame_context(sketch, design, host_occurrence))
+    placed = bool(framed) and framed[1] == WORLD_SPACE
+    _entity_handles(sketch, entities,
+                    safe(lambda: framed[0].assemblyContext) if placed else None, placed)
     note = (lead + "Full X-ray, lengths in 'units'. Entity coordinates are sketch-LOCAL; "
                  + frame_space_note(out.get("frame")) + face_note
                  + " Entity ids ('line:0', ...) match sketch_constrain "
@@ -1058,23 +1320,31 @@ def handler(sketch_name: str = "", include_entities: bool = False, units: str = 
                  "sketch ORIGIN. is_fully_constrained=false means free DOF remain; a dimension "
                  "driving=false only measures. A 'text:<i>' id is what "
                  "sketch_set_text(index=<i>) edits and sketch_delete_entity removes.")
+    if placed:
+        note += (" A point row's 'handle' goes in model_construction's 'points'/'to_object' and a "
+                 "line row's in its 'axis' and two_edges' 'edges'; a circle's or arc's centre goes "
+                 "in as '<sketch>/<id>:center'. An 'id' is a position in the current collection.")
+    elif any("handle" in e for e in entities):
+        note += " 'handle' is null on every row until the instance is named as above."
     if any(e.get("reference") for e in entities):
-        note += (" reference:true marks a curve PROJECTED in from model geometry, not drawn here.")
-    if any("?" in c.get("entities", []) for c in constraints):
-        note += (" A constraint entity of '?' has no id in this payload - nothing listed in "
-                 "'entities' matches it.")
+        note += (" reference:true marks reference geometry; linked:true marks an external or API-driven link.")
+    if any("?" in (c.get("entities") or []) for c in constraints + dimensions):
+        note += (" A constraint or dimension entity of '?' has no id in this payload - nothing "
+                 "listed in 'entities' matches it.")
     if truncated:
-        note += (f" entities/constraints/dimensions each capped at {_XRAY_CAP}; counts above "
-                 "(constraint_count/dimension_count/counts) are the full, uncapped totals.")
+        note += (f" Entity collections page {entity_limit} each; entity_pages gives each count and "
+                 "next_offset. Constraints/dimensions remain capped at 200; their counts above "
+                 "are uncapped.")
     out.update({
         "driving_dimension_count": driving_dims,
         "construction_count": construction_count,
         "entities": entities,
+        "entity_pages": entity_pages,
         "constraints": constraints,
         "dimensions": dimensions,
         "truncated": truncated,
         "note": note,
     })
+    if driving_dims is None:
+        out["driving_dimension_count_unread"] = "One or more driving flags did not read; the dimensions list may be capped."
     return ok(out)
-
-

@@ -51,9 +51,9 @@ def handler(edges=None, distance: float = 0.0, units: str = "mm",
     if ea_key and ea_key not in _EXTEND_ALIGNMENTS:
         return error(f"Unknown extend_alignment '{extend_alignment}'. Use: free_edges, align_edges.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     resolved, eerr = _EXTEND_EDGES.resolve(edges)   # enforces single-body open chain before mutating

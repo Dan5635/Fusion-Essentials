@@ -1,4 +1,4 @@
-"""Lint: the generated docs (TOOL_MANIFEST/TOOL_POINTER_MAP/PERMISSION_POSTURE + the CLAUDE.md map) match the live tree.
+"""Lint: the generated docs (TOOL_MANIFEST/TOOL_POINTER_MAP/PERMISSION_POSTURE + the AGENTS.md map) match the live tree.
 This shells ``gen_all.py --check`` so a stale artifact fails as a normal test - skipped only when a
 content FINGERPRINT over every generator INPUT and OUTPUT matches one a passing check already saw.
 A generator reading something outside those two sets joins ``_fingerprinted_paths`` in the same change."""
@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tests/lints/ -> tests/
 REPO_ROOT = os.path.dirname(TESTS_DIR)
 
@@ -18,17 +20,16 @@ _CACHE_KEY = "fusion_essentials/generated_docs_fingerprint"
 # gen_posture load every module through the registry, gen_wiring parses every tool's source) and the
 # scripts under tests/ that do the deriving.
 _INPUT_TREE = os.path.join(REPO_ROOT, "commands", "mcpServer")
-# What they WRITE. The two CLAUDE.md files are SPLICED, so only a block of each is generated - the
+# What they WRITE. The two AGENTS.md files are SPLICED, so only a block of each is generated - the
 # whole file is fingerprinted anyway, which costs a needless miss on an unrelated edit and never a
 # missed staleness.
 _OUTPUT_TREE = os.path.join(TESTS_DIR, "generated")
-# gen_guidance writes a whole PACKAGE - the map plus one playbook per section - so the tree is
-# walked rather than named file by file: a playbook added, renamed or deleted moves the digest.
-_SKILL_TREE = os.path.join(REPO_ROOT, ".claude", "skills", "parametric-cad-design")
 _OUTPUT_FILES = (
     os.path.join(TESTS_DIR, "api_surface.py"),
-    os.path.join(REPO_ROOT, "CLAUDE.md"),
-    os.path.join(REPO_ROOT, "commands", "mcpServer", "tools", "CLAUDE.md"),
+    os.path.join(TESTS_DIR, "README.md"),
+    os.path.join(REPO_ROOT, "AGENTS.md"),
+    os.path.join(REPO_ROOT, "commands", "mcpServer", "tools", "AGENTS.md"),
+    os.path.join(REPO_ROOT, "commands", "mcpServer", "guidance", "parametric_cad_design.md"),
 )
 
 
@@ -43,7 +44,6 @@ def _bindings_identity():
     import gen_api_surface
     root = gen_api_surface.find_bindings()
     if root is None:
-        # gen_api_surface --check FAILS without bindings; the miss lets it say so itself.
         return "bindings:absent"
     parts = [root]
     for mod in gen_api_surface._MODULES:
@@ -57,10 +57,10 @@ def _bindings_identity():
 
 
 def _generated_artifacts():
-    """Every file a generator WRITES: the two spliced CLAUDE.md files, tests/api_surface.py, the
-    generated tree and the guidance skill package."""
+    """Every file a generator WRITES: the two spliced AGENTS.md files, tests/api_surface.py, the
+    generated tree and the readable guidance document."""
     paths = set(_OUTPUT_FILES)
-    for tree in (_OUTPUT_TREE, _SKILL_TREE):
+    for tree in (_OUTPUT_TREE,):
         for root, _dirs, names in os.walk(tree):
             paths.update(os.path.join(root, n) for n in names)
     return tuple(sorted(p for p in paths if os.path.isfile(p)))
@@ -106,9 +106,11 @@ def _fingerprint():
 
 class TestGeneratedDocsAreCurrent:
     def test_generator_check_passes(self, pytestconfig):
+        import gen_api_surface
+        _root, api_unverified = gen_api_surface.snapshot_check_state()
         fingerprint = _fingerprint()
         cache = getattr(pytestconfig, "cache", None)
-        if cache is not None and cache.get(_CACHE_KEY, None) == fingerprint:
+        if not api_unverified and cache is not None and cache.get(_CACHE_KEY, None) == fingerprint:
             return   # every byte this check reads and writes is what a passing check already saw
         proc = subprocess.run(
             [sys.executable, os.path.join(TESTS_DIR, "gen_all.py"), "--check"],
@@ -118,6 +120,8 @@ class TestGeneratedDocsAreCurrent:
             "a generated doc is stale. Regenerate with `py -3 tests/gen_all.py` and commit the "
             f"result.\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
         )
+        if api_unverified:
+            pytest.skip("Repository generators passed; " + api_unverified)
         if cache is not None:
             cache.set(_CACHE_KEY, fingerprint)
 
@@ -153,10 +157,9 @@ class TestTheFingerprintCoversEveryArtifact:
                          "tests/generated/TOOL_POINTER_MAP.md",
                          "tests/generated/PERMISSION_POSTURE.md",
                          "tests/api_surface.py",
-                         "CLAUDE.md",
-                         "commands/mcpServer/tools/CLAUDE.md",
-                         ".claude/skills/parametric-cad-design/SKILL.md",
-                         ".claude/skills/parametric-cad-design/playbooks/plan.md"):
+                         "AGENTS.md",
+                         "commands/mcpServer/tools/AGENTS.md",
+                         "commands/mcpServer/guidance/parametric_cad_design.md"):
             path = os.path.join(REPO_ROOT, *artifact.split("/"))
             assert os.path.isfile(path), f"{artifact} is not where this lint looks for it"
             assert path in watched, f"{artifact} is generated but not fingerprinted"

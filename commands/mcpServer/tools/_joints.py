@@ -33,7 +33,7 @@ def is_as_built_joint(x):
     except TypeError:
         return False
 
-# The "what to reuse from here" catalog line for the generated CLAUDE.md helper map.
+# The "what to reuse from here" catalog line for the generated AGENTS.md helper map.
 MAP_BLURB = (
     "build_joint_geometry/apply_motion - keypoint factory + motion dispatch; all_joints/"
     "find_joint - walks joints+asBuiltJoints, REFUSING a shared name; DRIVES_ANY - drivable "
@@ -117,7 +117,7 @@ OFFSET_PARAM_NOTE = (
 def pending_position(design):
     """Design.snapshots.hasPendingSnapshot as True / False / None - None when the flag cannot be
     read at all, which is NOT evidence either way. A free move and a joint_drive pose both set it;
-    a design_add_instance placement does not."""
+    a shared design_add_instance placement does not, an independent copy's does."""
     return _common.read_flag(lambda: design.snapshots.hasPendingSnapshot)
 
 
@@ -158,14 +158,6 @@ def _non_planar_face_geometry(entity, keypoint):
 _KEYPOINT_TOL_CM = 1e-4
 
 
-def _xyz(pt):
-    """(x, y, z) off a Point3D, or None when any component is unreadable."""
-    if pt is None:
-        return None
-    vals = (safe(lambda: pt.x), safe(lambda: pt.y), safe(lambda: pt.z))
-    return None if any(not isinstance(v, (int, float)) or isinstance(v, bool) for v in vals) else vals
-
-
 def _fmt_point(xyz):
     """A published coordinate, rounded to 4dp (a micron in cm); the caller labels its FRAME."""
     return "(%.4f, %.4f, %.4f)" % xyz
@@ -203,6 +195,17 @@ def component_world_matrix(design, comp, context_occ=None):
     return None
 
 
+def _finite_inverse(matrix):
+    """A copied inverse whose 16 cells read finite, else None."""
+    inverse = safe(lambda: matrix.copy())
+    if inverse is None or safe(lambda: inverse.invert()) is not True:
+        return None
+    cells = safe(lambda: list(inverse.asArray()))
+    if cells is None or len(cells) != 16 or any(_common.finite_number(v) is None for v in cells):
+        return None
+    return inverse
+
+
 def driven_joint_snapshot(design):
     """[(key, name, value_now)] for every joint carrying a driven value, over all_joints - key is
     the entityToken (falling back to the name) so two joints sharing a name are matched correctly."""
@@ -219,8 +222,7 @@ def driven_joint_snapshot(design):
 
 
 def driven_joints_reset(before, after):
-    """[{name, before, after}] for every joint present in both snapshots (matched by key) whose
-    driven value CHANGED - the rows an uncaptured recompute's pose reset publishes."""
+    """[{name, before, after}] for every joint in both snapshots whose driven value changed."""
     after_by_key = {key: (nm, v) for key, nm, v in after}
     rows = []
     for key, nm, v in before:
@@ -230,9 +232,10 @@ def driven_joints_reset(before, after):
     return rows
 
 
-# The one sentence a driven-joint reset publishes, for every tool whose write recomputes.
-DRIVEN_RESET_NOTE = ("{n} driven joint(s) reset ({names}) - assembly_capture_position("
-                     "action='capture') before a recompute keeps a driven pose.")
+# One shared note for observed driven-joint value changes.
+DRIVEN_RESET_NOTE = ("Observed value changes in {n} driven joint(s) ({names}); their cause is not "
+                     "identified. If the pose is uncaptured, use assembly_capture_position("
+                     "action='capture') before recompute to request pose retention.")
 
 
 def driven_reset_note(reset):
@@ -259,14 +262,14 @@ def _world_torus_centre(entity):
     if origin is None:
         return None
     if safe(lambda: entity.assemblyContext) is not None:
-        return _xyz(origin)
+        return _geom._coords(origin)
     m = _world_placement(entity)
     if m is None:
         return None
     moved = safe(lambda: origin.copy())
     if moved is None or not safe(lambda: moved.transformBy(m)):
         return None
-    return _xyz(moved)
+    return _geom._coords(moved)
 
 
 def _torus_keypoint_error(g, entity):
@@ -275,7 +278,7 @@ def _torus_keypoint_error(g, entity):
     # createByNonPlanarFace on a torus inside a BASE FEATURE returns the OWNING COMPONENT'S ORIGIN,
     # world-framed, and raises nothing - so the keypoint is compared against the torus's own centre
     # read in the SAME world frame, the only comparison that separates the two.
-    kp = _xyz(safe(lambda: g.origin))
+    kp = _geom._coords(safe(lambda: g.origin))
     centre = _world_torus_centre(entity)
     if kp is None or centre is None:
         return None
@@ -337,7 +340,7 @@ def apply_motion(ji, jtype, axis_idx, custom_entity=None, slide_axis_idx=None):
     """Set rigid/revolute/slider/cylindrical/planar/ball/pin_slot motion on a JointInput or an
     existing Joint. axis_idx (0/1/2) selects the FRAME-relative axis unless custom_entity is given,
     which pairs CustomJointDirection with that entity for a TRUE direction. pin_slot takes two:
-    axis_idx rotates and slide_axis_idx slides, and they must differ. Returns (did, error)."""
+    axis_idx rotates and slide_axis_idx slides, and two frame axes must differ. Returns (did, error)."""
     JD = adsk.fusion.JointDirections
     dirs = [JD.XAxisJointDirection, JD.YAxisJointDirection, JD.ZAxisJointDirection]
     if custom_entity is not None:
@@ -376,7 +379,7 @@ def apply_motion(ji, jtype, axis_idx, custom_entity=None, slide_axis_idx=None):
             # customSlideDirectionEntity]) - a positional custom_entity fills the ROTATION entity,
             # so the slide direction stays frame-relative.
             s_idx = slide_axis_idx if slide_axis_idx is not None else (axis_idx + 1) % 3
-            if s_idx == axis_idx:
+            if custom_entity is None and s_idx == axis_idx:
                 return False, "pin_slot rotation axis and slide direction must differ."
             slide_dir = dirs[s_idx]
             if custom_entity is not None:
@@ -627,6 +630,57 @@ def all_joints(design):
     return out
 
 
+def joint_placements(design, joint, diagnostics=None):
+    """[(placement fullPathName, the joint read in that placement)] for a joint owned by a placed
+    sub-component, else [] - its native halves answer the first placement's paths only."""
+    unread = object()
+
+    def report(problem):
+        if diagnostics is not None:
+            diagnostics.append(problem)
+
+    root = safe(lambda: design.rootComponent, unread)
+    if root is unread or root is None:
+        report("root component could not be read")
+        return []
+    owner = safe(lambda: joint.parentComponent, unread)
+    if owner is unread or owner is None:
+        report("joint owner component could not be read")
+        return []
+    same_root = _common.same_component(owner, root)
+    if same_root is None:
+        report("joint owner could not be compared with the root component")
+        return []
+    if same_root is True:
+        return []
+
+    occurrences = safe(lambda: root.allOccurrencesByComponent(owner), unread)
+    if occurrences is unread or occurrences is None:
+        report("owner occurrence census could not be read")
+        return []
+    try:
+        occurrences = list(occurrences)
+    except Exception:
+        report("owner occurrence census could not be enumerated")
+        return []
+
+    out = []
+    for occ in occurrences:
+        if occ is None:
+            report("owner occurrence census contained a null occurrence")
+            continue
+        proxy = safe(lambda o=occ: joint.createForAssemblyContext(o), unread)
+        if proxy is unread or proxy is None:
+            report("joint proxy could not be created for an owner occurrence")
+            continue
+        placement = safe(lambda o=occ: o.fullPathName, unread)
+        if placement is unread or placement is None:
+            report("owner occurrence path could not be read")
+            placement = None
+        out.append((placement, proxy))
+    return out
+
+
 def find_joints_by_name(design, name):
     """Every Joint or AsBuiltJoint whose name EXACTLY matches `name`, over all_joints - a LIST,
     since a joint name is only component-locally unique."""
@@ -636,16 +690,43 @@ def find_joints_by_name(design, name):
     return [j for j in all_joints(design) if (safe(lambda j=j: j.name) or "") == want]
 
 
-def find_joint(design, name):
-    """Resolve ONE Joint or AsBuiltJoint by name over all_joints; returns (joint, error). Several
-    hits are REFUSED naming each hit's owning component, and a name no joint carries is
-    (None, None) - the caller words its own not-found error."""
-    hits = find_joints_by_name(design, name)
+def find_joint(design, name, component=None):
+    """Resolve one joint by exact name or typed handle, optionally scoped to its owning component."""
+    want = (name or "").strip()
+    if not want:
+        return None, None
+    hits = find_joints_by_name(design, want)
+    token = want.split("|@", 1)[0]
+    looks_handle = "|@" in want or (len(token) > 40 and not token.isdigit())
+    if not hits and looks_handle:
+        resolved = safe(lambda: design.findEntityByToken(token))
+        token_hits = list(resolved) if resolved else []
+        candidates = all_joints(design)
+        hits = [joint for joint in candidates if any(
+            joint == entity for entity in token_hits)]
+        if not hits and token_hits:
+            return None, f"'{name}' is a handle to an entity that is not a joint."
+        if not hits and "|@" in want:
+            return None, (f"'{name}' is a joint handle that no longer resolves; read assembly_get "
+                          "for the current joints.")
+    if component is not None:
+        scoped = []
+        unreadable = []
+        for joint in hits:
+            owner = safe(lambda joint=joint: joint.parentComponent)
+            same = _common.same_component(owner, component)
+            if same is None:
+                unreadable.append(joint)
+            elif same:
+                scoped.append(joint)
+        if unreadable:
+            return None, (f"'{name}' could not be scoped because the owning component of one or "
+                          "more matching joints could not be identified.")
+        hits = scoped
     if len(hits) == 1:
         return hits[0], None
     if not hits:
         return None, None
-    want = (name or "").strip()
     where = ", ".join(
         f"'{want}' in {safe(lambda j=j: j.parentComponent.name) or '(unreadable component)'}"
         for j in hits[:8])

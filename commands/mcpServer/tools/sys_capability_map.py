@@ -8,7 +8,8 @@ tool, and tool count - read live from the registry so it can't drift - plus each
 the tool whose read answers it. Pair with sys_find_tool to search within a family. Read-only, no adsk.*.
 """
 
-from ._common import ok
+from ._common import ok, safe
+from .. import endpoint
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register, get_tools, family_of, has_tool, GATED_TOOLS
@@ -20,6 +21,7 @@ _FAMILY = {
     "sketch":    ("2D sketching: create sketches and add/constrain/dimension geometry.", "sketch_create"),
     "model":     ("Solid feature modeling: extrude/revolve/fillet/hole/pattern/combine + inspect/measure.", "model_extrude"),
     "surface":   ("Open (non-solid) surface modeling: extrude/revolve/patch/trim/thicken.", "surface_extrude"),
+    "sheet":     ("Sheet metal rules, conversion, folds and flat patterns.", "sheet_get"),
     "mesh":      ("Mesh bodies (STL/OBJ/3MF): import, edit, reduce/remesh, convert to BRep.", "mesh_insert"),
     "form":      ("T-spline Forms: create one from a control cage, list them, read a Form's cage back.", "form_get"),
     "assembly":  ("Assembly kinematics: joints, grounding, move/capture, interference, probe.", "assembly_get"),
@@ -30,9 +32,10 @@ _FAMILY = {
     "doc":       ("Document lifecycle: open/new/save/close/activate/copy + insert/update references.", "doc_get"),
     "design":    ("The active design as a whole: read structure, mode, recompute, configure, delete.", "design_get"),
     "view":      ("Viewport/camera: screenshots, sections, isolate/orient, workspace switch.", "view_screenshot"),
+    "render":    ("Rendering: local image jobs, scene settings and in-canvas output.", "render_get"),
     "param":     ("User/model parameters: add/get/set/delete + favorites.", "param_get"),
     "sys":       ("Server/session utilities: find tools, this map, API docs, selection, the script hatch.", "sys_find_tool"),
-    "find":      ("Find existing geometry (faces/edges/...) as stable handles for other tools.", "find_geometry"),
+    "find":      ("Find geometry as short-lived handles; use promptly, re-find if stale.", "find_geometry"),
     "appearance":("Body/occurrence/face appearance (color) override.", "appearance_set"),
     "pmi":       ("PMI / 3D annotations on model geometry: leader notes with GD&T symbols, hole/thread callouts, imported PMI.", "pmi_get"),
     "workspace": ("Cold-boot orientation: where you are + what's here + pointers to the right deep tool.", "workspace_orient"),
@@ -100,6 +103,8 @@ def handler() -> dict:
         "family_count": len(out),
         "tool_count": sum(f["tool_count"] for f in out),
         "families": out,
+        # The running server's own socket address; null when no bound address is recorded.
+        "bound": safe(endpoint.bound, None),
         "capabilities": _capabilities_block(),
         "gated": {
             "tools": gated_tools,

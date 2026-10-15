@@ -7,20 +7,48 @@ or wrong-kind reference resolving to the wrong entity).
 Pinned: handle resolution + the require-predicate enforcement, the units/Distance scaling chain, the
 schema/contract auto-generation, and resolve_inputs end-to-end.
 """
-
+import json
+import math
 import re
 import types
 
+from conftest import install as _install_design
+
 import pytest
 
-from conftest import (load_tool, make_design, make_occurrence, _make_object_collection,
+from conftest import (install, load_tool, make_design, make_occurrence, _make_object_collection,
                       _MeshBodies, _NamedCollection, BRepBody, BRepEdge, BRepFace, Circle3D,
-                      Cylinder, FakeApplication, FakeBaseFeature, FakeOccurrence, FakePoint,
-                      FakeTimelineObject, FakeUserInterface, FakeVector3D, Line3D, MakeComp,
-                      MakeDesign, MeshBody, Plane, Profile, Sketch, body_proxy, entity_proxy,
-                      make_source_document)
+                      Cylinder, FakeApplication, FakeBaseFeature, FakeMatrix3D, FakeOccurrence,
+                      FakePoint, FakeSketchPoint, FakeTimeline, FakeTimelineObject,
+                      FakeUserInterface, FakeVector3D, Line3D, MakeComp, MakeDesign, MeshBody, Plane,
+                      Profile, Sketch, SketchCurves, body_proxy, entity_proxy, make_source_document)
 
 inp = load_tool("_inputs")
+
+
+def test_resolved_sketch_scope_keeps_the_exact_component_with_a_duplicate_name(monkeypatch):
+    curve = types.SimpleNamespace(name="Line1")
+    own_sketch = Sketch("SamePath", curves=SketchCurves(lines=[curve]))
+    other_sketch = Sketch("SamePath", curves=SketchCurves(lines=[types.SimpleNamespace(name="Twin")]))
+    owner = MakeComp(name="SameOwner", sketches=[own_sketch])
+    twin = MakeComp(name="SameOwner", sketches=[other_sketch])
+    design = MakeDesign(owner, all_components=[owner, twin])
+    monkeypatch.setattr(inp._common, "find_sketch",
+                        lambda *_args, **_kwargs: pytest.fail("lost resolved owner"))
+    resolved, reason = inp.resolve_sketch_entity(
+        design, "SamePath/line:0", resolved_component=owner)
+    assert reason is None and resolved is curve
+
+
+def test_resolved_sketch_scope_miss_does_not_offer_an_absent_component_input():
+    owner = MakeComp(name="FeatureOwner", sketches=[])
+    other = MakeComp(name="Other", sketches=[Sketch("OtherPath")])
+    design = MakeDesign(owner, all_components=[owner, other])
+    resolved, reason = inp.resolve_sketch_entity(
+        design, "OtherPath/line:0", resolved_component=owner)
+    assert resolved is None and "feature's own component" in reason
+    assert "references" in reason and "find_geometry" in reason
+    assert "as 'component'" not in reason
 
 
 # ── fakes for entity resolution ─────────────────────────────────────────────
@@ -58,7 +86,7 @@ def _install(token_map):
     # _inputs calls _common.design(); patch it. The requirement predicates read surfaceType live on
     # every call, so matching enum values is all they need.
     design = make_design(tokens=token_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
 
 
 # ── GeometryHandle: the guardrail ───────────────────────────────────────────
@@ -125,7 +153,7 @@ def _install_with_bodies(faces, token_map):
     body.edges = _NamedCollection([])
     root = MakeComp(name="Root", bodies=[body])
     design = MakeDesign(comp=root, tokens=token_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
 
 
 class TestIsHandle:
@@ -185,9 +213,17 @@ class TestSelfHealingHandle:
 
     def test_split_handle_parses_revision_and_legacy(self):
         tok, loc = inp._split_handle(f"T{inp._HANDLE_SEP}cylinder_face:1.0,2.0,3.0;rv=REV7")
-        assert tok == "T" and loc == ("cylinder_face", 1.0, 2.0, 3.0, "REV7")
+        assert tok == "T" and loc == ("cylinder_face", 1.0, 2.0, 3.0, "REV7", None)
         tok, loc = inp._split_handle(f"T{inp._HANDLE_SEP}cylinder_face:1.0,2.0,3.0")
-        assert tok == "T" and loc == ("cylinder_face", 1.0, 2.0, 3.0, None)
+        assert tok == "T" and loc == ("cylinder_face", 1.0, 2.0, 3.0, None, None)
+
+    def test_an_occurrence_path_round_trips_through_the_handle(self):
+        # A path carries ':' and '+', and the handle keeps it whole beside the revision.
+        ent = type("E", (), {"entityToken": "TOK",
+                             "body": type("B", (), {"revisionId": "REV7"})()})()
+        h = inp.make_handle(ent, "sketch_point", (1.0, 2.0, 3.0), "Asm:1+Probe B:2")
+        assert inp._split_handle(h) == ("TOK", ("sketch_point", 1.0, 2.0, 3.0, "REV7",
+                                                "Asm:1+Probe B:2"))
 
     def test_locator_recovery_with_matching_revision_succeeds(self):
         # token dead, geometry AND its body revision unchanged -> benign token rotation, recover.
@@ -233,7 +269,7 @@ def token_env(monkeypatch):
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "BRepFace", BRepFace, raising=False)
         design = make_design(tokens=tokens)
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda _d=None: design.rootComponent)
         return design
     return build
@@ -351,6 +387,8 @@ class TestTokenResolvingToSeveralEntities:
         val, err = inp.BodyRef("body").resolve(handle)
         assert val is None
         assert inp.BODY_MISS in err and "also tried as a handle" in err
+        assert "Pass a face/edge handle from find_geometry on that body" in err
+        assert "Pass a body handle from find_geometry" not in err
         assert "2 entities" in err and "co-located" in err
         assert "sit at the recorded position" in err
         assert "no position locator" not in err
@@ -574,7 +612,7 @@ def _install_bodies(named=None, handle_map=None, components=None):
     # allComponents holds the named sub-components only, so a by-name walk over it never falls back
     # to the root's own bodies.
     design = MakeDesign(comp=root, all_components=comp_objs, tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d: root
     return root
 
@@ -596,7 +634,7 @@ class TestBodyRef:
         occ.bRepBodies = _NamedCollection([proxy])
         root = MakeComp(name="Root", occurrences=[occ])
         design = MakeDesign(comp=root, all_components=[frame])
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda d: root)
         monkeypatch.setattr(inp._common, "occurrence_walk",
                             lambda _d, cap=None: types.SimpleNamespace(occurrences=[occ]))
@@ -614,7 +652,7 @@ class TestBodyRef:
         unrelated.bRepBodies = _NamedCollection([body_proxy(native, unrelated)])
         root = MakeComp(name="Root", occurrences=[longer, unrelated])
         design = MakeDesign(comp=root, all_components=[frame])
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda d: root)
         monkeypatch.setattr(inp._common, "occurrence_walk",
                             lambda _d, cap=None: types.SimpleNamespace(
@@ -636,7 +674,7 @@ class TestBodyRef:
         left.bRepBodies, right.bRepBodies = _NamedCollection([left_proxy]), _NamedCollection([right_proxy])
         root = MakeComp(name="Root", occurrences=[left, right])
         design = MakeDesign(comp=root)
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda d: root)
         monkeypatch.setattr(inp._common, "occurrence_walk",
                             lambda _d, cap=None: types.SimpleNamespace(
@@ -798,7 +836,7 @@ def _install_planes(named=None, handle_map=None, subs=(), active=None):
     root.allOccurrences = list(occs)
     root.allOccurrencesByComponent = lambda c: _NamedCollection(
         [o for o in occs if o.component is c])
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d: d.activeComponent
     return design
 
@@ -871,11 +909,10 @@ class TestPlaneRef:
         assert err is None and val is cp
 
     def test_contract_note_mentions_all_three_sources(self):
-        # All three vocabularies, in one wire clause: the alias set, the construction-plane name and
-        # the face handle. Where a handle comes from is the miss refusal's job, tested below.
+        # All three vocabularies, in one wire clause: aliases, plane names and face handles.
         note = inp.PlaneRef("plane").contract_note()
         assert "xy/xz/yz" in note and "top/front/right" in note
-        assert "construction-plane name" in note and "handle" in note
+        assert "plane name/handle" in note and "handle" in note
         assert len(note) <= 90, note
 
     def test_non_string_raw_does_not_crash(self):
@@ -1047,7 +1084,7 @@ def _install_axis(handle_map=None):
     import adsk.fusion
     adsk.fusion.BRepEdge = BRepEdge
     design = make_design(tokens=handle_map or {})
-    inp._common.design = lambda: design
+    _install_design(inp, design)
 
 
 class TestAxisRef:
@@ -1133,7 +1170,7 @@ def _install_axis_face(handle_map):
     adsk.fusion.BRepEdge = BRepEdge
     adsk.fusion.SketchLine = type("SL", (), {})
     design = make_design(tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
 
 
 class TestAxisRefFace:
@@ -1177,17 +1214,14 @@ class TestAxisRefFace:
 # component only, case-insensitive EXACT, and refuses a name two axes share.
 
 class _FakeConstructionAxis:
-    """A construction axis: a NAME plus .geometry, an InfiniteLine3D (origin + direction) - the
-    shape that tells a datum axis from a bounded edge's Line3D. Its geometry reads component-LOCAL
-    while native and WORLD through the createForAssemblyContext proxy, which is the split a world
-    lift exists for. Also stands in for the ConstructionAxis type the TargetRef extension tests bind
-    (one fake per live type per file)."""
+    """A named construction axis with native geometry and optional placement context."""
     def __init__(self, name="Axis1", origin=None, direction=None, component=None, proxy=None,
-                 assembly_context=None):
+                 assembly_context=None, native=None):
         self.name = name
         self.geometry = types.SimpleNamespace(origin=origin, direction=direction)
         self.component = component
         self.assemblyContext = assembly_context
+        self.nativeObject = native
         self.proxied_into = []
         if proxy is not None:
             def _for_context(occ, p=proxy):
@@ -1221,11 +1255,14 @@ def axis_env(monkeypatch):
         design = make_design(comp=root, tokens=dict(tokens or {}))
         placed = {}
         root.allOccurrencesByComponent = lambda c: _NamedCollection(placed.get(id(c), []))
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         monkeypatch.setattr(inp._common, "target_component", lambda _d=None: active)
 
-        def place(comp, *full_paths):
-            placed[id(comp)] = [make_occurrence(path=p) for p in full_paths]
+        def place(comp, *full_paths, matrices=None):
+            transforms = matrices or [FakeMatrix3D(t=(5, 0, 0)) for _ in full_paths]
+            placed[id(comp)] = [make_occurrence(path=p, component=comp, transform2=m)
+                                for p, m in zip(full_paths, transforms)]
+            return placed[id(comp)]
 
         return types.SimpleNamespace(active=active, root=root, design=design, place=place)
 
@@ -1322,17 +1359,176 @@ class TestAxisRefFaceEntity:
 # its existing path.
 
 def _datum_in(component, local_origin, world_origin=None, name="Spin"):
-    """(axis, its assembly-context proxy) - a datum whose LOCAL geometry differs from what the
-    proxy reads, i.e. a component placed away from the origin."""
+    """(axis, proxy) with native-local geometry and a placed proxy origin."""
     proxy = (_FakeConstructionAxis(name, origin=FakePoint(*world_origin),
                                    direction=FakeVector3D(0, 0, 1), assembly_context="OCC")
              if world_origin is not None else None)
     axis = _FakeConstructionAxis(name, origin=FakePoint(*local_origin),
                                  direction=FakeVector3D(0, 0, 1), component=component, proxy=proxy)
+    if proxy is not None:
+        proxy.nativeObject = axis
     return axis, proxy
 
 
 class TestAxisLineOfWorldSpace:
+    def test_rotated_axis_uses_native_direction_and_placed_origin(self, axis_env):
+        env = axis_env()
+        owner = MakeComp(name="AxisOwner", entity_token="TOKEN:AxisOwner")
+        half = math.sqrt(0.5)
+        native = _FakeConstructionAxis("Slope", origin=FakePoint(-1, 0, 3),
+                                       direction=FakeVector3D(half, 0, half), component=owner)
+        occ = env.place(owner, "AxisOwner:1",
+                        matrices=[FakeMatrix3D(deg=30, t=(2, 0, 1.2))])[0]
+        proxy = _FakeConstructionAxis("Slope", origin=FakePoint(1.133974596, -0.5, 4.2),
+                                      direction=FakeVector3D(half, 0, half), component=owner,
+                                      assembly_context=occ, native=native)
+        for axis in (native, proxy):
+            (origin, direction), err = inp.axis_line_of("rotate_axis", axis)
+            assert err is None
+            assert (origin.x, origin.y, origin.z) == pytest.approx((1.133974596, -0.5, 4.2))
+            assert (direction.x, direction.y, direction.z) == pytest.approx(
+                (0.612372436, 0.353553391, 0.707106781))
+
+    def test_acquired_axis_handle_keeps_second_placement_through_axisref(self, axis_env):
+        fg = load_tool("find_geometry")
+        env = axis_env()
+        owner = MakeComp(name="AxisOwner", entity_token="TOKEN:AxisOwner")
+        native = _FakeConstructionAxis("Spin", origin=FakePoint(-1, 0, 3),
+                                       direction=FakeVector3D(2 ** -0.5, 0, 2 ** -0.5),
+                                       component=owner)
+        native.entityToken = "AXIS-TOKEN"
+        owner.constructionAxes = _NamedCollection([native])
+        first, second = env.place(owner, "AxisOwner:1", "AxisOwner:2",
+                                  matrices=[FakeMatrix3D(deg=30, t=(2, 0, 1.2)),
+                                            FakeMatrix3D(t=(8, 0, 0))])
+        env.root.allOccurrences = _NamedCollection([first, second])
+        env.design._tokens["AXIS-TOKEN"] = native
+        def proxy_at(occ):
+            proxy = _FakeConstructionAxis("Spin", origin=FakePoint(99, 99, 99),
+                                          direction=FakeVector3D(2 ** -0.5, 0, 2 ** -0.5),
+                                          component=owner,
+                                          assembly_context=occ, native=native)
+            proxy.entityToken = native.entityToken
+            proxy.isVisible = True
+            return proxy
+        native.createForAssemblyContext = proxy_at
+        install(fg, env.design)
+        result = fg.handler(kind="construction_axis", target="AxisOwner:2", name="spin", units="cm")
+        row = json.loads(result["content"][0]["text"])["matches"][0]
+        assert row["position"] == [7.0, 0.0, 3.0]
+        assert row["direction"] == pytest.approx([2 ** -0.5, 0.0, 2 ** -0.5])
+        assert row["occurrence"] == "AxisOwner:2"
+        resolved, err = inp.AxisRef("axis").resolve(row["handle"])
+        assert err is None and resolved[1].assemblyContext is second
+        (point, direction), line_err = inp.axis_line_of("axis", resolved[1])
+        assert line_err is None and (point.x, point.y, point.z) == (7.0, 0.0, 3.0)
+        assert (direction.x, direction.y, direction.z) == pytest.approx(
+            (2 ** -0.5, 0.0, 2 ** -0.5))
+
+    def test_acquired_plane_handle_keeps_rotated_placement_through_planeref(self, axis_env,
+                                                                            monkeypatch):
+        import adsk.fusion
+        fg = load_tool("find_geometry")
+        env = axis_env()
+        owner = MakeComp(name="PlaneOwner", entity_token="TOKEN:PlaneOwner")
+        class ConstructionPlane:
+            def __init__(self, context=None, native=None):
+                self.name, self.component = "Offset", owner
+                self.geometry = types.SimpleNamespace(origin=FakePoint(0, 2, 1),
+                                                      normal=FakeVector3D(0, 1, 0))
+                self.assemblyContext, self.nativeObject = context, native
+                self.entityToken, self.isVisible = "PLANE-TOKEN", True
+        monkeypatch.setattr(adsk.fusion, "ConstructionPlane", ConstructionPlane, raising=False)
+        native = ConstructionPlane()
+        owner.constructionPlanes = _NamedCollection([native])
+        first, second = env.place(owner, "PlaneOwner:1", "PlaneOwner:2",
+                                  matrices=[FakeMatrix3D(deg=30, t=(2, 0, 1.2)),
+                                            FakeMatrix3D(t=(8, 0, 0))])
+        env.root.allOccurrences = _NamedCollection([first, second])
+        env.design._tokens["PLANE-TOKEN"] = native
+        native.createForAssemblyContext = lambda occ: ConstructionPlane(occ, native)
+        install(fg, env.design)
+        first_result = fg.handler(kind="construction_plane", target="PlaneOwner:1", name="offset",
+                                  units="cm")
+        row = json.loads(first_result["content"][0]["text"])["matches"][0]
+        assert row["position"] == pytest.approx([1.0, 3 ** 0.5, 2.2])
+        assert row["normal"] == pytest.approx([-0.5, 3 ** 0.5 / 2, 0.0])
+        plane, err = inp.PlaneRef("plane").resolve(row["handle"])
+        assert err is None and plane.assemblyContext is first
+        second_result = fg.handler(kind="construction_plane", target="PlaneOwner:2", name="offset",
+                                   units="cm")
+        second_row = json.loads(second_result["content"][0]["text"])["matches"][0]
+        other, other_err = inp.PlaneRef("plane").resolve(second_row["handle"])
+        assert other_err is None and other.assemblyContext is second
+        assert second_row["position"] == [8.0, 2.0, 1.0]
+
+    @pytest.mark.parametrize("placed", [True, False])
+    def test_sketch_plane_frame_transforms_the_normal_without_inventing_placement(self, monkeypatch, placed):
+        sketch = types.SimpleNamespace(origin=FakePoint(0, 2, 1),
+                                       xDirection=FakeVector3D(1, 0, 0),
+                                       yDirection=FakeVector3D(0, 0, 1))
+        matrix = FakeMatrix3D(deg=30, t=(2, 0, 1.2))
+        monkeypatch.setattr(inp.adsk.core.Vector3D, "create", FakeVector3D)
+        monkeypatch.setattr(inp, "_placement_matrix", lambda *args: (matrix, placed))
+        point, normal = inp.placed_datum_frame(sketch, "sketch_plane")
+        if placed:
+            assert point == pytest.approx([1, 3 ** .5, 2.2])
+            assert normal == pytest.approx([.5, -3 ** .5 / 2, 0], abs=1e-6)
+        else:
+            assert (point, normal) == (None, None)
+
+    def test_native_sketch_parent_component_places_once_and_refuses_ambiguous_instances(self,
+                                                                                          axis_env, monkeypatch):
+        env = axis_env()
+        owner = MakeComp(name="SketchOwner", entity_token="TOKEN:SketchOwner")
+        sketch = types.SimpleNamespace(parentComponent=owner, origin=FakePoint(1, 2, 0),
+                                       xDirection=FakeVector3D(1, 0, 0),
+                                       yDirection=FakeVector3D(0, 1, 0))
+        monkeypatch.setattr(inp.adsk.core.Vector3D, "create", FakeVector3D)
+        first = env.place(owner, "SketchOwner:1", matrices=[FakeMatrix3D(t=(7, 3, 5))])[0]
+        assert inp.entity_component(sketch) is owner
+        assert inp.placed_datum_frame(sketch, "sketch_plane") == ((8, 5, 5), [0.0, 0.0, 1.0])
+        env.place(owner, "SketchOwner:1", "SketchOwner:2",
+                  matrices=[FakeMatrix3D(t=(7, 3, 5)), FakeMatrix3D(t=(17, 3, 5))])
+        assert inp.placed_datum_frame(sketch, "sketch_plane") == (None, None)
+        proxy = types.SimpleNamespace(nativeObject=sketch, assemblyContext=first,
+                                      origin=FakePoint(99, 99, 99))
+        assert inp.placed_datum_frame(proxy, "sketch_plane") == ((8, 5, 5), [0.0, 0.0, 1.0])
+
+    def test_draft_face_uses_outward_evaluator_normal_even_when_surface_normal_opposes_it(self, monkeypatch):
+        face = types.SimpleNamespace(
+            kind="face", geometry=types.SimpleNamespace(origin=FakePoint(0, 0, 2),
+                                                        normal=FakeVector3D(0, 0, 1)),
+            pointOnFace=FakePoint(0, 0, 2),
+            evaluator=types.SimpleNamespace(getNormalAtPoint=lambda point: (True, FakeVector3D(0, 0, -1))))
+        monkeypatch.setattr(inp.adsk.fusion, "BRepFace",
+                            types.SimpleNamespace(cast=lambda value: value if getattr(value, "kind", None) == "face" else None))
+        monkeypatch.setattr(inp.adsk.core.Vector3D, "create", FakeVector3D)
+        monkeypatch.setattr(inp, "_placement_matrix", lambda *args: (None, True))
+        assert inp.placed_datum_frame(face, "draft_plane") == ((0, 0, 2), [0.0, 0.0, -1.0])
+        plane = types.SimpleNamespace(kind="plane", geometry=face.geometry)
+        assert inp.placed_datum_frame(plane, "draft_plane") == ((0, 0, 2), [0.0, 0.0, 1.0])
+        assert inp.placed_datum_frame(plane, "construction_plane") == ((0, 0, 2), [0.0, 0.0, 1.0])
+
+    def test_draft_face_refuses_unread_outward_normal_without_surface_fallback(self, monkeypatch):
+        face = types.SimpleNamespace(
+            kind="face", geometry=types.SimpleNamespace(origin=FakePoint(0, 0, 2),
+                                                        normal=FakeVector3D(0, 0, 1)),
+            pointOnFace=FakePoint(0, 0, 2),
+            evaluator=types.SimpleNamespace(getNormalAtPoint=lambda point: (False, FakeVector3D(0, 0, -1))))
+        monkeypatch.setattr(inp.adsk.fusion, "BRepFace", types.SimpleNamespace(cast=lambda value: value))
+        monkeypatch.setattr(inp, "_placement_matrix", lambda *args: (None, True))
+        assert inp.placed_datum_frame(face, "draft_plane") == (None, None)
+
+    def test_plane_proxy_without_native_read_does_not_double_place_world_geometry(self, axis_env):
+        env = axis_env()
+        owner = MakeComp(name="PlaneOwner", entity_token="TOKEN:PlaneOwner")
+        occ = env.place(owner, "PlaneOwner:1", matrices=[FakeMatrix3D(t=(8, 0, 0))])[0]
+        proxy = types.SimpleNamespace(assemblyContext=occ,
+                                      geometry=types.SimpleNamespace(origin=FakePoint(8, 2, 1),
+                                                                     normal=FakeVector3D(0, 1, 0)))
+        assert inp.placed_datum_frame(proxy, "construction_plane") == (None, None)
+
     def test_a_datum_in_a_placed_component_is_lifted_through_its_occurrence(self, axis_env):
         env = axis_env()
         wheel = MakeComp(name="Wheel", entity_token="TOKEN:Wheel")
@@ -1341,9 +1537,9 @@ class TestAxisLineOfWorldSpace:
         pair, err = inp.axis_line_of("rotate_axis", axis)
         assert err is None
         point, _direction = pair
-        # the PROXY's world origin - the component-local (0,0,0) would pivot about the world origin
+        # Native geometry takes the occurrence translation into world space.
         assert (point.x, point.y, point.z) == (5, 0, 0)
-        assert axis.proxied_into == ["Wheel:1"] or len(axis.proxied_into) == 1
+        assert axis.proxied_into == []
 
     def test_a_root_owned_datum_is_used_as_is(self, axis_env):
         # The datum's owner and the design's root are DISTINCT wrappers sharing one entityToken -
@@ -1357,23 +1553,29 @@ class TestAxisLineOfWorldSpace:
         assert err is None and (pair[0].x, pair[0].y) == (2, 2)
         assert axis.proxied_into == []            # local IS world on the root - no lift attempted
 
-    def test_a_proxied_datum_is_read_directly_even_where_its_component_is_placed_twice(self, axis_env):
-        # A proxy already reads WORLD (and createForAssemblyContext on one RAISES), so the early
-        # return is the ONLY route for a datum handed in from a multiply-placed component: without
-        # it the ambiguity refusal fires on a reference that names its instance already.
+    def test_a_proxied_datum_uses_its_explicit_context_when_placed_twice(self, axis_env):
         env = axis_env()
         wheel = MakeComp(name="Wheel", entity_token="TOKEN:Wheel")
-        axis = _FakeConstructionAxis("Spin", origin=FakePoint(9, 0, 0),
-                                     direction=FakeVector3D(0, 0, 1), component=wheel,
-                                     assembly_context="Assy:1+Wheel:2")
-        env.place(wheel, "Assy:1+Wheel:1", "Assy:1+Wheel:2")
-        pair, err = inp.axis_line_of("rotate_axis", axis)
+        native = _FakeConstructionAxis("Spin", origin=FakePoint(0, 0, 0),
+                                       direction=FakeVector3D(0, 0, 1), component=wheel)
+        _, second = env.place(wheel, "Assy:1+Wheel:1", "Assy:1+Wheel:2",
+                              matrices=[FakeMatrix3D(t=(5, 0, 0)),
+                                        FakeMatrix3D(t=(9, 0, 0))])
+        proxy = _FakeConstructionAxis("Spin", origin=FakePoint(9, 0, 0),
+                                      direction=FakeVector3D(0, 0, 1), component=wheel,
+                                      assembly_context=second, native=native)
+        pair, err = inp.axis_line_of("rotate_axis", proxy)
         assert err is None and pair[0].x == 9
 
     def test_a_datum_already_in_context_is_not_re_proxied(self, axis_env):
-        axis_env()
+        env = axis_env()
+        wheel = MakeComp(name="Wheel", entity_token="TOKEN:Wheel")
+        native = _FakeConstructionAxis("Spin", origin=FakePoint(0, 0, 0),
+                                       direction=FakeVector3D(0, 0, 1), component=wheel)
+        occ = env.place(wheel, "Wheel:1", matrices=[FakeMatrix3D(t=(7, 0, 0))])[0]
         axis = _FakeConstructionAxis("Spin", origin=FakePoint(7, 0, 0),
-                                     direction=FakeVector3D(0, 0, 1), assembly_context="OCC")
+                                     direction=FakeVector3D(0, 0, 1), component=wheel,
+                                     assembly_context=occ, native=native)
         pair, err = inp.axis_line_of("rotate_axis", axis)
         assert err is None and pair[0].x == 7
         assert axis.proxied_into == []
@@ -1685,7 +1887,7 @@ def _install_kind_bodies(brep_named=None, mesh_named=None, handle_map=None):
     # found by iterate-and-match.
     comp = MakeComp(bodies=list(brep_named.values()), mesh_bodies=list(mesh_named.values()))
     design = MakeDesign(comp=comp, tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d: comp
     return comp
 
@@ -1726,7 +1928,7 @@ def _install_occurrence_scope(comp_name="MeshComp", brep_name="Body1", mesh_name
     # findEntityByToken answers nothing, so every lookup takes the NAME path.
     design = MakeDesign(comp=root, all_components=[root, comp])
 
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: root
     return occs, brep, mesh
 
@@ -1751,7 +1953,7 @@ class TestBodyKind:
         _install_kind_bodies(handle_map={"H": surf})
         val, err = inp.BodyRef("target", kind="solid").resolve("H")
         assert val is None
-        assert "must be a SOLID body" in err and "OPEN SURFACE body" in err
+        assert "must be a SOLID body" in err and "points at an OPEN SURFACE body" in err
 
     def test_solid_kind_rejects_a_mesh_with_redirect(self):
         # the headline redirect: solid asked, MESH given -> name the mesh + point at mesh_* / convert
@@ -1817,7 +2019,7 @@ class TestBodyKind:
         # findEntityByToken answers nothing, so the lookup takes the NAME path.
         design = MakeDesign(comp=root, all_components=[root, sub])
 
-        inp._common.design = lambda: design
+        _install_design(inp, design)
         # target_component is the root (which has NO matching mesh) -> resolution must reach the
         # sub-component through the component walk, not through the occurrence.
         inp._common.target_component = lambda d: root
@@ -2012,6 +2214,19 @@ class TestBodyBrepKind:
 # has no end. The word follows _resolve_any_body's own answer about which vocabulary resolved.
 
 class TestRedirectNamesWhatWasPassed:
+    @pytest.fixture
+    def named_surface(self, monkeypatch):
+        monkeypatch.setattr(inp.adsk.fusion, "BRepBody", BRepBody)
+        surface = BRepBody(name="Surf", is_solid=False)
+        root = MakeComp(name="Root", bodies=[surface], mesh_bodies=[])
+        install(inp, MakeDesign(comp=root))
+        return surface
+
+    def test_a_surface_name_has_the_open_surface_article(self, named_surface):
+        val, err = inp.BodyRef("target", kind="solid").resolve("Surf")
+        assert val is None
+        assert "the name 'Surf' resolves to an OPEN SURFACE body" in err
+
     def test_a_name_sourced_wrong_kind_says_NAME_and_quotes_it(self):
         m = MeshBody("ScanData")
         _install_kind_bodies(mesh_named={"ScanData": m})
@@ -2075,7 +2290,7 @@ def _install_ambiguous_bodies(*, handle_map=None, occ_bodies=()):
             for i, m in enumerate(occ_bodies)]
     root = MakeComp(name="Root", all_occurrences=occs)
     design = MakeDesign(comp=root, tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: root
     return root
 
@@ -2100,7 +2315,7 @@ def _install_native_and_proxy(comp_bodies=(), occ_bodies=(), comp_name="Probe"):
     root = MakeComp(name="Root", all_occurrences=occs)
     # findEntityByToken answers nothing, so every lookup takes the NAME path.
     design = MakeDesign(comp=root, all_components=[root, comp])
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: comp
     return comp
 
@@ -2270,7 +2485,7 @@ class TestBodyNameAmbiguity:
         root = MakeComp(name="Frame")
         root.bRepBodies = _FreshColl()
         design = MakeDesign(comp=root)
-        inp._common.design = lambda: design
+        _install_design(inp, design)
         inp._common.target_component = lambda d=None: root
         val, err = inp.BodyRef("body").resolve("Pin")
         assert err is None and val is not None and val.name == "Pin"
@@ -2453,8 +2668,8 @@ def _FakeModeDesign(design_type=None, edit_object=None):
 
 
 def _install_mode():
-    """Wire BaseFeature so current_design_type / _in_base_feature_scope work (the DesignTypes ints
-    come seeded from live_api_facts)."""
+    """Wire BaseFeature so current_design_type reads (the DesignTypes ints come seeded from
+    live_api_facts)."""
     import adsk.fusion
     adsk.fusion.BaseFeature = FakeBaseFeature
 
@@ -2502,24 +2717,9 @@ class TestModeGuard:
         ok, err = g.check(_FakeModeDesign(design_type=0))
         assert ok is False and f"needs {inp.MODE_PARAMETRIC} mode" in err["message"]
 
-    def test_base_feature_guard_passes_inside_a_base_feature_scope(self):
-        _install_mode()
-        des = _FakeModeDesign(design_type=1, edit_object=FakeBaseFeature())
-        g = inp.ModeGuard(inp.MODE_BASE_FEATURE)
-        ok, err = g.check(des)
-        assert ok is True and err is None
-
-    def test_base_feature_guard_fails_without_scope(self):
-        _install_mode()
-        des = _FakeModeDesign(design_type=1, edit_object=None)
-        g = inp.ModeGuard(inp.MODE_BASE_FEATURE)
-        ok, err = g.check(des)
-        assert ok is False and "BASE-FEATURE edit scope" in err["message"]
-
     def test_contract_note(self):
         _install_mode()
         assert inp.ModeGuard(inp.MODE_DIRECT).contract_note() == "Requires direct mode."
-        assert "base-feature" in inp.ModeGuard(inp.MODE_BASE_FEATURE).contract_note()
 
 
 def _app_in(workspace_id):
@@ -2528,62 +2728,133 @@ def _app_in(workspace_id):
         active_workspace=types.SimpleNamespace(id=workspace_id)))
 
 
-class TestInFormEdit:
-    """An open Form edit reads designType direct AND the Form workspace active - either alone is
-    not one (a direct design, or the workspace read lagging a closed edit)."""
+class TestFeatureRefResolve:
+    """FeatureRef.resolve against timeline edge cases: a bare number's collapsed-group twin, and a
+    member visible only inside a collapsed group."""
 
-    @pytest.mark.parametrize("design_type,workspace,want", [
-        (0, "TSplineEnvironment", True), (1, "TSplineEnvironment", False),
-        (0, "FusionSolidEnvironment", False)])
-    def test_both_halves_are_needed(self, monkeypatch, design_type, workspace, want):
-        monkeypatch.setattr(inp._common, "app", _app_in(workspace))
-        assert inp.in_form_edit(MakeDesign(design_type=design_type)) is want
+    def test_the_kind_refuses_a_bare_number_whose_twin_hides_in_a_collapsed_group(self, monkeypatch):
+        # the visible hit's name does not read: the refusal counts it instead of raising
+        seat = FakeTimelineObject(None, 0, entity=object())
+        design = MakeDesign(design_type=1)
+        design.timeline = FakeTimeline([seat])
+        monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
+        _install_design(inp, design)
+        dc = load_tool("_design_common")
+        monkeypatch.setattr(dc, "collapsed_group_holding",
+                            lambda timeline, want: "Imports" if want == "0" else None)
+        _val, err = inp.FeatureRef("feature").resolve("0")
+        assert err and "'0' matches 1 whose name or index does not read and also names" in err
+        assert "collapsed timeline group 'Imports'" in err and "and retry" in err
 
-    @staticmethod
-    def _switch_on_pump(monkeypatch, n):
-        """Count doEvents pumps; the Form workspace arrives on pump `n`."""
-        app = _app_in("FusionSolidEnvironment")
-        monkeypatch.setattr(inp._common, "app", app)
-        pumps = []
+    def test_the_kind_names_the_collapsed_group_holding_a_member_it_cannot_see(self, monkeypatch):
+        # the member is absent from the walk and its bare number is no visible index or name
+        design = MakeDesign(design_type=1)
+        design.timeline = FakeTimeline([FakeTimelineObject("Extrude1", 0, entity=object())])
+        member = FakeTimelineObject("5", 2, entity=types.SimpleNamespace(objectType="adsk::fusion::ExtrudeFeature"))
+        group = types.SimpleNamespace(name="Imports", isCollapsed=True, count=1,
+                                      item=lambda i: member)
+        design.timeline.timelineGroups = _NamedCollection([group])
+        monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
+        _install_design(inp, design)
+        _val, err = inp.FeatureRef("feature").resolve("5")
+        assert err and "'5' is inside the collapsed timeline group 'Imports'" in err
+        assert "design_edit_timeline(action='ungroup', feature='Imports')" in err
+        assert "matches" not in err
 
-        def pump():
-            pumps.append(1)
-            if len(pumps) == n:
-                app.userInterface.activeWorkspace = types.SimpleNamespace(id="TSplineEnvironment")
-        monkeypatch.setattr(inp._pump_until.__globals__["adsk"], "doEvents", pump, raising=False)
-        return pumps
-
-    def test_an_edit_opened_just_before_the_read_is_found_after_the_workspace_switch(
-            self, monkeypatch):
-        pumps = self._switch_on_pump(monkeypatch, 3)
-        assert inp.in_form_edit(MakeDesign(design_type=0)) is True
-        assert len(pumps) == 3
-
-    @pytest.mark.parametrize("extra,want", [(0, True), (1, False)])
-    def test_the_wait_is_bounded_by_the_pump_count(self, monkeypatch, extra, want):
-        pumps = self._switch_on_pump(monkeypatch, inp._FORM_SWITCH_PUMPS + extra)
-        assert inp.in_form_edit(MakeDesign(design_type=0)) is want
-        assert len(pumps) == inp._FORM_SWITCH_PUMPS
-
-    def test_an_open_base_feature_scope_is_not_a_form_edit_and_pumps_nothing(self, monkeypatch):
-        _install_mode()
-        pumps = self._switch_on_pump(monkeypatch, 1)
-        monkeypatch.setattr(inp._common, "app", _app_in("TSplineEnvironment"))
-        design = _FakeModeDesign(design_type=0, edit_object=FakeBaseFeature())
-        assert inp.in_form_edit(design) is False and pumps == []
-
-    def test_the_parametric_guard_names_the_open_edit(self, monkeypatch):
-        monkeypatch.setattr(inp._common, "app", _app_in("TSplineEnvironment"))
-        ok, err = inp.ModeGuard(inp.MODE_PARAMETRIC).check(MakeDesign(design_type=0))
-        assert ok is False and "A Form edit is open" in err["message"]
-        assert "Finish Form" in err["message"] and "direct mode" not in err["message"]
-
-    def test_a_feature_name_in_an_open_form_edit_names_the_edit(self, monkeypatch):
+    def test_a_feature_name_when_the_design_reads_direct_has_no_timeline(self, monkeypatch):
         design = MakeDesign(design_type=0)
-        monkeypatch.setattr(inp._common, "app", _app_in("TSplineEnvironment"))
-        monkeypatch.setattr(inp._common, "design", lambda: design)
+        _install_design(inp, design)
         _val, err = inp.FeatureRef("feature").resolve("Fillet2")
-        assert "A Form edit is open" in err and "Act on the bodies" not in err
+        assert "This design has no timeline" in err and "Act on the bodies" in err
+
+
+def _timeline_group(name, index, collapsed=True, members=()):
+    """A timeline group as its timeline row and its timelineGroups entry: no feature entity, a
+    collapsed flag (dropped when `collapsed` is None) and counted members."""
+    group = FakeTimelineObject(name, index, entity=None, is_group=True)
+    group.isCollapsed = collapsed
+    group.count, group.item = len(members), lambda i: members[i]
+    if collapsed is None:
+        del group.isCollapsed
+    return group
+
+
+def _install_timeline(monkeypatch, rows, groups):
+    """A parametric design whose timeline lists `rows` and whose group list holds `groups`."""
+    design = MakeDesign(design_type=1)
+    design.timeline = FakeTimeline(rows)
+    design.timeline.timelineGroups = _NamedCollection(groups)
+    monkeypatch.setattr(inp._common, "app", _app_in("FusionSolidEnvironment"))
+    _install_design(inp, design)
+
+
+class TestFeatureRefGroups:
+    """FeatureRef(allow_group=True): a collapsed timeline group by name, name@index or index."""
+
+    def _rows(self):
+        cut = FakeTimelineObject("Cut1", 0, entity=types.SimpleNamespace())
+        return cut, _timeline_group("PP_Grp", 2)
+
+    def test_the_default_kind_still_refuses_a_group_with_its_own_text(self, monkeypatch):
+        cut, group = self._rows()
+        _install_timeline(monkeypatch, [cut, group], [group])
+        val, err = inp.FeatureRef("feature").resolve("PP_Grp")
+        assert val is None
+        assert err == ("'feature': 'PP_Grp' is a timeline GROUP, which has no feature entity. "
+                       "Name the features inside it instead.")
+
+    @pytest.mark.parametrize("address", ["PP_Grp", "PP_Grp@2", "2"])
+    def test_a_group_resolves_by_name_address_and_index(self, monkeypatch, address):
+        cut, group = self._rows()
+        _install_timeline(monkeypatch, [cut, group], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve(address)
+        assert err is None and val[0] is group and val[1] == "PP_Grp"
+
+    def test_a_feature_still_resolves_through_the_group_accepting_kind(self, monkeypatch):
+        cut, group = self._rows()
+        _install_timeline(monkeypatch, [cut, group], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve("Cut1")
+        assert err is None and val == (cut.entity, "Cut1")
+
+    def test_a_name_two_groups_share_is_refused_listing_their_indexes(self, monkeypatch):
+        cut, group = self._rows()
+        twin = _timeline_group("PP_Grp", 5)
+        _install_timeline(monkeypatch, [cut, group, twin], [group, twin])
+        kind = inp.FeatureRef("feature", allow_group=True)
+        val, err = kind.resolve("PP_Grp")
+        assert val is None
+        assert err == ("'feature': 'PP_Grp' matches 2 timeline groups (PP_Grp@2, PP_Grp@5) - "
+                       "name one exactly as listed.")
+        assert kind.resolve("PP_Grp@5")[0][0] is twin
+
+    def test_a_name_a_feature_and_a_group_share_is_refused_naming_both(self, monkeypatch):
+        cut, group = self._rows()
+        feature = FakeTimelineObject("PP_Grp", 4, entity=types.SimpleNamespace())
+        _install_timeline(monkeypatch, [cut, group, feature], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve("PP_Grp")
+        assert val is None
+        assert err == ("'feature': 'PP_Grp' names both a timeline group (PP_Grp@2) and a feature "
+                       "(PP_Grp@4) - name one exactly as listed.")
+
+    def test_a_component_in_front_of_a_group_name_is_refused(self, monkeypatch):
+        cut, group = self._rows()
+        _install_timeline(monkeypatch, [cut, group], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve("Root/PP_Grp")
+        assert val is None
+        assert err == ("'feature': 'Root/PP_Grp' puts a component in front of the timeline group "
+                       "'PP_Grp', and a group takes no component qualifier. Address it as "
+                       "PP_Grp@2 or by its timeline index.")
+
+    @pytest.mark.parametrize("collapsed, reads", [(False, "reads False"), (None, "does not read")])
+    def test_a_group_that_does_not_read_collapsed_is_refused(self, monkeypatch, collapsed, reads):
+        cut, _group = self._rows()
+        group = _timeline_group("PP_Grp", 2, collapsed=collapsed)
+        _install_timeline(monkeypatch, [cut], [group])
+        val, err = inp.FeatureRef("feature", allow_group=True).resolve("PP_Grp")
+        assert val is None
+        assert err == ("'feature': the timeline group 'PP_Grp' must be collapsed for this "
+                       f"reference, and its collapsed flag {reads}. "
+                       "design_get(include=['timeline']) lists is_collapsed per group.")
 
 
 # ── ProfileRef / ProfileRefList: stable handle first, legacy {sketch, index} fallback, ORDER-keeping ─
@@ -2621,10 +2892,10 @@ def _install_profiles(handle_map=None, sketches=None, monkeypatch=None):
                     sketches=[_profile_sketch_fake(*row) for row in (sketches or [])])
     des = make_design(comp=comp, tokens=dict(handle_map or {}))
     if monkeypatch is not None:
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: comp)
     else:
-        inp._common.design = lambda: des
+        _install_design(inp, des)
         inp._common.target_component = lambda d: comp
     return comp
 
@@ -2863,6 +3134,52 @@ class TestProfileHandleLocator:
         assert "'AtThePoint'" in err and "Elsewhere" not in err
 
 
+class TestProfileTokenAnsweringSeveralProfiles:
+    """In a component a multi-loop profile's token answers that profile plus each island inside it;
+    the locator's area and centroid pick the one the handle was minted from."""
+
+    def _resolve(self, monkeypatch, hits, locator):
+        _install_profiles(handle_map={"TOK": hits}, monkeypatch=monkeypatch)
+        return inp.ProfileRef("profile").resolve("TOK|@" + locator)
+
+    def test_the_annulus_is_picked_over_its_same_centroid_island(self, monkeypatch):
+        ring = FakeAreaProfile("ring", area=5.76)
+        island = FakeAreaProfile("island", area=10.24)
+        val, err = self._resolve(monkeypatch, [ring, island],
+                                 "profile[KeyedZGuide~5.7600]:0.000000,0.000000,0.000000")
+        assert err is None and val is ring
+
+    def test_the_slotted_blank_is_picked_out_of_three_hits(self, monkeypatch):
+        blank = FakeAreaProfile("blank", centroid=(0.0, 5.985248, 0.0), area=51.52)
+        slots = [FakeAreaProfile(f"slot{i}", centroid=(0.0, y, 0.0), area=0.96)
+                 for i, y in enumerate((4.2, 7.2))]
+        val, err = self._resolve(monkeypatch, [slots[0], blank, slots[1]],
+                                 "profile[TrayBlank~51.5200]:0.000000,5.985248,0.000000")
+        assert err is None and val is blank
+
+    def test_only_profile_hits_are_judged(self, monkeypatch):
+        # a non-Profile hit reading the same area and centroid would otherwise tie with the profile
+        ring = FakeAreaProfile("ring", area=5.76)
+        twin = types.SimpleNamespace(areaProperties=ring.areaProperties)
+        val, err = self._resolve(monkeypatch, [twin, ring],
+                                 "profile[S~5.7600]:0.000000,0.000000,0.000000")
+        assert err is None and val is ring
+
+    def test_two_equal_matches_are_the_tie_refusal(self, monkeypatch):
+        a, b = FakeAreaProfile("a", area=5.76), FakeAreaProfile("b", area=5.76)
+        val, err = self._resolve(monkeypatch, [a, b], "profile[S~5.7600]:0.000000,0.000000,0.000000")
+        assert val is None and "2 profiles match this handle's locator equally well" in err
+        assert "{sketch, profile_index}" in err
+
+    @pytest.mark.parametrize("locator", ["profile[S~99.0000]:0.000000,0.000000,0.000000",
+                                         "profile:0.000000,0.000000,0.000000"])
+    def test_no_area_match_or_no_area_at_all_keeps_the_refusal(self, monkeypatch, locator):
+        ring, island = FakeAreaProfile("ring", area=5.76), FakeAreaProfile("island", area=10.24)
+        val, err = self._resolve(monkeypatch, [ring, island], locator)
+        assert val is None
+        assert "the token resolved to 2 entities" in err and "matched none of them" in err
+
+
 class TestProfileRefComponentScope:
     """SKETCH-6: a {sketch, profile_index} selector addresses a sketch BY NAME, and Fusion numbers
     sketches per component from 1 - so 'Sketch1' in two components identifies nothing. Declaring
@@ -2876,7 +3193,7 @@ class TestProfileRefComponentScope:
         beta = MakeComp(name="Beta", sketches=[types.SimpleNamespace(
             name="Sketch1", profiles=_NamedCollection([beta_p]))])
         des = make_design(comp=alpha, all_components=[alpha, beta])
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: alpha)
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "Profile", Profile)
@@ -2921,7 +3238,7 @@ class TestProfileRefListComponentScope:
         beta = MakeComp(name="Beta", sketches=[types.SimpleNamespace(
             name="Sketch1", profiles=_NamedCollection([beta_p]))])
         des = make_design(comp=alpha, all_components=[alpha, beta])
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: alpha)
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "Profile", Profile)
@@ -2970,7 +3287,7 @@ class TestProfileLocatorSharedSketchName:
             sk = types.SimpleNamespace(name=sk_name, profiles=_NamedCollection(profs))
             comps.append(MakeComp(name=comp_name, sketches=[sk]))
         des = make_design(comp=comps[0], all_components=comps)
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: comps[0])
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "Profile", Profile)
@@ -3039,7 +3356,7 @@ class TestProfileLocatorTie:
                 sk.name = sk_name
             comps.append(MakeComp(name=comp_name, sketches=[sk]))
         des = make_design(comp=comps[0], all_components=comps)
-        monkeypatch.setattr(inp._common, "design", lambda: des)
+        _install_design(inp, des)
         monkeypatch.setattr(inp._common, "target_component", lambda d: comps[0])
         import adsk.fusion
         monkeypatch.setattr(adsk.fusion, "Profile", Profile)
@@ -3172,13 +3489,22 @@ class TestProfileSelectorSketchScope:
         sub = MakeComp(name="Frame", sketches=[Sketch(name="FrameSketch", profiles=[p])])
         # findEntityByToken answers nothing, so the selector takes the NAME path.
         design = MakeDesign(comp=root, all_components=[root, sub])
-        inp._common.design = lambda: design
+        _install_design(inp, design)
         inp._common.target_component = lambda d: root
         val, err = inp.ProfileRef("profile").resolve({"sketch": "FrameSketch", "profile_index": 0})
         assert err is None and val is p
 
 
 class TestProfileRefList:
+    @pytest.mark.parametrize("kind", [inp.ProfileRefList, inp.LoftSectionList])
+    def test_a_scalar_composite_handle_is_refused_before_any_resolution(self, monkeypatch, kind):
+        reference = "TOKEN|@edge:0.000000,1.000000,2.000000"
+        resolver = kind("sections")
+        monkeypatch.setattr(inp, "_resolve_one_profile", lambda *a: pytest.fail("scalar resolved"))
+        monkeypatch.setattr(inp.LoftSectionList, "_section", lambda *a: pytest.fail("scalar split"))
+        value, why = resolver.resolve(reference)
+        assert value is None and "'sections'" in why and "array" in why
+
     def test_resolves_handles_in_order(self):
         p0, p1, p2 = Profile("0"), Profile("1"), Profile("2")
         _install_profiles(handle_map={"A": p0, "B": p1, "C": p2})
@@ -3237,7 +3563,7 @@ def _two_components_one_sketch_name(monkeypatch, name="Plate", shared=True):
                     sketches=[_scope_sketch(name if shared else "Other", [pb])])
     # findEntityByToken answers nothing, so every lookup takes the NAME path.
     design = MakeDesign(comp=alpha, all_components=[alpha, beta])
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda d: alpha)
     return pa, pb
 
@@ -3490,7 +3816,7 @@ def _install_occurrences(*occs, tokens=None):
         if getattr(o, "entityToken", ""):
             by_token.setdefault(o.entityToken, o)
     design = MakeDesign(comp=MakeComp(name="Root", all_occurrences=occs), tokens=by_token)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     return list(occs)
 
 
@@ -3882,7 +4208,7 @@ def _install_target(*, handle_map=None, occurrences=(), components=(), brep_name
     # allComponents lives on the DESIGN in the live API (Component has no such attribute)
     design = MakeDesign(comp=root, all_components=[root] + [MakeComp(name=n) for n in components],
                         tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: root
     return design
 
@@ -4171,7 +4497,7 @@ def _install_target_ext(handle_map):
 
     root = MakeComp(name="Root")
     design = MakeDesign(comp=root, all_components=[], tokens=handle_map)
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     inp._common.target_component = lambda d=None: root
 
 
@@ -4268,7 +4594,7 @@ def _install_jo(design):
     explicitly to the _joints walk / _resolve_occurrence, so ONE seam covers it. Returns the ref."""
     import adsk.fusion
     adsk.fusion.JointOrigin = _JO
-    inp._common.design = lambda: design
+    _install_design(inp, design)
     return inp.JointOriginRef("jo")
 
 
@@ -4449,6 +4775,41 @@ class TestJointOriginRefNativeSelector:
         sub = _Comp("Jaw", [native])
         root = _RootJO(jos=[], occ_by_comp={"Jaw": [_OccJO("Jaw:1", sub), _OccJO("Jaw:2", sub)]})
         return native, _DesignJO(root, subs=[sub])
+
+    def test_native_component_scope_selects_one_of_two_same_named_origins(self):
+        left_jo, right_jo = _JO("Center"), _JO("Center")
+        left, right = _Comp("Left", [left_jo]), _Comp("Right", [right_jo])
+        left.entityToken, right.entityToken = "left-owner", "right-owner"
+        design = _DesignJO(_RootJO(jos=[]), subs=[left, right])
+        found, err = self._native(design).resolve("Center", component=right)
+        assert err is None and found is right_jo
+
+    def test_native_component_scope_resolves_the_typed_origin_handle(self):
+        left_jo, right_jo = _JO("Center"), _JO("Center")
+        left, right = _Comp("Left", [left_jo]), _Comp("Right", [right_jo])
+        left.entityToken, right.entityToken = "left-owner", "right-owner"
+        handle = "JO" * 24
+        design = _DesignJO(_RootJO(jos=[]), subs=[left, right], token_map={handle: right_jo})
+        found, err = self._native(design).resolve(handle, component=right)
+        assert err is None and found is right_jo
+
+    def test_native_component_scope_refuses_an_unreadable_matching_owner(self, monkeypatch):
+        left_jo, right_jo = _JO("Center"), _JO("Center")
+        left, right = _Comp("Left", [left_jo]), _Comp("Right", [right_jo])
+        left.entityToken, right.entityToken = "left-owner", "right-owner"
+        design = _DesignJO(_RootJO(jos=[]), subs=[left, right])
+        ref = self._native(design)
+        original = inp._common.same_component
+        monkeypatch.setattr(inp._common, "same_component",
+                            lambda a, b: None if a is left else original(a, b))
+        found, err = ref.resolve("Center", component=right)
+        assert found is None and "owning component could not be identified" in err
+
+    def test_native_component_scope_rejects_a_non_joint_origin_handle(self):
+        owner = MakeComp(name="Owner", entity_token="owner")
+        design = _DesignJO(_RootJO(jos=[]), subs=[owner], token_map={"F" * 48: object()})
+        found, err = self._native(design).resolve("F" * 48, component=owner)
+        assert found is None and "not a Joint Origin" in err
 
     def test_a_single_instance_bare_name_resolves_to_the_NATIVE_not_a_proxy(self):
         native = _JO("Stock_Center")
@@ -4657,21 +5018,158 @@ class TestQualifiedAndIndexAddressing:
         a, b = _tl_obj("Pipe4", 3, comp="COOLING - cockpit"), _tl_obj("Pipe4", 9, comp="FRAME")
         assert inp._match_timeline_objects([a, b], "FRAME/Pipe4") == [b]
 
+    def test_a_slashed_component_uses_the_whole_qualified_key(self):
+        target = _tl_obj("Target", 4, comp="X/Y")
+        other = _tl_obj("Target", 7, comp="X")
+        obj, err = inp.resolve_timeline_object([target, other], "X/Y/Target", "'feature'")
+        assert obj is target and err is None
+        assert inp._match_timeline_objects([target, other], "X/Y/Target@4") == [target]
+
+    def test_a_qualified_miss_preserves_the_full_address(self):
+        target = _tl_obj("Target", 4, comp="X/Y")
+        obj, err = inp.resolve_timeline_object([target], "X/Y/NoSuchFeature", "'feature'")
+        assert obj is None
+        assert "no timeline feature matches 'X/Y/NoSuchFeature'" in err
+        assert "design_get(include=['timeline'])" in err
+
+    def test_a_qualified_key_and_a_literal_slash_name_refuse_both_meanings(self):
+        literal, qualified = _tl_obj("A/B", 4, comp="Literal"), _tl_obj("B", 6, comp="A")
+        obj, err = inp.resolve_timeline_object([literal, qualified], "A/B", "'feature'")
+        assert obj is None and "matches 2 timeline objects" in err
+        assert "Literal/A/B@4" in err and "A/B@6" in err
+        assert inp._match_timeline_objects([literal, qualified], "Literal/A/B@4") == [literal]
+        assert inp._match_timeline_objects([literal, qualified], "A/B@6") == [qualified]
+
     def test_a_bare_integer_resolves_by_its_own_index(self):
         objs = [_tl_obj("Extrude1", 0), _tl_obj("Fillet1", 4)]
         assert inp._match_timeline_objects(objs, "4") == [objs[1]]
+
+    def test_a_number_that_is_also_a_feature_name_is_refused_naming_both(self):
+        # A DXF import lands a sketch literally named "0" while index 0 is the Bracket occurrence
+        # (a row with no component, as measured): the bare "0" must refuse, not delete the occurrence.
+        bracket, zero = _tl_obj(" Bracket:1", 0), _tl_obj("0", 7, comp="Root")
+        objs = [bracket, _tl_obj("Extrude1", 1, comp="Root"), zero]
+        assert inp._match_timeline_objects(objs, "0") == [bracket, zero]
+        obj, err = inp.resolve_timeline_object(objs, "0", "'feature'")
+        assert obj is None and "matches 2 timeline objects" in err
+        assert "(Bracket:1@0, Root/0@7)" in err and "exactly as listed" in err
+
+    def test_every_candidate_a_refusal_prints_resolves_back_to_its_own_object(self):
+        # The remedy is only a remedy if the resolver reads the exact strings it printed.
+        # an occurrence-create row reads no component (measured), so its candidate is '<name>@<index>'
+        bracket, zero = _tl_obj(" Bracket:1", 0), _tl_obj("0", 7, comp="Root")
+        a, b = _tl_obj("Pipe4", 3, comp="COOLING - cockpit"), _tl_obj("Pipe4", 9, comp="FRAME")
+        seat, slashed = _tl_obj("Extrude1", 0), _tl_obj("0", 5, comp="X/Y")
+        for objs, want in (([bracket, zero], "0"), ([a, b], "Pipe4"), ([seat, slashed], "0")):
+            _, err = inp.resolve_timeline_object(objs, want, "'feature'")
+            cands = [c.strip("'") for c in err.split("(")[1].split(")")[0].split(", ")]
+            assert len(cands) == 2
+            for cand, target in zip(cands, objs):
+                assert inp._match_timeline_objects(objs, cand) == [target], cand
+
+    def test_the_explicit_forms_still_pick_one_side_of_a_collision(self):
+        bracket, zero = _tl_obj(" Bracket:1", 0, comp="Root"), _tl_obj("0", 7, comp="Root")
+        objs = [bracket, zero]
+        assert inp._match_timeline_objects(objs, "0@7") == [zero]
+        assert inp._match_timeline_objects(objs, "Bracket:1@0") == [bracket]
+        assert inp._match_timeline_objects(objs, "7") == [zero]
+
+    def test_a_digit_named_feature_at_its_own_index_is_one_hit_not_a_self_collision(self):
+        objs = [_tl_obj("0", 0), _tl_obj("Extrude1", 1)]
+        assert inp._match_timeline_objects(objs, "0") == [objs[0]]
+
+    def test_a_qualified_address_holds_the_component_not_only_the_name(self):
+        # After a reorder FRAME's Pipe4 can sit where COOLING's did: the qualifier must miss.
+        a, b = _tl_obj("Pipe4", 3, comp="COOLING - cockpit"), _tl_obj("Pipe4", 9, comp="FRAME")
+        assert inp._match_timeline_objects([a, b], "FRAME/Pipe4@3") == []
+        assert inp._match_timeline_objects([a, b], "NoSuchComp/Pipe4@9") == []
+        assert inp._match_timeline_objects([a, b], "COOLING - cockpit/Pipe4@3") == [a]
+        obj, err = inp.resolve_timeline_object([a, b], "FRAME/Pipe4@3", "'feature'")
+        assert obj is None and "index 3 is 'COOLING - cockpit/Pipe4'" in err
+        assert "'FRAME/Pipe4' is at index 9" in err
+
+    def test_a_feature_literally_named_with_a_slash_keeps_its_whole_name(self):
+        objs = [_tl_obj("A/B", 4, comp="Root")]
+        assert inp._match_timeline_objects(objs, "A/B@4") == objs
+        assert inp._match_timeline_objects(objs, "A/B") == objs
+
+    def test_a_non_ascii_digit_is_a_name_not_an_index(self):
+        # an Arabic-Indic zero is decimal but not ASCII: a name, never index 0
+        objs = [_tl_obj("X", 0), _tl_obj("\u0660", 1)]
+        assert inp._match_timeline_objects(objs, "\u0660") == [objs[1]]
+        assert inp._match_timeline_objects(objs, "X@\u0660") == []
+
+    def test_a_feature_literally_named_with_an_at_sign_resolves_and_a_clash_is_refused(self):
+        alone = [_tl_obj("Rev@2", 6, comp="Root")]
+        assert inp._match_timeline_objects(alone, "Rev@2") == alone
+        rev, literal = _tl_obj("Rev", 2, comp="Root"), _tl_obj("Rev@2", 6, comp="Root")
+        obj, err = inp.resolve_timeline_object([rev, literal], "Rev@2", "'feature'")
+        assert obj is None and "(Root/Rev@2, Root/Rev@2@6)" in err
+        assert inp._match_timeline_objects([rev, literal], "Root/Rev@2") == [rev]
+        assert inp._match_timeline_objects([rev, literal], "Root/Rev@2@6") == [literal]
+
+    def test_a_candidate_whose_name_does_not_read_is_counted_not_dropped(self):
+        unread, zero = FakeTimelineObject(None, 0, entity=object()), _tl_obj("0", 7, comp="Root")
+        obj, err = inp.resolve_timeline_object([unread, zero], "0", "'feature'")
+        assert obj is None and "(Root/0@7 and 1 whose name or index does not read)" in err
+
+    def test_an_address_miss_says_when_the_seat_does_not_read_its_name(self):
+        objs = [FakeTimelineObject(None, 5, entity=object()), _tl_obj("Pipe4", 3, comp="FRAME")]
+        obj, err = inp.resolve_timeline_object(objs, "FRAME/Pipe4@5", "'feature'")
+        assert obj is None and "the item at index 5 does not read its name" in err
+        assert "'FRAME/Pipe4' is at index 3" in err
+        obj, err = inp.resolve_timeline_object(objs, "Ghost@3", "'feature'")
+        assert obj is None and "no timeline feature named 'Ghost@3'" in err
+
+    def test_a_bare_number_whose_literal_twin_hides_in_a_collapsed_group_is_refused(self):
+        bracket = _tl_obj(" Bracket:1", 0)
+        obj, err = inp.resolve_timeline_object(
+            [bracket], "0", "'feature'",
+            hidden_hint=lambda want, hits: "'0' is inside the collapsed timeline group 'Imports'.")
+        assert obj is None and "collapsed timeline group 'Imports'" in err
+        obj, err = inp.resolve_timeline_object([bracket], "0", "'feature'",
+                                               hidden_hint=lambda want, hits: None)
+        assert obj is bracket and err is None
+
+    def test_a_printed_address_of_a_collapsed_member_reaches_the_group_hint_by_its_base(self):
+        bracket, asked = _tl_obj(" Bracket:1", 0), []
+
+        def hint(name):
+            asked.append(name)
+            return ("'Root/0' is inside the collapsed timeline group 'Imports'." if name == "Root/0"
+                    else None)
+        obj, err = inp.resolve_timeline_object([bracket], "Root/0@1", "'feature'", miss_hint=hint)
+        assert obj is None and "collapsed timeline group 'Imports'" in err
+        assert asked == ["Root/0@1", "Root/0"]
+        obj, err = inp.resolve_timeline_object([bracket], "Root/Ghost@9", "'feature'", miss_hint=hint)
+        assert obj is None and "no timeline feature matches 'Root/Ghost@9'" in err
+
+    def test_a_bare_number_with_no_visible_hit_takes_the_group_miss_not_the_twin_refusal(self):
+        obj, err = inp.resolve_timeline_object(
+            [_tl_obj("Extrude1", 0)], "5", "'feature'",
+            miss_hint=lambda name: ("'5' is inside the collapsed timeline group 'Imports'."
+                                    if name == "5" else None),
+            hidden_hint=lambda want, hits: (f"'{want}' matches {inp._candidates_listed(hits)} and "
+                                            "also names a hidden item."))
+        assert obj is None and "is inside the collapsed timeline group 'Imports'" in err
+        assert "matches" not in err
+
+    def test_a_qualified_name_at_index_that_disagrees_names_the_seat(self):
+        objs = [_tl_obj("Pipe4", 3, comp="FRAME"), _tl_obj("Extrude1", 5, comp="FRAME")]
+        obj, err = inp.resolve_timeline_object(objs, "FRAME/Pipe4@5", "'feature'")
+        assert obj is None and "index 5 is 'FRAME/Extrude1'" in err and "'FRAME/Pipe4' is at index 3" in err
 
     def test_two_same_named_features_in_two_components_bare_name_refuses_naming_both(self):
         a, b = _tl_obj("Pipe4", 3, comp="COOLING - cockpit"), _tl_obj("Pipe4", 9, comp="FRAME")
         obj, err = inp.resolve_timeline_object([a, b], "Pipe4", "'feature'")
         assert obj is None and "matches 2 timeline objects" in err
-        assert "COOLING - cockpit/Pipe4" in err and "FRAME/Pipe4" in err
-        assert "<component>/<name>" in err
+        assert "COOLING - cockpit/Pipe4@3" in err and "FRAME/Pipe4@9" in err
+        assert "exactly as listed" in err
 
     def test_a_qualified_miss_names_the_component_and_the_feature(self):
         objs = [_tl_obj("Pipe4", 3, comp="FRAME")]
         obj, err = inp.resolve_timeline_object(objs, "FRAME/Pipe9", "'feature'")
-        assert obj is None and "no feature named 'Pipe9' in component 'FRAME'" in err
+        assert obj is None and "no timeline feature matches 'FRAME/Pipe9'" in err
 
     def test_a_bare_name_miss_lists_components_holding_a_near_name(self):
         objs = [_tl_obj("Pipe4 (Fillet)", 3, comp="COOLING - cockpit"), _tl_obj("Extrude1", 0)]
@@ -4768,7 +5266,7 @@ class TestSketchRefListRunsTheOneSharedWalk:
 
     def _resolve(self, monkeypatch, comps, raw):
         d = MakeDesign(comp=comps[0], all_components=comps)
-        monkeypatch.setattr(inp._common, "design", lambda: d)
+        _install_design(inp, d)
         return inp.SketchRefList("sketches").resolve(raw)
 
     def test_a_name_exactly_one_sketch_carries_resolves(self, monkeypatch):
@@ -5190,7 +5688,7 @@ def _install_shared_body_name(monkeypatch, name="Body1", placements=("Bracket:1"
                     entity_token="TOKEN:Carrier")
     root_body.parentComponent = root
     design = make_design(comp=root, all_components=[root, sub])
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda _d=None: root)
     return root_body, proxies
 
@@ -5208,7 +5706,7 @@ def _install_cased_bodies(monkeypatch):
     occ.bRepBodies = _NamedCollection(list(proxies))
     root = MakeComp(name="Carrier", occurrences=[occ], entity_token="TOKEN:Carrier")
     design = make_design(comp=root, all_components=[root, sub])
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda _d=None: root)
     return proxies
 
@@ -5224,7 +5722,7 @@ def _install_unplaced_component(monkeypatch, body_names):
         b.parentComponent = sub
     root = MakeComp(name="Carrier", entity_token="TOKEN:Carrier")
     design = make_design(comp=root, all_components=[root, sub])
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda _d=None: root)
     return bodies
 
@@ -5257,7 +5755,7 @@ def _install_unnamed_placement(monkeypatch):
     root = MakeComp(name="Carrier", entity_token="TOKEN:Carrier")
     design = make_design(comp=root, all_components=[root, sub],
                          tokens={"OCCTOK": _UnnamedOcc(sub)})
-    monkeypatch.setattr(inp._common, "design", lambda: design)
+    _install_design(inp, design)
     monkeypatch.setattr(inp._common, "target_component", lambda _d=None: root)
     return design
 
@@ -5342,7 +5840,7 @@ class TestBodyRefListComponentScope:
         # sentence has to describe what THIS call was resolving: the vocabularies underneath refuse
         # in their own nouns ("to resolve the occurrence against"), which sends the caller to fix a
         # scope spelling when the design is what is missing.
-        monkeypatch.setattr(inp._common, "design", lambda: None)
+        _install_design(inp, None)
         got, err = self._scoped().resolve(["Body1"], "Bracket")
         assert got is None
         assert err == "No active design to resolve the body names against."
@@ -5414,3 +5912,366 @@ class TestBodyRefListComponentScope:
         _install_shared_body_name(monkeypatch)
         got, err = self._scoped(required=True).resolve([], "Bracket")
         assert got is None and err == "'bodies' needs at least one body (handle or name)."
+
+
+# ── SheetMetalRuleRef: 'design:<name>' / 'library:<name>', and '#<n>' for a repeated name ──────────
+# sheet_get's rule rows carry '#<n>' (1-based, collection order) only when a name repeats in scope;
+# the kind must resolve that ordinal exactly and keep resolving a unique name unchanged.
+
+class TestSheetMetalRuleRefOrdinals:
+    def _design(self, *rules):
+        design = types.SimpleNamespace()
+        design.designSheetMetalRules = _NamedCollection(items=list(rules))
+        return design
+
+    def test_resolves_the_hash_ordinal_to_the_second_object(self, monkeypatch):
+        r1 = types.SimpleNamespace(name="Steel (mm)")
+        r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+        _install_design(inp, self._design(r1, r2))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#2")
+        assert err is None
+        rule, scope = got
+        assert rule is r2 and scope == "design"
+
+    def test_bare_duplicate_name_is_refused_naming_both_refs(self, monkeypatch):
+        r1 = types.SimpleNamespace(name="Steel (mm)")
+        r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+        _install_design(inp, self._design(r1, r2))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)")
+        assert got is None
+        assert "design:Steel (mm)#1" in err and "design:Steel (mm)#2" in err
+
+    def test_a_unique_name_still_resolves_without_a_hash(self, monkeypatch):
+        r = types.SimpleNamespace(name="Aluminum (mm)")
+        _install_design(inp, self._design(r))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Aluminum (mm)")
+        assert err is None
+        rule, scope = got
+        assert rule is r and scope == "design"
+
+    def test_a_unique_name_containing_a_literal_hash_round_trips(self, monkeypatch):
+        # A unique rule keeps its plain 'scope:name' ref (rule_ref_and_index) even when the name
+        # itself ends in '#<digits>' - the literal lookup must win before '#<n>' is read as an ordinal.
+        r = types.SimpleNamespace(name="Gauge #16")
+        _install_design(inp, self._design(r))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Gauge #16")
+        assert err is None
+        rule, scope = got
+        assert rule is r and scope == "design"
+
+    def test_hash_zero_is_refused_not_the_last_hit(self, monkeypatch):
+        r1 = types.SimpleNamespace(name="Steel (mm)")
+        r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+        _install_design(inp, self._design(r1, r2))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#0")
+        assert got is None and err is not None
+
+    def test_hash_out_of_range_is_refused_naming_the_count(self, monkeypatch):
+        r1 = types.SimpleNamespace(name="Steel (mm)")
+        r2 = types.SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+        _install_design(inp, self._design(r1, r2))
+        got, err = inp.SheetMetalRuleRef("rule").resolve("design:Steel (mm)#3")
+        assert got is None
+        assert "has 2 rule(s)" in err
+
+
+# ── PointRef, the AxisRef sketch-line form, and where an operand sits in the WORLD ───────────────
+
+class SketchLine:
+    """A sketch line - no live shape dump, so a local double: two end SketchPoints in one sketch."""
+    def __init__(self, start, end, sketch, token=None):
+        self.startSketchPoint, self.endSketchPoint, self.parentSketch = start, end, sketch
+        self.assemblyContext = None
+        if token:
+            self.entityToken = token
+
+
+class SketchCircle:
+    """A sketch circle - no live shape dump, so a local double: its centre point and radius."""
+    def __init__(self, centre, sketch, radius=1.0):
+        self.centerSketchPoint, self.parentSketch, self.radius = centre, sketch, radius
+
+
+class ConstructionPoint:
+    """A construction point - no live shape dump, so a local double: name, owner, local point."""
+    def __init__(self, name, component, geometry, token=None):
+        self.name, self.component, self.geometry = name, component, geometry
+        self.assemblyContext = None
+        if token:
+            self.entityToken = token
+
+
+# Where the Bench places a sketch point: the sketch sits 5 cm up its plane, and the occurrence
+# turns the component 30 deg about Z and moves it (10, 20, 0) cm.
+_SKETCH_LIFT = (0.0, 0.0, 5.0)
+
+
+def _bench_world(x, y):
+    """The WORLD (x, y, z) cm of Bench sketch point (x, y)."""
+    c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+    return (x * c - y * s + 10.0, x * s + y * c + 20.0, _SKETCH_LIFT[2])
+
+
+def _proxy_point(native, occ, token):
+    """`native` read through `occ`: its proxy, which createForAssemblyContext(occ) answers."""
+    proxy = FakeSketchPoint(native.geometry, parent_sketch=native.parentSketch,
+                            entity_token=token, assembly_context=occ, native_object=native)
+    native.createForAssemblyContext = lambda _occ: proxy
+    return proxy
+
+
+@pytest.fixture
+def operand_env(monkeypatch):
+    """Bench placed once as Bench:1 (sketch OpS: 3 points, line:0, circle:0) plus root sketch RootS."""
+    import adsk.fusion
+    for name, cls in (("SketchPoint", FakeSketchPoint), ("SketchLine", SketchLine),
+                      ("ConstructionPoint", ConstructionPoint), ("BRepFace", BRepFace),
+                      ("BRepEdge", BRepEdge), ("BRepVertex", type("V", (), {})),
+                      ("ConstructionAxis", type("CA", (), {}))):
+        monkeypatch.setattr(adsk.fusion, name, cls, raising=False)
+
+    def build(active="root", extra=(), tokens=None):
+        root = MakeComp(name="Root", entity_token="TOKEN:Root")
+        bench = MakeComp(name="Bench", entity_token="TOKEN:Bench")
+        occ = make_occurrence("Bench:1", component=bench,
+                              transform2=FakeMatrix3D(deg=30.0, t=(10.0, 20.0, 0.0)))
+        root.allOccurrences = [occ]
+        sk = Sketch("OpS", parent_component=bench, transform=FakeMatrix3D(t=_SKETCH_LIFT))
+        pts = [FakeSketchPoint(FakePoint(x, y, 0.0), parent_sketch=sk, entity_token=f"P{i}")
+               for i, (x, y) in enumerate(((0.0, 0.0), (1.0, 2.0), (4.0, 0.0)))]
+        line = SketchLine(pts[0], pts[2], sk, token="L0")
+        centre = FakeSketchPoint(FakePoint(3.0, 3.0, 0.0), parent_sketch=sk, entity_token="C0")
+        sk.sketchPoints = _NamedCollection(pts)
+        sk.sketchCurves = SketchCurves(lines=[line], circles=[SketchCircle(centre, sk)])
+        bench.sketches = _NamedCollection([sk])
+        root_sk = Sketch("RootS", parent_component=root, transform=FakeMatrix3D())
+        twins = [FakeSketchPoint(FakePoint(-5.0, -5.0, 0.0), parent_sketch=root_sk,
+                                 entity_token=f"R{i}") for i in range(2)]
+        root_sk.sketchPoints = _NamedCollection(twins)
+        root.sketches = _NamedCollection([root_sk])
+        comps = {"root": root, "bench": bench, **{c.name: c for c in extra}}
+        design = MakeDesign(comp=root, tokens=tokens or {},
+                            all_components=[root, bench, *extra])
+        design.activeComponent = comps[active]
+        _install_design(inp, design)
+        monkeypatch.setattr(inp._common, "target_component", lambda _d=None: design.activeComponent)
+        return types.SimpleNamespace(design=design, root=root, bench=bench, occ=occ, sketch=sk,
+                                     pts=pts, line=line, centre=centre, twins=twins)
+    return build
+
+
+class TestPointRefForms:
+    def test_an_index_ref_resolves_the_sketch_point_itself(self, operand_env):
+        env = operand_env()
+        assert inp.PointRef("p").resolve("OpS/point:1") == (env.pts[1], None)
+
+    def test_a_circle_centre_ref_resolves_to_its_centre_sketch_point(self, operand_env):
+        env = operand_env()
+        assert inp.PointRef("p").resolve("OpS/circle:0:center") == (env.centre, None)
+
+    def test_an_index_past_the_collection_is_refused_with_the_range(self, operand_env):
+        operand_env()
+        val, err = inp.PointRef("p").resolve("OpS/point:3")
+        assert val is None and "point:0 to point:2" in err and "'OpS/point:3'" in err
+
+    def test_a_curve_where_a_point_is_needed_is_refused_with_its_read_type(self, operand_env):
+        operand_env()
+        val, err = inp.PointRef("p").resolve("OpS/line:0")
+        assert val is None and "SketchLine" in err and "'<sketch>/point:<i>'" in err
+
+    def test_a_sketch_name_two_components_carry_is_refused_pointing_at_the_handle(self,
+                                                                               operand_env):
+        other = MakeComp(name="Other", entity_token="TOKEN:Other")
+        other.sketches = _NamedCollection([Sketch("OpS", parent_component=other)])
+        operand_env(extra=(other,))
+        val, err = inp.PointRef("p").resolve("OpS/point:1")
+        assert val is None and "in Bench" in err and "in Other" in err and "'handle'" in err
+        assert "'component'" not in err       # no scope input exists on the consumer to name
+
+    def test_the_active_components_construction_point_name_resolves(self, operand_env):
+        # Every component default-names its first datum 'Point1'; the active one's answers.
+        root_pt = ConstructionPoint("Point1", None, FakePoint())
+        bench_pt = ConstructionPoint("Point1", None, FakePoint())
+        env = operand_env(active="bench")
+        env.root.constructionPoints = _NamedCollection([root_pt])
+        env.bench.constructionPoints = _NamedCollection([bench_pt])
+        assert inp.PointRef("p").resolve("point1") == (bench_pt, None)
+        env.design.activeComponent = env.root
+        assert inp.PointRef("p").resolve("Point1") == (root_pt, None)
+
+    def test_owner_component_selects_a_same_named_construction_point(self, operand_env):
+        env = operand_env()
+        root_pt = ConstructionPoint("Datum", env.root, FakePoint(), token="ROOT-DATUM")
+        handle = "BENCH-DATUM-" + "X" * 48
+        bench_pt = ConstructionPoint("Datum", env.bench, FakePoint(), token=handle)
+        env.design._tokens[handle] = bench_pt
+        env.root.constructionPoints = _NamedCollection([root_pt])
+        env.bench.constructionPoints = _NamedCollection([bench_pt])
+        ref = inp.PointRef("p")
+        assert ref.resolve("Datum", owner_component=env.bench) == (bench_pt, None)
+        assert ref.resolve("Datum", owner_component=env.root) == (root_pt, None)
+        assert ref.resolve(handle, owner_component=env.bench) == (bench_pt, None)
+        point, err = ref.resolve(handle, owner_component=env.root)
+        assert point is None and "does not belong" in err
+
+    def test_owner_component_still_refuses_duplicate_names_inside_that_component(self, operand_env):
+        env = operand_env()
+        one = ConstructionPoint("Datum", env.bench, FakePoint())
+        two = ConstructionPoint("Datum", env.bench, FakePoint())
+        env.bench.constructionPoints = _NamedCollection([one, two])
+        point, err = inp.PointRef("p").resolve("Datum", owner_component=env.bench)
+        assert point is None and "names 2 construction points" in err
+
+    def test_a_handle_naming_a_face_is_refused_with_its_type(self, operand_env):
+        operand_env(tokens={"F": BRepFace(Plane(FakeVector3D(0, 0, 1)))})
+        val, err = inp.PointRef("p").resolve("F")
+        assert val is None and "names a BRepFace, not a point" in err
+
+    def test_a_list_refusal_names_the_entry(self, operand_env):
+        operand_env()
+        val, err = inp.PointRefList("points").resolve(["OpS/point:1", "OpS/point:7"])
+        assert val is None and err.startswith("'points'[1]:")
+
+
+class TestPlacedOperands:
+    def test_a_handle_minted_through_an_occurrence_is_its_proxy_in_world_cm(self, operand_env):
+        env = operand_env()
+        proxy = _proxy_point(env.pts[1], env.occ, "P1@Bench:1")
+        handle = inp.placed_handle(env.pts[1], "sketch_point", env.occ)
+        token, loc = inp._split_handle(handle)
+        assert token == "P1@Bench:1" and loc[0] == "sketch_point" and loc[5] == "Bench:1"
+        want = _bench_world(1.0, 2.0)
+        assert all(abs(a - round(b, 6)) < 1e-9 for a, b in zip(loc[1:4], want))
+        assert inp.placed_point_cm(proxy) == pytest.approx(want, abs=1e-12)
+
+    def test_a_native_reads_through_its_placement_not_its_own_component_space(self, operand_env):
+        # A native point's own reads stay in its component's space; the one placement lifts it.
+        env = operand_env()
+        env.pts[1].worldGeometry = FakePoint(1.0, 2.0, 5.0)
+        assert inp.placed_point_cm(env.pts[1]) == pytest.approx(_bench_world(1.0, 2.0), abs=1e-12)
+
+    def test_a_native_of_a_placed_component_goes_in_as_its_proxy(self, operand_env):
+        env = operand_env()
+        proxy = _proxy_point(env.pts[1], env.occ, "P1@Bench:1")
+        assert inp.operand_in("'p'", env.pts[1], env.root, env.design) == (proxy, None)
+        assert inp.operand_in("'p'", env.twins[0], env.bench, env.design) == (env.twins[0], None)
+
+    def test_a_native_of_a_component_placed_twice_is_refused_naming_each_instance(self,
+                                                                               operand_env):
+        env = operand_env()
+        env.root.allOccurrences.append(make_occurrence("Bench:2", component=env.bench,
+                                                       transform2=FakeMatrix3D()))
+        val, err = inp.operand_in("'p'", env.pts[1], env.root, env.design, remedy="Name one.")
+        assert val is None and "Bench:1" in err and "Bench:2" in err and err.endswith("Name one.")
+
+    def test_operand_meta_reads_owner_path_address_and_world_point(self, operand_env):
+        env = operand_env()
+        meta = inp.operand_meta(_proxy_point(env.pts[1], env.occ, "P1@Bench:1"))
+        assert (meta["component"], meta["assembly_path"], meta["ref"]) == (
+            "Bench", "Bench:1", "OpS/point:1")
+        assert meta["world_cm"] == pytest.approx(list(_bench_world(1.0, 2.0)), abs=1e-12)
+
+
+class TestPlacedHandleStaleness:
+    """A split line's token answers its first piece; only the recorded position tells it moved."""
+
+    def _split_line_handle(self, env):
+        proxy = SketchLine(env.pts[0], env.pts[2], env.sketch, token="L0@Bench:1")
+        proxy.assemblyContext, proxy.nativeObject = env.occ, env.line
+        mid = [round(c, 6) for c in _bench_world(2.0, 0.0)]
+        handle = f"L0@Bench:1{inp._HANDLE_SEP}sketch_line:{mid[0]},{mid[1]},{mid[2]};occ=Bench:1"
+        env.line.endSketchPoint = FakeSketchPoint(FakePoint(2.0, 0.0, 0.0),
+                                                  parent_sketch=env.sketch)
+        return proxy, handle
+
+    def test_a_split_line_handle_is_refused_by_axisref(self, operand_env):
+        env = operand_env()
+        proxy, handle = self._split_line_handle(env)
+        env.design._tokens["L0@Bench:1"] = proxy
+        val, err = inp.AxisRef("axis").resolve(handle)
+        assert val is None and "first piece" in err and "find_geometry" in err
+
+    def test_an_unmoved_line_handle_still_resolves(self, operand_env):
+        env = operand_env()
+        proxy, handle = self._split_line_handle(env)
+        env.line.endSketchPoint = env.pts[2]
+        env.design._tokens["L0@Bench:1"] = proxy
+        assert inp.AxisRef("axis").resolve(handle) == (("edge", proxy), None)
+
+    def test_a_moved_point_handle_is_refused_by_pointref(self, operand_env):
+        env = operand_env()
+        proxy = _proxy_point(env.pts[1], env.occ, "P1@Bench:1")
+        env.design._tokens["P1@Bench:1"] = proxy
+        handle = inp.placed_handle(env.pts[1], "sketch_point", env.occ)
+        env.pts[1].geometry = FakePoint(1.0, 2.001, 0.0)
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "find_geometry" in err and "reads at" in err
+        assert "first piece" not in err            # the split clause is a sketch line's alone
+
+    def _point_handle(self, env):
+        """P1's handle read through Bench:1, and the proxy its token answers."""
+        proxy = _proxy_point(env.pts[1], env.occ, "P1@Bench:1")
+        return inp.placed_handle(env.pts[1], "sketch_point", env.occ), proxy
+
+    def test_a_hit_whose_position_does_not_read_is_refused(self, operand_env):
+        env = operand_env()
+        handle, proxy = self._point_handle(env)
+        env.design._tokens["P1@Bench:1"] = proxy
+        env.pts[1].geometry = None
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "position did not read" in err and "find_geometry" in err
+
+    def test_a_hit_off_the_recorded_occurrence_is_refused_even_without_a_path(self, operand_env):
+        # the native at the very same point reads no occurrence, and one whose path will not read
+        # is no better: neither is the instance the handle was read through.
+        env = operand_env()
+        handle, proxy = self._point_handle(env)
+        env.design._tokens["P1@Bench:1"] = env.pts[1]
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "read through 'Bench:1'" in err and "no occurrence" in err
+        blind = _proxy_point(env.pts[1], types.SimpleNamespace(transform2=FakeMatrix3D()), "B")
+        env.design._tokens["P1@Bench:1"] = blind
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "occurrence did not read" in err
+        env.design._tokens["P1@Bench:1"] = proxy
+        assert inp.PointRef("p").resolve(handle) == (proxy, None)
+
+    def test_many_hits_are_filtered_to_the_recorded_occurrence_first(self, operand_env):
+        env = operand_env()
+        handle, proxy = self._point_handle(env)
+        other = make_occurrence("Other:1", component=env.bench,
+                                transform2=FakeMatrix3D(deg=30.0, t=(10.0, 20.0, 0.0)))
+        twin = FakeSketchPoint(env.pts[1].geometry, parent_sketch=env.sketch,
+                               assembly_context=other, native_object=env.pts[1])
+        env.design._tokens["P1@Bench:1"] = [twin, proxy]
+        assert inp.PointRef("p").resolve(handle) == (proxy, None)
+        far = FakeSketchPoint(FakePoint(3.0, 3.0, 0.0), parent_sketch=env.sketch,
+                              assembly_context=env.occ, native_object=env.centre)
+        env.design._tokens["P1@Bench:1"] = [twin, far]
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "not at the recorded" in err
+
+    def test_two_points_at_the_recorded_position_are_refused_naming_both(self, operand_env):
+        operand_env()           # the token is dead, so the locator scans the root's sketches
+        handle = f"DEAD{inp._HANDLE_SEP}sketch_point:-5.0,-5.0,0.0"
+        val, err = inp.PointRef("p").resolve(handle)
+        assert val is None and "'RootS/point:0'" in err and "'RootS/point:1'" in err
+
+
+class TestAxisRefSketchLineIndex:
+    def test_the_index_ref_resolves_the_line_now_at_that_index(self, operand_env):
+        env = operand_env()
+        assert inp.AxisRef("axis").resolve("OpS/line:0") == (("edge", env.line), None)
+
+    def test_an_index_ref_to_a_circle_is_refused(self, operand_env):
+        operand_env()
+        val, err = inp.AxisRef("axis").resolve("OpS/circle:0")
+        assert val is None and "'<sketch>/line:<i>'" in err
+
+    def test_a_placed_native_lines_axis_is_read_in_world_space(self, operand_env):
+        env = operand_env()
+        (start, direction), err = inp.axis_line_of("axis", env.line)
+        assert err is None
+        assert (start.x, start.y, start.z) == pytest.approx(_bench_world(0.0, 0.0), abs=1e-12)
+        c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+        assert (direction.x, direction.y, direction.z) == pytest.approx((c, s, 0.0), abs=1e-12)

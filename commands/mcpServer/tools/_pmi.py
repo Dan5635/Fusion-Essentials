@@ -8,6 +8,7 @@ Design.pmiSettings is never read - the getter raises InternalValidationError whe
 object exists. PMI CONTENT writes raise "3 : Manufacturing or Design Extension is required" on
 2705.0.87; reads and non-content writes such as hide/show are free."""
 
+import math
 import re
 
 import adsk.core
@@ -335,15 +336,33 @@ def enum_label(owner, cls_name, suffix, value):
     return str(value)
 
 
+_TOLERANCE_TYPES = ("symmetric", "deviation", "limits", "limits_linear", "max", "min",
+                    "fits_stacked", "fits_linear", "fits_size_limits", "fits_tolerance")
+
+
+def _tolerance_spec_error(spec):
+    """build_tolerance's refusal for a spec, decided without building anything; else None."""
+    if not isinstance(spec, dict) or not spec.get("type"):
+        return ("'tolerance' must be an object with 'type' - one of: "
+                + ", ".join(_TOLERANCE_TYPES) + ".")
+    t = str(spec["type"]).strip().lower()
+    if t not in _TOLERANCE_TYPES:
+        return (f"Unknown tolerance type '{t}'. Use symmetric, deviation, limits, "
+                "limits_linear, max, min, or fits_stacked/linear/size_limits/tolerance.")
+    for key in ("value", "upper", "lower", "min", "max", "size"):
+        if spec.get(key) is not None and _common.finite_number(spec[key], text=True) is None:
+            return f"Tolerance '{t}' needs a number for '{key}', got {spec[key]!a}."
+    return None
+
+
 def build_tolerance(spec, f):
     """(PMIGeometricValueTolerance, error) from a wire spec dict: type= symmetric (value) |
     deviation (upper, lower) | limits | limits_linear (min, max) | max | min | fits_stacked |
     fits_linear | fits_size_limits | fits_tolerance (size, hole_fit, shaft_fit). Bounds are in
     display units and scale by f to cm. Every set*() bool is gated."""
-    if not isinstance(spec, dict) or not spec.get("type"):
-        return None, ("'tolerance' must be an object with 'type' - one of: symmetric, deviation, "
-                      "limits, limits_linear, max, min, fits_stacked, fits_linear, "
-                      "fits_size_limits, fits_tolerance.")
+    refusal = _tolerance_spec_error(spec)
+    if refusal:
+        return None, refusal
     t = str(spec["type"]).strip().lower()
     tol = adsk.fusion.PMIGeometricValueTolerance.create()
     def num(key):
@@ -362,16 +381,13 @@ def build_tolerance(spec, f):
             done = tol.setMAX()
         elif t == "min":
             done = tol.setMIN()
-        elif t in ("fits_stacked", "fits_linear", "fits_size_limits", "fits_tolerance"):
+        else:
             setter = {"fits_stacked": tol.setLimitsFitsStacked,
                       "fits_linear": tol.setLimitsFitsLinear,
                       "fits_size_limits": tol.setLimitsFitsSizeLimits,
                       "fits_tolerance": tol.setLimitsFitsTolerance}[t]
             done = setter(num("size") or 0.0, str(spec.get("hole_fit") or ""),
                           str(spec.get("shaft_fit") or ""))
-        else:
-            return None, (f"Unknown tolerance type '{t}'. Use symmetric, deviation, limits, "
-                          "limits_linear, max, min, or fits_stacked/linear/size_limits/tolerance.")
     except Exception as e:
         return None, f"Tolerance '{t}' construction failed: {e}"
     if not done:
@@ -405,7 +421,6 @@ def value_record(gv, out_f, angle=False):
     Angles report degrees, lengths in display units."""
     if gv is None or not safe(lambda: gv.hasValue, False):
         return None
-    import math
     raw = safe(lambda: gv.value)
     if raw is None:
         return None
@@ -420,28 +435,63 @@ def value_record(gv, out_f, angle=False):
     return rec
 
 
-def build_display(spec):
-    """(PMIDisplaySettings, error) from a wire spec dict: precision (0-8), units
-    (document/mm/cm/m/in/ft), leading_zeros, trailing_zeros, unit_abbreviation."""
+_DISPLAY_FLAGS = (("leading_zeros", "hasLeadingZeros"), ("trailing_zeros", "hasTrailingZeros"),
+                  ("unit_abbreviation", "hasUnitAbbreviation"))
+
+
+def _display_spec_error(spec):
+    """build_display's refusal for one display spec, decided without building it; else None."""
     if not isinstance(spec, dict):
-        return None, "'display' must be an object: {%s}." % ", ".join(DISPLAY_KEYS)
+        return "'display' must be an object: {%s}." % ", ".join(DISPLAY_KEYS)
     for key in spec:
         if key not in DISPLAY_KEYS:
-            return None, (f"Unknown display key '{key}'. Legal keys: "
-                          f"{', '.join(DISPLAY_KEYS)} (plus secondary: {{...}} at the top level).")
+            return (f"Unknown display key '{key}'. Legal keys: "
+                    f"{', '.join(DISPLAY_KEYS)} (plus secondary: {{...}} at the top level).")
+    if (spec.get("units") is not None
+            and DISPLAY_UNITS.get(str(spec["units"]).strip().lower()) is None):
+        return f"display.units must be one of: {', '.join(sorted(DISPLAY_UNITS))}."
+    precision = spec.get("precision")
+    if precision is not None and not (type(precision) is int or (
+            type(precision) is float and precision.is_integer())):
+        return f"display.precision must be an integer, got {_common.short_ref(ascii(precision))}."
+    for key, _prop in _DISPLAY_FLAGS:
+        if spec.get(key) is not None and type(spec[key]) is not bool:
+            return (f"Invalid Boolean for 'display.{key}': "
+                    f"{_common.short_ref(ascii(spec[key]))}. Use true or false.")
+    return None
+
+
+def display_error(display):
+    """apply_display's refusal for a display object, secondary included; else None."""
+    if not isinstance(display, dict):
+        return _display_spec_error(display)
+    primary = {k: v for k, v in display.items() if k != "secondary"}
+    refusal = _display_spec_error(primary) if primary else None
+    secondary = display.get("secondary")
+    if refusal is None and secondary is not None:
+        if not isinstance(secondary, dict):
+            return "'display.secondary' must be an object: {%s}." % ", ".join(DISPLAY_KEYS)
+        refusal = _display_spec_error(secondary)
+        return "display.secondary: " + refusal if refusal else None
+    return refusal
+
+
+def build_display(spec):
+    """(PMIDisplaySettings, error) from a wire spec dict: precision, units
+    (document/mm/cm/m/in/ft), leading_zeros, trailing_zeros, unit_abbreviation."""
+    refusal = _display_spec_error(spec)
+    if refusal:
+        return None, refusal
     ds = adsk.fusion.PMIDisplaySettings.create()
     try:
         if spec.get("precision") is not None:
             ds.precision = int(spec["precision"])
         if spec.get("units") is not None:
-            attr = DISPLAY_UNITS.get(str(spec["units"]).strip().lower())
-            if attr is None:
-                return None, f"display.units must be one of: {', '.join(sorted(DISPLAY_UNITS))}."
-            ds.unitType = getattr(adsk.fusion.PMIUnitTypes, attr)
-        for key, prop in (("leading_zeros", "hasLeadingZeros"), ("trailing_zeros", "hasTrailingZeros"),
-                          ("unit_abbreviation", "hasUnitAbbreviation")):
+            ds.unitType = getattr(adsk.fusion.PMIUnitTypes,
+                                  DISPLAY_UNITS[str(spec["units"]).strip().lower()])
+        for key, prop in _DISPLAY_FLAGS:
             if spec.get(key) is not None:
-                setattr(ds, prop, bool(spec[key]))
+                setattr(ds, prop, spec[key])
     except Exception as e:
         return None, f"Display settings construction failed: {e}"
     return ds, None
@@ -512,9 +562,12 @@ def apply_display(obj, display):
     """Apply a display spec - {precision, units, leading_zeros, trailing_zeros,
     unit_abbreviation, secondary: {...}} - to a hole/thread note. The ONE display writer both
     pmi_create and pmi_edit run. Returns an error string, or None."""
-    spec = dict(display) if isinstance(display, dict) else display
-    secondary = spec.pop("secondary", None) if isinstance(spec, dict) else None
-    if isinstance(spec, dict) and spec:
+    refusal = display_error(display)
+    if refusal:
+        return refusal
+    spec = {k: v for k, v in display.items() if k != "secondary"}
+    secondary = display.get("secondary")
+    if spec:
         ds, derr = build_display(spec)
         if derr:
             return derr
@@ -562,25 +615,72 @@ HOLE_FLAGS = {"quantity_note": "isWantQuantityNote", "all_matching": "isWantSele
               "show_imported_geometry": "isShowImportedGeometry"}
 
 
+def hole_flags_error(flags):
+    """The refusal for a flags object with an unknown key or a non-Boolean value, else None."""
+    if not isinstance(flags, dict):
+        return f"'flags' must be an object with any of: {', '.join(sorted(HOLE_FLAGS))}."
+    for key, val in flags.items():
+        if HOLE_FLAGS.get(str(key).strip().lower()) is None:
+            return f"Unknown flag '{key}'. Legal flags: {', '.join(sorted(HOLE_FLAGS))}."
+        if type(val) is not bool:
+            return (f"Invalid Boolean for 'flags.{key}': {_common.short_ref(ascii(val))}. "
+                    "Use true or false.")
+    return None
+
+
 def apply_hole_flags(note, flags):
     """Apply a {wire_key: bool} flags dict to a hole/thread note; every set is re-read and a flag
     that did not take is an error. Returns (applied_dict, error)."""
-    if not isinstance(flags, dict):
-        return None, f"'flags' must be an object with any of: {', '.join(sorted(HOLE_FLAGS))}."
+    refusal = hole_flags_error(flags)
+    if refusal:
+        return None, refusal + " No flag was set."
     applied = {}
     for key, val in flags.items():
-        prop = HOLE_FLAGS.get(str(key).strip().lower())
-        if prop is None:
-            return None, f"Unknown flag '{key}'. Legal flags: {', '.join(sorted(HOLE_FLAGS))}."
+        prop = HOLE_FLAGS[str(key).strip().lower()]
         try:
-            setattr(note, prop, bool(val))
+            setattr(note, prop, val)
         except Exception as e:
             return None, f"Flag '{key}' set failed: {e}"
-        got = bool(safe(lambda p=prop: getattr(note, p), not bool(val)))
-        if got != bool(val):
+        got = bool(safe(lambda p=prop: getattr(note, p), not val))
+        if got != val:
             return None, f"Flag '{key}'={val} did not take (re-read {got})."
         applied[key] = got
     return applied, None
+
+
+def _value_spec(key, spec):
+    """((attr, angle, number, tolerance spec), None) for one values entry, else (None, refusal)."""
+    norm = str(key).strip().lower()
+    attr = HOLE_VALUE_ATTR.get(norm)
+    if attr is None:
+        return None, f"Unknown value '{key}'. Legal values: {', '.join(HOLE_VALUE_PROPS)}."
+    angle = norm == "countersink_angle_deg"
+    num = spec.get("value") if isinstance(spec, dict) else spec
+    tol_spec = spec.get("tolerance") if isinstance(spec, dict) else None
+    if num is not None:
+        number = _common.finite_number(num, text=True)
+        if number is None:
+            return None, (f"'{key}' must be a number (in 'units'"
+                          + (", degrees" if angle else "") + f"), got {num!a}.")
+        num = number
+    # The unit an angle BOUND is stored in is not measured, and the two candidates differ by
+    # 57x, so this tool writes no angle tolerance at all rather than a possibly wrong one.
+    if tol_spec is not None and angle:
+        return None, (f"'{key}'.tolerance was not written - the unit Fusion stores an angle "
+                      "tolerance in is unmeasured here, so any bound written could be wrong "
+                      "by a factor of 57. Nothing was written. Add the angle tolerance in the "
+                      "Fusion PMI dialog, or set a tolerance on a length value instead.")
+    terr = _tolerance_spec_error(tol_spec) if tol_spec is not None else None
+    if terr:
+        return None, f"'{key}'.tolerance: {terr}"
+    return (attr, angle, num, tol_spec), None
+
+
+def hole_values_error(values):
+    """The refusal a values object earns from the request alone; else None."""
+    if not isinstance(values, dict):
+        return f"'values' must be an object with any of: {', '.join(HOLE_VALUE_PROPS)}."
+    return next((r for _row, r in (_value_spec(k, s) for k, s in values.items()) if r), None)
 
 
 def apply_hole_values(note, values, f):
@@ -588,35 +688,12 @@ def apply_hole_values(note, values, f):
     dict (display units, countersink_angle_deg in degrees). Every refusal is decided before the
     first write; a failure DURING the writes stops at that key and leaves the earlier ones.
     Returns (applied_dict, error)."""
-    import math
-    if not isinstance(values, dict):
-        return None, f"'values' must be an object with any of: {', '.join(HOLE_VALUE_PROPS)}."
-    # PRE-PASS: resolve every key and refuse every refusable spec BEFORE the first write, so a
-    # refused call leaves the note exactly as it was instead of half-applied.
+    refusal = hole_values_error(values)
+    if refusal:
+        return None, refusal
     plan = []
     for key, spec in values.items():
-        norm = str(key).strip().lower()
-        attr = HOLE_VALUE_ATTR.get(norm)
-        if attr is None:
-            return None, f"Unknown value '{key}'. Legal values: {', '.join(HOLE_VALUE_PROPS)}."
-        angle = norm == "countersink_angle_deg"
-        num = spec.get("value") if isinstance(spec, dict) else spec
-        tol_spec = spec.get("tolerance") if isinstance(spec, dict) else None
-        # The coercion is decidable from the request alone, so it refuses HERE beside the other
-        # four refusal classes rather than raising mid-write with earlier keys already applied.
-        if num is not None:
-            try:
-                num = float(num)
-            except (TypeError, ValueError):
-                return None, (f"'{key}' must be a number (in 'units'"
-                              + (", degrees" if angle else "") + f"), got {num!r}.")
-        # The unit an angle BOUND is stored in is not measured, and the two candidates differ by
-        # 57x, so this tool writes no angle tolerance at all rather than a possibly wrong one.
-        if tol_spec is not None and angle:
-            return None, (f"'{key}'.tolerance was not written - the unit Fusion stores an angle "
-                          "tolerance in is unmeasured here, so any bound written could be wrong "
-                          "by a factor of 57. Nothing was written. Add the angle tolerance in the "
-                          "Fusion PMI dialog, or set a tolerance on a length value instead.")
+        (attr, angle, num, tol_spec), _refusal = _value_spec(key, spec)
         gv = safe(lambda a=attr: getattr(note, a))
         if gv is None:
             return None, (f"'{key}' is not readable on this note (not applicable to this "

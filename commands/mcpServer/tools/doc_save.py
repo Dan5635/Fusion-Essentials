@@ -28,9 +28,10 @@ def _report_lineage_change(payload, doc, lineage_before):
         payload["lineage_changed"] = {"from": lineage_before, "to": lineage_after}
         payload["note"] = (payload.get("note", "") +
                            " THIS SAVE MOVED THE DOCUMENT TO A NEW LINEAGE URN. Address the file by "
-                           "lineage_changed.to from now on - lineage_changed.from opens the file "
-                           "this one forked from, and its version history does not "
-                           "continue.").strip()
+                           "lineage_changed.to from now on. The two version histories are separate; "
+                           "an advance cannot be inferred across them. Read data_get(file=<the new "
+                           "URN>). The prior lineage may now be a configuration backing file, not an "
+                           "independent copy.").strip()
 
 
 def handler(description: str = "") -> dict:

@@ -56,6 +56,11 @@ _STL_UNITS = _inputs.Choice("stl_units", options=list(_export.STL_UNIT_MEMBERS),
 # format=dxf inputs: a whole SKETCH by name, or a planar FACE's projected outline (find_geometry
 # handle). Exactly one of these is required when format=dxf; both are ignored otherwise.
 _DXF_FACE = _inputs.GeometryHandle("dxf_face", require="planar_face", required=False)
+_DXF_FLAT = _inputs.BodyRef("dxf_flat_pattern", required=False,
+    description="Folded sheet body owning the flat pattern to export.")
+_FLAT_UNITS = _inputs.Choice("dxf_flat_units", ["mm", "cm", "in"])
+_FLAT_UNIT_MEMBERS = {"mm": "MillimeterDistanceUnits", "cm": "CentimeterDistanceUnits",
+                      "in": "InchDistanceUnits"}
 
 # MEASURED against an occurrence, a body proxy and their component: these six factories take a
 # COMPONENT (or the root) and RAISE "3 : invlid argument geometry" on the other two, while stl, obj
@@ -257,9 +262,9 @@ def _export_dxf(dxf_sketch, dxf_face, file_path,
     if not path.lower().endswith(".dxf"):
         path = path + ".dxf"
 
-    design = _common.design()
-    if not design:
-        return error("No active design to export. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     sketch_name = (dxf_sketch or "").strip()
     has_face = bool((dxf_face or "").strip()) if isinstance(dxf_face, str) else bool(dxf_face)
@@ -351,7 +356,7 @@ def _export_dxf_face(design, dxf_face, path, want_construction, want_points, wan
         return error(f"Could not create a projection sketch on the face: {e}")
     if not sk:
         return error("Could not create a projection sketch on the face (sketches.add returned nothing).")
-    sk_name = safe(lambda: sk.name) or "scratch sketch"
+    left = _common.left_in_timeline(design, _common.feature_address(sk))
 
     def _cleanup():
         return bool(safe(lambda: sk.deleteMe(), False))
@@ -366,14 +371,14 @@ def _export_dxf_face(design, dxf_face, path, want_construction, want_points, wan
             cleaned = _cleanup()
             msg = f"Could not project the face's edges into a sketch for DXF: {e}"
             if not cleaned:
-                msg += f" Also failed to remove the scratch sketch '{sk_name}' - delete it manually."
+                msg += " The scratch sketch was not removed: " + left
             return error(msg)
 
     if not _sketch_curve_count(sk):
         cleaned = _cleanup()
         msg = "Face projection produced no sketch geometry - nothing to write to DXF."
         if not cleaned:
-            msg += f" Also failed to remove the scratch sketch '{sk_name}' - delete it manually."
+            msg += " The scratch sketch was not removed: " + left
         return error(msg)
 
     size, werr = _write_dxf(design, sk, path, want_construction, want_points, want_projected)
@@ -381,14 +386,13 @@ def _export_dxf_face(design, dxf_face, path, want_construction, want_points, wan
     if werr:
         msg = werr
         if not cleaned:
-            msg += f" Also failed to remove the scratch sketch '{sk_name}' - delete it manually."
+            msg += " The scratch sketch was not removed: " + left
         return error(msg)
 
     note = ("Face outline projected into a scratch sketch, written to DXF, and the scratch sketch "
             "removed - the design is unchanged.")
     if not cleaned:
-        note = (f"DXF written, but the scratch projection sketch '{sk_name}' could not be removed - "
-                "it remains in the design; delete it manually.")
+        note = "DXF written, but the scratch projection sketch was not removed: " + left
 
     return ok({
         "exported": True,
@@ -401,12 +405,74 @@ def _export_dxf_face(design, dxf_face, path, want_construction, want_points, wan
     })
 
 
+def _export_flat_dxf(reference, file_path, units, bend_lines, bend_extents):
+    """Export the named body's existing flat pattern with explicit units and verified file output."""
+    unit, why = _FLAT_UNITS.resolve(units or "mm")
+    if why:
+        return error(why)
+    body, why = _DXF_FLAT.resolve(reference)
+    if why:
+        return error(why)
+    body = _common._native_of(body)
+    design = _common.design()
+    comp = body.parentComponent
+    if _common.same_component(safe(lambda: comp.parentDesign.rootComponent), safe(lambda: design.rootComponent)) is not True:
+        return error("dxf_flat_pattern must belong to the active design; open its source document first.")
+    flat = safe(lambda: comp.flatPattern)
+    if flat is None:
+        return error("dxf_flat_pattern has no readable flat pattern. Use sheet_create_flat_pattern first.")
+    key = _common.native_identity(body)
+    if key is None or key != _common.native_identity(safe(lambda: flat.foldedBody)):
+        return error("dxf_flat_pattern is not the component's flattened body. Select its folded source body.")
+    path = (file_path or "").strip().strip('"')
+    if not path:
+        return error("Provide file_path for the flat-pattern DXF.")
+    if not path.lower().endswith(".dxf"):
+        path += ".dxf"
+    before = _export.snapshot(path)
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        opts = design.exportManager.createDXFFlatPatternExportOptions(path, flat)
+        wanted = getattr(adsk.fusion.DistanceUnits, _FLAT_UNIT_MEMBERS[unit])
+        # Reading the factory's units before assigning them aborts the native command.
+        opts.units = wanted
+        flags = (("isCenterLinesExported", True if bend_lines is None else bend_lines),
+                 ("isExtentLinesExported", True if bend_extents is None else bend_extents))
+        for prop, value in flags:
+            landed, _changed = _export.applied_pair(opts, prop, value, value)
+            if landed is None:
+                return error(f"{prop}={value!r} did not land; no export was attempted.")
+        executed = design.exportManager.execute(opts)
+    except Exception as exc:
+        return error(f"Flat-pattern DXF export failed: {exc}")
+    size, why = _landed("dxf", path, before, executed)
+    if why:
+        return error(why)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as stream:
+            lines = [line.strip() for line in stream]
+        pairs = list(zip(lines[::2], lines[1::2]))
+        units_in_file = [pairs[i + 1] for i, pair in enumerate(pairs[:-1])
+                         if pair == ("9", "$INSUNITS")]
+    except OSError as exc:
+        return error(f"DXF landed at {path!r}, but its unit header could not be read: {exc}")
+    expected_header = ("70", {"mm": "4", "cm": "5", "in": "1"}[unit])
+    if units_in_file != [expected_header]:
+        return error(f"DXF landed at {path!r}, but $INSUNITS={units_in_file!r} disagrees with {unit!r}.")
+    return ok({"exported": True, "format": "dxf", "file_path": path, "file_exists": True,
+               "size_bytes": size, "source": body.name, "dxf_flat_units": unit,
+               "bend_lines": flags[0][1], "bend_extents": flags[1][1],
+               "development": "unverified",
+               "note": "Native flat DXF exported; development is unverified. Inspect sheet_get(include=['features']) and the cutting contours before fabrication. Coordinates use the flat export frame."})
+
+
 def handler(format: str = "step", file_path: str = "", target: str = "",
             split_by_component: bool = False, dxf_sketch: str = "", dxf_face: str = "",
             include_invisible_bodies: bool = False, include_invisible_components: bool = False,
             stl_binary=None, stl_units: str = "",
             dxf_export_construction=None, dxf_export_points=None,
-            dxf_export_projected=None, dxf_component: str = "") -> dict:
+            dxf_export_projected=None, dxf_component: str = "", dxf_flat_pattern: str = "",
+            dxf_flat_units: str = "", dxf_bend_lines=None, dxf_bend_extents=None) -> dict:
     """See TOOL_DESCRIPTION."""
     fmt, ferr = _FORMAT.resolve(format)
     if ferr:
@@ -429,6 +495,20 @@ def handler(format: str = "step", file_path: str = "", target: str = "",
                      f"only, and this call asked for format={fmt} - refusing rather than dropping "
                      "it. Export as stl to choose binary or ASCII, or omit 'stl_binary'.")
 
+    flat_options = dxf_flat_units or dxf_bend_lines is not None or dxf_bend_extents is not None
+    if (dxf_flat_pattern or flat_options) and fmt != "dxf":
+        return error("Flat-pattern options require format=dxf; omit them for other formats.")
+    if flat_options and not dxf_flat_pattern:
+        return error("dxf_flat_units/dxf_bend_lines/dxf_bend_extents require dxf_flat_pattern.")
+    sketch_only = [name for name, sent in (
+        ("dxf_sketch", bool(dxf_sketch)), ("dxf_face", bool(dxf_face)), ("dxf_component", bool(dxf_component)),
+        ("dxf_export_construction", dxf_export_construction is not None),
+        ("dxf_export_points", dxf_export_points is not None),
+        ("dxf_export_projected", dxf_export_projected is not None)) if sent]
+    if dxf_flat_pattern and sketch_only:
+        return error("dxf_flat_pattern takes dxf_flat_units, dxf_bend_lines and dxf_bend_extents only; "
+                     f"drop {', '.join(sketch_only)}.")
+
     # The dxf branch writes the ONE sketch/face named by dxf_sketch/dxf_face, and the split walk picks
     # its own top-level occurrences - so every knob that cannot reach either write is refused here.
     if fmt == "dxf":
@@ -446,6 +526,9 @@ def handler(format: str = "step", file_path: str = "", target: str = "",
                 return error(f"'{knob}' (true) applies to the 3D formats only, and this call asked "
                              "for format=dxf, whose source is one named sketch or face - refusing "
                              f"rather than dropping it. Export as a 3D format, or omit '{knob}'.")
+        if dxf_flat_pattern:
+            return _export_flat_dxf(dxf_flat_pattern, file_path, dxf_flat_units,
+                                    dxf_bend_lines, dxf_bend_extents)
         return _export_dxf(dxf_sketch, dxf_face, file_path,
                            dxf_export_construction, dxf_export_points, dxf_export_projected,
                            dxf_component)
@@ -463,9 +546,9 @@ def handler(format: str = "step", file_path: str = "", target: str = "",
         return error("Provide 'file_path' - the local output path (a file, or a DIRECTORY when "
     "split_by_component=true). The format extension is appended if missing.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design to export. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     em = design.exportManager
 
@@ -702,6 +785,10 @@ tool = (
     .add_input_property("include_invisible_components", {"type": "boolean"})
     .add_input_property("stl_binary", {"type": "boolean"})
     .add_input_property(_STL_UNITS.name, _STL_UNITS.schema())
+    .add_input_property(*_DXF_FLAT.as_property())
+    .add_input_property(*_FLAT_UNITS.as_property())
+    .add_input_property("dxf_bend_lines", {"type": "boolean"})
+    .add_input_property("dxf_bend_extents", {"type": "boolean"})
     .add_input_property("dxf_sketch", {"type": "string"})
     .add_input_property("dxf_component", {"type": "string",
             "description": "Narrows 'dxf_sketch' to one component."})

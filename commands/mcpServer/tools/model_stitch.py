@@ -33,9 +33,9 @@ def handler(bodies=None, tolerance=None, units="mm", operation="new") -> dict:
     if k is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # SurfaceBodyRefList validates >=2 AND that EVERY input is an open surface (rejects solids up front
     # with a precise per-index message) BEFORE we mutate anything.

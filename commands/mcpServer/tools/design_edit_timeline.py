@@ -1,8 +1,8 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Drive the parametric timeline: move the marker, suppress a timeline object, group a range of
-items, discard everything after the marker, and tag a feature with an attribute.
+"""Drive the parametric timeline: move the marker, reorder or suppress a timeline object, group a
+range of items, discard everything after the marker, and tag a feature with an attribute.
 Timeline.movetoNextStep carries a lowercase 't' - that is the member name the API exposes.
 """
 
@@ -12,9 +12,10 @@ from ..mcp_primitives.registry import register
 from . import _common
 from . import _design_common
 from . import _inputs
-from ._common import error, ok, safe, short_ref, timeline_health
+from ._common import error, ok, outcome_clause, safe, short_ref, timeline_health
+from ._inputs import _timeline_objects as _objects
 
-_ACTIONS = ("roll", "suppress", "group", "ungroup", "delete_after_marker",
+_ACTIONS = ("roll", "reorder", "suppress", "group", "ungroup", "group_state", "delete_after_marker",
             "set_attribute", "delete_attribute")
 _PLACES = ("before", "after")            # roll to a named item - TimelineObject.rollTo(rollBefore)
 _STEPS = ("beginning", "end", "next", "previous")   # roll with no feature - the Timeline marker moves
@@ -33,17 +34,10 @@ _UNREADABLE = object()      # a read-back that RAISED - distinct from one that r
 _ACTION = _inputs.Choice("action", list(_ACTIONS), default="roll")
 _TO = _inputs.Choice(
     "to", list(_PLACES) + list(_STEPS), default="before",
-    description="before/after a named 'feature'; the steps take none.")
+    description="before/after the anchor; the steps take none.")
 # The attribute actions target the FEATURE ENTITY, which is what the FeatureRef kind resolves to;
 # it rides on the shared 'feature' input rather than adding a second name for the same thing.
 _ATTR_TARGET = _inputs.FeatureRef("feature")
-
-
-def _objects(timeline):
-    """Every TimelineObject in timeline order, unreadable slots dropped - the shared collection walk,
-    so this list and the one FeatureRef resolves against skip the same slots. A skip leaves a HOLE, so
-    a position here is NOT an object's .index; everything addressing an index reads .index itself."""
-    return list(_common.iter_collection(timeline))
 
 
 def _index(obj):
@@ -63,11 +57,62 @@ def _sample(labels):
     return ", ".join(head) + (f" and {more} more" if more > 0 else "")
 
 
-def _groups(timeline):
+def _groups(timeline, strict=False):
     """Every TimelineGroup, unreadable slots dropped. Read from timelineGroups, NOT from
     timeline.item(): an EXPANDED group is absent from the timeline enumeration entirely - only its
     members appear there - so a walk of timeline.item() sees collapsed groups only."""
-    return list(_common.iter_collection(safe(lambda: timeline.timelineGroups)))
+    collection = safe(lambda: timeline.timelineGroups)
+    if strict:
+        count = _common.counted(lambda: collection.count)
+        if count is None or count < 0:
+            return None
+        groups = [safe(lambda i=i: collection.item(i)) for i in range(count)]
+        return groups if all(g is not None and isinstance(safe(lambda g=g: g.name), str)
+                             and safe(lambda g=g: g.name) for g in groups) else None
+    return list(_common.iter_collection(collection))
+
+
+def _do_group_state(timeline, feature, collapsed):
+    """Set an unfold group's collapse flag and verify its retained wrapper and canonical members."""
+    if not feature or type(collapsed) is not bool:
+        return error("action='group_state' needs feature='<group name>' and collapsed=true/false. "
+                     "Read design_get(include=['timeline']) for its unfold group.")
+    groups = _groups(timeline, strict=True)
+    if groups is None:
+        return error("Timeline groups could not be listed completely. Nothing changed; read design_get(include=['timeline']).")
+    group, why = _inputs.resolve_timeline_object(groups, feature, "the unfold group")
+    if why:
+        return error(why)
+    before, why = _design_common.unfold_group_members(group)
+    was = _common.read_flag(lambda: group.isCollapsed)
+    name = safe(lambda: group.name)
+    if before is None or was is None or _common.read_flag(lambda: group.isValid) is not True:
+        return error(f"'{name}': {why or 'group validity/collapse state could not be confirmed'}. Nothing changed; "
+                     "read design_get(include=['timeline'], group='<group name>').")
+    if was is collapsed:
+        return error(f"'{name}' already reads collapsed={collapsed}. Nothing changed.")
+    key = _common.native_identity(group)
+    try:
+        group.isCollapsed = collapsed
+    except Exception as exc:
+        return error(f"Setting '{name}' collapsed={collapsed} failed: {exc}. Read design_get(include=['timeline']).")
+    fresh_groups = _groups(timeline, strict=True)
+    fresh, why = (_inputs.resolve_timeline_object(fresh_groups, name, "the unfold group")
+                  if fresh_groups is not None else (None, "group census unread"))
+    now_key = _common.native_identity(fresh)
+    canonical = (None if key is None or now_key is None else key == now_key)
+    if (why or _common.read_flag(lambda: group.isValid) is not True
+            or safe(lambda: _common._native_of(group) == _common._native_of(fresh)) is not True
+            or _common.read_flag(lambda: group.isCollapsed) is not collapsed
+            or _common.read_flag(lambda: fresh.isCollapsed) is not collapsed
+            or _design_common.unfold_group_members(group)[0] != before or _design_common.unfold_group_members(fresh)[0] != before
+            or canonical is False):
+        return error(f"'{name}' collapse change or preserved membership is unconfirmed. "
+                     "Read design_get(include=['timeline'], group='<group name>') before retrying.")
+    return ok({"group": name, "was_collapsed": was, "is_collapsed": collapsed,
+               "member_count": len(before), "group_canonical_identity_verified": canonical,
+               "note": "Group state re-read; original valid group and canonical member/owner identities retained. "
+                       "A null group identity verdict means its canonical key was unavailable."})
 
 
 def _member_span(group):
@@ -92,7 +137,8 @@ def _resolve_object(timeline, want, role, roll=False):
     `role` is this call's noun for the target, and the miss hint names a collapsed group."""
     return _inputs.resolve_timeline_object(
         _objects(timeline), want, role,
-        miss_hint=lambda name: _design_common.collapsed_group_hint(timeline, name, roll))
+        miss_hint=lambda name: _design_common.collapsed_group_hint(timeline, name, roll),
+        hidden_hint=lambda name, hits: _design_common.hidden_twin_hint(timeline, name, hits))
 
 
 def _marker_facts(timeline, count):
@@ -174,6 +220,133 @@ def _do_roll(timeline, feature, to):
     out.update(_marker_facts(timeline, count))
     out["note"] = ("Items after the marker are rolled back - they are not computed and their geometry "
                    "is absent until the marker returns. Roll to='end' when done.")
+    return ok(out)
+
+
+def _order(design):
+    """The timeline census as [((entity token, name), index)], None when unread or not told apart."""
+    census = _design_common.timeline_census(design)
+    if census is None:
+        return None
+    rows = [((it["key"], it["name"]), it["index"]) for it in census["items"]]
+    return rows if len({key for key, _i in rows}) == len(rows) else None
+
+
+_REORDER_CALL = ("design_edit_timeline(action='reorder', feature='{}@{}', to='before', "
+                 "end_feature='{}@{}')")
+_ORDER_READ = "design_get(include=['timeline']) reads the order."
+
+
+def _to_last(name, i, last_name, last):
+    """The two measured moves making item `i` last: before the last row, then that row before it."""
+    return ([] if i == last - 1 else [_REORDER_CALL.format(name, i, last_name, last)]
+            ) + [_REORDER_CALL.format(last_name, last, name, last - 1)]
+
+
+def _move_back(before, after, item):
+    """The reorder calls, by 'name@index' in `after`, putting `item` back where `before` held it;
+    None when an index does not read."""
+    keys, now = [key for key, _i in before], dict(after)
+    at = keys.index(item)
+    if at + 1 < len(keys):
+        anchor = keys[at + 1]
+        if not isinstance(now.get(item), int) or not isinstance(now.get(anchor), int):
+            return None
+        return [_REORDER_CALL.format(item[1], now[item], anchor[1], now[anchor])]
+    return None
+
+
+def _restore_text(moves):
+    """The way back to the prior order: the computed moves and the read, or the read alone."""
+    if moves is None:
+        return ("No verified tool sequence restores this order. " + _ORDER_READ
+                + " Inspect and restore the order manually in Fusion.")
+    return f"Move it back with {', then '.join(moves)}; " + _ORDER_READ
+
+
+def _last_refusal(name, i, last_name, last):
+    """The refusal for a move after the last row, with the two measured moves that make it last."""
+    return error(f"Fusion cannot place an item after the last timeline row, so '{name}' cannot go "
+                 f"after '{last_name}'. Nothing moved. To make '{name}' last, run "
+                 + ", then ".join(_to_last(name, i, last_name, last)) + ".")
+
+
+def _do_reorder(design, timeline, feature, anchor, to):
+    if not feature or not anchor:
+        return error("action='reorder' needs 'feature' (the item to move) and 'end_feature' (the "
+                     "item it goes before or after), named as design_get(include=['timeline']) "
+                     "lists them.")
+    if to not in _PLACES:
+        return error(f"action='reorder' takes to='before' or to='after' (got '{to}').")
+    obj, rerr = _resolve_object(timeline, feature, "the item to move")
+    if rerr:
+        return error(rerr)
+    mark, aerr = _resolve_object(timeline, anchor, "the anchor item")
+    if aerr:
+        return error(aerr)
+    item = (_design_common.timeline_item_key(obj), safe(lambda: obj.name))
+    near = (_design_common.timeline_item_key(mark), safe(lambda: mark.name))
+    name, target = item[1], near[1]
+    before = _order(design)
+    keys_before = [key for key, _i in before or []]
+    if item not in keys_before or near not in keys_before:
+        return error("The timeline did not list with every item told apart, so a move could not be "
+                     "verified. Nothing moved.")
+    if item == near:
+        return error(f"'{_label(obj)}' is the anchor itself; name another item as 'end_feature'.")
+    at, pa = keys_before.index(item), keys_before.index(near)
+    if at == (pa - 1 if to == "before" else pa + 1):
+        return error(f"'{name}' already sits immediately {to} '{target}'. Nothing moved.")
+    # reorder(beforeIndex) lands the item in front of the item read at beforeIndex, moving either way;
+    # nothing lands after the last row (measure_api row timeline-reorder-past-end-raises).
+    nxt = pa if to == "before" else pa + 1
+    land = before[nxt][1] if nxt < len(before) else None
+    i = before[at][1]
+    if nxt == len(before) and isinstance(i, int) and isinstance(before[pa][1], int):
+        return _last_refusal(name, i, target, before[pa][1])
+    if not isinstance(land, int) or not isinstance(i, int):
+        return error(f"The timeline index of '{name}' or of the item it would land in front of "
+                     "does not read. Nothing moved.")
+    health_before = timeline_health(design)
+    try:
+        why = None if obj.reorder(land) is True else "reorder returned false"
+    except Exception as e:
+        why = str(e).split(" / ")[0].strip().rstrip(".")
+    after = _order(design)
+    keys_after = [key for key, _i in after or []]
+    if why is not None:
+        if after == before:
+            return error(f"Fusion refused to move '{name}' {to} '{target}': {why}. Nothing moved "
+                         "(the timeline re-reads unchanged).")
+        return error(f"Fusion refused to move '{name}' {to} '{target}': {why}, but the timeline "
+                     "re-reads changed or did not re-read. Read design_get(include=['timeline']).")
+    if after == before:
+        return error(f"reorder returned true, but the timeline re-reads unchanged: '{name}' is still "
+                     f"at index {i}. Nothing moved.")
+    if item not in keys_after or near not in keys_after:
+        return error(f"reorder returned true, but the timeline did not re-read with every item told "
+                     f"apart, so where '{name}' sits is UNCONFIRMED. Read "
+                     "design_get(include=['timeline']).")
+    j, k = keys_after.index(item), keys_after.index(near)
+    now = after[j][1]
+    undo = _restore_text(_move_back(before, after, item))
+    kept_order = [x for x in keys_after if x != item] == [x for x in keys_before if x != item]
+    if j != (k - 1 if to == "before" else k + 1) or not kept_order:
+        return error(f"reorder returned true, but the re-read has '{name}' at index {now}, "
+                     + (f"not immediately {to} '{target}' (index {after[k][1]}). {undo}"
+                        if kept_order else "and other items changed order. " + _restore_text(None)))
+    errors_after, warnings_after, _total = timeline_health(design)
+    new = ([n for n in errors_after if n not in health_before[0]]
+           + [n for n in warnings_after if n not in health_before[1]])
+    if new:
+        return error(f"Moving '{name}' {to} '{target}' left new timeline errors or warnings: "
+                     f"{_common.named_with_remainder(new)}. "
+                     + outcome_clause("kept", "", [(f"'{name}' timeline index", now, i)], undo))
+    out = {"reordered": True, "feature": name, "to": to, "end_feature": target,
+           "index_before": i, "index_after": now,
+           "note": f"'{name}' now sits immediately {to} '{target}'; every other item kept its order "
+                   "(re-read)."}
+    out.update(_marker_facts(timeline, len(keys_after)))
     return ok(out)
 
 
@@ -336,6 +509,13 @@ def _do_ungroup(timeline, feature):
                      "is unambiguous.")
     group = hits[0]
     gname = safe(lambda: group.name) or feature
+    if _design_common.unfold_group_members(group)[0] is not None:
+        if _common.read_flag(lambda: group.isCollapsed) is False:
+            return error(f"'{gname}' is an unfold group and is already expanded, so its items are listed; "
+                         "name them directly. Nothing changed.")
+        return error(f"'{gname}' is an unfold group; ungrouping it loses its unfold/refold association. "
+                     f"Expand it with design_edit_timeline(action='group_state', feature='{gname}', "
+                     "collapsed=false) instead.")
     try:
         # deleteGroupAndContents=False: the group goes, its items stay in the timeline, expanded.
         did = group.deleteMe(False)
@@ -354,14 +534,22 @@ def _do_ungroup(timeline, feature):
 
 
 def _do_delete_after_marker(timeline, confirm):
+    if type(confirm) is not bool:
+        return error(f"confirm_delete_after_marker must be a Boolean, got {confirm!r}. "
+                     "Use false for a preview or true to discard the items after the marker.")
     marker = safe(lambda: timeline.markerPosition)
-    count = safe(lambda: timeline.count, 0) or 0
-    if marker is None:
-        return error("Could not read markerPosition, so what lies after the marker is unknown - "
+    count = _common.counted(lambda: timeline.count)
+    if type(marker) is not int or count is None or not 0 <= marker <= count:
+        return error("Could not read a valid markerPosition and timeline count, so what lies after the marker is unknown - "
                      "nothing was deleted.")
     if marker >= count:
         return error(f"Nothing lies after the marker: it is at {marker} of {count} (the end of the "
                      "timeline). Roll it back first with action='roll'.")
+    before = _order(_common.design())
+    if (before is None or len(before) != count or [i for _key, i in before] != list(range(count))
+            or any(not isinstance(key[1], str) or not key[1] for key, _i in before)):
+        return error("The timeline prefix could not be listed completely. Nothing was deleted; "
+                     "read design_get(include=['timeline']) before retrying.")
     after_marker = [o for o in _objects(timeline) if _index(o) >= marker]
     # A collapsed group is ONE entry here and takes every member down with it, so the blast radius
     # is the member count, not the entry count - measured: 5 entries discarded 8 features.
@@ -378,14 +566,24 @@ def _do_delete_after_marker(timeline, confirm):
         did = timeline.deleteAllAfterMarker()
     except Exception as e:
         return error(f"deleteAllAfterMarker failed: {e}")
-    after = safe(lambda: timeline.count, 0) or 0
+    after = _common.counted(lambda: timeline.count)
     if not did:
         return error(f"Fusion declined to delete after the marker (returned false); the timeline "
                      f"still holds {after} item(s).")
+    if after is None:
+        return error("deleteAllAfterMarker reported success but the resulting timeline count is "
+                     "unread. Deletion is unconfirmed; read design_get(include=['timeline']).")
     if after >= count:
         return error(f"deleteAllAfterMarker reported success but the timeline still holds {after} "
                      f"item(s) of {count} - nothing was discarded.")
-    return ok({"deleted_after_marker": True, "deleted": features,
+    after_marker_position = _common.counted(lambda: timeline.markerPosition)
+    retained = _order(_common.design())
+    if after != marker or after_marker_position != marker or retained != before[:marker]:
+        return error(f"deleteAllAfterMarker reported success but the retained timeline prefix or "
+                     f"marker differs from the expected {marker} entries (count={after}, "
+                     f"marker={after_marker_position}). Partial changes may remain; read "
+                     "design_get(include=['timeline']) before retrying; undo in Fusion if unintended.")
+    return ok({"deleted_after_marker": True, "retained_prefix_confirmed": True, "deleted": features,
                "deleted_timeline_entries": count - after, "discarded": doomed[:_PREVIEW_MAX],
                "marker_position": marker, "timeline_count": after,
                "note": "Those items and their geometry are gone. Undo in Fusion if unintended - the "
@@ -536,7 +734,7 @@ def _do_delete_attribute(design, feature, group, name):
 
 
 def handler(action: str = "roll", feature: str = "", to: str = "before", end_feature: str = "",
-            name: str = "", suppressed: bool = True,
+            name: str = "", suppressed: bool = True, collapsed=None,
             confirm_delete_after_marker: bool = False, attribute_group: str = "",
             attribute_name: str = "", attribute_value: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
@@ -545,35 +743,38 @@ def handler(action: str = "roll", feature: str = "", to: str = "before", end_fea
         return verr
     action, to = values["action"], values["to"]
 
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     timeline = safe(lambda: design.timeline)
     # Timeline defines __len__, so an EMPTY one reads falsy - test it against None, never for truth.
     if timeline is None:
         return error(_design_common.no_timeline_reason(
-            design, "This design has no timeline (a direct-modelling design keeps no history), so "
-                    "there is no marker to move and nothing to group."))
+            "This design has no timeline (a direct-modelling design keeps no history), so "
+            "there is no marker to move and nothing to group."))
 
     feature = (feature or "").strip()
     if action == "roll":
         return _do_roll(timeline, feature, to)
+    if action == "reorder":
+        return _do_reorder(design, timeline, feature, (end_feature or "").strip(), to)
     if action == "suppress":
         return _do_suppress(design, timeline, feature, suppressed)
     if action == "group":
         return _do_group(timeline, feature, (end_feature or "").strip(), name)
     if action == "ungroup":
         return _do_ungroup(timeline, feature)
+    if action == "group_state":
+        return _do_group_state(timeline, feature, collapsed)
     if action == "set_attribute":
         return _do_set_attribute(design, feature, attribute_group, attribute_name, attribute_value)
     if action == "delete_attribute":
         return _do_delete_attribute(design, feature, attribute_group, attribute_name)
-    return _do_delete_after_marker(timeline, bool(confirm_delete_after_marker))
+    return _do_delete_after_marker(timeline, confirm_delete_after_marker)
 
 
 TOOL_DESCRIPTION = (
-    "Drive the parametric timeline. Items after the marker are not computed, so roll to='end' when "
-    "done. Names come from design_get(include=['timeline'])."
+    "Edit timeline items from design_get(include=['timeline']); roll to='end' when done."
 )
 
 tool = (
@@ -581,15 +782,17 @@ tool = (
     .add_input_property(*_ACTION.as_property())
     .add_input_property(*_TO.as_property())
     .add_input_property("feature", {"type": "string",
-            "description": "The roll/suppress/attribute target, or a group's first item."})
+            "description": "Item/anchor or group name."})
     .add_input_property("end_feature", {"type": "string",
-            "description": "Last item of the group range."})
+            "description": "Group's last item, or reorder's anchor."})
     .add_input_property("name", {"type": "string",
-            "description": "The new group's name."})
+            "description": "New group's name."})
     .add_input_property("suppressed", {"type": "boolean",
             "description": "False unsuppresses."})
+    .add_input_property("collapsed", {"type": "boolean",
+            "description": "group_state: collapse/expand one unfold plus optional refold."})
     .add_input_property("confirm_delete_after_marker", {"type": "boolean",
-            "description": "Without it the action previews and refuses."})
+            "description": "Without it, previews and refuses."})
     .add_input_property("attribute_group", {"type": "string"})
     .add_input_property("attribute_name", {"type": "string"})
     .add_input_property("attribute_value", {"type": "string"})

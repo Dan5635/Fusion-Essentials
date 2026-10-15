@@ -23,7 +23,8 @@ def family_of(name):
 # Only these: the hub families (doc/find/view/design/model/sketch/joint/assembly/param) are
 # cross-referenced from everywhere, and sys/workspace hold the orientation tools named in the
 # server's initialize instructions - so those stay always-on.
-GATEABLE_FAMILIES = ("appearance", "cam", "data", "drawing", "form", "mesh", "save", "surface")
+GATEABLE_FAMILIES = ("appearance", "cam", "data", "drawing", "form", "mesh", "pmi", "render",
+                     "save", "sheet", "surface")
 
 # Tools the auto-discovery sweep SKIPS ENTIRELY unless a specific settings checkbox allows them
 # (see entry.py's _GATED_TOOL_MODULES / _collect_items - the module is never even imported by the
@@ -33,7 +34,7 @@ GATEABLE_FAMILIES = ("appearance", "cam", "data", "drawing", "form", "mesh", "sa
 # map (cross-checked against the LIVE registry via has_tool) so an agent that gets a bare "tool not
 # found" for one of these has a discoverable next step instead of a dead end.
 GATED_TOOLS = {
-    "sys_execute_script": "Allow AI to execute arbitrary Fusion API scripts (advanced; security risk)",
+    "sys_execute_script": "Allow AI scripts (unsafe)",
 }
 
 

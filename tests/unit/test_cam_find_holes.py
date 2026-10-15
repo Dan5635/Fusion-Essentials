@@ -343,7 +343,7 @@ class TestRecognizerCall:
                             raising=False)
         groups, err = cfh._recognize_groups([object()], False)
         assert groups is None
-        assert "Manufacturing Extension" in err and "entitlement" in err
+        assert "Manufacturing Extension" in err and "This operation requires" in err
         assert "find_geometry(kind='cylinder_face')" in err and "selection='holes'" in err
 
 

@@ -14,6 +14,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe
+from ._common import normalize_include as _normalize_include
 from . import _common
 from . import _inputs
 from . import _pmi
@@ -31,14 +32,6 @@ _KINDS = ("note", "hole_note", "imported_dimension", "imported_note", "imported_
 
 _GEOMETRY = _inputs.GeometryHandleList("geometry", require="any")
 _KIND_FILTER = _inputs.Choice("kind", options=list(_KINDS))
-
-
-def _normalize_include(include):
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
 
 
 def _row_cap(max_results) -> int:
@@ -260,9 +253,9 @@ def _slice_detail(rec, ann, out_f):
 def handler(include=None, geometry=None, kind="", component="", max_results=None,
             units="mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    d = _common.design()
-    if not d:
-        return error("No active design. Create or open a document first (see doc_new).")
+    d, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     f = _common.scale(units)
     if f is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")

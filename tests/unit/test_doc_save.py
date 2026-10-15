@@ -5,7 +5,6 @@ version-description marker, and the postcondition that turns a save() which vers
 nothing into an error.
 """
 
-import json
 import time
 
 import pytest
@@ -32,9 +31,7 @@ def pump_clock(monkeypatch):
     return record
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _doc(name="PartA", **kw):
@@ -47,8 +44,10 @@ def _doc(name="PartA", **kw):
 class _ForkingSave(FakeFusionDocument):
     """A save that lands the document on a NEW lineage urn - what the first save after a
     configured-design conversion does."""
+    lands_on = "urn:new"
+
     def save(self, description=""):
-        self.dataFile = FakeDataFile(self._name, file_id="urn:new")
+        self.dataFile = FakeDataFile(self._name, file_id=self.lands_on)
         return super().save(description)
 
 
@@ -77,10 +76,12 @@ class _VersionData(FakeData):
         super().__init__()
         self._sequence = list(files)
         self._calls = 0
+        self.asked = []
 
     def findFileById(self, lineage):
         item = self._sequence[min(self._calls, len(self._sequence) - 1)]
         self._calls += 1
+        self.asked.append(lineage)
         return item
 
 
@@ -120,15 +121,16 @@ class TestSaveDocument:
         assert doc._saves == []
 
     def test_a_forking_save_reports_the_new_lineage_loudly(self, install_app):
-        # A save can move the document onto a NEW lineage URN (the first save after a
-        # configured-design conversion does; the superseded URN keeps opening the pre-conversion file).
-        # The payload must carry the change, not just swap identities silently.
+        # A configured save can move to a new lineage and relocate its source as a backing file.
         doc = _ForkingSave(name="PartA", is_saved=True, is_modified=True,
                            data_file=FakeDataFile("PartA", file_id="urn:old"))
         install_app(doc)
         out = _payload(dm.handler())
         assert out["lineage_changed"] == {"from": "urn:old", "to": "urn:new"}
         assert "NEW LINEAGE" in out["note"] and "lineage_changed.to" in out["note"]
+        assert "an advance cannot be inferred across them" in out["note"]
+        assert "configuration backing file" in out["note"]
+        assert "opens the file this one forked from" not in out["note"]
 
     def test_a_same_lineage_save_reports_no_lineage_change(self, install_app):
         doc = _doc(is_modified=True, urn="urn:same")
@@ -160,6 +162,69 @@ class TestSaveDocument:
         assert out["saved"] is True
         assert out["local_save_confirmed"] is True and out["version_confirmed"] is True
         assert out["latest_version_before"] == 1 and out["latest_version_after"] == 2
+
+    def _forked(self, install_app, monkeypatch, fresh, lands_on="urn:new"):
+        """The wrapped reply and the fake cloud for a save that leaves urn:old for `lands_on`."""
+        kernel = load_tool("_assert")
+        doc = _ForkingSave(name="PartA", is_saved=True, is_modified=True,
+                           data_file=FakeDataFile("PartA", file_id="urn:old"))
+        doc.lands_on = lands_on
+        app = install_app(doc, kernel=kernel, fresh=fresh)
+        post = kernel.VersionAdvanced()
+        monkeypatch.setattr(post, "_DEADLINE_S", 0.0)
+        monkeypatch.setattr(post, "_POLL_SLEEP", 0.0)
+        return _payload(kernel.wrap(dm.handler, [post])()), app.data
+
+    def test_a_moved_lineage_names_both_lineages_beside_the_two_version_reads(
+            self, install_app, monkeypatch):
+        # Version 3 of one file and version 1 of another read as a drop when no lineage is named.
+        out, data = self._forked(install_app, monkeypatch,
+                                 [_version(3, "urn:old"), _version(1, "urn:new")])
+        assert data.asked == ["urn:old", "urn:new"]
+        assert out["version_before"] == 3 and out["version_after"] == 1
+        assert out["version_confirmed"] is False and out["pending"] is True
+        status = out["version_status"]
+        assert "read urn:old before the save and urn:new after it" in status
+        assert "are not compared" in status and "data_get(file='urn:new')" in status
+        assert "did not return a file" not in status
+
+    def test_a_moved_lineage_that_does_not_resolve_yet_says_the_lookup_was_empty(
+            self, install_app, monkeypatch):
+        out, _data = self._forked(install_app, monkeypatch, [_version(3, "urn:old"), None])
+        assert out["version_before"] == 3 and out["version_after"] is None
+        assert "A fresh lookup of the second did not return a file" in out["version_status"]
+        assert "data_get(file='urn:new')" in out["version_status"]
+
+    def test_an_id_that_is_not_a_lineage_urn_after_the_save_is_not_reported_as_a_move(
+            self, install_app, monkeypatch):
+        # Only two lineage URNs that differ are a move; any other id after the save is unknown.
+        out, _data = self._forked(install_app, monkeypatch, [_version(3, "urn:old"), None],
+                                  lands_on="C:/Users/me/AppData/pending.f3d")
+        assert "lineage_changed" not in out
+        assert "were not comparable" in out["version_status"]
+        assert "before the save and" not in out["version_status"]
+
+    @pytest.mark.parametrize("before, after, moved", [
+        ("urn:a", "urn:b", True),
+        ("urn:a", "urn:a", False),
+        ("urn:a", "C:/Users/me/AppData/pending.f3d", False),
+        ("urn:a", None, False),
+        (None, "urn:b", False),
+    ])
+    def test_only_two_differing_lineage_urns_count_as_a_move(self, before, after, moved):
+        assert dm._doc_common._lineage_moved(before, after) is moved
+
+    def test_a_same_lineage_save_with_no_new_version_keeps_the_not_observed_status(
+            self, install_app, monkeypatch):
+        kernel = load_tool("_assert")
+        doc = _doc(is_modified=True, urn="urn:same")
+        install_app(doc, kernel=kernel, fresh=[_version(2), _version(2)])
+        post = kernel.VersionAdvanced()
+        monkeypatch.setattr(post, "_DEADLINE_S", 0.0)
+        monkeypatch.setattr(post, "_POLL_SLEEP", 0.0)
+        out = _payload(kernel.wrap(dm.handler, [post])())
+        assert out["version_confirmed"] is False
+        assert "was not observed in fresh comparable reads" in out["version_status"]
 
     def test_save_document_item_declares_the_postcondition(self):
         # the wiring is the contract: the registered Item carries VersionAdvanced (walk the guard chain).

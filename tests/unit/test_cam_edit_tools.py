@@ -43,6 +43,8 @@ class _Param(FakeCAMParameter):
     every other existing test in this file expects."""
     def __init__(self, name, expr, editable=True):
         super().__init__(name, expr, value=expr, editable=editable)
+        if expr in ("true", "false"):
+            self.value = _val(expr == "true")
 
     @FakeCAMParameter.expression.setter
     def expression(self, v):
@@ -60,6 +62,8 @@ class _Param(FakeCAMParameter):
 
 
 _IN_PER_MIN = re.compile(r"^([+-]?[\d.]+)\s*in/min$")
+_MM_PER_MIN = re.compile(r"^([+-]?[\d.]+)\s*mm/min$")
+_MM = re.compile(r"^([+-]?[\d.]+)\s*mm$")
 
 
 def _evaluate(expr):
@@ -71,7 +75,13 @@ def _evaluate(expr):
     except ValueError:
         pass
     m = _IN_PER_MIN.match(expr.strip())
-    return float(m.group(1)) * 25.4 if m else None
+    if m:
+        return float(m.group(1)) * 25.4
+    m = _MM_PER_MIN.match(expr.strip())
+    if m:
+        return float(m.group(1))
+    m = _MM.match(expr.strip())
+    return float(m.group(1)) / 10 if m else None
 
 
 def _NumParam(name, expr, editable=True):
@@ -179,6 +189,8 @@ def _drop(parameters, name):
 # tool_surfaceSpeed and no tool_spindleSpeed at all.
 _MILL_CUTTING_DATA = {"tool_spindleSpeed": "0", "tool_feedCutting": "0"}
 _TURNING_CUTTING_DATA = {"tool_surfaceSpeed": "0", "tool_feedCutting": "0"}
+_TURNING_REL_DATA = {"tool_useConstantSurfaceSpeed": "true", "tool_surfaceSpeed": "0",
+                     "tool_useFeedPerRevolution": "true", "tool_feedCuttingRel": "0"}
 
 
 class _Preset:
@@ -241,13 +253,17 @@ class _SrcLib(_NamedCollection):
 def _refetched(tool):
     """One tool as a library re-read from its url hands it back: a DIFFERENT object carrying the same
     stored values. Every persist read-back must go through one of these - a read-back satisfied by the
-    object the write just touched proves nothing. (Preset PARAMETER values are not copied; the
-    re-read only ever reports preset NAMES.)"""
+    object the write just touched proves nothing."""
     clone = _Tool(tool.desc)
     clone.parameters = _Params({tool.parameters.item(i).name: tool.parameters.item(i).expression
                                 for i in range(tool.parameters.count)})
     clone.preset_params = dict(tool.preset_params)
     clone.presets = _Presets(_preset_names(tool), owner=clone)
+    for i in range(tool.presets.count):
+        original = tool.presets.item(i)
+        clone.presets.item(i).parameters = _Params({
+            original.parameters.item(j).name: original.parameters.item(j).expression
+            for j in range(original.parameters.count)})
     clone.holder = tool.holder
     return clone
 
@@ -290,6 +306,17 @@ class _Target:
         # library did not store.
         fresh = self._fresh()
         return _preset_names(fresh[index]) if fresh is not None else None
+    def reread_preset_expressions(self, index, name, parameter_names):
+        fresh = self._fresh()
+        if fresh is None:
+            return None
+        matches = cp._presets_named(fresh[index].presets, name)
+        if len(matches) != 1:
+            return {"matches": len(matches)}
+        params = matches[0][1].parameters
+        return {"matches": 1, "expressions": {
+            pname: params.itemByName(pname).expression if params.itemByName(pname) else None
+            for pname in parameter_names}}
     def stored_tool_numbers(self):
         # the numbers the STORED library holds; a test overrides it to simulate a persist-side
         # renumber, which no in-memory read could catch.
@@ -336,9 +363,7 @@ def _install(monkeypatch, target=None, src=None):
     return target
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────
@@ -1557,6 +1582,8 @@ class _NewLib:
     """A new ToolLibrary: like the live one, its truth is its tool count, so an empty one is falsy."""
     def __init__(self):
         self.tools = []
+    def __bool__(self):
+        return bool(self.tools)
     def add(self, t):
         self.tools.append(t)
     @property
@@ -1626,7 +1653,9 @@ class TestCreateLibrary:
         libs._loads_back = False
         res = ct.handler(action="create_library", scope="local", library="Ghost Lib")
         assert res["isError"] is True
-        assert "did not land" in res["message"]
+        assert "create is unconfirmed" in res["message"]
+        assert "toollibraryroot://Local/Ghost Lib" in res["message"]
+        assert "not rolled back" in res["message"]
 
     def test_a_seed_the_library_refuses_creates_nothing(self, monkeypatch):
         libs = _install_create(monkeypatch)
@@ -1638,7 +1667,8 @@ class TestCreateLibrary:
         monkeypatch.setattr(ct, "_empty_library", _RefusingLib)
         res = ct.handler(action="create_library", scope="local", library="X",
                          add_tools=[{"library_url": "u", "index": 0}])
-        assert res["isError"] is True and "Only 0 of 1 seed tools" in res["message"]
+        assert res["isError"] is True
+        assert "Seed 0 addition is unconfirmed: library count reads 0, expected 1" in res["message"]
         assert len(libs.imported) == 0
 
     def test_tool_count_is_read_off_the_library_that_loads_back(self, monkeypatch):
@@ -1649,7 +1679,7 @@ class TestCreateLibrary:
         res = ct.handler(action="create_library", scope="local", library="X",
                          add_tools=[{"library_url": "u", "index": 0},
                                     {"library_url": "u", "index": 1}])
-        assert res["isError"] is True and "holding 1 of the 2 seed tools" in res["message"]
+        assert res["isError"] is True and "reads 1 tools, expected 2" in res["message"]
 
     def test_hub_descends_to_team_folder(self, monkeypatch):
         libs = _install_create(monkeypatch)
@@ -1674,6 +1704,94 @@ class TestCreateLibrary:
                          add_tools=[{"library_url": "u", "index": 99}])
         assert res["isError"] is True and "99" in res["message"]
         assert len(libs.imported) == 0
+
+    @pytest.mark.parametrize("seed", [{"from_type": "flat end mill"}, {"library_url": "u"},
+                                      {"library_url": "u", "index": 0, "description": "x"},
+                                      {"library_url": "u", "index": True}])
+    def test_seed_that_is_not_exactly_library_url_and_index_is_refused_before_import(
+            self, monkeypatch, seed):
+        libs = _install_create(monkeypatch)
+        res = ct.handler(action="create_library", scope="local", library="X", add_tools=[seed])
+        assert res["isError"] is True
+        assert "takes exactly 'library_url'" in res["message"]
+        assert "action='add'" in res["message"] and "Nothing was created" in res["message"]
+        assert libs.imported == []
+
+    @pytest.mark.parametrize("seeds, count", [([{"library_url": "u", "index": 0}], 1), ([], 0)])
+    def test_returned_url_is_the_one_list_resolves(self, monkeypatch, seeds, count):
+        # the empty case is also the 0-tool library a falsiness test refused as "Could not load"
+        libs = _install_create(monkeypatch)
+        monkeypatch.setattr(libs, "importToolLibrary", lambda lib, dest, name: (
+            libs.imported.append((lib, dest, name))
+            or _DupLeafURL(name + ".json", f"toollibraryroot://Local/{name}.json")))
+        monkeypatch.setattr(libs, "childAssetURLs", lambda url: [
+            _DupLeafURL(n, f"toollibraryroot://Local/{n}") for _l, _d, n in libs.imported]
+            if url.toString() == "toollibraryroot://Local" else [], raising=False)
+        out = _payload(ct.handler(action="create_library", scope="local", library="X",
+                                  add_tools=seeds))
+        assert out["url"] == "toollibraryroot://Local/X"
+        assert out["import_url"] == "toollibraryroot://Local/X.json"
+        listed = _payload(ct.handler(action="list", scope="local", library=out["url"]))
+        assert listed["tool_count"] == count
+
+    def test_a_create_the_listing_does_not_show_keeps_the_returned_url_and_says_so(
+            self, monkeypatch):
+        _install_create(monkeypatch)
+        out = _payload(ct.handler(action="create_library", scope="local", library="X"))
+        assert out["url"] == "toollibraryroot://Local/X" and "import_url" not in out
+        assert "shows no single library named 'X'" in out["note"]
+
+    def test_two_listed_assets_answering_the_returned_leaf_keep_the_returned_url(
+            self, monkeypatch):
+        libs = _install_create(monkeypatch)
+        monkeypatch.setattr(libs, "importToolLibrary", lambda lib, dest, name: (
+            libs.imported.append((lib, dest, name))
+            or _DupLeafURL(name + ".json", f"toollibraryroot://Local/{name}.json")))
+        monkeypatch.setattr(libs, "childAssetURLs", lambda url: [
+            _DupLeafURL("X", "toollibraryroot://Local/X"),
+            _DupLeafURL("X", "toollibraryroot://Local/Old/X")]
+            if libs.imported and url.toString() == "toollibraryroot://Local" else [],
+            raising=False)
+        out = _payload(ct.handler(action="create_library", scope="local", library="X"))
+        assert out["url"] == "toollibraryroot://Local/X.json" and "import_url" not in out
+        assert "shows no single library named" in out["note"]
+
+
+@pytest.fixture
+def seed_creation_failure(monkeypatch):
+    libs = _install_create(monkeypatch)
+    transient = _NewLib()
+    monkeypatch.setattr(ct, "_empty_library", lambda: transient)
+
+    def configure(mode):
+        if mode == "stored_missing_seed":
+            monkeypatch.setattr(libs, "toolLibraryAtURL", lambda url: _NewLib())
+        else:
+            def add(tool):
+                if transient.count == 0:
+                    transient.tools.append(tool)
+                elif mode == "raise":
+                    raise RuntimeError("seed rejected")
+            monkeypatch.setattr(transient, "add", add)
+        return libs
+    return configure
+
+
+@pytest.mark.parametrize("mode", ["raise", "no_op", "stored_missing_seed"])
+def test_seed_failure_never_reports_complete_library(seed_creation_failure, mode):
+    libs = seed_creation_failure(mode)
+    result = ct.handler(action="create_library", scope="local", library="Seed Check",
+                        add_tools=[{"library_url": "u", "index": 0},
+                                   {"library_url": "u", "index": 1}])
+    assert result["isError"] is True
+    if mode == "stored_missing_seed":
+        assert len(libs.imported) == 1
+        assert "reads 0 tools, expected 2" in result["message"]
+        assert "not rolled back" in result["message"]
+    else:
+        assert libs.imported == []
+        assert "Seed 1" in result["message"]
+        assert "Nothing was imported" in result["message"]
 
 
 # ── _preset_param_of: a preset value maps per tool CLASS (a drill preset has no 'tool_feedCutting', ─
@@ -2263,6 +2381,60 @@ class TestPresetValues:
                             preset={"name": "Steel", "feed": 250}))
         assert tool.presets.item(0).parameters.itemByName("tool_feedCutting").expression == "250"
 
+    def test_turning_preset_authors_surface_speed_and_per_revolution_feed(self, monkeypatch):
+        tool = _tool_with_presets("Turning General", preset_params=_TURNING_REL_DATA)
+        _install(monkeypatch, _Target(tools=[tool], is_document=True))
+        _payload(ct.handler(action="add_preset", scope="document", tool=0,
+                            preset={"name": "Steel", "surface_speed": 180000,
+                                    "feed_per_revolution": 0.18}))
+        params = tool.presets.item(0).parameters
+        assert params.itemByName("tool_surfaceSpeed").expression == "180000 mm/min"
+        assert params.itemByName("tool_surfaceSpeed").value.value == 180000
+        assert params.itemByName("tool_feedCuttingRel").expression == "0.18 mm"
+        assert params.itemByName("tool_feedCuttingRel").value.value == 0.018
+
+    def test_name_persists_but_cutting_value_lost_is_error(self, monkeypatch):
+        tool = _tool_with_presets("Turning General", preset_params=_TURNING_REL_DATA)
+        target = _install(monkeypatch, _Target(tools=[tool], is_document=True))
+        original = target.reread_preset_expressions
+
+        def stale(index, name, parameter_names):
+            row = original(index, name, parameter_names)
+            row["expressions"]["tool_feedCuttingRel"] = "0.1 mm"
+            return row
+
+        monkeypatch.setattr(target, "reread_preset_expressions", stale)
+        result = ct.handler(action="add_preset", scope="document", tool=0,
+                            preset={"name": "Steel", "surface_speed": 180000,
+                                    "feed_per_revolution": 0.18})
+        assert result["isError"] is True
+        assert "values did not reach" in result["message"]
+
+    @pytest.mark.parametrize("lost_read", ["names", "expressions"])
+    def test_unreadable_cutting_value_is_not_reported_as_persisted(self, monkeypatch,
+                                                                   lost_read):
+        tool = _tool_with_presets("Turning General", preset_params=_TURNING_REL_DATA)
+        target = _install(monkeypatch, _Target(tools=[tool], is_document=True))
+        monkeypatch.setattr(target, f"reread_preset_{lost_read}", lambda *args: None)
+        result = ct.handler(action="add_preset", scope="document", tool=0,
+                            preset={"name": "Steel", "surface_speed": 180000,
+                                    "feed_per_revolution": 0.18})
+        assert result["isError"] is True
+        assert "could not be re-read" in result["message"]
+        assert "may already exist" in result["message"]
+
+    def test_inactive_turning_mode_refuses_and_removes_partial_preset(self, monkeypatch):
+        inactive = dict(_TURNING_REL_DATA, tool_useFeedPerRevolution="false")
+        tool = _tool_with_presets("Turning General", preset_params=inactive)
+        _install(monkeypatch, _Target(tools=[tool], is_document=True))
+        result = ct.handler(action="add_preset", scope="document", tool=0,
+                            preset={"name": "Steel", "surface_speed": 180000,
+                                    "feed_per_revolution": 0.18})
+        assert result["isError"] is True
+        assert "tool_useFeedPerRevolution" in result["message"]
+        assert "Use spindle_speed/feed" in result["message"]
+        assert tool.presets.count == 0
+
     def test_a_mistyped_key_is_refused_not_silently_dropped(self, monkeypatch):
         tool = _tool_with_presets("EM")
         _install(monkeypatch, _Target(tools=[tool], is_document=True))
@@ -2308,6 +2480,15 @@ class TestPresetValues:
         assert res["isError"] is True and "feed_rate" in res["message"]
         assert len(tgt.tools) == 2 and tgt.persisted == 0
 
+    def test_new_turning_values_require_add_preset_readback(self, monkeypatch):
+        tgt = _install(monkeypatch)
+        result = ct.handler(action="add", scope="cloud", library="L", add_tools=[
+            {"from_type": "drill", "presets": [
+                {"name": "Steel", "surface_speed": 180000, "feed_per_revolution": 0.18}]}])
+        assert result["isError"] is True
+        assert "action='add_preset'" in result["message"]
+        assert len(tgt.tools) == 2 and tgt.persisted == 0
+
 
 class TestPresetSpecNumberGate:
     """_preset_spec_error is the FIRST judge of a preset spec's VALUES - it refuses by TYPE before
@@ -2338,7 +2519,8 @@ class TestPresetSpecNumberGate:
         # The gate never fires on {"name": "Rough", "feed": 500}, so the wire is the only place
         # an agent learns a bare number is rpm / mm-per-min whatever the document's units.
         desc = ct.tool.to_dict()["inputSchema"]["properties"]["preset"]["description"]
-        assert "rpm / mm-per-min" in desc and "35in/min" in desc
+        assert ("spindle_speed: rpm" in desc and "surface_speed: mm/min" in desc
+                and "feed_per_revolution: mm/rev" in desc and "35in/min" in desc)
 
 
 class TestRemovePreset:
@@ -2780,6 +2962,25 @@ class TestResolveTargetShared:
                             lambda: self._libs([_AssetURL("Team Mill")], loads=False))
         target, err = ct._resolve_target("cloud", "Team Mill")
         assert target is None and "Could not load cloud library 'Team Mill'" in err
+
+    def test_capped_name_refuses_but_seen_exact_url_remains_addressable(self, monkeypatch):
+        asset = _AssetURL("Team Mill")
+        monkeypatch.setattr(ct, "_tool_libraries", lambda: self._libs([asset]))
+        monkeypatch.setattr(ct, "library_assets", lambda libs, root: ([asset], True))
+        target, err = ct._resolve_target("cloud", "Team Mill")
+        assert target is None and "was capped" in err and asset.toString() in err
+        target, err = ct._resolve_target("cloud", asset.toString())
+        assert err is None and target.is_document is False
+
+    @pytest.mark.parametrize("target_name", ["Ghost", "cloud://Team/Hidden"])
+    def test_capped_miss_does_not_claim_absence_or_repeat_unseen_url(self, monkeypatch, target_name):
+        monkeypatch.setattr(ct, "_tool_libraries", lambda: self._libs([]))
+        monkeypatch.setattr(ct, "library_assets", lambda libs, root: ([], True))
+        target, err = ct._resolve_target("cloud", target_name)
+        assert target is None and "absence is unknown" in err
+        assert "Choose an enumerated library URL instead" in err
+        assert "URLs outside this walk cannot be resolved" in err
+        assert "Pass an exact library url" not in err
 
     def test_two_libraries_sharing_a_leaf_name_are_refused_not_the_first(self, monkeypatch):
         # two DISTINCT assets both leafed 'Team Mill' (different folders) - the by-name resolve
@@ -3265,7 +3466,7 @@ class TestCreateLibraryGuards:
     def test_a_seed_that_is_not_an_object(self, monkeypatch):
         libs = _install_create(monkeypatch)
         res = ct.handler(action="create_library", scope="local", library="X", add_tools=["u:0"])
-        assert res["isError"] is True and "Each seed entry must be" in res["message"]
+        assert res["isError"] is True and "seed 0 has 'u:0'" in res["message"]
         assert len(libs.imported) == 0
 
     def test_an_empty_library_that_cannot_be_created(self, monkeypatch):
@@ -3366,3 +3567,28 @@ class TestReadLibraryEntryPoint:
                             lambda scope: ([{"name": "Team Mill", "url": "u"}], False, None))
         out = _payload(ct.read_library(scope="hub"))
         assert out["scope"] == "hub" and out["library_count"] == 1
+
+    def test_selected_library_tool_discloses_its_preset_without_assigning_an_operation(
+            self, monkeypatch):
+        first, second = _Tool("Plain"), _Tool("Preset tool")
+        recipe = second.presets.add()
+        recipe.name = "Finishing"
+        recipe.parameters.itemByName("tool_spindleSpeed").expression = "5000 rpm"
+        target = _Target([first, second])
+        _install(monkeypatch, target)
+        out = _payload(ct.read_library(tool_index=1, preset="finishing"))
+        assert out["tool"]["index"] == 1
+        assert out["preset_names"] == ["Finishing"] and out["preset_count"] == 1
+        assert out["preset"] == {"name": "Finishing", "expressions": {
+            "tool_spindleSpeed": "5000 rpm", "tool_feedCutting": "0"}}
+        assert target.updated == [] and target.persisted == 0
+        assert "library_tool'=2" in ct.read_library(tool_index=2)["message"]
+
+    def test_duplicate_library_preset_names_refuse_a_false_single_recipe(self, monkeypatch):
+        tool = _Tool("Shared names")
+        for name in ("Finish", "finish"):
+            tool.presets.add().name = name
+        _install(monkeypatch, _Target([tool]))
+        refusal = ct.read_library(tool_index=0, preset="finish")
+        assert refusal["isError"] is True
+        assert "2 presets" in refusal["message"] and "indices [0, 1]" in refusal["message"]

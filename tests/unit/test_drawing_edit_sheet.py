@@ -502,13 +502,19 @@ class TestTidyUp:
         out = payload(es.handler(action="tidy_up", sheet="Front"))
         assert out["tidied"] is True and out["views"] == 4
         assert out["document_modified"] is True and out["modified_confirmed"] is True
+        assert "Fusion accepted the tidy-up request" in out["note"]
+        assert "drawing_export lets you inspect the visual effect" in out["note"]
+        assert "lays the sheet's views out" not in es.TOOL_DESCRIPTION
         assert state.doc.isModified is True
         assert state.sheets[0]._tidy_reads == 1
 
     def test_a_tidy_that_left_the_document_clean_is_an_error(self, wire):
         # tidyUp returns true but dirties nothing
         wire([sheet("Front", modifies=False)])
-        assert "still unmodified" in error_message(es.handler(action="tidy_up", sheet="Front"))
+        msg = error_message(es.handler(action="tidy_up", sheet="Front"))
+        assert "still unmodified" in msg
+        assert "visual effect is unverified" in msg and "drawing_export(format='pdf'" in msg
+        assert "nothing on the sheet changed" not in msg
 
     def test_an_already_modified_document_cannot_confirm_the_tidy(self, wire):
         # measured: tidying an already-modified document returns true with isModified already true

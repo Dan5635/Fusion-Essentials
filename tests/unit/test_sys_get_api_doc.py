@@ -8,7 +8,6 @@ caps, regex/empty-input validation, and the pure string helpers (``_class_filter
 ``_trim``, ``_signature``, ``_load_modules`` filtering).
 """
 
-import json
 import sys
 import types
 
@@ -71,9 +70,7 @@ def _install_fake_api(monkeypatch):
     monkeypatch.setattr(ad, "_API_MODULES", ("adsk.core", "adsk.fusion"))
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── pure helpers ─────────────────────────────────────────────────────────────
@@ -144,6 +141,26 @@ class TestValidation:
         res = ad.handler(searchPattern="bound[")
         assert res["isError"] is True and "Invalid regex" in res["message"]
 
+    @pytest.mark.parametrize("pattern", [
+        "a+", "(a+)+$", "(a|aa)+$", r"a\1", "[^^](a+)+$", "[^^]a+"])
+    def test_unsafe_regex_constructs_are_refused_before_module_walk(self, monkeypatch, pattern):
+        monkeypatch.setattr(ad, "_load_modules",
+                            lambda *args, **kwargs: pytest.fail("API modules were loaded"))
+
+        result = ad.handler(searchPattern=pattern)
+
+        assert result["isError"] is True
+        assert "unsupported" in result["message"]
+
+    def test_pattern_over_limit_is_refused_before_module_walk(self, monkeypatch):
+        monkeypatch.setattr(ad, "_load_modules",
+                            lambda *args, **kwargs: pytest.fail("API modules were loaded"))
+
+        result = ad.handler(searchPattern="x" * (ad._MAX_PATTERN_CHARS + 1))
+
+        assert result["isError"] is True
+        assert "256" in result["message"] and "Shorten" in result["message"]
+
     def test_bad_category_errors(self, monkeypatch):
         _install_fake_api(monkeypatch)
         res = ad.handler(searchPattern="x", apiCategory="bogus")
@@ -171,6 +188,15 @@ class TestClassSearch:
         _install_fake_api(monkeypatch)
         out = _payload(ad.handler(searchPattern=".", apiCategory="class", filter="adsk.core"))
         assert {c["name"] for c in out["classes"]} == {"Vector3D", "MeasureManager"}
+
+    def test_escaped_literal_and_character_class_patterns_are_supported(self, monkeypatch):
+        _install_fake_api(monkeypatch)
+
+        out = _payload(ad.handler(searchPattern=r"^Vector3[D]$", apiCategory="class"))
+        doc_out = _payload(ad.handler(searchPattern=r"^A 3D vector\.$", apiCategory="description"))
+
+        assert [row["name"] for row in out["classes"]] == ["Vector3D"]
+        assert [row["name"] for row in doc_out["classes"]] == ["Vector3D"]
 
 
 class TestMemberSearch:

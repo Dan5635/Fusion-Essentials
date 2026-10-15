@@ -17,6 +17,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe
+from ._geom import _coords as _v
 from . import _common
 from . import _geom
 from . import _inputs
@@ -45,19 +46,6 @@ _TOL = _inputs.Distance("tolerance", allow_zero=True, allow_negative=False)
 
 
 # ── pure vector math (plain tuples in cm; no adsk objects, so it is unit-testable) ────────────────
-
-def _v(p):
-    """A Point3D/Vector3D as an (x, y, z) tuple - None when the object is absent OR any one of its
-    three components will not read. A point whose components do not all read is no position at all:
-    a 0.0 stand-in publishes the world origin as a measured coordinate, and every consumer below
-    compares this tuple against a tolerance, so one fabricated component decides a verdict."""
-    if p is None:
-        return None
-    xyz = (safe(lambda: p.x), safe(lambda: p.y), safe(lambda: p.z))
-    if not all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in xyz):
-        return None
-    return xyz
-
 
 def _sub(a, b):
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
@@ -481,9 +469,9 @@ _DISPATCH = {
 def handler(entity_a: str = "", entity_b: str = "", relation: str = "",
             tolerance=None, tolerance_deg=None, units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     rel, rerr = _REL.resolve(relation)
     if rerr:

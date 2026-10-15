@@ -6,7 +6,6 @@ case-insensitive visible name, the already-active short-circuit, the not-found e
 what's available, and the activation-failed branch.
 """
 
-import json
 
 import pytest
 
@@ -53,9 +52,7 @@ def install(monkeypatch):
     return _install
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestSwitchGuards:

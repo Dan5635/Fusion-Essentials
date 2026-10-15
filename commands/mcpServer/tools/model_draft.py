@@ -56,7 +56,8 @@ def _unchanged_detail(vol_readable: bool, count_readable: bool, compared_faces: 
 
 
 def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
-            symmetric: bool = False, tangent_chain: bool = True, flip: bool = False) -> dict:
+            symmetric: bool = False, tangent_chain: bool = True, flip: bool = False,
+            angle_two_deg=None) -> dict:
     """See TOOL_DESCRIPTION."""
     try:
         angle = float(angle_deg)
@@ -66,10 +67,20 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
         return error("'angle_deg' must be non-zero - a 0 deg draft tapers nothing.")
     if abs(angle) >= 90:
         return error(f"'angle_deg' must be between -90 and 90 degrees (got {angle}).")
+    angle_two = None
+    if angle_two_deg is not None:
+        try:
+            angle_two = float(angle_two_deg)
+        except Exception:
+            return error("'angle_two_deg' must be a number (second-side draft angle in degrees).")
+        if not math.isfinite(angle_two) or angle_two == 0 or abs(angle_two) >= 90:
+            return error(f"'angle_two_deg' must be between -90 and 90 degrees and non-zero (got {angle_two}).")
+        if symmetric:
+            return error("'angle_two_deg' cannot be combined with symmetric=true; set both side angles explicitly.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     face_ents, ferr = _FACES.resolve(faces)
@@ -78,6 +89,8 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
     plane, perr = _PULL.resolve(pull_direction)
     if perr:
         return error(perr)
+    side_origin, side_normal = (_inputs.placed_datum_frame(plane, "draft_plane")
+                                if angle_two is not None else (None, None))
 
     # DraftFeatures.createInput wants a Python list of BRepFace (per the live signature), not an
     # ObjectCollection.
@@ -92,9 +105,13 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
     try:
         di = comp.features.draftFeatures.createInput(face_list, plane, bool(tangent_chain))
         di.isDirectionFlipped = bool(flip)
-        # A single angle for every drafted face; isSymmetric splits at the pull plane and tapers both
-        # sides by that angle. This is the setSingleAngle path (not setTwoAngles, which is per-side).
-        if not di.setSingleAngle(bool(symmetric), angle_val):
+        if angle_two is not None:
+            set_result = di.setTwoAngles(
+                angle_val, adsk.core.ValueInput.createByReal(math.radians(angle_two)))
+            if set_result is not True:
+                return error("Fusion refused the two-angle draft (setTwoAngles did not return true), "
+                             "so nothing was drafted.")
+        elif not di.setSingleAngle(bool(symmetric), angle_val):
             return error(f"Fusion refused a {'symmetric ' if symmetric else ''}draft angle of "
                          f"{angle_deg} deg (setSingleAngle returned false), so nothing was drafted.")
         feature = comp.features.draftFeatures.add(di)
@@ -129,15 +146,11 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
     effect_unverified = not read_any
     if not moved and read_any:
         named = ", ".join(str(safe(lambda b=b: b.name)) for b in draft_bodies) or "its body"
-        removed = bool(safe(lambda: feature.deleteMe()))
         return error(f"Draft computed but tapered nothing - on {named}, "
                      f"{_unchanged_detail(vol_readable, count_readable, compared_faces)}, so the "
                      f"{angle} deg taper changed no geometry. Check 'pull_direction' is the plane "
                      "the faces taper relative to, and try 'flip' or a face that is not already "
-                     "parallel to it."
-                     + (" The feature has been rolled back." if removed
-                        else " (The inert feature could not be auto-removed.) "
-                             + _common.failed_effect_remedy(design, feature)))
+                     "parallel to it. " + _common.delete_failed_feature(design, feature)[1])
 
     requested = len(face_list)
     # The count the FEATURE reports, never the request echoed back. NOT `inputFaces`: that property
@@ -145,6 +158,14 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
     # feature and on an earlier one alike.
     drafted = _common.counted(lambda: feature.faces.count)
     note = "Faces tapered to the pull direction. Pair with view_screenshot to view."
+    if angle_two is not None:
+        if side_origin is not None and side_normal is not None:
+            note += (" Two-angle sides use the pull operand's normal: angle_deg on its positive "
+                     "side, angle_two_deg on its negative side. A face uses its outward normal; "
+                     "flip reverses taper, not these regions.")
+        else:
+            note += (" World pull frame unavailable, so the angle-to-side mapping is unknown. "
+                     "Reacquire the placed plane or face with find_geometry.")
     if effect_unverified:
         note += (" NONE of the bodies' volume, their face count or the requested faces' own "
                  "normal/area could be read back, so there is no geometric proof the taper landed "
@@ -170,6 +191,10 @@ def handler(faces=None, pull_direction: str = "", angle_deg: float = 0.0,
         "pull_direction": pull_direction,
         "note": note,
     }
+    if angle_two is not None:
+        payload["side_reference"] = {"frame": "world" if side_origin is not None and side_normal is not None else None,
+                                     "origin_cm": side_origin,
+                                     "normal_world": side_normal, "operand": pull_direction}
     if effect_unverified:
         payload["effect_unverified"] = True
     # Published only where the before/after pair was READABLE: a null here would read as "no material
@@ -193,6 +218,8 @@ draft_tool = (
     .add_input_property("symmetric", {"type": "boolean"})
     .add_input_property("tangent_chain", {"type": "boolean"})
     .add_input_property("flip", {"type": "boolean"})
+    .add_input_property("angle_two_deg", {"type": "number",
+            "description": "Second-side draft angle; excludes symmetric."})
     .strict_schema()
 )
 draft_item = Item.create_tool_item(tool=draft_tool, write="write", handler=handler, run_on_main_thread=True,

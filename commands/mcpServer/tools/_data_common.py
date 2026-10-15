@@ -15,11 +15,11 @@ import adsk.core
 from ._common import safe
 
 MAP_BLURB = (
-    "the cloud data-model substrate: resolve_file_reference / _file_in_folder_by_name - the "
+    "cloud data-model substrate: resolve_file_reference / _file_in_folder_by_name - the "
     "URN-or-name-in-a-project and one-folder resolvers, a shared name REFUSED; "
-    "navigate_folder_path - the folder-PATH walk from a project root, creating nothing, and the "
-    "miss triple a refusal is worded from; active_project - the active document's OWN DataProject; "
-    "name_extension - the NAME holds the true extension")
+    "navigate_folder_path - the folder-PATH walk from a project root, creating nothing; "
+    "active_project - the active document's OWN DataProject; name_extension - the NAME holds "
+    "the true extension; absence_after_delete - the re-resolve after deleteMe")
 
 app = adsk.core.Application.get()
 
@@ -45,26 +45,73 @@ def _data():
     return d
 
 
-def _find_project(data, name=None, project_id=None):
-    """Find a project by id or (case-insensitive) name. Returns (project, available_names)."""
-    available = []
-    for p in data.dataProjects.asArray():
-        nm = None
+def absence_after_delete(find, ident, not_found):
+    """(absence_observed, why unread): `find(ident)` re-read once after deleteMe; True only on a
+    raise carrying `not_found`."""
+    try:
+        again = find(ident)
+    except Exception as e:
+        return (True, None) if not_found in str(e) else (None, f"the re-read raised: {e}")
+    return (False, None) if again else (None, "the re-read returned no record")
+
+
+def _find_project(data, name=None, project_id=None, id_input="project_id"):
+    """Find one project by id or case-insensitive exact name; a name refusal names `id_input` when one is set."""
+    try:
+        projects = list(data.dataProjects.asArray())
+    except Exception as exc:
+        raise RuntimeError(f"Project listing could not be read: {exc}") from exc
+
+    if project_id:
+        unread_ids = 0
+        for p in projects:
+            try:
+                pid = p.id
+                if not pid:
+                    unread_ids += 1
+                elif pid == project_id:
+                    return p, []
+            except Exception:
+                unread_ids += 1
+        if unread_ids:
+            raise RuntimeError(f"Project id '{project_id}' was not found in the readable entries; "
+                               f"{unread_ids} project id(s) could not be read, so its absence is "
+                               "unknown.")
+        available = []
+        for p in projects:
+            try:
+                nm = p.name
+            except Exception:
+                raise RuntimeError("Project id was not found, and the available project names "
+                                   "could not be completely read.")
+            if nm:
+                available.append(nm)
+        return None, available
+
+    available, matches, unread_names = [], [], 0
+    for p in projects:
         try:
             nm = p.name
         except Exception:
-            pass
-        if nm:
-            available.append(nm)
-        try:
-            if project_id:
-                if p.id == project_id:
-                    return p, available
-            elif name and nm and nm.strip().lower() == name.strip().lower():
-                return p, available
-        except Exception:
+            unread_names += 1
             continue
-    return None, available
+        if not nm:
+            unread_names += 1
+            continue
+        available.append(nm)
+        if name and nm and nm.strip().lower() == name.strip().lower():
+            matches.append(p)
+
+    if unread_names:
+        raise RuntimeError(f"Project name listing is incomplete: {unread_names} project name(s) "
+                           "could not be read, so lookup results are unknown. Retry"
+                           + (f" or use an exact {id_input}." if id_input else "."))
+    if len(matches) > 1:
+        rows = "; ".join(f"'{safe(lambda p=p: p.name)}' "
+                         f"(id {safe(lambda p=p: p.id) or 'unreadable'})" for p in matches)
+        remedy = f" Refusing to guess which; pass an exact {id_input}." if id_input else ""
+        raise ValueError(f"Project name '{name}' matches {len(matches)} projects: {rows}.{remedy}")
+    return (matches[0] if matches else None), available
 
 
 def active_project():
@@ -364,11 +411,11 @@ def _name_hint(names):
     return ", ".join(kept) + (f", and {more} more" if more > 0 else "")
 
 
-def resolve_file_reference(raw, project="", project_id="", folder=""):
+def resolve_file_reference(raw, project="", project_id="", folder="", id_input="project_id"):
     """Resolve ONE DataFile from `raw` - a lineage URN / Fusion web URL, or a file NAME scoped to a
     project (optionally a folder path in it): (data_file, meta, err), exactly one of data_file/err
     set. A NAME is not unique across a project's folders, so a name matching several files is
-    REFUSED with each candidate's folder path and URN; matching is case-insensitive EXACT."""
+    REFUSED with each candidate's folder path and URN; `id_input` is the caller's project-id input."""
     from . import _data_read              # deferred: _data_read imports this module
 
     ident = (raw or "").strip()
@@ -386,13 +433,19 @@ def resolve_file_reference(raw, project="", project_id="", folder=""):
 
     if not (project or project_id):
         return None, None, (f"'{ident}' is a file NAME, which is only unique within a project - pass "
-                            "'project' (or 'project_id') to scope it, or pass the file's lineage URN "
-                            "instead (data_get(project=<name>) lists both).")
+                            "'project'" + (f" (or '{id_input}')" if id_input else "")
+                            + " to scope it, or pass the file's lineage URN as 'file' "
+                            "(data_get(project=<name>) lists it).")
 
     data = safe(lambda: app.data)
     if not data:
         return None, None, "Data not available (not signed in?)."
-    proj, available = _find_project(data, name=project or None, project_id=project_id or None)
+    try:
+        proj, available = _find_project(data, name=project or None,
+                                        project_id=project_id or None, id_input=id_input)
+    except Exception as exc:
+        return None, None, (f"{exc} Get the file's lineage URN with "
+                            "data_get(project_id=<id>), then pass it as 'file'.")
     if not proj:
         return None, None, (f"Project not found: {project_id or project}. Available: "
                             f"{', '.join(available) or '(none)'}")
@@ -420,32 +473,40 @@ def resolve_file_reference(raw, project="", project_id="", folder=""):
     want = ident.lower()
     matches = [f for f in files if (f.get("name") or "").strip().lower() == want]
     scope = f"project '{safe(lambda: proj.name)}'" + (f", folder '{start_path}'" if start_path else "")
-    capped = (" The listing hit its cap, so files beyond it were not searched - scope with 'folder'."
-              if truncated.get("value") else "")
-    # A folder that would not enumerate is a hole in the search space, not an empty folder: a second
-    # file of this name could be sitting in it, so neither a miss nor a UNIQUE match may be reported
-    # as settled without saying so.
-    if truncated.get("unread_count"):
-        capped += (f" {truncated['unread_count']} folder(s) could not be read and were not searched"
-                   + (f" ({', '.join(truncated.get('unread', []))})" if truncated.get("unread") else "")
-                   + " - pass the file's id if this answer looks wrong.")
+    unread_names = [f for f in files if not f.get("name")]
+    incomplete = bool(truncated.get("value") or truncated.get("unread_count") or unread_names)
+    if incomplete:
+        details = []
+        if truncated.get("value"):
+            details.append("the file listing reached its cap or time budget")
+        if truncated.get("unread_count"):
+            unread_paths = ", ".join(truncated.get("unread", []))
+            details.append(f"{truncated['unread_count']} folder(s) could not be read"
+                           + (f" ({unread_paths})" if unread_paths else ""))
+        if unread_names:
+            paths = ", ".join(dict.fromkeys(f.get("folder_path") or "(unknown folder)"
+                                             for f in unread_names))
+            details.append(f"{len(unread_names)} file name(s) could not be read in {paths}")
+        seen = "; ".join(f"{f.get('folder_path')} (id {f.get('id')})" for f in matches)
+        return None, None, (f"Cannot resolve '{ident}' in {scope}: the name census is incomplete "
+                            f"because {', '.join(details)}."
+                            + (f" Matching files read so far: {seen}." if seen else "")
+                            + " Pass the file's lineage id, or scope a complete folder.")
 
     if not matches:
         return None, None, (f"No file named '{ident}' in {scope}. Files there: "
-                            f"{_name_hint([f.get('name') for f in files])}.{capped}")
+                            f"{_name_hint([f.get('name') for f in files])}.")
     if len(matches) > 1:
         rows = "; ".join(f"{m.get('folder_path')} (id {m.get('id')})" for m in matches)
         return None, None, (f"'{ident}' names {len(matches)} files in {scope} - refusing to guess "
                             f"which: {rows}. Pass one of those ids as 'file', or scope with "
-                            f"'folder'.{capped}")
+                            "'folder'.")
 
     hit = matches[0]
     df, resolved, tried = _resolve_data_file(hit.get("id") or "")
     if not df:
         return None, None, (f"'{ident}' resolved to id {hit.get('id')} in {scope}, but that id does "
                             f"not open as a cloud file. Tried: {', '.join(tried)}.")
-    # One match inside a CAPPED listing is not proof of uniqueness - files past the cap were never
-    # compared. The flag travels with the result so every caller can say so instead of implying it.
     return df, {"matched_by": "name", "urn": resolved, "folder_path": hit.get("folder_path"),
                 "scope_truncated": bool(truncated.get("value")),
                 "folders_unreadable": truncated.get("unread_count", 0)}, None

@@ -316,6 +316,21 @@ def test_note_states_that_copies_do_not_rotate_along_the_path():
     assert "do not rotate to follow the path" in out["note"]
 
 
+def test_partial_sketch_path_names_omitted_curve_in_pattern_note(monkeypatch):
+    _wire(feature=_Feature(elements=2), bodies=["Boss"], sketches=[_path_sketch(curves=3)])
+    path = _built_path(None, True, 2)
+    def build(_owner, _raw, left_out=None):
+        left_out.extend(["line:1"])
+        return path, "sketch:Spine", None
+    monkeypatch.setattr(pp, "build_path", build)
+    monkeypatch.setattr(pp._path_common, "path_sketch_curve_count", lambda _owner, _raw: 3)
+
+    out = payload(pp.handler(bodies="Boss", path="sketch:Spine", quantity=2, distance=10))
+
+    assert out["path"] == "sketch:Spine"
+    assert "Not in the path: line:1" in out["note"]
+
+
 def test_body_targets_reported_as_bodies():
     _wire(bodies=["Boss"], sketches=[_path_sketch()])
     out = payload(pp.handler(bodies="Boss", path="sketch:Spine", quantity=3, distance=10))

@@ -26,6 +26,7 @@ seams to hand back fake entities so we exercise the handler, not the resolver. T
 resolved for real against a fake design, because refusing a duplicated sketch name is this tool's
 own promise.
 """
+from conftest import install as _install_design
 
 import json
 import types
@@ -288,6 +289,54 @@ class _HoleParamValue:
         self.value = []          # set to [faces] by the handler
 
 
+class _ProbeTypeResetOnSelection(_HoleParamValue):
+    """Selecting a probe face resets probingType to the type inferred from that face."""
+    def __init__(self, probing_type_param, inferred):
+        self._value = []
+        self._probing_type_param = probing_type_param
+        self._inferred = inferred
+
+    @property
+    def value(self):
+        return list(self._value)
+
+    @value.setter
+    def value(self, faces):
+        self._value = list(faces)
+        self._probing_type_param.expression = self._inferred
+
+
+class _ProbeTypeRejectAfterSelection(FakeCAMParameter):
+    """Reject a requested type write only after the face selection has landed."""
+    def __init__(self, name, expression, choices):
+        self.selection_landed = False
+        super().__init__(name, expression=expression, choices=choices)
+
+    @FakeCAMParameter.expression.setter
+    def expression(self, value):
+        if self.selection_landed and value == "'probing-z'":
+            raise RuntimeError("type setter refused")
+        FakeCAMParameter.expression.fset(self, value)
+
+
+class _InferringProbeValue(_HoleParamValue):
+    """Infer a face type and mark that the selection precedes the next type write."""
+    def __init__(self, probing_type_param, inferred):
+        self._value = []
+        self._probing_type_param = probing_type_param
+        self._inferred = inferred
+
+    @property
+    def value(self):
+        return list(self._value)
+
+    @value.setter
+    def value(self, faces):
+        self._value = list(faces)
+        self._probing_type_param.selection_landed = True
+        self._probing_type_param.expression = self._inferred
+
+
 class _Param(FakeCAMParameter):
     """A CAM parameter whose .value IS the parameter-value object the appliers drive (a
     CadObjectParameterValue), rather than the second-hop payload a plain read takes. It carries no
@@ -383,7 +432,7 @@ def _bore_op(name="Bore1", **kw):
 
 
 def _install(monkeypatch, cam, entities):
-    monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+    monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
     # patch the geometry-handle resolver to hand back fake entities (resolver has its own tests)
     cg._inputs.GeometryHandleList.resolve = lambda self, raw: (entities, None)
     return cam
@@ -392,7 +441,7 @@ def _install(monkeypatch, cam, entities):
 def _install_bodies(monkeypatch, cam, bodies):
     # The stub takes the kind's own (raw, component) signature: the handler passes the scope
     # through, so a one-argument stand-in would hide the wiring instead of standing in for it.
-    monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+    monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
     cg._inputs.BodyRefList.resolve = lambda self, raw, component="": (list(bodies), None)
     return cam
 
@@ -401,9 +450,7 @@ def _selection_of(op):
     return op.parameters.itemByName("contours").value.getCurveSelections().item(0)
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────
@@ -414,14 +461,14 @@ class TestGuards:
         assert res["isError"] is True and "selection" in res["message"].lower()
 
     def test_no_cam(self, monkeypatch):
-        monkeypatch.setattr(cg, "get_cam", lambda: (None, "no CAM data"))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (None, "no CAM data"))
         res = cg.handler(operation="X", selection="chain", handles=["h"])
         assert res["isError"] is True and "cam" in res["message"].lower()
 
     def test_pocket_recognition_refuses_before_cam_or_native_resolution(self, monkeypatch):
         touched = []
         monkeypatch.setattr(cg, "get_cam",
-                            lambda: touched.append("get_cam") or (None, "unexpected CAM read"))
+                            lambda **_: touched.append("get_cam") or (None, "unexpected CAM read"))
         monkeypatch.setattr(cg, "_resolve_geometry",
                             lambda *args: touched.append("resolve_geometry") or ([], None))
         res = cg.handler(operation="Adaptive1", selection="pocket_recognition",
@@ -442,7 +489,7 @@ class TestGuards:
         # setup paths, never silently target whichever setup's op the walk met first.
         cam = make_cam(SharedSetup("Setup1", ops=[SharedOp("Drill1")]),
                        SharedSetup("Setup2", ops=[SharedOp("Drill1")]))
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         cg._inputs.GeometryHandleList.resolve = lambda self, raw: ([_Face(0.3)], None)
         res = cg.handler(operation="Drill1", selection="holes", handles=["a"])
         assert res["isError"] is True and "ambiguous" in res["message"].lower()
@@ -450,7 +497,7 @@ class TestGuards:
 
     def test_handle_resolve_error_propagates(self, monkeypatch):
         cam = _CAM([_Setup([_curve_op()])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         cg._inputs.GeometryHandleList.resolve = lambda self, raw: (None, "bad handle")
         res = cg.handler(operation="2D Contour1", selection="chain", handles=["h"])
         assert res["isError"] is True and "bad handle" in res["message"]
@@ -531,12 +578,12 @@ class TestHandleKindRequirement:
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
         monkeypatch.setattr(cg._inputs, "_resolve_token_entity", lambda des, h: entity)
-        monkeypatch.setattr(cg._inputs._common, "design", lambda: object())
+        _install_design(cg, object())
 
     def test_chain_refuses_a_face_handle_naming_the_type_it_got(self, monkeypatch):
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         self._resolves_to(monkeypatch, _Face())
         res = cg.handler(operation="2D Contour1", selection="chain", handles=["h"], generate=False)
         assert res["isError"] is True
@@ -546,7 +593,7 @@ class TestHandleKindRequirement:
     def test_pocket_refuses_an_edge_handle_naming_the_type_it_got(self, monkeypatch):
         op = _curve_op(name="2D Pocket1")
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         self._resolves_to(monkeypatch, _Edge())
         res = cg.handler(operation="2D Pocket1", selection="pocket", handles=["h"], generate=False)
         assert res["isError"] is True
@@ -559,7 +606,7 @@ class TestHandleKindRequirement:
         # through would be assigned into the operation's surface parameter as the wrong type.
         op = _geodesic_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         self._resolves_to(monkeypatch, _Edge())
         res = cg.handler(operation="Geodesic1", selection="surfaces", handles=["h"], generate=False)
         assert res["isError"] is True
@@ -570,7 +617,7 @@ class TestHandleKindRequirement:
         # the refusal above must come from the require=, not from this fixture refusing everything.
         op = _geodesic_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         face = _Face()
         self._resolves_to(monkeypatch, face)
         out = _payload(cg.handler(operation="Geodesic1", selection="surfaces", handles=["h"],
@@ -583,7 +630,7 @@ class TestHandleKindRequirement:
         # everything this fixture hands it.
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         self._resolves_to(monkeypatch, _Edge())
         out = _payload(cg.handler(operation="2D Contour1", selection="chain", handles=["h"],
                                   generate=False))
@@ -651,7 +698,7 @@ class TestBodySelectionComponentScope:
     def _run(self, monkeypatch, **kw):
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="silhouette", generate=False, **kw)
         return op, res
 
@@ -684,7 +731,7 @@ class TestBodySelectionComponentScope:
         install(cg, design)
         op = _curve_op(name="Adaptive1")
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="Adaptive1", selection="pocket_recognition", bodies=["Body1"],
                          component="Bracket", allow_pocket_recognition=True, generate=False)
         assert res["isError"] is False
@@ -864,7 +911,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(MakeComp("Root", sketches=[sk])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         out = _payload(cg.handler(operation="2D Contour1", selection="sketch",
                                   sketches=["Pocket Outline"], generate=False))
         sel = _selection_of(op)
@@ -879,7 +926,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(root, sub))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", sketches=["Sketch1"],
                          generate=False)
         assert res["isError"] is True
@@ -905,7 +952,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(root, sub))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         out = _payload(cg.handler(operation="2D Contour1", selection="sketch", sketches=["Sketch1"],
                                   component="Bracket", generate=False))
         assert _selection_of(op).inputGeometry == [mine]
@@ -920,7 +967,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(root, sub))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         _payload(cg.handler(operation="2D Contour1", selection="sketch",
                             sketches=["Inner", "Outer"], component="Bracket", generate=False))
         assert _selection_of(op).inputGeometry == [a_mine, b_mine]
@@ -931,7 +978,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(MakeComp("Carrier", sketches=[make_sketch("Outline")])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", sketches=["Outline"],
                          component="Ghost", generate=False)
         assert res["isError"] is True
@@ -947,7 +994,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(root, sub))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", sketches=["Outline"],
                          component="Bracket", generate=False)
         assert res["isError"] is True
@@ -972,7 +1019,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(MakeComp("Root", sketches=[make_sketch("Outline")])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", sketches=["Ghost"],
                          generate=False)
         assert res["isError"] is True and "Ghost" in res["message"] and "Outline" in res["message"]
@@ -981,7 +1028,7 @@ class TestSketchSelection:
         install(cg, _sketch_design(MakeComp("Root", sketches=[make_sketch("Outline")])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         res = cg.handler(operation="2D Contour1", selection="sketch", generate=False)
         assert res["isError"] is True and "sketches" in res["message"]
 
@@ -994,7 +1041,7 @@ class TestSketchScope:
         install(cg, _sketch_design(MakeComp("Root", sketches=[make_sketch("Outline")])))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         if prepare is not None:
             pv = op.parameters.itemByName("contours").value
             real_make = pv._cs._make
@@ -1026,7 +1073,7 @@ class TestSketchScope:
         install(cg, _sketch_design(MakeComp("Root", sketches=[make_sketch("Outline")])))
         op = _curve_op(name="Engrave FE Text Outline1")
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         out = _payload(cg.handler(operation="Engrave FE Text Outline1", selection="sketch",
                                   sketches=["Outline"]))
         assert out["launched"] is True
@@ -1045,7 +1092,7 @@ class TestSelectedIdentityIsPublished:
         install(cg, _sketch_design(*comps))
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         return _payload(cg.handler(operation="2D Contour1", selection="sketch", sketches=names,
                                    generate=False))
 
@@ -1074,7 +1121,7 @@ class TestSelectedIdentityIsPublished:
         install(cg, design)
         op = _curve_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         out = _payload(cg.handler(operation="2D Contour1", selection="silhouette",
                                   bodies=["Body1"], component="Bracket", generate=False))
         assert out["selected"] == "'Bracket:1:Body1'"
@@ -1371,12 +1418,12 @@ class TestTurningObjectSets:
     def test_chamfer_refuses_a_face_handle_before_the_parameter_raises(self, monkeypatch):
         op = _turn_chamfer_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         import adsk.fusion
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
         monkeypatch.setattr(cg._inputs, "_resolve_token_entity", lambda des, h: _Face(2.2))
-        monkeypatch.setattr(cg._inputs._common, "design", lambda: object())
+        _install_design(cg, object())
         res = cg.handler(operation="Chamfer1", selection="chamfer", handles=["h"], generate=False)
         assert res["isError"] is True and "must be an edge" in res["message"]
         assert op.parameters.itemByName("chamfers").value.value == []
@@ -1386,12 +1433,12 @@ class TestTurningObjectSets:
         # rather than a wrong pick - so the required type refuses it while nothing has been written.
         op = _groove_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         import adsk.fusion
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
         monkeypatch.setattr(cg._inputs, "_resolve_token_entity", lambda des, h: _Face(2.2))
-        monkeypatch.setattr(cg._inputs._common, "design", lambda: object())
+        _install_design(cg, object())
         res = cg.handler(operation="Single Groove1", selection="groove", handles=["h"],
                          generate=False)
         assert res["isError"] is True and "must be an edge" in res["message"]
@@ -1400,12 +1447,12 @@ class TestTurningObjectSets:
     def test_thread_refuses_an_edge_handle(self, monkeypatch):
         op = _turn_thread_op()
         cam = _CAM([_Setup([op])])
-        monkeypatch.setattr(cg, "get_cam", lambda: (cam, None))
+        monkeypatch.setattr(cg, "get_cam", lambda **_: (cam, None))
         import adsk.fusion
         adsk.fusion.BRepFace = BRepFace
         adsk.fusion.BRepEdge = BRepEdge
         monkeypatch.setattr(cg._inputs, "_resolve_token_entity", lambda des, h: _Edge())
-        monkeypatch.setattr(cg._inputs._common, "design", lambda: object())
+        _install_design(cg, object())
         res = cg.handler(operation="Thread1", selection="thread", handles=["h"], generate=False)
         assert res["isError"] is True and "must be a face" in res["message"]
         assert op.parameters.itemByName("threadFaces").value.value == []
@@ -1668,10 +1715,12 @@ class TestProbingType:
     path - MEASURED: left 'probing-unknown', a launch landed the op errored 'No valid probe
     operations found.'."""
 
-    _CHOICES = ("probing-unknown", "probing-z", "probing-x")
+    _CHOICES = ("probing-unknown", "probing-z", "probing-x",
+                "probing-xy-rectangular-boss")
 
     def test_probe_without_a_type_on_an_unknown_op_refuses_naming_probing_type(self, monkeypatch):
-        op = _probe_op(probing_type="'probing-unknown'", probing_type_choices=self._CHOICES)
+        op = _probe_op(probing_type="'probing-unknown'", probing_type_choices=self._CHOICES,
+                       strategy="probe")
         cam = _CAM([_Setup([op])])
         _install(monkeypatch, cam, [_Face()])
         res = cg.handler(operation="Probe WCS1", selection="probe", handles=["f"], generate=True)
@@ -1691,6 +1740,19 @@ class TestProbingType:
         assert out["selections"] == 1
         assert op.parameters.itemByName("probingType").expression == "'probing-z'"
 
+    def test_a_reselection_that_infers_the_same_type_publishes_no_change(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-z'",
+                       probing_type_choices=self._CHOICES, strategy="probe_geometry")
+        probe_value = _ProbeTypeResetOnSelection(op.parameters.itemByName("probingType"),
+                                                 "'probing-z'")
+        mode = op.parameters.itemByName("probe_mode")
+        op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
+        _install(monkeypatch, _CAM([_Setup([op])]), [_Face()])
+        out = _payload(cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                                  generate=False))
+        assert out["probing_type"] == "probing-z"
+        assert "probing_type_changed" not in out and "probingType read" not in out["note"]
+
     def test_probe_with_a_valid_type_writes_it_and_launches(self, monkeypatch):
         op = _probe_op(probing_type="'probing-unknown'", probing_type_choices=self._CHOICES)
         cam = _CAM([_Setup([op])])
@@ -1700,6 +1762,83 @@ class TestProbingType:
         assert op.parameters.itemByName("probingType").expression == "'probing-z'"
         assert out["probing_type"] == "probing-z"
         assert out["launched"] is True
+
+    def test_explicit_probe_type_is_applied_after_face_selection_resets_it(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",
+                       probing_type_choices=self._CHOICES,
+                       strategy="probe_geometry")
+        probe_type = op.parameters.itemByName("probingType")
+        probe_value = _ProbeTypeResetOnSelection(probe_type, "'probing-xy-rectangular-boss'")
+        mode = op.parameters.itemByName("probe_mode")
+        op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
+        cam = _CAM([_Setup([op])])
+        _install(monkeypatch, cam, [_Face()])
+
+        out = _payload(cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                                  probing_type="probing-z", generate=False))
+
+        assert out["selections"] == 1 and out["probing_type"] == "probing-z"
+        assert probe_type.expression == "'probing-z'"
+
+    @pytest.mark.parametrize("strategy", ["probe", "probe_geometry"])
+    def test_probe_without_explicit_type_reports_final_inferred_face_type(self, monkeypatch, strategy):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-z'",
+                       probing_type_choices=self._CHOICES,
+                       strategy=strategy)
+        probe_type = op.parameters.itemByName("probingType")
+        probe_value = _ProbeTypeResetOnSelection(probe_type, "'probing-x'")
+        mode = op.parameters.itemByName("probe_mode")
+        op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
+        cam = _CAM([_Setup([op])])
+        _install(monkeypatch, cam, [_Face()])
+
+        out = _payload(cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                                  generate=False))
+
+        assert out["selections"] == 1
+        assert probe_type.expression == "'probing-x'"
+        assert out["probing_type"] == "probing-x"
+        assert out["probing_type_changed"] is True and out["probing_type_before"] == "probing-z"
+        assert "probingType read 'probing-z' before this selection and 'probing-x'" in out["note"]
+        assert cam.generated == []
+
+    def test_probe_geometry_refuses_when_face_leaves_type_unknown(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",
+                       probing_type_choices=self._CHOICES,
+                       strategy="probe_geometry")
+        cam = _CAM([_Setup([op])])
+        face = _Face()
+        _install(monkeypatch, cam, [face])
+
+        res = cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                         generate=False)
+
+        assert res["isError"] is True and "still reads 'probing-unknown'" in res["message"]
+        assert "remain selected on 'probe_selection'" in res["message"]
+        assert op.parameters.itemByName("probe_selection").value.value == [face]
+
+    def test_failed_explicit_type_write_discloses_the_retained_face_selection(self, monkeypatch):
+        op = _probe_op(name="Probe Geometry1", probing_type="'probing-unknown'",
+                       probing_type_choices=self._CHOICES,
+                       strategy="probe_geometry")
+        probing_type = _ProbeTypeRejectAfterSelection(
+            "probingType", "'probing-unknown'", self._CHOICES)
+        op.parameters.swap("probingType", probing_type)
+        probe_value = _InferringProbeValue(probing_type, "'probing-xy-rectangular-boss'")
+        mode = op.parameters.itemByName("probe_mode")
+        op.parameters.swap("probe_selection", _ModeGatedParam(probe_value, mode, "selection-model"))
+        cam = _CAM([_Setup([op])])
+        face = _Face()
+        _install(monkeypatch, cam, [face])
+
+        res = cg.handler(operation="Probe Geometry1", selection="probe", handles=["f"],
+                         probing_type="probing-z", generate=False)
+
+        assert res["isError"] is True and "Could not set probingType='probing-z'" in res["message"]
+        assert "remain selected on 'probe_selection'" in res["message"]
+        assert "probe_mode remains 'selection-model'" in res["message"]
+        assert op.parameters.itemByName("probe_selection").value.value == [face]
+        assert probing_type.expression == "'probing-xy-rectangular-boss'"
 
     def test_the_type_is_written_after_the_selection_it_is_gated_on(self, monkeypatch):
         op = _probe_op(probing_type="'probing-unknown'", probing_type_choices=self._CHOICES)
@@ -1721,6 +1860,7 @@ class TestProbingType:
         assert res["isError"] is True
         assert "probing-z" in res["message"] and "probing-x" in res["message"]
         assert op.parameters.itemByName("probingType").expression == "'probing-unknown'"
+        assert op.parameters.itemByName("probe_selection").value.value == []
 
 
 def _orientation_op(name="3+2 Roughing1", mode=None, editable=True, **kw):
@@ -2142,6 +2282,36 @@ class TestHeightReadBack:
 # ── generation: launch-and-return (it runs in the background on its own) ─────
 
 class TestGenerate:
+    def test_flat_setup_refresh_precedes_silhouette_application(self, monkeypatch):
+        op = _curve_op()
+        cam = _CAM([_Setup([op])], future=_Future(complete=False))
+        _install_bodies(monkeypatch, cam, [])
+        events = []
+        monkeypatch.setattr(cg, "sync_validity",
+                            lambda cam: events.append("sync") or True)
+        monkeypatch.setattr(cg, "refresh_flat_setup_models",
+                            lambda setup: (events.append("refresh") or 1, None))
+        pv = op.parameters.itemByName("contours").value
+        apply = pv.applyCurveSelections
+        def tracked_apply(selections):
+            events.append("selection")
+            return apply(selections)
+        monkeypatch.setattr(pv, "applyCurveSelections", tracked_apply)
+        out = _payload(cg.handler(operation="2D Contour1", selection="silhouette",
+                                  generate=True))
+        assert events == ["sync", "refresh", "selection"]
+        assert out["flat_models_refreshed"] == 1 and out["launched"] is True
+
+    def test_failed_validity_sync_refuses_before_selection(self, monkeypatch):
+        op = _curve_op()
+        cam = _CAM([_Setup([op])])
+        _install_bodies(monkeypatch, cam, [])
+        monkeypatch.setattr(cg, "sync_validity", lambda cam: False)
+        res = cg.handler(operation="2D Contour1", selection="silhouette", generate=True)
+        assert res["isError"] is True and "checkValidity" in res["message"]
+        assert op.parameters.itemByName("contours").value.applied == 0
+        assert cam.generated == []
+
     def test_returns_immediately_without_pumping_while_future_incomplete(self, monkeypatch):
         # The handler LAUNCHES generation and returns - it must never pump adsk.doEvents waiting on
         # the future (that blocks Fusion's UI for the whole compute; cam_get_status owns the pump).
@@ -3443,6 +3613,51 @@ class TestSurfaceSelection:
                                   handles=["a", "b"], surface_target="swarf", generate=False))
         assert op.parameters.itemByName("advancedSwarfSurfaces").value.value == faces
         assert out["surface_param"] == "advancedSwarfSurfaces" and out["selections"] == 2
+
+    def test_the_swarf_target_lands_on_a_legacy_swarf_ops_swarf_surfaces(self, monkeypatch):
+        # a legacy swarf op carries swarfSurfaces and none of the other surface sets
+        op = _Op("Swarf1", {"swarfSurfaces": _Param(_HoleParamValue())})
+        cam = _CAM([_Setup([op])])
+        faces = [_Face()]
+        _install(monkeypatch, cam, faces)
+        out = _payload(cg.handler(operation="Swarf1", selection="surfaces", handles=["a"],
+                                  surface_target="swarf", generate=False))
+        assert op.parameters.itemByName("swarfSurfaces").value.value == faces
+        assert out["surface_param"] == "swarfSurfaces" and out["selections"] == 1
+
+    @staticmethod
+    def _tokened(*tokens):
+        faces = [_Face() for _ in tokens]
+        for face, token in zip(faces, tokens):
+            face.entityToken = token
+        return faces
+
+    def _swarf_storing(self, monkeypatch, stored, assigned="wall"):
+        """A legacy swarf op whose swarfSurfaces reads back `stored` whatever one face it is given."""
+        class _Expanding:
+            value = property(lambda self: list(stored), lambda self, faces: None)
+        op = _Op("Swarf1", {"swarfSurfaces": _Param(_Expanding())})
+        wall = self._tokened(assigned)
+        _install(monkeypatch, _CAM([_Setup([op])]), wall)
+        return cg.handler(operation="Swarf1", selection="surfaces", handles=["a"],
+                          surface_target="swarf", generate=False)
+
+    def test_a_longer_read_back_holding_the_assigned_face_publishes_both_counts(self, monkeypatch):
+        out = _payload(self._swarf_storing(
+            monkeypatch, self._tokened("wall", "wall", "w2", "w3", "w4")))
+        assert (out["selections"], out["assigned"], out["stored"]) == (1, 1, 5)
+        assert "swarfSurfaces reads back 5 entries for the 1 assigned" in out["note"]
+
+    def test_a_longer_read_back_without_the_assigned_face_is_an_error(self, monkeypatch):
+        res = self._swarf_storing(monkeypatch, self._tokened("w2", "w3", "w4", "w5", "w6"))
+        assert res["isError"] is True
+        assert "1 face(s) were assigned and the operation reads back 5" in res["message"]
+
+    def test_an_assigned_face_with_no_readable_token_is_never_matched(self, monkeypatch):
+        # a token-less stored entry and a token-less assigned face both key on None
+        res = self._swarf_storing(monkeypatch, self._tokened(None, "w2", "w3"), assigned=None)
+        assert res["isError"] is True
+        assert "1 face(s) were assigned and the operation reads back 3" in res["message"]
 
     def test_an_omitted_target_on_the_swarf_op_names_the_one_set_it_can_take(self, monkeypatch):
         # its non-editable floor/check sets stay out of the listing, so the caller is sent at the

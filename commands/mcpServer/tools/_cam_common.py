@@ -11,9 +11,10 @@ import time
 
 import adsk.core
 import adsk.cam
+import adsk.fusion
 
-from ._common import (counted, measured, named_with_remainder, native_identity, iter_collection,
-                      read_flag, safe, scale, told_apart)
+from ._common import (all_components, counted, measured, named_with_remainder, native_identity,
+                      iter_collection, read_flag, safe, scale, told_apart)
 from ._write_guard import _active_identity, document_key, on_key_renamed
 from . import _geom
 from . import _inputs
@@ -21,12 +22,20 @@ from . import _view_common
 
 MAP_BLURB = (
     "the CAM substrate every CAM tool starts from: get_cam (the document's CAM product); the ONE "
-    "tree walk and its EXACT by-name resolvers (walk_cam_tree, resolve_cam_node, find_setup, "
-    "find_operation - a duplicate name is refused); the parameter helpers; the per-op state "
+    "tree walk and its EXACT by-name resolvers (walk_cam_tree, resolve_cam_node, find_setup "
+    "- a duplicate name is refused); the parameter helpers; the per-op state "
     "classifiers and readiness verdicts (op_state_facts, ready_verdict, live_readiness); the "
     "machine catalog; the bounded library walk")
 
 app = adsk.core.Application.get()
+
+
+def tool_selector_error(scope, library_url):
+    """Return the refusal for simultaneous document and shared-library tool selectors."""
+    if (scope or "").strip().lower() == "document" and library_url:
+        return (f"tool_scope='document' conflicts with tool_library_url={library_url!a}. "
+                "Use document scope without a URL, or a library URL without document scope.")
+    return None
 
 
 def expression_error(p):
@@ -230,6 +239,11 @@ def validity_sync_miss() -> str:
     return "" if _VALIDITY_SYNCED[0] else _SYNC_MISS
 
 
+def validity_synced() -> bool:
+    """Whether this call's get_cam(sync=True) ran checkValidity."""
+    return _VALIDITY_SYNCED[0]
+
+
 def with_validity_clause(verdict: str) -> str:
     """`verdict` plus this call's unsynced-validity clause, held inside the wire budget: the clause
     is the half an agent must not miss, so a verdict past the budget is the half that gives way."""
@@ -238,6 +252,20 @@ def with_validity_clause(verdict: str) -> str:
         return verdict
     room = _MISS_BUDGET - len(clause)
     return (verdict if len(verdict) <= room else verdict[:room - 3].rstrip() + "...") + clause
+
+
+def _touch_flat_patterns(products) -> None:
+    """Read every flat pattern's CURRENT flat body, so a stale one cannot pass checkValidity."""
+    # MEASURED (2706.0.97): a flat pattern recomputes LAZILY after its source changes -
+    # checkValidity() alone validates against the STALE flat and leaves a stale op reading valid.
+    # Reading flatBody.revisionId first forces the recompute checkValidity then sees.
+    design = safe(lambda: adsk.fusion.Design.cast(products.itemByProductType('DesignProductType')))
+    if design is None:
+        return
+    for comp in all_components(design):
+        flat = safe(lambda comp=comp: comp.flatPattern)
+        if flat is not None:
+            safe(lambda flat=flat: flat.flatBody.revisionId)
 
 
 def get_cam(sync: bool = False):
@@ -256,6 +284,9 @@ def get_cam(sync: bool = False):
                       "one on first entry: call view_switch_workspace('manufacture') once, then "
                       "retry this call.")
     if sync:
+        # checkValidity holds no persistent state and the writers already call it, so a read tool
+        # syncing before it reads stays write="read".
+        _touch_flat_patterns(products)
         sync_validity(cam)
     return cam, None
 
@@ -415,6 +446,14 @@ def _child_kind(child):
         if family is not None and safe(lambda family=family: family.cast(child)) is not None:
             return kind
     return "operation" if safe(lambda: adsk.cam.Operation.cast(child)) is not None else "base"
+
+
+def child_row_names(parent, kind):
+    """The names of `parent`'s `children` of CamNode `kind`, in order; None when `children` does not read."""
+    children = safe(lambda: parent.children)
+    if children is None:
+        return None
+    return [safe(lambda c=c: c.name) for c in iter_collection(children) if _child_kind(c) == kind]
 
 
 def _walk_children(parent, setup_name, path, out, parent_node=None):
@@ -670,6 +709,77 @@ def owning_setup(node):
     return None
 
 
+
+def refresh_flat_setup_models(setup):
+    """Rebind one setup's selected flat bodies to their current developed geometry."""
+    raw = safe(lambda: setup.models)
+    if raw is None:
+        return 0, "Setup.models could not be read; no flat refresh attempted."
+    models = list(raw) if isinstance(raw, (list, tuple)) else list(iter_collection(raw))
+    expected = len(raw) if isinstance(raw, (list, tuple)) else counted(lambda: raw.count)
+    if expected is None or expected != len(models):
+        return 0, "Setup.models could not be read completely; no flat refresh attempted."
+    if not models:
+        return 0, None
+    selected, flats = [], 0
+    for model in models:
+        design = safe(lambda model=model: model.parentComponent.parentDesign)
+        if design is None:
+            design = safe(lambda model=model: model.component.parentDesign)
+        if design is None:
+            design = safe(lambda model=model: model.parentDesign)
+        product_type = safe(lambda design=design: design.objectType)
+        if product_type is None:
+            return 0, (f"Selected model '{safe(lambda model=model: model.name)}' has no readable "
+                       "product type; setup models were not changed.")
+        if product_type != "adsk::fusion::FlatPatternProduct":
+            selected.append(model)
+            continue
+        flat = safe(lambda design=design: design.flatPattern)
+        if flat is None:
+            return 0, "A selected flat model has no readable flatPattern; setup models were not changed."
+        developed = safe(lambda flat=flat: flat.flatBody)
+        if native_identity(developed) is None:
+            return 0, "A selected flat model's current flat body has no readable identity; setup models were not changed."
+        selected.append(developed)
+        flats += 1
+    if not flats:
+        return 0, None
+    collection = adsk.core.ObjectCollection.create()
+    for model in selected:
+        collection.add(model)
+    try:
+        setup.models = collection
+    except Exception as exc:
+        return 0, f"Flat setup model refresh failed: {exc}. Inspect the setup before retrying."
+    landed_raw = safe(lambda: setup.models)
+    landed = (list(landed_raw) if isinstance(landed_raw, (list, tuple))
+              else list(iter_collection(landed_raw)) if landed_raw is not None else None)
+    landed_count = (len(landed_raw) if isinstance(landed_raw, (list, tuple))
+                    else counted(lambda: landed_raw.count) if landed_raw is not None else None)
+    wanted_keys = [native_identity(model) for model in selected]
+    landed_keys = [native_identity(model) for model in landed] if landed is not None else None
+    if (landed_count is None or landed_count != len(selected)
+            or landed_keys is None or len(landed_keys) != len(wanted_keys)
+            or None in landed_keys or landed_keys != wanted_keys):
+        return flats, "Flat setup models were reassigned, but their identities did not read back. Inspect the setup before retrying."
+    return flats, None
+
+
+def flat_setups_for_operations(operations):
+    """Return unique owning setups for the given operation scope."""
+    out, seen = [], set()
+    for op in operations:
+        setup = safe(lambda op=op: op.parentSetup)
+        name = safe(lambda setup=setup: setup.name)
+        if setup is None or not name:
+            return None, f"Operation '{safe(lambda op=op: op.name)}' has no readable owning setup."
+        key = name.lower()
+        if key not in seen:
+            out.append(setup)
+            seen.add(key)
+    return out, None
+
 # What each write path would LAND instead, and so the scope its clash census reads. MEASURED: the
 # create goes through operations.add, which dedupes DOCUMENT-WIDE to '<name> (2)'; the rename sets
 # Operation.name, which dedupes inside one setup and takes a twin in another setup exactly.
@@ -714,15 +824,6 @@ def _operation_listing(pool, name):
     want = (name or "").strip().lower()
     dupes = [n for n in pool if (n.name or "").lower() == want]
     return [n.path for n in dupes] if len(dupes) > 1 else [n.name for n in pool]
-
-
-def find_operation(cam, name):
-    """(operation, available_names) for the unique Operation named `name` anywhere in the CAM tree;
-    a DUPLICATED name is refused and the list carries each duplicate's 'Setup / op' path."""
-    pool = operation_nodes(cam)
-    want = (name or "").strip().lower()
-    matches = [n for n in pool if (n.name or "").lower() == want]
-    return (matches[0].obj if len(matches) == 1 else None), _operation_listing(pool, name)
 
 
 def resolve_operation(cam, name, label="operation"):
@@ -951,7 +1052,7 @@ def op_state_facts(op, cam=None) -> dict:
 
 def is_empty_toolpath(facts: dict) -> bool:
     """True for the EMPTY class: an operation that generated, is not suppressed, and cuts nothing.
-    An additive build op joins the manual-NC exclusion - it carries no toolpath by construction."""
+    An additive op joins the manual-NC exclusion: a valid one is never reported empty."""
     # 'valid' is answered off operationState IsValid (0) only, so the empty claim rests on a state
     # that was READ; a state that raised buckets _UNREAD_STATE and stops here.
     if (facts.get("strategy") == _MANUAL_NC_STRATEGY
@@ -967,14 +1068,18 @@ def is_empty_toolpath(facts: dict) -> bool:
 
 
 def toolpath_present_tally(ops):
-    """(rows reading hasToolpath True and not errored, rows whose flag did not read) - an errored
-    row reads hasToolpath True but a post will not write it."""
+    """(present, unread) - a suppressed or errored row never counts as present."""
     present = unread = 0
     for row in (ops or []):
         flag = read_flag(lambda row=row: row.hasToolpath)
         if flag is None:
             unread += 1
-        elif flag and not safe(lambda row=row: row.hasError, False):
+            continue
+        if not flag:
+            continue
+        facts = {"is_suppressed": safe(lambda row=row: row.isSuppressed, False),
+                 "operation_state": safe(lambda row=row: row.operationState)}
+        if not op_is_suppressed(facts) and not safe(lambda row=row: row.hasError, False):
             present += 1
     return present, unread
 
@@ -999,23 +1104,24 @@ def op_state_tally(ops, cam=None) -> dict:
             warnings += 1                            # OVERLAY: the op still lands in a bucket below
             if warning_sample is None:
                 warning_sample = {"name": facts["name"], "warning": first_warning_line(op)}
-        if facts["has_error"]:
+        if op_is_suppressed(facts):
+            suppressed += 1                          # the flag/state outrank hasError - suppressed wins
+        elif facts["has_error"]:
             errored += 1                             # FAILED, not pending - its own bucket
             if op_sample is None:
                 op_sample = {"name": facts["name"], "error": first_error_line(op)}
             continue
-        state = facts["operation_state"]
-        if state == 0:
-            if facts["nonfinite_toolpath"]:
-                nonfinite_names.append(facts["name"] or _UNREAD_SEGMENT)
-            else:
-                valid += 1
-        elif state == 2:
-            suppressed += 1
-        elif state in (1, 3):
-            ood += 1
         else:
-            unread += 1
+            state = facts["operation_state"]
+            if state == 0:
+                if facts["nonfinite_toolpath"]:
+                    nonfinite_names.append(facts["name"] or _UNREAD_SEGMENT)
+                else:
+                    valid += 1
+            elif state in (1, 3):
+                ood += 1
+            else:
+                unread += 1
         if facts["is_generating"]:
             generating += 1
             if op_settled(facts):
@@ -1124,7 +1230,7 @@ def ready_verdict(measure: str, warned: int, warning_sample, blocked=None) -> st
             f"{_warning_phrase(warning_sample)}")
 
 
-# ── strategy entitlement: whether this INSTALLATION will generate a strategy at all ──────────────
+# ── strategy generation permission ─────────────────────────────────────────────────────────────
 
 
 def _create_strategy(name):
@@ -1144,14 +1250,12 @@ def strategy_generation_allowed(name):
     return read_flag(lambda: strat.isGenerationAllowed)
 
 
-# The strategies whose isGenerationAllowed verdicts this install's Manufacturing Extension
-# entitlement - needs no document or setup.
+# Sentinel strategies sample generation permission without a document or setup.
 CAPABILITY_SENTINELS = ("steep_and_shallow", "multiaxis_finishing", "swarf", "probe_geometry")
 
 
 def entitled_over(flags) -> object:
-    """True/False/None over an iterable of isGenerationAllowed flags - True only where every one
-    reads true, None where any did not read, so an unread flag never folds into a confident False."""
+    """Fold generation permission flags, preserving None when any flag did not read."""
     values = list(flags)
     if any(v is None for v in values):
         return None
@@ -1159,15 +1263,12 @@ def entitled_over(flags) -> object:
 
 
 def capability_entitled():
-    """This install's Manufacturing Extension verdict - entitled_over the CAPABILITY_SENTINELS'
-    own isGenerationAllowed flags, probed fresh."""
+    """Aggregate generation permission across the sentinel strategies, probed fresh."""
     return entitled_over(strategy_generation_allowed(name) for name in CAPABILITY_SENTINELS)
 
 
 def entitlement_flags(ops) -> list:
-    """One True / False / None per operation - its own strategy's isGenerationAllowed - probed ONCE
-    per distinct strategy name. False is what a generation-blocked operation reads; None is a flag
-    that did not read, which is no entitlement verdict at all."""
+    """One True / False / None per operation from its strategy's isGenerationAllowed flag."""
     seen, out = {}, []
     for op in ops or []:
         name = safe(lambda op=op: op.strategy)
@@ -1922,9 +2023,9 @@ def resolve_machine(machine):
                                 "resolver will not pick one.")
 
     cands = query_machines(lib, vendor, model)
-    # WIDEN when the model as given matches nothing: the query prefix-matches the MODEL field, but a
-    # variant's distinguishing text lives in its DESCRIPTION, which is the label callers pass. The
-    # broad token fetches a pool that answers only where a machine matches the WHOLE request.
+    # WIDEN when the model as given matches nothing: the query matches the MODEL field as a whole,
+    # but a variant's distinguishing text lives in its DESCRIPTION, which is the label callers pass.
+    # The first model token is queried for a pool that answers only on a WHOLE-request match.
     near = []
     if not cands:
         v2, full_model = vendor, model

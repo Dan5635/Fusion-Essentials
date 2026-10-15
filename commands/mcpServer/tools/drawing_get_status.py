@@ -10,6 +10,14 @@ from ..server import drawing_jobs
 from ._common import ok
 
 
+_PENDING_NOTE = ("Work has not finished. Poll this request_key; do not repeat this operation "
+                 "with a new key.")
+_RUNNING_NOTE = ("Fusion is processing this drawing job. This is not a failure or a progress "
+                 "estimate; poll the same request_key, even if processing takes minutes.")
+_UNRESOLVED_NOTE = ("Outcome unknown after a restart or persistence failure. For drawing_create, "
+                    "check data_get for the cloud file before any retry; do not assume failure.")
+
+
 def handler(request_key: str = "") -> dict:
     key = request_key.strip() if isinstance(request_key, str) else ""
     if not key:
@@ -21,14 +29,27 @@ def handler(request_key: str = "") -> dict:
                    "note": "No durable drawing job has this request_key."})
     record.pop("canonical_request", None)
     record.pop("owner_instance", None)
-    record["note"] = ("This is the stored operation state and raw terminal tool result. It does not "
-                      "add an effect verdict or replay unresolved work.")
+    state = record.get("status")
+    if state in ("accepted", "queued"):
+        note = _PENDING_NOTE
+    elif state == "running":
+        note = _RUNNING_NOTE
+    elif state == "completed":
+        note = ("Completed. Read terminal_result for the created file_id, then doc_open it."
+                if record.get("tool") == "drawing_create" else
+                "Completed. Read terminal_result and independently check the effect.")
+    elif state == "failed":
+        note = ("Failed. Read terminal_result or reason. For drawing_create, check data_get "
+                "for a cloud file before retrying.")
+    else:
+        note = _UNRESOLVED_NOTE
+    record["note"] = note
     return ok(record)
 
 
 TOOL_DESCRIPTION = (
-    "Poll deferred drawing_create, drawing_update, or drawing_export by caller-known request_key. "
-    "It reads stored state and does not replay work."
+    "Poll drawing_create, drawing_update or drawing_export by request_key. "
+    "Pending: wait; completed: result; failed/unresolved: inspect."
 )
 
 tool = (

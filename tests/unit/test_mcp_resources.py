@@ -8,14 +8,13 @@ builder hands start_server, so what is asserted here is what a client that speak
 receives - the capability advertised only when the content actually loaded, one listing row without
 the body in it, the read, and the two refusal codes.
 
-The parity class holds the served Markdown against the committed skill minus its frontmatter: one
-authored render with two consumers, rather than two renders that happen to agree today.
+The parity class holds the served Markdown against the readable guidance document.
 """
 
 import asyncio
+import hashlib
 import json
 import os
-import re
 import sys
 
 import pytest
@@ -28,7 +27,7 @@ if COMMANDS_DIR not in sys.path:                   # the flat package root the a
 from mcpServer.guidance import loader, render, resources  # noqa: E402
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_SKILL_PATH = os.path.join(_REPO, ".claude", "skills", "parametric-cad-design", "SKILL.md")
+_GUIDANCE_PATH = os.path.join(_REPO, "commands", "mcpServer", "guidance", "parametric_cad_design.md")
 
 # The addresses this server publishes: the whole document, then one per non-kernel section (the
 # kernel is IN every reading of the document, so it has no address of its own). Written out here
@@ -94,6 +93,13 @@ def _section_body(section_id):
     return render.section_text(doc, section_id)
 
 
+def _unstamped(text):
+    """Return the rendered content apart from its required source stamp."""
+    body, separator, stamp = text.rpartition("\n\nSource: ")
+    assert separator and "Resource snapshot: reload the add-in" in stamp
+    return body
+
+
 def _rows(server):
     return _result(_request(server, "resources/list"))["resources"]
 
@@ -150,7 +156,8 @@ class TestResourcesList:
         assert row["description"].startswith("Use when designing or modelling in Fusion")
 
     def test_the_advertised_size_is_the_byte_length_of_what_a_read_returns(self, served):
-        assert _rows(served)[0]["size"] == len(_body().encode("utf-8"))
+        text = _result(_request(served, "resources/read", {"uri": URI}))["contents"][0]["text"]
+        assert _rows(served)[0]["size"] == len(text.encode("utf-8"))
 
     def test_the_listing_never_carries_the_body(self, served):
         # a listing that shipped the document would cost every client the whole read it did not ask
@@ -194,12 +201,12 @@ class TestResourcesRead:
     def test_reading_the_published_uri_returns_the_rendered_markdown(self, served):
         contents = _result(_request(served, "resources/read", {"uri": URI}))["contents"]
         assert len(contents) == 1
-        assert contents[0]["text"] == _body()
+        assert _unstamped(contents[0]["text"]) == _body()
 
     def test_reading_one_section_returns_that_section_alone(self, served):
         contents = _result(_request(served, "resources/read",
                                     {"uri": f"{URI}/assemble"}))["contents"]
-        assert contents[0]["text"] == _section_body("assemble")
+        assert _unstamped(contents[0]["text"]) == _section_body("assemble")
         assert "## Validate" not in contents[0]["text"]
 
     def test_the_content_row_names_its_uri_and_its_markdown_type(self, served):
@@ -390,7 +397,7 @@ def no_transport(mcp, monkeypatch):
 class TestStartServerPublishesTheCatalogItWasHanded:
     def _start(self, mcp, resources_arg):
         result = mcp.start_server(
-            "127.0.0.1", 27182, items=[], resources=resources_arg, job_store=object())
+            "127.0.0.1", 37182, items=[], resources=resources_arg, job_store=object())
         assert result["status"] == mcp.START_OK, result
         assert result["thread"].started, "the serving thread must still be started"
         return result["mcp"]
@@ -398,15 +405,15 @@ class TestStartServerPublishesTheCatalogItWasHanded:
     def test_the_catalog_reaches_the_server_start_server_builds(self, no_transport):
         server = self._start(no_transport, resources.catalog())
         assert [r["uri"] for r in server.resources] == URIS
-        assert server.resources[0]["text"] == _body()
+        assert _unstamped(server.resources[0]["text"]) == _body()
 
     def test_that_server_advertises_and_serves_the_resource(self, no_transport):
         # the whole point of the hop: the instance the transport actually runs is the one that has
         # to advertise the capability and answer the read.
         server = self._start(no_transport, resources.catalog())
         assert _result(_request(server, "initialize", {}))["capabilities"]["resources"] == {}
-        assert _result(_request(server, "resources/read",
-                                {"uri": URI}))["contents"][0]["text"] == _body()
+        assert _unstamped(_result(_request(server, "resources/read",
+                                {"uri": URI}))["contents"][0]["text"]) == _body()
 
     def test_no_catalog_leaves_that_server_advertising_none(self, no_transport):
         server = self._start(no_transport, [])
@@ -420,8 +427,26 @@ class TestTheCatalogBuilder:
     def test_it_publishes_the_whole_document_then_one_entry_per_non_kernel_section(self):
         catalog = resources.catalog()
         assert [e["uri"] for e in catalog] == URIS
-        assert catalog[0]["text"] == _body()
-        assert catalog[1]["text"] == _section_body("plan")
+        assert _unstamped(catalog[0]["text"]) == _body()
+        assert _unstamped(catalog[1]["text"]) == _section_body("plan")
+
+    def test_resource_snapshots_identify_their_source_after_the_file_changes(self, mcp, tmp_path):
+        doc, _ = loader.load()
+        path = tmp_path / "guidance.json"
+        original = json.dumps(doc).encode("utf-8")
+        path.write_bytes(original)
+        server = mcp.SimpleMCPServer(resources=resources.catalog(path))
+        old_hash = hashlib.sha256(original).hexdigest()
+        doc["title"] = "Updated private source"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        _, new_hash = loader.load(path)
+        assert new_hash != old_hash
+        for row in _rows(server):
+            text = _result(_request(server, "resources/read", {"uri": row["uri"]}))["contents"][0]["text"]
+            assert f"guidance_id={doc['guidance_id']}; sha256={old_hash}" in text
+            assert new_hash not in text and "reload the add-in" in text
+            assert "Updated private source" not in text
+        assert new_hash in resources.catalog(path)[0]["text"]
 
     def test_the_kernel_gets_no_address_of_its_own(self):
         # it is carried by every reading of the document (and by the skill map), so a separate
@@ -447,7 +472,7 @@ class TestTheCatalogBuilder:
         # the add-in's process CWD is Fusion's, not the repo: the packaged file is found beside the
         # code or not at all.
         monkeypatch.chdir(tmp_path)
-        assert resources.catalog()[0]["text"] == _body()
+        assert _unstamped(resources.catalog()[0]["text"]) == _body()
 
     def test_a_missing_packaged_document_is_reported_by_name(self, tmp_path):
         missing = str(tmp_path / "gone.json")
@@ -456,34 +481,29 @@ class TestTheCatalogBuilder:
         assert "gone.json" in str(exc.value)
 
 
-# ── parity: the resource body IS the committed skill's body ─────────────────
+# ── parity: the resource body IS the readable document ──────────────────────
 
 class TestTheServedTextIsTheCommittedPackage:
     def _committed_body(self):
-        with open(_SKILL_PATH, encoding="utf-8") as fh:
-            committed = fh.read()
-        match = re.match(r"^---\n.*?\n---\n+", committed, re.S)
-        assert match, "the committed skill lost its frontmatter block"
-        return committed[match.end():]
+        with open(_GUIDANCE_PATH, encoding="utf-8") as fh:
+            return fh.read()
 
-    def test_each_served_section_equals_the_committed_playbook_file(self, served):
-        # the two channels an agent can reach a playbook through - the resource read and the file
-        # on disk - are one render, not two that agree today.
+    def test_each_served_section_equals_the_explicitly_exported_playbook(self, served, tmp_path):
+        doc, _sha = loader.load()
+        gen_guidance.write_package(doc, str(tmp_path))
         for section_id in loader.SECTION_IDS:
             if section_id == loader.KERNEL:
                 continue
             text = _result(_request(served, "resources/read",
                                     {"uri": f"{URI}/{section_id}"}))["contents"][0]["text"]
-            with open(gen_guidance.playbook_path(section_id), encoding="utf-8") as fh:
-                assert fh.read() == text, section_id
+            with open(gen_guidance.playbook_path(section_id, str(tmp_path)), encoding="utf-8") as fh:
+                assert fh.read() == _unstamped(text), section_id
 
-    def test_the_committed_skill_is_the_map_while_the_resource_serves_the_document(self, served):
-        # the SKILL.md an agent carries is a MAP: the kernel plus where to fetch the rest. The
-        # resource channel is where the whole document lives, so they are NOT the same text.
+    def test_the_readable_document_equals_the_served_document_body(self, served):
         doc, _sha = loader.load()
-        assert self._committed_body() == render.map_text(doc)
+        assert self._committed_body() == render.body(doc)
         served_text = _result(_request(served, "resources/read", {"uri": URI}))["contents"][0]["text"]
-        assert served_text == _body() != self._committed_body()
+        assert _unstamped(served_text) == _body() == self._committed_body()
 
     def test_the_frontmatter_a_skill_loader_needs_is_not_served(self, served):
         text = _result(_request(served, "resources/read", {"uri": URI}))["contents"][0]["text"]

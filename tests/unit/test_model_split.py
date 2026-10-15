@@ -5,10 +5,20 @@ no-active-design guard, resolution-error propagation, and the honesty verifiers 
 yields a SINGLE body is reported as an error (no silent ok), a face split that creates no new faces is
 an error, and the resulting body count / net face-count increase are read back and reported.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
-from conftest import (load_tool, make_design, install, MakeComp, BRepBody, BRepFace, entity_proxy,
-                      go_stale, payload, error_message, assert_no_active_design,
-                      _NamedCollection)
+import math
+from types import SimpleNamespace
+
+import adsk.fusion
+import pytest
+
+from conftest import (load_tool, make_design, install, MakeComp, BRepBody, BRepFace, BRepEdge,
+                      entity_proxy, go_stale, payload, error_message, assert_no_active_design,
+                      _NamedCollection, Circle3D, FakePoint, FakeVector3D, Line3D,
+                      FakeTimelineObject, make_timeline)
 
 sp = load_tool("model_split")
 
@@ -16,7 +26,7 @@ sp = load_tool("model_split")
 # ── body-split fakes ────────────────────────────────────────────────────────
 
 class FakeSplitBodyFeature:
-    def __init__(self, result_names=("Body1", "Body2"), health=0):
+    def __init__(self, result_names=("Body1", "Body2"), health=_HEALTHY):
         self.name = "Split1"
         self.bodies = _NamedCollection([BRepBody(name=n) for n in result_names])
         self.healthState = health
@@ -59,11 +69,20 @@ class FakeSplitBodyFeatures:
 # ── face-split fakes ────────────────────────────────────────────────────────
 
 class FakeSplitFaceFeature:
-    def __init__(self, created=2, health=0):
+    def __init__(self, created=2, health=_HEALTHY):
         self.name = "SplitFace1"
         self.faces = _NamedCollection([None] * created)
         self.healthState = health
         self.errorOrWarningMessage = ""
+
+
+class FakeSplitFaceInput:
+    def __init__(self):
+        self.direction = None
+
+    def setAlongVectorSplitType(self, direction):
+        self.direction = direction
+        return True
 
 
 class FakeSplitFaceFeatures:
@@ -75,13 +94,15 @@ class FakeSplitFaceFeatures:
         self._feature = feature
         self._body = None
         self.returns_nothing = returns_nothing
+        self.input = None
 
     def bind_body(self, body):
         self._body = body
 
     def createInput(self, faces, tool, extend):
         self.last = (faces, tool, extend)
-        return type("I", (), {})()
+        self.input = FakeSplitFaceInput()
+        return self.input
 
     def add(self, inp):
         if self._body is not None:
@@ -90,7 +111,12 @@ class FakeSplitFaceFeatures:
             self._body.faces._items.extend([None] * self._bumps)
         if self.returns_nothing:
             return None
-        return self._feature if self._feature is not None else FakeSplitFaceFeature()
+        feature = self._feature if self._feature is not None else FakeSplitFaceFeature()
+        if not hasattr(feature, "directionEntity"):
+            feature.directionEntity = inp.direction
+        if not hasattr(feature, "splitType"):
+            feature.splitType = getattr(sp.adsk.fusion.SplitFaceSplitTypes, "alongVectorSplitType", None)
+        return feature
 
 
 def _faces_on_one_body(count, face_count=6, token="Box1"):
@@ -127,8 +153,9 @@ def _wire_body(monkeypatch, feature=None, target=("body-obj", None), cutter=("pl
     return feats
 
 
-def _wire_face(monkeypatch, feats, faces, cutter=("plane", None), design_type=None):
-    design = make_design(comp=_comp_with(face_feats=feats))
+def _wire_face(monkeypatch, feats, faces, cutter=("plane", None), design_type=None,
+               timeline=None):
+    design = make_design(comp=_comp_with(face_feats=feats), timeline=timeline)
     if design_type is not None:
         design.designType = design_type
     install(sp, design)
@@ -185,7 +212,7 @@ class TestSplitBody:
         assert feats.last[1] == "surf-body"        # the resolved tool body reached createInput
 
     def test_health_error_reported(self, monkeypatch):
-        _wire_body(monkeypatch, feature=FakeSplitBodyFeature(("A", "B"), health=2))
+        _wire_body(monkeypatch, feature=FakeSplitBodyFeature(("A", "B"), health=_ERROR))
         res = sp.handler(split="body", target="Body1", split_plane="xy")
         assert res["isError"] is True and "failed to compute" in res["message"]
 
@@ -304,6 +331,124 @@ class TestSplitFace:
         msg = error_message(sp.handler(split="face", faces=[], split_plane="xy"))
         assert "'faces' is required" in msg
 
+    def test_along_vector_uses_typed_line_and_direction_then_reads_face_delta(self, monkeypatch):
+        body, faces = _faces_on_one_body(1, face_count=6)
+        feature = FakeSplitFaceFeature(created=1)
+        feature.timelineObject = FakeTimelineObject(index=1)
+        feats = FakeSplitFaceFeatures(bumps=1, feature=feature)
+        feats.bind_body(body)
+        _wire_face(monkeypatch, feats, faces, timeline=make_timeline("Seed", marker=1))
+        line = object()
+        direction = SimpleNamespace(entityToken="test:split-direction")
+        monkeypatch.setattr(sp._SPLIT_LINE, "resolve", lambda raw: (line, None))
+        monkeypatch.setattr(sp._VIEW, "resolve", lambda raw, comp: (("entity", direction), None))
+        out = payload(sp.handler(split="along_vector", faces=["face"], split_line="S/line:0",
+                                 view_direction="Axis"))
+        assert feats.last[1] is line
+        assert feats.input.direction is direction
+        assert out["split"] == "along_vector" and out["result_count"] == 1
+        assert "unverified" not in out
+
+    def test_direct_along_vector_discloses_unreadable_definition(self, monkeypatch):
+        body, faces = _faces_on_one_body(1, face_count=6)
+        feats = FakeSplitFaceFeatures(bumps=1, returns_nothing=True)
+        feats.bind_body(body)
+        _wire_face(monkeypatch, feats, faces, design_type=0)
+        monkeypatch.setattr(sp._SPLIT_LINE, "resolve", lambda raw: (object(), None))
+        direction = SimpleNamespace(entityToken="test:split-direction")
+        monkeypatch.setattr(sp._VIEW, "resolve", lambda raw, comp: (("entity", direction), None))
+        out = payload(sp.handler(split="along_vector", faces=["face"], split_line="S/line:0",
+                                 view_direction="Axis"))
+        assert out["unverified"] == ["split_type", "split_direction"]
+
+    def test_along_vector_refuses_a_different_retained_direction(self, monkeypatch):
+        body, faces = _faces_on_one_body(1, face_count=6)
+        direction = SimpleNamespace(entityToken="test:selected-direction")
+        other = SimpleNamespace(entityToken="test:other-direction")
+
+        class WrongDirectionFeature(FakeSplitFaceFeature):
+            @property
+            def directionEntity(self):
+                return other
+
+        feats = FakeSplitFaceFeatures(bumps=1, feature=WrongDirectionFeature(created=1))
+        feats._feature.timelineObject = FakeTimelineObject(index=1)
+        feats.bind_body(body)
+        _wire_face(monkeypatch, feats, faces, timeline=make_timeline("Seed", marker=1))
+        monkeypatch.setattr(sp._SPLIT_LINE, "resolve", lambda raw: (object(), None))
+        monkeypatch.setattr(sp._VIEW, "resolve", lambda raw, comp: (("entity", direction), None))
+        result = sp.handler(split="along_vector", faces=["face"], split_line="S/line:0",
+                            view_direction="Axis")
+        assert result["isError"] is True
+        assert "did not retain the selected view_direction" in result["message"]
+
+    def test_along_vector_reads_retained_definition_while_rolled_and_reports_restore_failure(
+            self, monkeypatch):
+        body, faces = _faces_on_one_body(1, face_count=6)
+        direction = SimpleNamespace(entityToken="test:split-direction")
+        timeline = make_timeline("Seed", marker=1)
+
+        class RestoreRaisingTimeline(type(timeline)):
+            @property
+            def markerPosition(self):
+                return self._read(self._marker)
+
+            @markerPosition.setter
+            def markerPosition(self, value):
+                if value == 1:
+                    raise RuntimeError("restore refused")
+                self._marker = value
+
+        timeline = RestoreRaisingTimeline(items=timeline._items, marker=1)
+
+        class RollingTimelineObject(FakeTimelineObject):
+            def rollTo(self, roll_before):
+                result = super().rollTo(roll_before)
+                if result and roll_before:
+                    timeline._marker = 0
+                return result
+
+        class RolledDefinitionFeature(FakeSplitFaceFeature):
+            def __init__(self):
+                super().__init__(created=1)
+                self.timelineObject = RollingTimelineObject(index=1)
+                self._split_type = adsk.fusion.SplitFaceSplitTypes.alongVectorSplitType
+                self._direction_entity = direction
+                self.read_markers = []
+
+            def _require_rolled(self, value):
+                self.read_markers.append(timeline.markerPosition)
+                if not self.timelineObject.isRolledBack:
+                    raise RuntimeError("Didn't roll editing feature back")
+                return value
+
+            @property
+            def splitType(self):
+                return self._require_rolled(self._split_type)
+
+            @property
+            def directionEntity(self):
+                return self._require_rolled(self._direction_entity)
+
+        feature = RolledDefinitionFeature()
+        feats = FakeSplitFaceFeatures(bumps=1, feature=feature)
+        feats.bind_body(body)
+        def add_with_feature(inp):
+            body.faces._items.append(None)
+            return feature
+        feats.add = add_with_feature
+        _wire_face(monkeypatch, feats, faces, timeline=timeline)
+        monkeypatch.setattr(sp._SPLIT_LINE, "resolve", lambda raw: (object(), None))
+        monkeypatch.setattr(sp._VIEW, "resolve", lambda raw, comp: (("entity", direction), None))
+
+        result = sp.handler(split="along_vector", faces=["face"], split_line="S/line:0",
+                            view_direction="Axis")
+        assert result["isError"] is True
+        assert "timeline marker could not be restored" in result["message"]
+        assert "SplitFace1" in result["message"] and "remove it with design_delete_feature" in result["message"]
+        assert feature.read_markers == [0, 0]
+        assert timeline.markerPosition == 0
+
     def test_direct_none_counts_the_new_faces_and_names_no_feature(self, monkeypatch):
         # The before/after face census on the owning body needs no feature object, so a direct
         # design's None return still yields an honest verdict - without a fabricated feature name.
@@ -351,3 +496,124 @@ class TestSplitFace:
         _wire_face(monkeypatch, feats, faces)
         payload(sp.handler(split="face", faces=["a"], split_plane="xy"))
         assert feats.last[0].count == 1        # the ObjectCollection carries the one face
+
+
+# ── silhouette: SilhouetteSplitFeatures, faces only, a root solid and a construction axis ──────
+
+class _Axis:
+    """A construction axis owned by `component`."""
+
+    def __init__(self, component):
+        self.component = component
+        self.assemblyContext = None
+
+
+class SketchLine:
+    """A sketch line a view direction resolved to."""
+
+
+class _SilhouetteSplits:
+    """Splits adding `faces` faces, the `lines` straight edges (cm ends) and `volume` cm3 to `body`."""
+
+    def __init__(self, body):
+        self.body, self.faces, self.lines, self.volume, self.calls = body, 3, [], 0.0, []
+
+    def createInput(self, direction, body, operation):
+        self.calls.append((direction, body, operation))
+        return "input"
+
+    def add(self, _input):
+        self.body.faces._items.extend([None] * self.faces)
+        self.body.edges._items.extend(BRepEdge(Line3D(), start=FakePoint(*a), end=FakePoint(*b))
+                                      for a, b in self.lines)
+        self.body.volume += self.volume
+        return SimpleNamespace(name="SilhouetteSplit1", healthState=0, errorOrWarningMessage="")
+
+
+@pytest.fixture
+def silhouette(monkeypatch):
+    """A three-face root cylinder at x=4 cm, its root X axis, and the split collection."""
+    root = MakeComp(name="Root")
+    rim = lambda z: BRepEdge(Circle3D(FakeVector3D(0, 0, 1)), start=FakePoint(3, 0, z),
+                             end=FakePoint(3, 0, z))
+    body = BRepBody(name="Cyl", volume=6.283185307179316, face_count=3, parent_component=root,
+                    edges=[rim(0), rim(2)])
+    root.xConstructionAxis = axis = _Axis(root)
+    root.features = SimpleNamespace(silhouetteSplitFeatures=_SilhouetteSplits(body))
+    install(sp, make_design(comp=root))
+    monkeypatch.setattr(adsk.fusion, "ConstructionAxis", _Axis, raising=False)
+    monkeypatch.setattr(sp._SOLID, "resolve", lambda raw: (body, None))
+    return body, axis, root.features.silhouetteSplitFeatures
+
+
+def test_a_silhouette_split_lands_with_counts_and_the_new_straight_edges(silhouette):
+    body, axis, splits = silhouette
+    splits.lines = [((4, -1, 0), (4, -1, 2)), ((4, 1, 0), (4, 1, 2)),
+                    ((4, -1, 0), (4, 1, 0)), ((4, -1, 2), (4, 1, 2))]
+    out = payload(sp.handler(split="silhouette", target="Cyl", view_direction="x"))
+    assert splits.calls == [(axis, body, adsk.fusion.SilhouetteSplitOperations
+                             .SilhouetteSplitFacesOnlyOperation)]
+    assert (out["feature"], out["faces_before"], out["faces_after"], out["result_count"]) == (
+        "SilhouetteSplit1", 3, 6, 3)
+    assert out["new_line_edges_mm"] == [
+        [[40.0, -10.0, 0.0], [40.0, -10.0, 20.0]], [[40.0, -10.0, 0.0], [40.0, 10.0, 0.0]],
+        [[40.0, -10.0, 20.0], [40.0, 10.0, 20.0]], [[40.0, 10.0, 0.0], [40.0, 10.0, 20.0]]]
+    for o in sp.RETURNS:
+        assert o.assert_present(out) == "", o.key
+
+
+def test_a_silhouette_feature_that_split_no_face_is_an_error_naming_it(silhouette):
+    _body, _axis, splits = silhouette
+    splits.faces = 0
+    assert error_message(sp.handler(split="silhouette", target="Cyl", view_direction="x")) == (
+        "Silhouette split 'SilhouetteSplit1' was created, but 'Cyl' reads 3 faces (was 3): no face "
+        "was split. 'SilhouetteSplit1' remains in the timeline; remove it with "
+        "design_delete_feature(feature='SilhouetteSplit1').")
+
+
+@pytest.mark.parametrize("change,landed", [(1e-9, True), (math.nextafter(1e-9, 1), False)])
+def test_a_silhouette_split_keeps_the_volume_within_the_no_change_band(silhouette, change, landed):
+    body, _axis, splits = silhouette
+    body.volume, splits.volume = 0.0, change
+    result = sp.handler(split="silhouette", target="Cyl", view_direction="x")
+    if landed:
+        assert payload(result)["volume_change_cm3"] == change
+    else:
+        assert "Silhouette split 'SilhouetteSplit1' changed the volume of 'Cyl'" in error_message(result)
+
+
+def test_a_sketch_line_view_direction_is_refused_before_any_split(silhouette, monkeypatch):
+    _body, _axis, splits = silhouette
+    monkeypatch.setattr(sp._VIEW, "resolve", lambda raw: (("edge", SketchLine()), None))
+    assert error_message(sp.handler(split="silhouette", target="Cyl", view_direction="S/line:0")) == (
+        "'view_direction' resolved to a SketchLine; split='silhouette' takes a construction axis "
+        "only: x/y/z or an axis name/handle.")
+    assert splits.calls == []
+
+
+def test_a_placed_silhouette_target_is_refused_before_any_split(silhouette):
+    body, _axis, splits = silhouette
+    body.assemblyContext = SimpleNamespace(fullPathName="Holder:1")
+    assert error_message(sp.handler(split="silhouette", target="Cyl", view_direction="x")) == (
+        "'target' 'Cyl' is not a root-component body; split='silhouette' takes a solid in the root "
+        "component.")
+    assert splits.calls == []
+
+
+@pytest.mark.parametrize("args,text", [
+    ({"split": "silhouette", "target": "Cyl", "view_direction": "x", "faces": ["f"]},
+     "split='silhouette' takes 'target' and 'view_direction', not 'faces', 'split_plane' or "
+     "'split_tool_body'."),
+    ({"split": "body", "target": "Cyl", "view_direction": "x", "split_plane": "xy"},
+     "'view_direction' is used only by split='silhouette' (got split='body').")])
+def test_view_direction_belongs_to_the_silhouette_split_alone(silhouette, args, text):
+    assert error_message(sp.handler(**args)) == text
+    assert silhouette[2].calls == []
+
+
+def test_silhouette_unreadable_boundary_after_write_is_error(silhouette, monkeypatch):
+    reads = iter([set(), None])
+    monkeypatch.setattr(sp, "_line_ends", lambda body: next(reads))
+    result = sp.handler(split="silhouette", target="Cyl", view_direction="x")
+    assert result["isError"] is True
+    assert "SilhouetteSplit1" in result["message"] and "boundary positions are unverified" in result["message"]

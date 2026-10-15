@@ -81,9 +81,9 @@ def handler(action: str = "", plane: str = "", through: str = "", offset: float 
         return error(f"Unknown action '{action}'. Valid: {', '.join(_ACTIONS)}.")
     if section is not None and action != "clear":
         return error("'section' is only valid with action='clear'.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open a document with design geometry first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     sections = design.analyses.sectionAnalyses
 
     if action == "list":
@@ -197,9 +197,7 @@ def handler(action: str = "", plane: str = "", through: str = "", offset: float 
             return error(f"'{safe(lambda: occ.name) or through}' has no readable bounding box, so "
                          "there is no centre to cut through and nothing was cut. Pass 'plane' with "
                          "an explicit 'offset' to place the cut yourself.")
-        cx = (bb.minPoint.x + bb.maxPoint.x) / 2
-        cy = (bb.minPoint.y + bb.maxPoint.y) / 2
-        cz = (bb.minPoint.z + bb.maxPoint.z) / 2
+        cx, cy, cz = _common.box_center(bb)
         # distance along the plane's normal to reach the occurrence center
         normal_coord = {"xy": cz, "top": cz, "xz": cy, "front": cy, "yz": cx, "right": cx}[pkey]
         base_offset_cm += normal_coord

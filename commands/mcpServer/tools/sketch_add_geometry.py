@@ -25,7 +25,9 @@ app = adsk.core.Application.get()
 
 _KINDS = ("line", "rectangle", "center_rectangle", "circle", "ellipse", "elliptical_arc", "arc",
     "conic", "polygon", "slot", "overall_slot", "center_point_slot", "center_point_arc_slot",
-    "three_point_arc_slot", "point", "spline", "cv_spline", "polyline", "closed_path")
+    "three_point_arc_slot", "point", "spline", "cv_spline", "polyline", "closed_path",
+    "three_point_arc", "center_arc", "two_point_circle", "three_point_circle",
+    "three_point_rectangle", "edge_polygon", "circumscribed_polygon")
 
 # The slot kinds that follow an ARC instead of a straight centre line. Both constructors build the
 # whole slot out of SketchArcs (two end caps plus the inner/centre/outer arcs), so 'arc' is the
@@ -73,11 +75,19 @@ _KIND_REF_TOKEN = {"cv_spline": "cv_spline",
                    "center_rectangle": "line",
                    "polygon": "line",
                    "polyline": "line",
-                   "closed_path": "line"}
+                   "closed_path": "line",
+                   "three_point_arc": "arc",
+                   "center_arc": "arc",
+                   "two_point_circle": "circle",
+                   "three_point_circle": "circle",
+                   "three_point_rectangle": "line",
+                   "edge_polygon": "line",
+                   "circumscribed_polygon": "line"}
 
 # How many landed segments a broken-chain error names before it summarizes the rest - a chain can
 # hold hundreds of points, and the error crosses the wire.
 _MAX_NAMED_SEGMENTS = 6
+_DRAW_MORE_NOTE = "Draw more with sketch_add_geometry, or view_screenshot to view the sketch."
 
 # Which params each kind requires (in user units / degrees / counts).
 _REQUIRED = {
@@ -107,24 +117,46 @@ _REQUIRED = {
     "cv_spline": [],
     "polyline": [],
     "closed_path": [],
+    # the three-point kinds take exactly three 'points' (handled with the point-list kinds).
+    "three_point_arc": [],
+    "center_arc": ["cx", "cy", "x1", "y1", "x2", "y2"],
+    "two_point_circle": ["x1", "y1", "x2", "y2"],
+    "three_point_circle": [],
+    "three_point_rectangle": [],
+    "edge_polygon": ["x1", "y1", "x2", "y2", "sides"],
+    "circumscribed_polygon": ["cx", "cy", "radius", "sides"],
 }
 
-_POINT_LIST_KINDS = ("polyline", "closed_path", "spline", "cv_spline")
+# The kinds that take exactly THREE 'points'; each refuses coincident and collinear input itself,
+# because the constructors answer those with an error that names nothing.
+_THREE_POINT_KINDS = ("three_point_arc", "three_point_circle", "three_point_rectangle")
+_POINT_LIST_KINDS = ("polyline", "closed_path", "spline", "cv_spline") + _THREE_POINT_KINDS
+# The kinds whose drawn entity is re-read and compared with the request before the draw is reported.
+_READBACK_KINDS = _THREE_POINT_KINDS + ("center_arc", "two_point_circle", "edge_polygon",
+                                        "circumscribed_polygon")
+# Two sketch points closer than this (cm) are one point to the constructors.
+_COINCIDENT_CM = 1e-6
 
 
 def _inputs_by_kind(required):
-    """One clause per kind naming the inputs it needs, built from the table the guard reads, so the
-    wire cannot disagree with the refusal."""
-    return "; ".join(f"{kind} {','.join(keys) or 'points'}" for kind, keys in required.items())
+    """One clause per scalar input set naming its kinds, from the guard's own table."""
+    groups = {}
+    for kind, keys in required.items():
+        if keys:
+            groups.setdefault(",".join(keys), []).append(kind)
+    return "; ".join(f"{'/'.join(kinds)} {keys}" for keys, kinds in groups.items())
 
 
 # Point ROLES the input names cannot carry: the kinds whose x1,y1 / x2,y2 / cx,cy / radius mean
 # something other than "point 1, point 2, centre, radius".
 _ROLES = (" Roles: center_rectangle x2,y2 = half-extents. conic cx,cy = apex. overall_slot "
-          "x1,y1/x2,y2 = tips, center_point_slot = centre and cap. slot radius = half-width.")
+          "x1,y1/x2,y2 = tips, center_point_slot = centre and cap. slot radius = half-width."
+          " center_arc: CCW from x1,y1. edge_polygon: right of x1,y1->x2,y2. angle_deg turns "
+          "polygons.")
 
 _KIND = _inputs.Choice("kind", list(_KINDS), required=True,
-                       description="Inputs by kind: " + _inputs_by_kind(_REQUIRED) + "." + _ROLES)
+                       description="Inputs (other kinds: points): " + _inputs_by_kind(_REQUIRED) + "."
+                                   + _ROLES)
 
 
 def _pt(x, y, k):
@@ -461,10 +493,35 @@ def _draw(sketch, kind, p, k):
         start = _pt(p["x1"], p["y1"], k)
         a = curves.sketchArcs.addByCenterStartSweep(center, start, math.radians(p["sweep_deg"]))
         return f"arc c=({p['cx']},{p['cy']}) start=({p['x1']},{p['y1']}) sweep={p['sweep_deg']}deg" if a else None
-    if kind == "polygon":
+    if kind in ("polygon", "circumscribed_polygon"):
+        # Circumscribed radius is centre-to-edge; its angle directs the first edge normal.
         poly = curves.sketchLines.addScribedPolygon(
-            _pt(p["cx"], p["cy"], k), int(p["sides"]), 0.0, p["radius"] * k, True)
-        return f"polygon c=({p['cx']},{p['cy']}) sides={int(p['sides'])} r={p['radius']}" if poly else None
+            _pt(p["cx"], p["cy"], k), int(p["sides"]), math.radians(float(p.get("angle_deg") or 0.0)),
+            p["radius"] * k, kind == "polygon")
+        return f"{kind} c=({p['cx']},{p['cy']}) sides={int(p['sides'])} r={p['radius']}" if poly else None
+    if kind in _THREE_POINT_KINDS:
+        a, b, c = (_pt(x, y, k) for (x, y) in p["_points"])
+        if kind == "three_point_arc":
+            made = curves.sketchArcs.addByThreePoints(a, b, c)
+        elif kind == "three_point_circle":
+            made = curves.sketchCircles.addByThreePoints(a, b, c)
+        else:
+            made = curves.sketchLines.addThreePointRectangle(a, b, c)
+        return f"{kind} through {p['_points']}" if made else None
+    if kind == "center_arc":
+        made = curves.sketchArcs.addByCenterStartEnd(
+            _pt(p["cx"], p["cy"], k), _pt(p["x1"], p["y1"], k), _pt(p["x2"], p["y2"], k))
+        return (f"center_arc c=({p['cx']},{p['cy']}) start=({p['x1']},{p['y1']}) "
+                f"end=({p['x2']},{p['y2']})") if made else None
+    if kind == "two_point_circle":
+        made = curves.sketchCircles.addByTwoPoints(_pt(p["x1"], p["y1"], k), _pt(p["x2"], p["y2"], k))
+        return f"two_point_circle ({p['x1']},{p['y1']})-({p['x2']},{p['y2']})" if made else None
+    if kind == "edge_polygon":
+        # isRight=True: the polygon lies to the right of point one -> point two.
+        made = curves.sketchLines.addEdgePolygon(
+            _pt(p["x1"], p["y1"], k), _pt(p["x2"], p["y2"], k), True, int(p["sides"]))
+        return (f"edge_polygon ({p['x1']},{p['y1']})->({p['x2']},{p['y2']}) "
+                f"sides={int(p['sides'])}") if made else None
     if kind == "center_rectangle":
         # center at (cx,cy), half-extents from (x2,y2) treated as a corner offset -> width/height.
         hw, hh = abs(p["x2"]) * k, abs(p["y2"]) * k
@@ -531,6 +588,152 @@ def _draw(sketch, kind, p, k):
     return None
 
 
+def _gap(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _exact_curve_error(kind, p, k):
+    """The refusal for input an exact-curve constructor builds wrongly or will not name, or ''."""
+    near = _COINCIDENT_CM / k
+    if kind in _THREE_POINT_KINDS:
+        a, b, c = p["_points"]
+        for m, n in ((a, b), (b, c), (a, c)):
+            if _gap(m, n) <= near:
+                return f"'{kind}' needs three distinct points; {list(m)} and {list(n)} coincide."
+        cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        if abs(cross) <= 1e-9 * max(_gap(a, b), _gap(b, c), _gap(a, c)) ** 2:
+            return (f"'{kind}' needs three points that are not in a line; {list(a)}, {list(b)} "
+                    f"and {list(c)} are collinear.")
+        return ""
+    if kind == "center_arc":
+        centre, start, end = (p["cx"], p["cy"]), (p["x1"], p["y1"]), (p["x2"], p["y2"])
+        r_start, r_end = _gap(centre, start), _gap(centre, end)
+        if r_start <= near:
+            return f"center_arc start {list(start)} is the centre {list(centre)}; no radius."
+        if abs(r_start - r_end) > near:
+            return (f"center_arc start is {r_start:g} from the centre and end is {r_end:g}; they "
+                    "must be equal. Move x2,y2 onto the start's radius.")
+        if _gap(start, end) <= near:
+            return (f"center_arc start and end coincide at {list(start)}; use kind='circle' for a "
+                    "full turn.")
+        return ""
+    if kind in ("two_point_circle", "edge_polygon"):
+        one, two = (p["x1"], p["y1"]), (p["x2"], p["y2"])
+        if _gap(one, two) <= near:
+            return f"'{kind}' needs two distinct points; both are {list(one)}."
+    if kind in ("edge_polygon", "circumscribed_polygon") and int(p["sides"]) < 3:
+        return f"'{kind}' needs sides >= 3. Got {p['sides']}."
+    if kind == "circumscribed_polygon" and p["radius"] <= 0:
+        return "radius must be > 0."
+    return ""
+
+
+def _newest(sketch, token, count):
+    """The last `count` entities of one sketch collection, oldest first, or None when it does not read."""
+    coll = _common.entity_collection(sketch, token)
+    total = safe(lambda: coll.count) if coll is not None else None
+    if total is None or total < count:
+        return None
+    return [coll.item(i) for i in range(total - count, total)]
+
+
+def _xy(point, k):
+    return (point.x / k + 0.0, point.y / k + 0.0)
+
+
+def _on_sweep(centre, start, end, point):
+    """True when `point` lies on the counter-clockwise sweep from `start` to `end` about `centre`."""
+    turn = 2.0 * math.pi
+    base = math.atan2(start[1] - centre[1], start[0] - centre[0])
+    sweep = (math.atan2(end[1] - centre[1], end[0] - centre[0]) - base) % turn
+    at = (math.atan2(point[1] - centre[1], point[0] - centre[0]) - base) % turn
+    return at <= sweep + 1e-9
+
+
+def _exact_curve_readback(sketch, kind, p, k):
+    """(fields, error) from re-reading the entity an exact-curve kind drew against its request."""
+    near = 10.0 * _COINCIDENT_CM / k
+    same = lambda a, b: _gap(a, b) <= near
+    if kind in ("three_point_arc", "center_arc"):
+        arcs = _newest(sketch, "arc", 1)
+        if not arcs:
+            return None, f"The new {kind} could not be re-read from the sketch's arc collection."
+        arc = arcs[0]
+        start, end = _xy(arc.startSketchPoint.geometry, k), _xy(arc.endSketchPoint.geometry, k)
+        centre, radius = _xy(arc.centerSketchPoint.geometry, k), arc.radius / k
+        fields = {"start": list(start), "end": list(end), "center": list(centre), "radius": radius}
+        built = (f"The arc built runs counter-clockwise from {list(start)} to {list(end)} about "
+                 f"{list(centre)}, radius {radius:g}")
+        if kind == "three_point_arc":
+            first, middle, last = p["_points"]
+            exchanged = same(start, last) and same(end, first)
+            if not exchanged and not (same(start, first) and same(end, last)):
+                return None, f"{built}: its ends are not the requested end points."
+            if abs(_gap(centre, middle) - radius) > near or not _on_sweep(centre, start, end, middle):
+                return None, f"{built}: it does not pass through the requested middle point {list(middle)}."
+            if exchanged:
+                fields["ends_exchanged"] = True
+            return fields, None
+        if not (same(centre, (p["cx"], p["cy"])) and same(start, (p["x1"], p["y1"]))
+                and same(end, (p["x2"], p["y2"]))):
+            return None, f"{built}: not the requested centre, start and end."
+        return fields, None
+    if kind in ("two_point_circle", "three_point_circle"):
+        circles = _newest(sketch, "circle", 1)
+        if not circles:
+            return None, f"The new {kind} could not be re-read from the sketch's circle collection."
+        centre, radius = _xy(circles[0].centerSketchPoint.geometry, k), circles[0].radius / k
+        on = p["_points"] if kind == "three_point_circle" else [(p["x1"], p["y1"]), (p["x2"], p["y2"])]
+        if any(abs(_gap(centre, point) - radius) > near for point in on) or (
+                kind == "two_point_circle" and abs(2.0 * radius - _gap(on[0], on[1])) > near):
+            return None, (f"The circle built has centre {list(centre)} and radius {radius:g}: it does "
+                          "not pass through the requested points.")
+        return {"center": list(centre), "radius": radius}, None
+    sides = 4 if kind == "three_point_rectangle" else int(p["sides"])
+    lines = _newest(sketch, "line", sides)
+    if not lines:
+        return None, f"The new {kind} could not be re-read from the sketch's line collection."
+    edges = [(_xy(line.startSketchPoint.geometry, k), _xy(line.endSketchPoint.geometry, k))
+             for line in lines]
+    corners = []
+    for edge in edges:
+        for point in edge:
+            if not any(same(point, seen) for seen in corners):
+                corners.append(point)
+    fields = {"corners": [list(c) for c in corners]}
+    if len(corners) != sides:
+        return None, f"The {kind} built has {len(corners)} corners, not {sides}: {fields['corners']}."
+    has_edge = lambda a, b: any((same(u, a) and same(v, b)) or (same(u, b) and same(v, a))
+                                for u, v in edges)
+    if kind == "three_point_rectangle":
+        one, two, far = p["_points"]
+        others = [c for c in corners if not same(c, one) and not same(c, two)]
+        if not has_edge(one, two) or len(others) != 2:
+            return None, f"The rectangle built does not have the requested side: {fields['corners']}."
+        u, v = others
+        off_line = abs((v[0] - u[0]) * (far[1] - u[1]) - (v[1] - u[1]) * (far[0] - u[0]))
+        if off_line > near * max(_gap(u, v), 1e-12):
+            return None, (f"The rectangle built does not put its far side through {list(far)}: "
+                          f"{fields['corners']}.")
+        return fields, None
+    cx = sum(c[0] for c in corners) / sides
+    cy = sum(c[1] for c in corners) / sides
+    if kind == "edge_polygon":
+        one, two = (p["x1"], p["y1"]), (p["x2"], p["y2"])
+        side = (two[0] - one[0]) * (cy - one[1]) - (two[1] - one[1]) * (cx - one[0])
+        if not has_edge(one, two) or side >= 0:
+            return None, (f"The polygon built is not on the requested edge, to its right: "
+                          f"{fields['corners']}.")
+        return fields, None
+    centre, radius = (p["cx"], p["cy"]), p["radius"]
+    for u, v in edges:
+        apothem = abs((v[0] - u[0]) * (centre[1] - u[1]) - (v[1] - u[1]) * (centre[0] - u[0])) / _gap(u, v)
+        if abs(apothem - radius) > near:
+            return None, (f"The polygon built has an edge {apothem:g} from the centre, not the "
+                          f"requested {radius:g}: {fields['corners']}.")
+    return fields, None
+
+
 def _parse_points(points):
     """Normalize a 'points' argument into a list of (x, y) floats. Accepts a list of [x,y] pairs or
     {x,y} dicts. Returns (list, error_or_None)."""
@@ -557,6 +760,42 @@ _ENTRY_FIELDS = ("kind", "x1", "y1", "x2", "y2", "cx", "cy", "radius", "minor", 
                  "create_angle_dimension", "is_construction")
 
 
+def _batch_receipt_fields(results, sketch, entries, units):
+    """Return one final sketch state and one copy of each batch guidance note."""
+    notes = []
+    for row in results:
+        row.pop("units", None)
+        if row.get("compute_deferred"):
+            continue
+        note = row.pop("note", None)
+        kind = row.get("kind")
+        if kind in ("circle", "arc") and row.get("center_point"):
+            note = "Each row's center_point identifies its centre sketch point."
+        elif kind == "cv_spline" and "degree" in row:
+            requested = entries[row["index"]].get("degree")
+            requested = 3 if requested is None else int(requested)
+            if requested != row["degree"]:
+                row["degree_requested"] = requested
+                note = ("Built degree differs from degree_requested; add control points for a "
+                        "higher degree. Use sketch_get(include_entities=true) for cv_spline ids.")
+        if note and note != _DRAW_MORE_NOTE:
+            prefix = kind
+            if kind in _RECT_KINDS:
+                prefix += f" constraints_added={row.get('constraints_added')}"
+            note = f"{prefix}: {note}"
+        if note and note not in notes:
+            notes.append(note)
+    try:
+        state = _sketch_summary(sketch)
+    except Exception:
+        state = None
+    if state is None:
+        notes.append("Final sketch state could not be read; use sketch_get to inspect it.")
+    readback = "Read sketch_get(include_entities=true) with entity_offset for current ids and available handles."
+    return {"units": units, "sketch_state": state,
+            "result_note": " ".join([readback, *notes])}
+
+
 def handler(geometry=None, sketch_name: str = "", component: str = "", units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
     entries, eerr = _sketch_batch.entries_or_error(geometry, "geometry", _ENTRY_FIELDS)
@@ -565,9 +804,9 @@ def handler(geometry=None, sketch_name: str = "", component: str = "", units: st
     k = scale(units)
     if k is None:
         return error(f"Unknown units '{units}'. Valid: mm, cm, in.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # 'component' narrows the by-name walk to one component's own sketches - the way through a name
     # two components carry, which Fusion's per-component numbering makes the norm. Unscoped, the
@@ -581,32 +820,49 @@ def handler(geometry=None, sketch_name: str = "", component: str = "", units: st
             return error(f"No sketch named '{requested}'. Use sketch_get to list them, "
     "or sketch_create first.")
         return error("No sketch to draw on. Create one first with sketch_create.")
-    return _sketch_batch.run_batch(entries, lambda i, e: _one(sketch, e, k, units), "geometry",
-                                   "drawn", safe(lambda: sketch.name))
+    multi = len(entries) > 1
+    return _sketch_batch.run_batch(
+        entries, lambda i, e: _one(sketch, e, k, units, include_summary=not multi),
+        "geometry", "drawn", safe(lambda: sketch.name), sketch=sketch,
+        result_fields=(lambda results: _batch_receipt_fields(results, sketch, entries, units))
+        if multi else None)
 
 
-def _one(sketch, entry, k, units):
+def _one(sketch, entry, k, units, include_summary=True):
     """(result, error) for ONE geometry entry drawn on `sketch`; required params per 'kind' are in
     _REQUIRED."""
+    refuse = _sketch_batch.refuse
     kind = (entry.get("kind") or "").strip().lower()
     if kind not in _KINDS:
-        return None, f"Unknown kind '{kind}'. Valid: {', '.join(_KINDS)}."
+        return refuse(f"Unknown kind '{kind}'. Valid: {', '.join(_KINDS)}.")
+    if kind not in _SLOT_KINDS:
+        flags = [key for key in ("create_width_dimension", "create_radius_dimension",
+                                  "create_angle_dimension") if entry.get(key)]
+        if flags:
+            return refuse(f"kind='{kind}' cannot use {', '.join(flags)}; draw it without those "
+                          "flags, then use sketch_dimension and read sketch_get to verify it.")
     is_construction = bool(entry.get("is_construction"))
     if is_construction and kind == "point":
-        return None, ("is_construction does not apply to kind='point' - it is set on sketch "
+        return refuse("is_construction does not apply to kind='point' - it is set on sketch "
                       "curves only, so the point would land as a normal point. Omit it.")
 
     # polyline / closed_path / spline / cv_spline: a chain/curve from a 'points' list.
     if kind in _POINT_LIST_KINDS:
         pts, perr = _parse_points(entry.get("points"))
         if perr:
-            return None, perr
+            return refuse(perr)
         p = {"points": pts, "_points": pts}
+        if kind in _THREE_POINT_KINDS:
+            if len(pts) != 3:
+                return refuse(f"'{kind}' needs exactly 3 points. Got {len(pts)}.")
+            exact_err = _exact_curve_error(kind, p, k)
+            if exact_err:
+                return refuse(exact_err)
         if kind == "cv_spline":
             degree = entry.get("degree")
             d = 3 if degree is None else int(degree)
             if d not in _SPLINE_DEGREES:
-                return None, (f"cv_spline 'degree' must be "
+                return refuse(f"cv_spline 'degree' must be "
                               f"{' or '.join(str(n) for n in sorted(_SPLINE_DEGREES))} - the only "
                               f"degrees the API accepts when creating a spline. Got {degree}.")
             p["degree"] = d
@@ -625,7 +881,7 @@ def _one(sketch, entry, k, units):
             else:
                 p[key] = supplied[key]
         if missing:
-            return None, (f"'{kind}' needs: {', '.join(_REQUIRED[kind])}. "
+            return refuse(f"'{kind}' needs: {', '.join(_REQUIRED[kind])}. "
                           f"Missing: {', '.join(missing)}.")
         p["minor"] = entry.get("minor")   # optional, passed through for ellipse / elliptical_arc
         p["start_deg"] = entry.get("start_deg")  # optional, elliptical_arc (default 0 = major axis)
@@ -638,19 +894,24 @@ def _one(sketch, entry, k, units):
         if kind in _SLOT_KINDS:
             slot_err = _slot_error(kind, p)
             if slot_err:
-                return None, slot_err
+                return refuse(slot_err)
         if kind in ("circle", "ellipse", "elliptical_arc") and p["radius"] <= 0:
-            return None, "radius must be > 0."
+            return refuse("radius must be > 0.")
         if kind == "elliptical_arc" and p["minor"] is not None and p["minor"] <= 0:
-            return None, f"minor must be > 0 (got {p['minor']}); omit it for major/2."
+            return refuse(f"minor must be > 0 (got {p['minor']}); omit it for major/2.")
         # the conic binding states rhoValue must be greater than zero and less than one.
         if kind == "conic" and not 0.0 < float(p["rho"]) < 1.0:
-            return None, f"conic 'rho' must be greater than 0 and less than 1. Got {p['rho']}."
+            return refuse(f"conic 'rho' must be greater than 0 and less than 1. Got {p['rho']}.")
         if kind == "polygon" and int(p["sides"]) < 3:
-            return None, "polygon needs sides >= 3."
+            return refuse("polygon needs sides >= 3.")
+        if kind in _READBACK_KINDS:
+            exact_err = _exact_curve_error(kind, p, k)
+            if exact_err:
+                return refuse(exact_err)
 
     # Draw (defer compute so the single add is efficient and consistent).
     before_kind = _kind_curve_count(sketch, kind)
+    constraints_before = safe(lambda: sketch.geometricConstraints.count)
     deferred_set = False
     restore_error = None
     draw_error = None
@@ -704,9 +965,22 @@ def _one(sketch, entry, k, units):
     "label": label,
     "kind": kind,
     "units": units,
-    "sketch": _sketch_summary(sketch),
-    "note": "Draw more with sketch_add_geometry, or view_screenshot to view the sketch.",
     }
+    if kind in _READBACK_KINDS:
+        # The drawn entity itself is re-read: a constructor can answer with a curve that is not the
+        # one asked for (the complement, another radius), and that is reported as a failure.
+        try:
+            read, read_err = _exact_curve_readback(sketch, kind, p, k)
+        except Exception as e:
+            read, read_err = None, f"The new {kind} could not be re-read: {e}."
+        if read_err:
+            return None, (read_err + " It IS in the sketch; remove it with sketch_delete_entity "
+                          "(sketch_get(include_entities=true) lists it last in its collection)."
+                          + _restore_clause(restore_error, sketch))
+        out.update(read)
+    if include_summary:
+        out["sketch"] = _sketch_summary(sketch)
+    out["note"] = _DRAW_MORE_NOTE
     if delta is not None:
         out["curves_added"] = delta
     if kind in _RECT_KINDS:
@@ -763,6 +1037,15 @@ def _one(sketch, entry, k, units):
                        "its position and shape freedom.")
     if kind in _CONIC_FAMILY_NOTES:
         out["note"] = _CONIC_FAMILY_NOTES[kind]
+    if kind in _READBACK_KINDS:
+        constraints_after = safe(lambda: sketch.geometricConstraints.count)
+        if constraints_before is not None and constraints_after is not None:
+            out["constraints_added"] = constraints_after - constraints_before
+        out["note"] = (("The ends read exchanged against the request: arcs are stored "
+                          "counter-clockwise. " if out.get("ends_exchanged") else "")
+                       + ("The rectangle carries no constraints; its sides are held by coordinates only. "
+                          if kind == "three_point_rectangle" else "")
+                       + _DRAW_MORE_NOTE)
     if restore_error:
         out["compute_deferred"] = True
         out["note"] += _restore_clause(restore_error, sketch)

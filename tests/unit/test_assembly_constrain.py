@@ -5,18 +5,19 @@ cm-scaled length, an angle a 'deg' string), and what the create VERIFIES - the c
 it broke no existing timeline feature, it holds every relationship submitted, and which parts it
 repositioned.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import pytest
 
-import live_api_facts as _api_facts
-from conftest import (FakeMatrix3D, FakeTimeline, FakeTimelineObject, MakeComp, _NamedCollection,
-                      install, load_tool, make_design, make_placed_occurrence, payload)
+from conftest import (BRepFace, FakeMatrix3D, FakeSelection, FakeSelections, FakeTimeline, FakeTimelineObject,
+                      FakeUserInterface, MakeComp, _NamedCollection,
+                      install, load_tool, make_design, make_occurrence, make_placed_occurrence, payload)
 
 ja = load_tool("assembly_constrain")
 
-_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
 _WARNING = _api_facts.ENUMS["fusion.FeatureHealthStates"]["WarningFeatureHealthState"]
-_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 _ORIGIN = (0.0, 0.0, 0.0)
 
@@ -133,8 +134,31 @@ def constrain(monkeypatch):
         ac = FakeAssemblyConstraints(**ac_kwargs)
         # a spec is (name, pos) or (name, pos, fullPathName) - the third form is a NESTED occurrence,
         # whose leaf name differs from the path that names it uniquely
-        occs = [_part(s[2] if len(s) > 2 else s[0], s[1]) for s in occ_specs]
-        comp = MakeComp(occurrences=occs)
+        occs, roots, parents = [], [], {}
+        for index, spec in enumerate(occ_specs):
+            path = spec[2] if len(spec) > 2 else spec[0]
+            parent = None
+            if "+" in path:
+                parent_path = path.rsplit("+", 1)[0]
+                if parent_path not in parents:
+                    parents[parent_path] = make_occurrence(parent_path,
+                        component=MakeComp(name="Host", entity_token=f"constraint-host-{index}"),
+                        transform2=FakeMatrix3D())
+                    roots.append(parents[parent_path])
+                parent = parents[parent_path]
+            comp = MakeComp(name=path.split("+")[-1].split(":")[0],
+                            entity_token=f"constraint-component-{index}")
+            occ = make_occurrence(path, component=comp, assembly_context=parent,
+                        transform2=FakeMatrix3D(t=spec[1]) if spec[1] is not None else None,
+                        raises_on={"transform2": "transform unreadable"} if spec[1] is None else None)
+            occs.append(occ)
+            if parent is None:
+                roots.append(occ)
+            else:
+                parent.childOccurrences._items.append(occ)
+                parent.component.occurrences._items.append(make_occurrence(occ.name, component=comp,
+                    transform2=FakeMatrix3D(t=spec[1]) if spec[1] is not None else None))
+        comp = MakeComp(occurrences=roots, all_occurrences=occs + list(parents.values()))
         comp.assemblyConstraints = ac
         timeline = FakeTimeline(timeline_items) if timeline_items is not None else None
         design = make_design(comp=comp, timeline=timeline)
@@ -159,6 +183,82 @@ class TestAssemblyConstraint:
         res = ja.handler(occurrence_one="A:1", occurrence_two="B:1")
         assert res["isError"] is True
         assert "geometry" in res["message"].lower() or "select" in res["message"].lower()
+
+
+def test_selected_geometry_cannot_constrain_unrequested_owners(constrain, monkeypatch):
+    design, ac = constrain(occ_specs=(("ClaimA:1", (0, 0, 0)), ("ClaimB:1", (1, 0, 0)),
+                                     ("SelectedC:1", (2, 0, 0)), ("SelectedD:1", (4, 0, 0))))
+    occurrences = list(design.rootComponent.occurrences)
+    for occ in occurrences:
+        occ.entityToken = "occ-" + occ.fullPathName
+    faces = [BRepFace(None, assembly_context=o) for o in occurrences[2:]]
+    monkeypatch.setattr(ja.app, "userInterface",
+                        FakeUserInterface(FakeSelections([FakeSelection(f) for f in faces])), raising=False)
+    result = ja.handler(occurrence_one="ClaimA:1", occurrence_two="ClaimB:1", flipped=True)
+    assert result["isError"] is True
+    assert "Selected entity 1 belongs to 'SelectedC:1', not requested 'ClaimA:1'" in result["message"]
+    assert "occurrence_one first" in result["message"] and "'relationships'" in result["message"]
+    assert ac.last_input is None and ac.added == 0
+    result = payload(ja.handler(occurrence_one="SelectedC:1", occurrence_two="SelectedD:1", flipped=True))
+    assert result["created"] is True and result["occurrences"] == ["SelectedC:1", "SelectedD:1"]
+    assert ac.added == 1 and ac.last_input.geometricRelationships.added[0][:3] == (*faces, True)
+
+
+@pytest.mark.parametrize("defect", ["path", "identity", "unread", "extra", "order"])
+def test_selection_owner_match_requires_complete_placed_identity(constrain, monkeypatch, defect):
+    design, ac = constrain()
+    a, b = list(design.rootComponent.occurrences)
+    a.entityToken, b.entityToken = "occ-a", "occ-b"
+    owner = _part("A:1", _ORIGIN)
+    owner.entityToken = a.entityToken
+    if defect == "path":
+        owner._path = "Other:1+A:1"
+    elif defect == "identity":
+        owner.entityToken = "other-occ"
+    elif defect == "unread":
+        owner = None
+    faces = [BRepFace(None, assembly_context=o) for o in (owner, b)]
+    if defect == "extra":
+        faces.append(faces[0])
+    elif defect == "order":
+        faces.reverse()
+    monkeypatch.setattr(ja.app, "userInterface",
+                        FakeUserInterface(FakeSelections([FakeSelection(f) for f in faces])), raising=False)
+    result = ja.handler(occurrence_one="A:1", occurrence_two="B:1")
+    assert result["isError"] is True and "select" in result["message"].lower()
+    assert ac.last_input is None and ac.added == 0
+
+
+@pytest.mark.parametrize("request_path,duplicate,expected", [
+    ("RP:2+Leaf:1", False, None),
+    ("RP:1+Leaf:1", False, "Selected entity 1 belongs to 'RP:2+Leaf:1', not requested 'RP:1+Leaf:1'"),
+    ("RP:2+Leaf:1", True, "Selected entity 1's placed owner cannot be confirmed"),
+    ("root", False, "Selected entity 1 is root-component geometry with no placed owner"),
+])
+def test_nested_selection_owner_is_matched_by_a_unique_path(constrain, monkeypatch,
+                                                             request_path, duplicate, expected):
+    # Nested placements carry no entityToken here: their native identity does not read.
+    specs = [("RP:1+Leaf:1", _ORIGIN), ("RP:2+Leaf:1", (4, 0, 0)), ("Anchor:1", (8, 0, 0))]
+    design, ac = constrain(occ_specs=specs)
+    occs = list(design.rootComponent.allOccurrences)
+    occs[2].entityToken = "occ-anchor"
+    one = "RP:2+Leaf:1" if request_path == "root" else request_path
+    if duplicate:
+        # Requested by handle: the path resolver never saw the second wearer of the path.
+        monkeypatch.setattr(ja.adsk.fusion, "Occurrence", type(occs[1]), raising=False)
+        design._tokens["h-leaf2"] = occs[1]
+        design.rootComponent.allOccurrences.append(_part("RP:2+Leaf:1", _ORIGIN))
+        one = "h-leaf2"
+    owner = None if request_path == "root" else occs[1]
+    faces = [BRepFace(None, assembly_context=owner), BRepFace(None, assembly_context=occs[2])]
+    monkeypatch.setattr(ja.app, "userInterface",
+                        FakeUserInterface(FakeSelections([FakeSelection(f) for f in faces])), raising=False)
+    result = ja.handler(occurrence_one=one, occurrence_two="Anchor:1", flipped=True)
+    if expected is None:
+        assert payload(result)["created"] is True and ac.added == 1
+    else:
+        assert result["isError"] is True and expected in result["message"]
+        assert ac.last_input is None and ac.added == 0
 
 
 class TestAssemblyConstraintSnaps:
@@ -224,6 +324,38 @@ class TestMultiRelationshipConstraint:
         assert added[0][2] is True     # flipped on first
         assert added[1][2] is False    # not on second
 
+    @pytest.mark.parametrize("flip", ["false", 0, None])
+    def test_a_non_boolean_flip_is_refused_before_any_input_is_built(self, constrain, flip):
+        _design, ac = constrain()
+        res = ja.handler(relationships=[
+            {"snap_one": "A:1:bottom", "snap_two": "B:1:top", "flip": True},
+            {"snap_one": "A:1:left", "snap_two": "B:1:left", "flip": flip}])
+        assert res["isError"] is True
+        assert f"Invalid Boolean for 'relationships[1].flip': {ascii(flip)}." in res["message"]
+        assert "Use true or false. Nothing was constrained." in res["message"]
+        assert ac.last_input is None and ac.added == 0
+
+    @pytest.mark.parametrize("args,fragment", [
+        ({"relationships": [{"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": "ten"}]},
+         "'relationships[0].offset' must be a number; received 'ten'."),
+        ({"relationships": [{"snap_one": "A:1:top", "snap_two": "B:1:top", "angle_deg": True}]},
+         "'relationships[0].angle_deg' must be a number; received True."),
+        ({"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": "5mm"},
+         "'offset' must be a number; received '5mm'."),
+        ({"snap_one": "A:1:top", "snap_two": "B:1:top", "angle_deg": "30 deg"},
+         "'angle_deg' must be a number; received '30 deg'."),
+        ({"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": float("nan")},
+         "'offset' must be a number; received nan."),
+        ({"snap_one": "A:1:top", "snap_two": "B:1:top", "angle_deg": float("inf")},
+         "'angle_deg' must be a number; received inf.")])
+    def test_a_non_numeric_value_is_refused_before_any_input_is_built(self, constrain, args,
+                                                                       fragment):
+        _design, ac = constrain()
+        res = ja.handler(**args)
+        assert res["isError"] is True and fragment in res["message"]
+        assert "Nothing was constrained." in res["message"]
+        assert ac.last_input is None and ac.added == 0
+
     def test_single_pair_still_works(self, constrain):
         # back-compat: snap_one/snap_two shorthand == a one-relationship list
         constrain()
@@ -269,6 +401,13 @@ class TestConstraintValueEncoding:
         ja.handler(snap_one="A:1:top", snap_two="B:1:top", offset=2, units="in")
         value = ac.last_input.geometricRelationships.added[0][3]
         assert value[0] == "real" and abs(value[1] - 5.08) < 1e-9   # 2 in -> 5.08 cm
+
+    def test_a_relationship_offset_reaches_the_add_scaled(self, constrain):
+        ac = self._stub(constrain)
+        ja.handler(relationships=[{"snap_one": "A:1:top", "snap_two": "B:1:top", "offset": 2}],
+                   units="in")
+        value = ac.last_input.geometricRelationships.added[0][3]
+        assert value[0] == "real" and abs(value[1] - 5.08) < 1e-9
 
     def test_unknown_units_errors_not_silently_treated_as_mm(self, constrain):
         # An unrecognized unit must be REFUSED, not silently treated as mm, like joint_create errors

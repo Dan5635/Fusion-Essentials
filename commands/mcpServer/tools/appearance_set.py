@@ -13,6 +13,7 @@ from ._common import error, ok, safe
 from . import _common
 from . import _inputs
 from . import _materials
+from . import sys_get_preferences as _prefs
 
 # An appearance's see-through-ness is its Prism material class, not its Color alpha, so the color
 # written here is always fully opaque; 'opacity' below is the separate browser Opacity Control.
@@ -181,6 +182,64 @@ def _reads_as(entity, appr_id, appr_name):
     return got_id == appr_id and got_name == appr_name
 
 
+def _appearance_state(entity, appearance=None):
+    """Read the occurrence's current appearance name and albedo color when both are available."""
+    if appearance is None:
+        appearance = safe(lambda: entity.appearance)
+    name = safe(lambda: appearance.name)
+    color = None
+    for prop in _common.iter_collection(safe(lambda: appearance.appearanceProperties)):
+        if safe(lambda: prop.id) in _ALBEDO_IDS:
+            color = _channel_rgb(safe(lambda: prop.value))
+            break
+    return {"name": name, "id": safe(lambda: appearance.id),
+            "color_rgb": list(color) if color is not None else None}
+
+
+def _occurrence_failure_observation(design, entity, prior_appearance, prior_opacity, prior_count,
+                                   asset_name, not_reached=()):
+    """Describe the occurrence and document state after its color reached no bodies."""
+    observed = _appearance_state(entity)
+    component = safe(lambda: entity.component)
+    opacity_now = safe(lambda: component.opacity)
+    asset_count_now = safe(lambda: design.appearances.count)
+    if opacity_now is None:
+        details = " Component opacity is UNCONFIRMED because it could not be read back."
+    elif prior_opacity is None:
+        details = f" Component opacity now reads {opacity_now!r}; its previous value was unreadable."
+    elif opacity_now != prior_opacity:
+        details = f" Component opacity now reads {opacity_now!r} (before this call: {prior_opacity!r})."
+    else:
+        details = f" Component opacity still reads {opacity_now!r}."
+    if observed["name"] is None or observed["color_rgb"] is None:
+        details += f" Occurrence appearance is UNCONFIRMED: {observed!r}."
+    elif observed != prior_appearance:
+        details += f" Occurrence appearance now reads {observed!r}."
+    else:
+        details += f" Occurrence appearance still reads {observed!r}."
+    catalog_entry = safe(lambda: design.appearances.itemByName(asset_name))
+    catalog_state = _appearance_state(entity, catalog_entry) if catalog_entry else None
+    if catalog_state and catalog_state["name"] is not None and catalog_state["color_rgb"] is not None:
+        details += f" Document appearance '{asset_name}' reads {catalog_state!r}."
+        if observed["name"] == catalog_state["name"] and observed["color_rgb"] == catalog_state["color_rgb"]:
+            details += " The occurrence and document entry read the same name and color."
+    else:
+        details += f" Document appearance '{asset_name}' is UNCONFIRMED."
+    if not_reached:
+        bodies = []
+        wanted = {row["body"] for row in not_reached}
+        for body in _common.iter_collection(safe(lambda: entity.bRepBodies)):
+            name = safe(lambda body=body: body.name)
+            if name in wanted and len(bodies) < 5:
+                bodies.append({"body": name, "appearance": _appearance_state(body)})
+        details += f" Bodies still carrying another appearance: {bodies!r}."
+    if asset_count_now is not None and prior_count is not None:
+        details += f" Document appearance count is {asset_count_now} (was {prior_count})."
+    else:
+        details += " Document appearance count could not be read back."
+    return details
+
+
 def _occurrence_fanout(occ, appr_id, appr_name):
     """(reached, not_reached, unverified) after an OCCURRENCE-level appearance write - each body is
     compared through _reads_as, and a comparison that cannot be made is 'unverified'."""
@@ -243,8 +302,155 @@ def _apply_opacity(entity, kind, percent):
     return (None if seen is None else round(seen * 100)), None
 
 
-def handler(target: str = "", color: str = "", opacity=None, name: str = "") -> dict:
+# The source an override at each level reads as; an occurrence has no appearanceSourceType.
+_OWN_SOURCE = {"body": "BodyAppearanceSource", "face": "FaceAppearanceSource"}
+
+
+def _source(entity):
+    """The AppearanceSourceTypes member name a body or face reads, or None."""
+    value = safe(lambda: entity.appearanceSourceType)
+    if value is None:
+        return None
+    return _prefs.enum_member_name(safe(lambda: adsk.core.AppearanceSourceTypes), value)
+
+
+def _library_appearance(name, library):
+    """(appearance, library name, error) for ONE library appearance of exactly this name."""
+    if library:
+        lib, lerr = _materials.find_library(library)
+        if lerr:
+            return None, None, lerr
+        libs = [lib]
+    else:
+        libs = _materials.libraries()
+    # A name can repeat INSIDE one library, so every entry is walked and each match kept.
+    # An entry or a name that does not read could be a second match, so it ends the lookup.
+    hits = []
+    for lib in libs:
+        lib_name = safe(lambda lib=lib: lib.name)
+        entries = safe(lambda lib=lib: lib.appearances)
+        total = safe(lambda: entries.count) if entries is not None else None
+        if not isinstance(total, int) or isinstance(total, bool):
+            return None, None, (f"The appearances of library '{lib_name}' did not read, so "
+                                f"'{name}' could not be shown unique; nothing was assigned.")
+        for i in range(total):
+            read = safe(lambda i=i: entries.item(i).name)
+            if not isinstance(read, str):
+                return None, None, (f"Appearance {i} of library '{lib_name}' did not read its "
+                                    f"name, so '{name}' could not be shown unique; nothing was "
+                                    "assigned.")
+            if read == name:
+                hits.append((entries.item(i), lib_name))
+    if len(hits) == 1:
+        return hits[0][0], hits[0][1], None
+    if not hits:
+        where = f"library '{library}'" if library else "any loaded library"
+        return None, None, (f"No appearance named exactly '{name}' in {where}. "
+                            "design_get(include=['appearances'], library=...) lists the names.")
+    where = sorted({str(lib) for _a, lib in hits})
+    if len(where) == 1:
+        return None, None, (f"'{name}' names {len(hits)} appearances in library '{where[0]}'; "
+                            "this tool takes a name that is unique there.")
+    return None, None, (f"'{name}' is in {len(where)} libraries: "
+                        + ", ".join(f"'{lib}'" for lib in where) + ". Pass 'library'.")
+
+
+def _library_or_clear(target, color, opacity, name, wanted, library, clear):
+    """Assign a library appearance to a body, face or occurrence, or clear its own override."""
+    library = (library or "").strip()
+    with_it = [n for n, v in (("color", color), ("opacity", opacity), ("name", name))
+               if v is not None and str(v).strip() != ""]
+    if wanted and clear:
+        with_it.append("clear")
+    if with_it:
+        return error(("'appearance'" if wanted else "'clear'") + " is a call of its own; drop "
+                     + ", ".join(f"'{n}'" for n in with_it) + ".")
+    if library and not wanted:
+        return error("'library' narrows 'appearance'; pass the appearance name too.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
+    resolved, terr = _TARGET.resolve(target)
+    if terr:
+        return terr if isinstance(terr, dict) else error(terr)
+    entity, kind = resolved
+    if kind not in ("body", "face", "occurrence"):
+        return error(f"A library appearance or a clear takes a body, face or occurrence; "
+                     f"'{target}' resolved to a {kind}.")
+    desc = (f"{kind} '{safe(lambda: entity.fullPathName) or safe(lambda: entity.name)}'"
+            if safe(lambda: entity.name) else kind)
+    before = safe(lambda: entity.appearance.name)
+    own = _OWN_SOURCE.get(kind)
+
+    # An occurrence's own override is its appearance reading something; a getter that raises is
+    # neither state.
+    bare = lambda: _common.read_flag(lambda: entity.appearance is None)
+    if clear:
+        source = _source(entity) if own else None
+        if (own and source is None) or (not own and bare() is None):
+            return error(f"The appearance source of {desc} did not read, so nothing was cleared.")
+        if (own and source != own) or (not own and bare() is True):
+            return error(f"{desc} carries no override of its own"
+                         + (f" (its appearance '{before}' reads {source})" if own else "")
+                         + ", so there is nothing to clear.")
+        try:
+            entity.appearance = None
+        except Exception as e:
+            return error(f"Could not clear the appearance override of {desc}: {e}")
+        after_source = _source(entity) if own else None
+        after_bare = None if own else bare()
+        still = (after_source == own) if own else after_bare is False
+        if still or (own and after_source is None) or (not own and after_bare is None):
+            return error(f"The clear was accepted but {desc} "
+                         + ("still reads an override of its own." if still else
+                            "did not read its appearance source afterwards, so it is unverified."))
+        out = {"cleared": True, "target": desc, "kind": kind, "appearance_before": before,
+               "note": "Override cleared; the target shows what the level above gives it."}
+        if own:
+            out.update(appearance=safe(lambda: entity.appearance.name),
+                       appearance_source=after_source)
+        return ok(out)
+
+    appr, lib_name, aerr = _library_appearance(wanted, library)
+    if aerr:
+        return error(aerr)
+    appr_id, appr_name = safe(lambda: appr.id), safe(lambda: appr.name)
+    try:
+        entity.appearance = appr
+    except Exception as e:
+        return error(f"Could not apply appearance '{wanted}' to {desc}: {e}")
+    if _reads_as(entity, appr_id, appr_name) is not True:
+        return error(f"Assignment was accepted but {desc} reads appearance "
+                     f"'{safe(lambda: entity.appearance.name)}', not '{wanted}'.")
+    out = {"applied": True, "target": desc, "kind": kind, "appearance": appr_name,
+           "library": lib_name, "appearance_before": before,
+           "note": "Library appearance applied as this target's own override; 'clear' removes it."}
+    if own:
+        out["appearance_source"] = _source(entity)
+        if out["appearance_source"] != own:
+            return error(f"{desc} reads appearance '{wanted}' but its source reads "
+                         f"{out['appearance_source']}, not {own}: the override is not its own.")
+    else:
+        reached, not_reached, unverified = _occurrence_fanout(entity, appr_id, appr_name)
+        if not reached and not_reached:
+            return error(f"Assignment to {desc} reached NONE of its {len(not_reached)} "
+                         "body(ies); each still reads another appearance. Target the bodies.")
+        out["applied_to"] = reached
+        if not_reached:
+            out["bodies_not_reached"] = not_reached
+            out["note"] = (f"PARTIAL: {len(not_reached)} body(ies) keep their own appearance - "
+                           "see 'bodies_not_reached'. " + out["note"])
+        if unverified:
+            out["unverified_bodies"] = unverified
+    return ok(out)
+
+
+def handler(target: str = "", color: str = "", opacity=None, name: str = "",
+            appearance: str = "", library: str = "", clear: bool = None) -> dict:
     """Apply a solid-color appearance override and/or an opacity override to the target. WRITES."""
+    wanted = (appearance or "").strip()
+    if wanted or clear or (library or "").strip():
+        return _library_or_clear(target, color, opacity, name, wanted, library, clear)
     want_opacity = opacity is not None and str(opacity).strip() != ""
     if want_opacity:
         try:
@@ -258,9 +464,9 @@ def handler(target: str = "", color: str = "", opacity=None, name: str = "") -> 
     if cerr:
         return error(cerr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design with geometry.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     resolved, terr = _TARGET.resolve(target)
     if terr:
@@ -270,6 +476,12 @@ def handler(target: str = "", color: str = "", opacity=None, name: str = "") -> 
         kind = "component"      # whole design = the root component; color all its bodies
     desc = (f"{kind} '{safe(lambda: entity.fullPathName) or safe(lambda: entity.name)}'"
             if safe(lambda: entity.name) else kind)
+
+    prior_occurrence_appearance = _appearance_state(entity) if kind == "occurrence" else None
+    prior_component_opacity = (safe(lambda: entity.component.opacity)
+                               if kind == "occurrence" else None)
+    appearances = safe(lambda: design.appearances) if kind == "occurrence" else None
+    prior_asset_count = safe(lambda: appearances.count) if appearances is not None else None
 
     # Every precondition runs BEFORE the appearance is minted; minting first leaves an orphan
     # appearance asset in the design on each refusal.
@@ -346,7 +558,10 @@ def handler(target: str = "", color: str = "", opacity=None, name: str = "") -> 
                 names = ", ".join(o["body"] for o in not_reached[:5])
                 return error(f"Assignment to {desc} reached NONE of its {len(not_reached)} "
                              f"body(ies) - each still reads a different appearance ({names}). "
-                             "Color the bodies directly (target = the body name).")
+                             "Color the bodies directly (target = the body name). "
+                             + _occurrence_failure_observation(design, entity,
+                                 prior_occurrence_appearance, prior_component_opacity,
+                                 prior_asset_count, appr_landed_name, not_reached[:5]))
 
     note = ("Appearance override applied. Set a new color anytime; to revert, the override is on "
             "the body/occurrence (.appearance). Pair with view_screenshot to see it.")
@@ -400,7 +615,8 @@ def handler(target: str = "", color: str = "", opacity=None, name: str = "") -> 
 
 
 _DESC = (
-"Set the color and/or opacity of a face, body, occurrence or component as a revertible override."
+"Set color/opacity or a library appearance on a face, body, occurrence or component as a "
+"revertible override, or clear it."
 )
 
 tool = (
@@ -411,6 +627,11 @@ tool = (
     .add_input_property("opacity", {"type": "integer",
             "description": "A percent: 0 invisible, 100 opaque."})
     .add_input_property("name", {"type": "string"})
+    .add_input_property("appearance", {"type": "string", "description": (
+        "Library appearance name (design_get include=['appearances']).")})
+    .add_input_property("library", {"type": "string"})
+    .add_input_property("clear", {"type": "boolean",
+            "description": "Remove this target's own override."})
     .strict_schema()
 )
 item = Item.create_tool_item(

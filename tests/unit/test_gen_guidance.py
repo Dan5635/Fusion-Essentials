@@ -1,18 +1,7 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Tests for the canonical guidance data and the generator that renders the Claude skill from it.
-
-Two halves. The SHIPPED half asserts the committed JSON against the live tool registry and the
-committed skill against the renderer, so the client skill cannot drift from the data and a proof
-step cannot point a client at a tool the server does not register. The SYNTHETIC half drives each
-structural check with data built to break exactly it - duplicate ids, a rule filed under the wrong
-section, a scenario the enum does not know, and each size cap at its exact boundary - because a
-cap that never fires reads identically to one that cannot.
-
-Whether a rule's WORDING is honest (that the named tool really shows what 'observe' claims) is a
-reading judgment and stays in review; these tests check shape, routing, and size.
-"""
+"""Test canonical guidance validation, readable rendering and explicit skill export routing."""
 
 import copy
 import json
@@ -167,18 +156,17 @@ class TestShippedGuidance:
         assert not [name for name in cited if name not in tool_names]
 
     def test_every_committed_package_file_is_exactly_what_the_generator_renders(self, shipped):
-        # every file, not just SKILL.md: a playbook is a committed artifact an agent reads without
-        # calling the server at all, so a stale one ships guidance the document no longer carries.
         for path, text in gen_guidance.package(shipped).items():
             with open(path, encoding="utf-8") as fh:
                 assert fh.read() == text, path
 
-    def test_the_package_is_the_map_plus_one_playbook_per_non_kernel_section(self, shipped):
-        paths = gen_guidance.package(shipped)
-        assert gen_guidance.SKILL_PATH in paths
-        expected = [gen_guidance.playbook_path(s) for s in gen_guidance.SECTION_IDS
+    def test_the_package_is_the_map_plus_one_playbook_per_non_kernel_section(self, shipped, tmp_path):
+        paths = gen_guidance.package(shipped, str(tmp_path))
+        skill_path = str(tmp_path / "SKILL.md")
+        assert paths[skill_path] == gen_guidance.render(shipped)
+        expected = [gen_guidance.playbook_path(s, str(tmp_path)) for s in gen_guidance.SECTION_IDS
                     if s != gen_guidance.KERNEL]
-        assert sorted(paths) == sorted([gen_guidance.SKILL_PATH] + expected)
+        assert sorted(paths) == sorted([skill_path] + expected)
 
     def test_the_skill_keeps_the_frontmatter_shape_its_readers_parse(self, shipped):
         # the eval harness appends a skill's BODY by splitting on this exact frontmatter block,
@@ -848,75 +836,83 @@ class TestCheckDetectsAStalePackage:
         monkeypatch.setattr(gen_guidance.sys, "argv", ["gen_guidance.py"] + argv)
         return gen_guidance.main()
 
-    def _elsewhere(self, monkeypatch, tmp_path):
-        """Point the whole package at an empty directory, so nothing committed is touched."""
-        monkeypatch.setattr(gen_guidance, "SKILL_PATH", str(tmp_path / "SKILL.md"))
-        monkeypatch.setattr(gen_guidance, "PLAYBOOK_DIR", str(tmp_path / "playbooks"))
+    @pytest.fixture
+    def readable(self, monkeypatch, tmp_path):
+        path = tmp_path / "guidance" / "parametric_cad_design.md"
+        monkeypatch.setattr(gen_guidance, "MARKDOWN_PATH", str(path))
+        return path
 
     def test_check_passes_on_the_committed_package(self, monkeypatch, capsys):
         assert self._run(monkeypatch, ["--check"]) == 0
         assert "up to date" in capsys.readouterr().out
 
-    def test_check_reports_a_stale_skill_and_writes_nothing(self, monkeypatch, tmp_path, capsys):
-        stale = tmp_path / "SKILL.md"
-        stale.write_text("---\nname: parametric-cad-design\n---\n\n# Stale\n", encoding="utf-8")
-        monkeypatch.setattr(gen_guidance, "SKILL_PATH", str(stale))
-        assert self._run(monkeypatch, ["--check"]) == 1
-        assert "Stale" in capsys.readouterr().err
-        assert stale.read_text(encoding="utf-8").endswith("# Stale\n")
-
-    def test_check_reports_a_stale_playbook(self, monkeypatch, tmp_path, capsys):
-        # the playbook files are committed artifacts too: an agent reads one off disk without
-        # calling the server, so a stale one is guidance the document no longer carries.
-        self._elsewhere(monkeypatch, tmp_path)
+    def test_default_writes_only_the_full_readable_document(self, monkeypatch, tmp_path, readable):
         assert self._run(monkeypatch, []) == 0
-        target = gen_guidance.playbook_path("plan")
-        with open(target, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("## Stale plan\n")
-        assert self._run(monkeypatch, ["--check"]) == 1
-        assert "plan.md" in capsys.readouterr().err
+        assert readable.read_bytes() == gen_guidance.body(gen_guidance.load()).encode("utf-8")
+        assert list(tmp_path.rglob("*.*")) == [readable]
+        assert self._run(monkeypatch, ["--check"]) == 0
 
-    def test_check_reports_a_playbook_the_document_does_not_declare(self, monkeypatch, tmp_path,
-                                                                    capsys):
-        self._elsewhere(monkeypatch, tmp_path)
+    @pytest.mark.parametrize("existing", [None, b"stale\n", b"stale\r\n"])
+    def test_check_reports_missing_or_stale_readable_without_writing(self, monkeypatch, readable,
+                                                                   existing, capsys):
+        if existing is not None:
+            readable.parent.mkdir()
+            readable.write_bytes(existing)
+        assert self._run(monkeypatch, ["--check"]) == 1
+        assert "parametric_cad_design.md" in capsys.readouterr().err
+        assert (readable.read_bytes() if readable.exists() else None) == existing
+
+    def test_check_refuses_crlf_of_otherwise_current_text(self, monkeypatch, readable, capsys):
         assert self._run(monkeypatch, []) == 0
-        stray = os.path.join(gen_guidance.PLAYBOOK_DIR, "retired.md")
-        with open(stray, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("## Retired\n")
+        content = readable.read_bytes().replace(b"\n", b"\r\n")
+        readable.write_bytes(content)
         assert self._run(monkeypatch, ["--check"]) == 1
-        assert "retired.md" in capsys.readouterr().err
+        assert "parametric_cad_design.md" in capsys.readouterr().err
+        assert readable.read_bytes() == content
 
-    def test_write_reports_a_playbook_the_document_does_not_declare(self, monkeypatch, tmp_path,
-                                                                     capsys):
-        self._elsewhere(monkeypatch, tmp_path)
-        assert self._run(monkeypatch, []) == 0
-        stray = os.path.join(gen_guidance.PLAYBOOK_DIR, "retired.md")
-        with open(stray, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("## Retired\n")
-        assert self._run(monkeypatch, []) == 1
-        assert "retired.md" in capsys.readouterr().err
-        with open(stray, encoding="utf-8") as fh:
-            assert fh.read() == "## Retired\n"
+    @pytest.mark.skipif(os.name != "nt", reason="Windows drive-relative diagnostics")
+    def test_check_can_report_an_export_on_another_drive(self, monkeypatch, capsys):
+        drive = "Z:" if os.path.splitdrive(gen_guidance.REPO_ROOT)[0].upper() != "Z:" else "C:"
+        missing = drive + "/exports/SKILL.md"
+        monkeypatch.setattr(gen_guidance, "stale_paths", lambda *a: [missing])
+        assert self._run(monkeypatch, ["--skill-dir", drive + "/exports", "--check"]) == 1
+        assert missing in capsys.readouterr().err
 
-    def test_check_reports_a_missing_skill(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(gen_guidance, "SKILL_PATH", str(tmp_path / "absent.md"))
-        assert self._run(monkeypatch, ["--check"]) == 1
+    def test_explicit_export_writes_and_checks_every_skill_file_only(self, monkeypatch, tmp_path,
+                                                                  readable):
+        skill_dir = str(tmp_path / "export")
+        args = ["--skill-dir", skill_dir]
+        assert self._run(monkeypatch, args) == 0
+        for path, text in gen_guidance.package(gen_guidance.load(), skill_dir).items():
+            assert open(path, "rb").read() == text.encode("utf-8"), path
+        assert not readable.exists()
+        assert self._run(monkeypatch, args + ["--check"]) == 0
+        target = gen_guidance.playbook_path("plan", skill_dir)
+        with open(target, "wb") as fh:
+            fh.write(b"Stale plan\n")
+        assert self._run(monkeypatch, args + ["--check"]) == 1
+        assert open(target, "rb").read() == b"Stale plan\n"
 
-    def test_invalid_data_fails_before_anything_is_written(self, monkeypatch, tmp_path, capsys):
-        self._elsewhere(monkeypatch, tmp_path)
+    def test_export_reports_undeclared_playbooks_without_deleting(self, monkeypatch, tmp_path,
+                                                               readable, capsys):
+        skill_dir = str(tmp_path / "export")
+        args = ["--skill-dir", skill_dir]
+        assert self._run(monkeypatch, args) == 0
+        stray = tmp_path / "export" / "playbooks" / "retired.md"
+        stray.write_bytes(b"Retired\n")
+        for extra in (["--check"], []):
+            assert self._run(monkeypatch, args + extra) == 1
+            assert "retired.md" in capsys.readouterr().err
+            assert stray.read_bytes() == b"Retired\n"
+        assert not readable.exists()
+
+    @pytest.mark.parametrize("export", [False, True])
+    def test_invalid_data_fails_before_anything_is_written(self, monkeypatch, tmp_path, readable,
+                                                         export, capsys):
         broken = _doc()
         _section(broken, "plan")["rules"][0]["prove"][0]["tool"] = "no_such_tool"
         monkeypatch.setattr(gen_guidance, "load", lambda *a, **k: broken)
-        assert self._run(monkeypatch, []) == 1
+        args = ["--skill-dir", str(tmp_path / "export")] if export else []
+        assert self._run(monkeypatch, args) == 1
         assert "no_such_tool" in capsys.readouterr().err
-        assert not os.path.exists(gen_guidance.SKILL_PATH)
-        assert not os.path.isdir(gen_guidance.PLAYBOOK_DIR)
-
-    def test_generating_writes_every_file_and_then_checks_clean(self, monkeypatch, tmp_path):
-        self._elsewhere(monkeypatch, tmp_path)
-        assert self._run(monkeypatch, []) == 0
-        doc = gen_guidance.load()
-        for path, text in gen_guidance.package(doc).items():
-            with open(path, encoding="utf-8") as fh:
-                assert fh.read() == text, path
-        assert self._run(monkeypatch, ["--check"]) == 0
+        assert list(tmp_path.iterdir()) == []

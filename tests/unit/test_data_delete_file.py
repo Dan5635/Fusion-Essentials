@@ -5,21 +5,15 @@ and the FAIL-CLOSED behaviour when the reference read will not answer (an empty 
 not evidence the file is unreferenced).
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
 
 from conftest import (FakeApplication, FakeData, FakeDataFile, FakeDocuments, FakeFusionDocument,
-                      load_tool)
+                      load_tool, payload as _payload)
 
 dm = load_tool("data_delete_file")
 dc = load_tool("_data_common")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 def _ref(name, urn):
@@ -31,10 +25,21 @@ def _ref(name, urn):
 def cloud(monkeypatch):
     """Point both seams the delete reads through - its own app for the open-document walk and the
     _data_common one findFileById comes off - at a hub holding `by_id`, with `open_urns` open."""
-    def _use(by_id=None, open_urns=()):
+    def _use(by_id=None, open_urns=(), after_delete="3 : file not found"):
         docs = [FakeFusionDocument(data_file=FakeDataFile(file_id=urn)) for urn in open_urns]
-        app = FakeApplication(data=FakeData(files_by_id=by_id or {}),
-                              documents=FakeDocuments(docs))
+        data = FakeData(files_by_id=by_id or {})
+        registered = data._files.get
+
+        def find(file_id):
+            # measured: a deleted lineage's lookup raises; after_delete=None keeps it resolving
+            found = registered(file_id)
+            if found is not None and found._deleted and after_delete is not None:
+                if after_delete is False:
+                    return None
+                raise RuntimeError(after_delete)
+            return found
+        data.findFileById = find
+        app = FakeApplication(data=data, documents=FakeDocuments(docs))
         monkeypatch.setattr(dc, "app", app)
         monkeypatch.setattr(dm, "app", app)
         return app
@@ -135,6 +140,44 @@ class TestDeleteDocument:
         cloud({"urn:f": f})
         res = dm.handler(document_id="urn:f", confirm_name="PartA")
         assert res["isError"] is True and "declined to delete" in res["message"]
+
+
+class TestAbsenceAfterDelete:
+    def test_the_measured_not_found_raise_is_observed_absence(self, cloud):
+        f = FakeDataFile("PartA", file_id="urn:f")
+        cloud({"urn:f": f})
+        out = _payload(dm.handler(document_id="urn:f", confirm_name="PartA"))
+        assert out["absence_observed"] is True and "absence_unreadable" not in out
+
+    def test_a_lineage_that_still_resolves_is_an_error(self, cloud):
+        f = FakeDataFile("PartA", file_id="urn:f")
+        cloud({"urn:f": f}, after_delete=None)
+        res = dm.handler(document_id="urn:f", confirm_name="PartA")
+        assert res["isError"] is True and f._deleted is True
+        assert "still resolved 'urn:f'" in res["message"]
+        assert "data_get(file='urn:f')" in res["message"]
+
+    def test_another_raise_is_unreadable_not_absence(self, cloud):
+        f = FakeDataFile("PartA", file_id="urn:f")
+        cloud({"urn:f": f}, after_delete="3 : network timeout")
+        out = _payload(dm.handler(document_id="urn:f", confirm_name="PartA"))
+        assert out["absence_observed"] is None
+        assert "3 : network timeout" in out["absence_unreadable"]
+
+    def test_a_re_read_returning_no_record_is_not_observed_absence(self, cloud):
+        f = FakeDataFile("PartA", file_id="urn:f")
+        cloud({"urn:f": f}, after_delete=False)
+        out = _payload(dm.handler(document_id="urn:f", confirm_name="PartA"))
+        assert out["deleted"] is True and out["absence_observed"] is None
+        assert out["absence_unreadable"].startswith("the re-read returned no record;")
+
+    def test_a_second_delete_meets_the_not_found_wording(self, cloud):
+        f = FakeDataFile("PartA", file_id="urn:f")
+        f._deleted = True
+        cloud({"urn:f": f})
+        res = dm.handler(document_id="urn:f", confirm_name="PartA")
+        assert res["isError"] is True and "No file found" in res["message"]
+        assert "findFileById failed" not in res["message"]
 
 
 class TestDeleteFailsClosedOnUnreadableReferences:

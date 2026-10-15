@@ -96,7 +96,7 @@ def handler(sketch: str = "", sheet: str = "") -> dict:
 
 
 TOOL_DESCRIPTION = (
-    "Delete a drawing sketch by exact name from a sheet of the active 2D drawing document."
+    "Delete a drawing sketch by exact name from a sheet of the active drawing."
 )
 
 FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)
@@ -104,7 +104,7 @@ FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)
 tool = (
     Tool.create_simple(name="drawing_delete_sketch", description=FULL_DESCRIPTION)
     .add_input_property("sketch", {"type": "string",
-            "description": "Exact name of the drawing sketch (from drawing_get)."})
+            "description": "Exact sketch name."})
     .add_required_input("sketch")
     .add_input_property("sheet", {"type": "string",
             "description": "Omit for the active sheet."})

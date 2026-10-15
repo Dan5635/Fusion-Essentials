@@ -2,7 +2,6 @@
 upload-state enum mapping (0/1/2/unknown).
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +13,7 @@ dm = load_tool("data_upload_file")
 dc = load_tool("_data_common")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _future(state, df=None):

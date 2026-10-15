@@ -3,6 +3,7 @@
 delete refuses when another expression references the name (matched on WORD boundaries), reports a
 deleteMe() that answered false, and reports a health regression afterwards.
 """
+from conftest import install as _install_design
 
 import live_api_facts
 from conftest import (FakeTimelineObject, FakeUserParameter, FakeUserParameters, MakeDesign,
@@ -34,7 +35,7 @@ def _design(user_params, timeline, all_params=()):
 
 
 def _stub_design(monkeypatch, design):
-    monkeypatch.setattr(params._common, "design", lambda: design)
+    _install_design(params, design)
 
 
 class TestDeleteHandler:

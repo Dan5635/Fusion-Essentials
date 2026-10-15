@@ -1,8 +1,8 @@
 """Tests for `pmi_edit` - per-action read-back gating: a set that does not take is an error, an
 imported annotation refuses text edits, and the below-floor leader extension is normalized before
 a segment edit."""
+from conftest import install as _install_design
 
-import json
 import math
 from types import SimpleNamespace
 
@@ -15,9 +15,7 @@ from conftest import (load_tool, error_message, FakePMIDisplaySettings,
 pe = load_tool("pmi_edit")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class _FakeAnn(FakePMILeaderLineNote):
@@ -86,7 +84,7 @@ def _install_suppressed(rig, item, hits_after):
 def rig(monkeypatch):
     ann = _FakeAnn()
     comp = MakeComp("Root")
-    monkeypatch.setattr(pe._common, "design", lambda: object())
+    _install_design(pe, object())
     monkeypatch.setattr(pe._pmi, "find_annotation", lambda d, n, c="": (ann, comp, None))
     monkeypatch.setattr(pe._pmi, "segments_markup", lambda a: "NEW")
     return SimpleNamespace(ann=ann, comp=comp, monkeypatch=monkeypatch)
@@ -135,7 +133,7 @@ class TestSetText:
         rig.monkeypatch.setattr(pe._pmi, "find_annotation",
                                 lambda d, n, c="": (ann, rig.comp, None))
         msg = error_message(pe.handler(action="set_text", annotation="Note1", text="X"))
-        assert "Extension is required" in msg and "entitlement" in msg and "pmi_get" in msg
+        assert "Extension is required" in msg and "This operation requires" in msg and "pmi_get" in msg
 
     def test_a_segments_write_that_raises_is_an_error(self, rig):
         ann = _RefusingSet(raises=("segments",))
@@ -671,6 +669,13 @@ class TestHoleCallouts:
             assert "action='set_flags'" in msg and "non-empty 'flags'" in msg
         assert not hasattr(hole, "isThrough")
 
+    def test_a_string_flag_value_is_refused_before_any_flag_is_set(self, hole):
+        msg = error_message(pe.handler(action="set_flags", annotation="Hole Note1",
+                                       flags={"through": True, "threaded": "false"}))
+        assert "Invalid Boolean for 'flags.threaded': 'false'. Use true or false." in msg
+        assert "No flag was set." in msg
+        assert not hasattr(hole, "isThrough") and not hasattr(hole, "isThreaded")
+
     def test_an_unknown_flag_is_refused(self, hole):
         assert "Unknown flag 'bogus'" in error_message(
             pe.handler(action="set_flags", annotation="Hole Note1", flags={"bogus": True}))
@@ -686,6 +691,14 @@ class TestHoleCallouts:
         msg = error_message(pe.handler(action="set_display", annotation="Hole Note1",
                                        display={"decimals": 4}))
         assert "Unknown display key 'decimals'" in msg and "precision" in msg
+        assert hole.primaryDisplaySettings is None
+
+    def test_a_bad_secondary_refuses_before_the_primary_is_written(self, hole):
+        hole.primaryDisplaySettings = None
+        msg = error_message(pe.handler(action="set_display", annotation="Hole Note1",
+                                       display={"precision": 2,
+                                                "secondary": {"trailing_zeros": "no"}}))
+        assert "display.secondary: Invalid Boolean for 'display.trailing_zeros': 'no'." in msg
         assert hole.primaryDisplaySettings is None
 
     def test_set_display_republishes_the_secondary_settings_a_note_carries(self, hole, rig):
@@ -830,7 +843,7 @@ class TestGuards:
                                                           new_name="Y"))
 
     def test_no_active_design_is_an_error(self, rig):
-        rig.monkeypatch.setattr(pe._common, "design", lambda: None)
+        _install_design(pe, None)
         assert "No active design" in error_message(pe.handler(action="hide", annotation="N"))
 
     def test_an_unknown_action_is_refused_listing_the_vocabulary(self, rig):

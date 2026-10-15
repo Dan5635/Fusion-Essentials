@@ -8,7 +8,6 @@ True - the cloud confirms the file has landed), or 'failed'. It must NEVER sleep
 CURRENT state and returns.
 """
 
-import json
 from types import SimpleNamespace
 
 from conftest import FakeDataFile, load_tool
@@ -17,9 +16,7 @@ dc = load_tool("_data_common")
 sut = load_tool("data_get_upload_status")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _future(upload_state, df=None):
@@ -145,3 +142,48 @@ class TestStateReporting:
         dc._UPLOADS["up1"] = _entry(_future(1, df=df))
         out = _payload(sut.handler(handle="up1"))     # must return without ever calling time.sleep
         assert out["state"] == "processing"
+
+    def test_component_copy_requires_landed_name_folder_and_id_before_completion(self):
+        df = _datafile(name="Wrong", fid="urn:copy", is_complete=True)
+        df.parentFolder = SimpleNamespace(id="fid:dest")
+        entry = _entry(_future(1, df=df), source_file="Expected")
+        entry.update(kind="component_copy", requested_name="Expected",
+                     destination_folder_id="fid:dest", source_component="Part",
+                     source_occurrence="Part:1")
+        dc._UPLOADS["up1"] = entry
+        mismatch = sut.handler(handle="up1")
+        assert mismatch["isError"] is True and "Wrong" in mismatch["message"]
+        assert dc._UPLOADS["up1"]["identity_error"] == mismatch["message"]
+        assert "different name or folder" in mismatch["message"]
+
+        df.name = "Expected"
+        dc._UPLOADS["up2"] = entry
+        complete = _payload(sut.handler(handle="up2"))
+        assert complete["state"] == "complete"
+        assert complete["operation"] == "component_copy"
+        assert complete["file_id"] == "urn:copy"
+        assert complete["file_name"] == "Expected"
+        assert complete["source_occurrence"] == "Part:1"
+        assert "up2" not in dc._UPLOADS
+
+    def test_component_copy_stays_unfinished_without_cloud_file(self):
+        entry = _entry(_future(0), source_file="Expected")
+        entry.update(kind="component_copy", requested_name="Expected",
+                     destination_folder_id="fid:dest")
+        dc._UPLOADS["up1"] = entry
+        out = _payload(sut.handler(handle="up1"))
+        assert out["state"] == "uploading" and "file_id" not in out
+        assert "up1" in dc._UPLOADS
+
+    def test_component_copy_refuses_wrong_folder_or_missing_lineage(self):
+        for file_id, folder_id in (("urn:copy", "fid:wrong"), (None, "fid:dest")):
+            dc._UPLOADS.clear()
+            df = _datafile(name="Expected", fid=file_id, is_complete=True)
+            df.parentFolder = SimpleNamespace(id=folder_id)
+            entry = _entry(_future(1, df=df), source_file="Expected")
+            entry.update(kind="component_copy", requested_name="Expected",
+                         destination_folder_id="fid:dest")
+            dc._UPLOADS["up1"] = entry
+            reply = sut.handler(handle="up1")
+            assert reply["isError"] is True and "did not match" in reply["message"]
+            assert "up1" in dc._UPLOADS

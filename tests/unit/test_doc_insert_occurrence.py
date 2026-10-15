@@ -7,11 +7,15 @@ ambiguity REFUSED - never the wrong instance). The DataFile resolution is monkey
 test stays offline; occurrence resolution goes through the real _inputs kind against a fake design
 (dual seam: both io._common.design and io._inputs._common.design point at the same fake).
 """
+from conftest import install as _install_design
 
-import json
+import math
+
+import pytest
 
 from conftest import (FakeApplication, FakeData, FakeDataFile, FakeDocumentReference,
-                      FakeFusionDocument, FakeMatrix3D, FakePoint, FakeVector3D, MakeComp,
+                      FakeFusionDocument, LinkedInsertOccurrences, FakeMatrix3D, FakePoint,
+                      FakeVector3D, MakeComp,
                       MakeDesign, _NamedCollection, load_tool, make_occurrence)
 
 io = load_tool("doc_insert_occurrence")
@@ -57,8 +61,7 @@ def _install(monkeypatch, occurrences=(), root_comp=None, data_file=None, host_d
     design = (MakeDesign(comp=root_comp) if host_document is None
               else MakeDesign(comp=root_comp, parent_document=host_document))
     source = FakeDataFile("Part") if data_file is None else data_file
-    monkeypatch.setattr(io._common, "design", lambda: design)
-    monkeypatch.setattr(io._inputs._common, "design", lambda: design)
+    _install_design(io, design)
     monkeypatch.setattr(io, "_resolve_data_file", lambda raw: (source, raw, [raw]))
     import adsk.core
     monkeypatch.setattr(adsk.core.Matrix3D, "create", staticmethod(FakeMatrix3D))
@@ -69,9 +72,7 @@ def _install(monkeypatch, occurrences=(), root_comp=None, data_file=None, host_d
     return design, root_comp
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestPlacement:
@@ -284,6 +285,82 @@ class TestResolveDataFile:
         assert got is None and resolved is None
 
 
+class TestNestedHostPlacement:
+    """Into a host that is moved and turned, the request is the pose in the HOST's frame."""
+    ASK = dict(document_id="urn:x", into_component="Chassis:1", x=30, y=-25, z=12, units="mm",
+               rotate_deg=90, rotate_axis="x")
+    HOST = dict(deg=40, t=(-5.0, 2.0, 3.5))
+
+    def _host(self, monkeypatch, pose, others=()):
+        chassis = MakeComp("Chassis")
+        chassis.occurrences = LinkedInsertOccurrences(FakeMatrix3D(**self.HOST).asArray())
+        occ = make_occurrence(path="Chassis:1", component=chassis, transform2=pose)
+        _install(monkeypatch, occurrences=[occ, *others])
+        return chassis
+
+    def test_the_request_lands_in_the_hosts_frame(self, monkeypatch):
+        host = FakeMatrix3D(**self.HOST)
+        chassis = self._host(monkeypatch, host)
+        out = _payload(io.handler(**self.ASK))
+        assert out["placement_matches"] is True
+        assert out["placed_at"] == {"x": 30.0, "y": -25.0, "z": 12.0, "units": "mm"}
+        assert "placed_at is in the host component's frame" in out["note"]
+        assert "its world placements are unconfirmed - read each path with assembly_get"             in out["note"]
+        # what was handed to addByInsert is the request carried through the host's world pose
+        want = FakeMatrix3D()
+        want.setToRotation(math.radians(90), FakeVector3D(1, 0, 0), FakePoint(0, 0, 0))
+        want.translation = FakeVector3D(3.0, -2.5, 1.2)
+        h = host.asArray()
+        assert chassis.occurrences._last_transform.asArray() == pytest.approx(
+            io._mul(io._mul(h, want.asArray()), io._rigid_inverse(h)))
+
+    def test_a_root_insertion_is_never_carried_whatever_wrapper_names_the_root(self, monkeypatch):
+        # design.rootComponent hands back a fresh wrapper on each read, so object identity cannot
+        # tell the root; a placed root insertion must not reach the carried matrix at all
+        import adsk.core
+        design, root_comp = _install(monkeypatch)
+        def fresh(_self):
+            twin = MakeComp("Root")
+            twin.occurrences = root_comp.occurrences
+            return twin
+        type(design).rootComponent = property(fresh)
+
+        class NeverCarried(FakeMatrix3D):
+            def setWithArray(self, cells):
+                raise AssertionError("a root insertion built a carried matrix")
+        monkeypatch.setattr(adsk.core.Matrix3D, "create", staticmethod(NeverCarried))
+        try:
+            out = _payload(io.handler(document_id="urn:x", x=30, units="mm"))
+        finally:
+            del type(design).rootComponent
+        assert out["placement_matches"] is True and "host component's frame" not in out["note"]
+
+    def test_an_unplaced_insertion_needs_no_host_pose(self, monkeypatch):
+        chassis = self._host(monkeypatch, None)
+        out = _payload(io.handler(document_id="urn:x", into_component="Chassis:1"))
+        assert out["inserted"] is True
+        assert chassis.occurrences._last_transform.asArray() == FakeMatrix3D().asArray()
+
+    @pytest.mark.parametrize("fault, why", [
+        ("pose", "its world pose did not read"), ("refused", "the carried matrix was refused")])
+    def test_a_placement_that_cannot_be_carried_is_refused_before_any_removal(
+            self, monkeypatch, fault, why):
+        doomed = FakeOcc("Old:1")
+        chassis = self._host(monkeypatch, None if fault == "pose" else FakeMatrix3D(**self.HOST),
+                             others=[doomed])
+        if fault == "refused":
+            import adsk.core
+
+            class Refusing(FakeMatrix3D):
+                def setWithArray(self, cells):
+                    return False
+            monkeypatch.setattr(adsk.core.Matrix3D, "create", staticmethod(Refusing))
+        msg = io.handler(remove_existing="Old:1", **self.ASK)
+        assert msg["isError"] is True and why in msg["message"]
+        assert "Nothing was inserted or removed" in msg["message"]
+        assert doomed._deleted is False and chassis.occurrences._last_transform is None
+
+
 # ── into_component / remove_existing via the shared OccurrenceRef kind ────────
 
 class TestIntoComponent:
@@ -421,12 +498,12 @@ class TestHandlerGates:
         assert res["isError"] is True and "document_id" in res["message"]
 
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(io._common, "design", lambda: None)
+        _install_design(io, None)
         res = io.handler(document_id="urn:x")
         assert res["isError"] is True and "No active design" in res["message"]
 
     def test_unresolvable_document_errors(self, monkeypatch):
-        monkeypatch.setattr(io._common, "design", lambda: object())
+        _install_design(io, object())
         monkeypatch.setattr(io, "_resolve_data_file", lambda raw: (None, None, []))
         res = io.handler(document_id="urn:nope")
         assert res["isError"] is True and "Could not resolve" in res["message"]

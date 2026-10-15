@@ -14,6 +14,9 @@ where add on an existing group/name updates it in place), attributes built by ``
 (groupName/name/value + deleteMe() -> bool, and a value that can no longer be read once deleted),
 and FakeAttributeVector for what Design.findAttributes hands back - len()/[i] with NO .count.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+from conftest import install as _install_design
 
 import types
 
@@ -21,8 +24,7 @@ import pytest
 
 from conftest import FakeTimeline as _SharedTimeline
 from conftest import FakeTimelineObject as _SharedTimelineObject
-from conftest import (FakeApplication, FakeUserInterface, _NamedCollection, error_message,
-                      load_tool, make_design, payload)
+from conftest import MakeComp, _NamedCollection, error_message, load_tool, make_design, payload
 
 et = load_tool("design_edit_timeline")
 
@@ -34,7 +36,7 @@ class FakeTimelineObject(_SharedTimelineObject):
     marker position is not being computed. So a rollTo that returns true without repositioning the
     marker leaves the item in its previous state, exactly as it would in Fusion."""
 
-    def __init__(self, name, index, health=0, suppressed=False, is_group=False,
+    def __init__(self, name, index, health=_HEALTHY, suppressed=False, is_group=False,
                  roll_returns=True, suppress_takes=True, rename="ok", reports_rolled=True,
                  entity=None):
         self._holder = None                     # the group this item belongs to, once grouped
@@ -354,10 +356,186 @@ def wire(monkeypatch):
         design = make_design()
         design.timeline = timeline
         design.findAttributes = lambda group, name: _find_attributes(timeline, group, name)
-        monkeypatch.setattr(et._common, "design", lambda: design)
-        monkeypatch.setattr(et._inputs._common, "design", lambda: design)
+        _install_design(et, design)
         return timeline
     return _wire
+
+
+@pytest.fixture
+def unfold_group(wire):
+    """Return the measured single-unfold group with readable canonical member and owner keys."""
+    owner = MakeComp('SheetA', entity_token='sheet-a')
+    source = types.SimpleNamespace(entityToken='unfold-a', objectType='adsk::fusion::UnfoldFeature', parentComponent=owner)
+    member = FakeTimelineObject('Unfold1', 0, entity=source)
+    group = FakeTimelineGroup('Group1', 0, members=[member], collapsed=True)
+    group.isValid = True
+    timeline = wire(FakeTimeline([group], groups=[group]))
+    return timeline, group, member
+
+
+def test_group_state_expands_and_collapses_with_unknown_group_key_and_retained_member(unfold_group):
+    timeline, group, member = unfold_group
+    for collapsed in (False, True):
+        out = payload(et.handler(action='group_state', feature='Group1', collapsed=collapsed))
+        assert group.isCollapsed is collapsed and out['is_collapsed'] is collapsed
+        assert out['member_count'] == 1 and out['group_canonical_identity_verified'] is None
+        assert group.item(0) is member and group.delete_calls == []
+
+
+def test_group_state_refuses_unread_or_unsupported_members_before_change(unfold_group, monkeypatch):
+    timeline, group, member = unfold_group
+    member.entity.parentComponent.entityToken = ''
+    result = et.handler(action='group_state', feature='Group1', collapsed=False)
+    assert result['isError'] is True and 'could not be read' in result['message']
+    assert group.isCollapsed is True
+    member.entity.parentComponent.entityToken = 'sheet-a'
+    group._members.extend([FakeTimelineObject('Cut1', 1), FakeTimelineObject('Refold1', 2)])
+    result = et.handler(action='group_state', feature='Group1', collapsed=False)
+    assert result['isError'] is True and 'supports only' in result['message']
+    assert group.isCollapsed is True
+
+
+def test_group_state_rejects_a_fresh_group_with_changed_member_keys(unfold_group, monkeypatch):
+    timeline, group, member = unfold_group
+    replacement = FakeTimelineGroup('Group1', 0, members=[FakeTimelineObject('Unfold1', 0,
+        entity=types.SimpleNamespace(entityToken='wrong-unfold', objectType='adsk::fusion::UnfoldFeature',
+                                     parentComponent=member.entity.parentComponent))], collapsed=False)
+    replacement.isValid = True
+    monkeypatch.setattr(et, '_groups', lambda _timeline, strict=False: [group] if group.isCollapsed else [replacement])
+    result = et.handler(action='group_state', feature='Group1', collapsed=False)
+    assert result['isError'] is True and 'unconfirmed' in result['message']
+
+
+def test_group_state_rejects_changed_member_key_on_the_same_valid_wrapper(unfold_group, monkeypatch):
+    timeline, group, member = unfold_group
+    original_setattr = FakeTimelineGroup.__setattr__
+    def change_member(self, name, value):
+        original_setattr(self, name, value)
+        if self is group and name == 'isCollapsed':
+            member.entity.entityToken = 'changed-unfold'
+    monkeypatch.setattr(FakeTimelineGroup, '__setattr__', change_member)
+    result = et.handler(action='group_state', feature='Group1', collapsed=False)
+    assert group.isValid is True and timeline.timelineGroups.item(0) is group
+    assert result['isError'] is True and 'unconfirmed' in result['message']
+
+
+def test_hidden_unfold_advice_expands_and_retries_original_qualified_action(unfold_group):
+    timeline, group, member = unfold_group
+    result = et.handler(action='suppress', feature='SheetA/Unfold1')
+    message = error_message(result)
+    assert "action='group_state', feature='Group1', collapsed=false" in message
+    assert "qualified reference 'SheetA/Unfold1'" in message
+    assert 'original action' in message and "action='ungroup'" not in message and 'sheet_create_refold' not in message
+    assert member.isSuppressed is False and group.isCollapsed is True
+
+
+def _collapsed_unfold_groups(wire, count, cut_in=()):
+    """`count` collapsed groups, each a sheet's Unfold1 and Refold1, plus Cut1 at the `cut_in` indexes."""
+    groups = []
+    for i in range(count):
+        sheet = f"Sheet{'ABCDEF'[i]}"
+        owner = MakeComp(sheet, entity_token=sheet.lower())
+        names = ("Unfold1", "Refold1", "Cut1") if i in cut_in else ("Unfold1", "Refold1")
+        members = [FakeTimelineObject(name, j, entity=types.SimpleNamespace(
+            entityToken=f"{name}-{sheet}", objectType=("adsk::fusion::ExtrudeFeature" if name == "Cut1"
+                                                       else f"adsk::fusion::{name[:-1]}Feature"),
+            parentComponent=owner)) for j, name in enumerate(names)]
+        group = FakeTimelineGroup(f"Group{i + 1}", i, members=members, collapsed=True)
+        group.isValid = True
+        groups.append(group)
+    wire(FakeTimeline(groups, groups=groups))
+    return groups
+
+
+@pytest.mark.parametrize("cut_in,second", [
+    ((), "for 'SheetB/Unfold1' run design_edit_timeline(action='group_state', feature='Group2', "
+         "collapsed=false)"),
+    ((1,), "'SheetB/Unfold1' sits in 'Group2', outside group_state support - inspect it with "
+           "design_get(include=['timeline'], group='Group2')")])
+def test_two_collapsed_unfold_groups_name_both_qualified_candidates(wire, cut_in, second):
+    groups = _collapsed_unfold_groups(wire, 2, cut_in)
+    message = error_message(et.handler(action='suppress', feature='Unfold1'))
+    assert message.endswith(
+        "'Unfold1' names 2 hidden unfold-group features in collapsed groups: for 'SheetA/Unfold1' run "
+        "design_edit_timeline(action='group_state', feature='Group1', collapsed=false); "
+        + second + ". Then retry the original action with that qualified reference. Keep "
+        "the unfold group intact.")
+    assert 'could not be read' not in message and all(g.isCollapsed for g in groups)
+
+
+@pytest.mark.parametrize("count,tail", [(5, "'SheetE/Unfold1' run"), (6, "; 1 more not listed.")])
+def test_collapsed_unfold_candidates_past_five_are_counted(wire, count, tail):
+    _collapsed_unfold_groups(wire, count)
+    message = error_message(et.handler(action='suppress', feature='Unfold1'))
+    assert f"names {count} hidden unfold-group features" in message and tail in message
+    assert "SheetF" not in message and ("more not listed" in message) is (count > 5)
+
+
+def test_hidden_unfold_unread_type_owner_or_slot_never_recommends_ungroup(unfold_group):
+    timeline, group, member = unfold_group
+    for field in ('objectType', 'parentComponent'):
+        prior = getattr(member.entity, field)
+        setattr(member.entity, field, None)
+        message = error_message(et.handler(action='suppress', feature='Unfold1'))
+        assert 'could not be read completely' in message and 'design_get' in message
+        assert "group='Group1'" in message and '<group name>' not in message
+        assert "action='ungroup'" not in message
+        setattr(member.entity, field, prior)
+    group._members.append(None)
+    message = error_message(et.handler(action='suppress', feature='Unfold1'))
+    assert 'could not be read completely' in message and "action='ungroup'" not in message
+
+
+def test_hidden_unfold_with_cut_does_not_offer_unsupported_group_state(unfold_group):
+    timeline, group, member = unfold_group
+    group._members.append(FakeTimelineObject('Cut1', 1, entity=types.SimpleNamespace(
+        entityToken='cut', objectType='adsk::fusion::ExtrudeFeature', parentComponent=member.entity.parentComponent)))
+    message = error_message(et.handler(action='suppress', feature='SheetA/Unfold1'))
+    assert 'outside' in message and 'expand it in Fusion' in message and 'design_get' in message
+    assert "action='group_state'" not in message and "action='ungroup'" not in message
+
+
+def test_hidden_refold_of_an_unfold_group_gets_group_state_advice_not_ungroup(wire):
+    group, = _collapsed_unfold_groups(wire, 1)
+    message = error_message(et.handler(action='suppress', feature='Refold1'))
+    assert message.endswith(
+        "'SheetA/Refold1' is inside collapsed group 'Group1'. Run design_edit_timeline("
+        "action='group_state', feature='Group1', collapsed=false), then retry the original action "
+        "with qualified reference 'SheetA/Refold1'. Keep the unfold group intact.")
+    assert group.item(1).isSuppressed is False and group.isCollapsed is True
+
+
+def test_visible_twin_of_a_hidden_refold_gets_group_state_advice(wire):
+    group, = _collapsed_unfold_groups(wire, 1)
+    visible = FakeTimelineObject('Refold1', 1, entity=types.SimpleNamespace(
+        entityToken='refold-b', objectType='adsk::fusion::RefoldFeature', parentComponent=MakeComp('SheetB')))
+    timeline = et._common.design().timeline
+    timeline._items.append(visible)
+    visible.timeline = timeline
+    message = error_message(et.handler(action='suppress', feature='Refold1'))
+    assert "also matches" in message and "qualified reference 'SheetA/Refold1'" in message
+    assert "action='ungroup'" not in message and visible.isSuppressed is False
+
+
+@pytest.mark.parametrize("collapsed, text", [
+    (True, "'Group1' is an unfold group; ungrouping it loses its unfold/refold association. Expand it "
+           "with design_edit_timeline(action='group_state', feature='Group1', collapsed=false) instead."),
+    (False, "'Group1' is an unfold group and is already expanded, so its items are listed; name them "
+            "directly. Nothing changed.")])
+def test_ungroup_refuses_an_unfold_group_and_keeps_it(wire, collapsed, text):
+    group, = _collapsed_unfold_groups(wire, 1)
+    group.isCollapsed = collapsed
+    assert error_message(et.handler(action='ungroup', feature='Group1')) == text
+    assert group.delete_calls == [] and group.count == 2
+
+
+def test_readable_hidden_construction_plane_keeps_ordinary_owner_hint(unfold_group):
+    timeline, group, member = unfold_group
+    member.name = 'Plane1'
+    member.entity = types.SimpleNamespace(entityToken='plane', objectType='adsk::fusion::ConstructionPlane',
+                                         component=MakeComp('SheetA', entity_token='sheet-a'))
+    message = error_message(et.handler(action='suppress', feature='SheetA/Plane1'))
+    assert "action='ungroup'" in message and 'could not be read' not in message
 
 
 # ── roll: to a named item ────────────────────────────────────────────────────
@@ -408,13 +586,45 @@ class TestRollToFeature:
         assert "Target 'Base' itself" in msg and "ungroup" not in msg
 
     def test_a_suppress_of_a_collapsed_groups_member_names_the_ungroup_call(self, wire):
-        members = [FakeTimelineObject("Sketch1", 0), FakeTimelineObject("Extrude1", 1)]
+        members = [FakeTimelineObject("Sketch1", 0), FakeTimelineObject("Extrude1", 1,
+                   entity=types.SimpleNamespace(objectType='adsk::fusion::ExtrudeFeature'))]
         group = FakeTimelineGroup("CascadeG", 0, members=members, collapsed=True)
         wire(FakeTimeline([group, FakeTimelineObject("Fillet1", 1)], groups=[group]))
         msg = error_message(et.handler(action="suppress", feature="Extrude1", suppressed=True))
         assert "'CascadeG'" in msg
         assert "design_edit_timeline(action='ungroup', feature='CascadeG')" in msg
         assert members[1].isSuppressed is False
+
+    def test_a_bare_number_whose_twin_hides_in_a_collapsed_group_is_refused_unsuppressed(self, wire):
+        # index 0 is visible; a member literally named "0" sits in a collapsed group, absent from
+        # the walk - the bare "0" must refuse naming both, and suppress nothing.
+        seat = FakeTimelineObject("Extrude1", 0)
+        group = FakeTimelineGroup("Imports", 1, members=[FakeTimelineObject("0", 2,
+                                  entity=types.SimpleNamespace(objectType='adsk::fusion::Sketch'))], collapsed=True)
+        wire(FakeTimeline([seat, group], groups=[group]))
+        msg = error_message(et.handler(action="suppress", feature="0", suppressed=True))
+        assert "'0' matches Extrude1@0 and also names" in msg
+        assert "collapsed timeline group 'Imports'" in msg and seat.isSuppressed is False
+
+    def test_a_hidden_bare_name_twin_refuses_but_an_indexed_visible_address_rolls(self, wire):
+        visible = FakeTimelineObject("Twin", 1)
+        hidden = FakeTimelineObject("Twin", 2, entity=types.SimpleNamespace(objectType='adsk::fusion::ExtrudeFeature'))
+        group = FakeTimelineGroup("HiddenPair", 0, members=[hidden], collapsed=True)
+        tl = wire(FakeTimeline([group, visible], groups=[group], marker=2))
+        msg = error_message(et.handler(action="roll", feature="Twin"))
+        assert "Twin@1" in msg and "collapsed timeline group 'HiddenPair'" in msg
+        assert visible.roll_calls == [] and tl.markerPosition == 2
+        out = payload(et.handler(action="roll", feature="Twin@1"))
+        assert out["marker_position"] == 1 and visible.roll_calls == [True]
+
+    def test_collapsed_member_matching_keeps_a_slashed_owner_whole(self, wire):
+        entity = types.SimpleNamespace(parentComponent=types.SimpleNamespace(name="X/Y"))
+        hidden = FakeTimelineObject("Target", 1, entity=entity)
+        group = FakeTimelineGroup("HiddenPair", 0, members=[hidden], collapsed=True)
+        tl = wire(FakeTimeline([group], groups=[group], marker=1))
+        msg = error_message(et.handler(action="roll", feature="X/Y/Target"))
+        assert "'X/Y/Target' is inside the collapsed timeline group 'HiddenPair'" in msg
+        assert tl.markerPosition == 1 and hidden.roll_calls == []
 
     def test_a_genuinely_absent_name_still_lists_the_timeline(self, wire):
         members = [FakeTimelineObject("Sketch1", 0)]
@@ -842,6 +1052,15 @@ class TestUngroup:
 # ── delete after the marker ──────────────────────────────────────────────────
 
 class TestDeleteAfterMarker:
+    @pytest.mark.parametrize("confirmation", ["false", 1, None])
+    def test_non_boolean_confirmation_never_reaches_delete(self, wire, confirmation):
+        tl = wire(_timeline(marker=1))
+        msg = error_message(et.handler(action="delete_after_marker",
+                                       confirm_delete_after_marker=confirmation))
+        assert "confirm_delete_after_marker must be a Boolean" in msg and repr(confirmation) in msg
+        assert "false for a preview or true" in msg
+        assert tl.delete_calls == 0 and tl.count == 3 and tl.markerPosition == 1
+
     def test_refuses_without_the_confirmation_and_deletes_nothing(self, wire):
         tl = wire(_timeline(marker=1))
         msg = error_message(et.handler(action="delete_after_marker"))
@@ -899,6 +1118,34 @@ class TestDeleteAfterMarker:
 
 
 # ── attributes on the entity a timeline item wraps ───────────────────────────
+
+@pytest.mark.parametrize("failure", ["partial", "prefix", "marker", "unread"])
+def test_partial_or_unread_delete_never_reports_exact_removal(wire, monkeypatch, failure):
+    tl = wire(_timeline(marker=1))
+    def delete():
+        tl._items = tl._items[:2 if failure == "partial" else 1]
+        if failure == "prefix":
+            tl._items[0].name = "Replaced"
+        if failure == "marker":
+            tl.markerPosition = 0
+        return True
+    monkeypatch.setattr(tl, "deleteAllAfterMarker", delete)
+    if failure == "unread":
+        counted = et._common.counted
+        monkeypatch.setattr(et._common, "counted", lambda getter: None if len(tl._items) == 1 else counted(getter))
+    result = et.handler(action="delete_after_marker", confirm_delete_after_marker=True)
+    msg = error_message(result)
+    assert "reported success" in msg and "design_get" in msg
+    assert "unread" in msg if failure == "unread" else "Partial changes may remain" in msg
+
+
+def test_unread_initial_count_refuses_before_delete(wire, monkeypatch):
+    tl = wire(_timeline(marker=1))
+    monkeypatch.setattr(et._common, "counted", lambda getter: None)
+    msg = error_message(et.handler(action="delete_after_marker", confirm_delete_after_marker=True))
+    assert "count" in msg and "nothing was deleted" in msg
+    assert tl.delete_calls == 0
+
 
 class TestSetAttribute:
     def test_attaches_to_the_entity_and_reads_the_value_back(self, wire):
@@ -1144,20 +1391,12 @@ class TestDeleteAttribute:
 
 class TestGuards:
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(et._common, "design", lambda: None)
+        _install_design(et, None)
         assert "No active design" in error_message(et.handler(action="roll", to="end"))
 
     def test_direct_modelling_design_has_no_timeline(self, wire):
         wire(None)
         assert "no timeline" in error_message(et.handler(action="roll", to="end"))
-
-    def test_an_open_form_edit_is_named_not_called_direct(self, monkeypatch):
-        design = make_design(design_type=0)
-        monkeypatch.setattr(et._common, "design", lambda: design)
-        monkeypatch.setattr(et._common, "app", FakeApplication(user_interface=FakeUserInterface(
-            active_workspace=types.SimpleNamespace(id="TSplineEnvironment"))))
-        msg = error_message(et.handler(action="suppress", feature="Form1"))
-        assert "A Form edit is open" in msg and "direct-modelling" not in msg
 
     def test_unknown_action_is_refused(self, wire):
         wire(_timeline())
@@ -1182,6 +1421,187 @@ class TestWiring:
         assert props["confirm_delete_after_marker"]["type"] == "boolean"
         for prop in ("attribute_group", "attribute_name", "attribute_value"):
             assert props[prop]["type"] == "string"
+
+
+class _Movable(FakeTimelineObject):
+    """reorder(i) lands the item in front of the item read at index i; -1 or the count raises."""
+
+    def __init__(self, name, index, raises=None, returns=True, lands=None, after=None):
+        super().__init__(name, index, entity=types.SimpleNamespace(entityToken=f"tok-{name}"))
+        self._raises, self._returns, self._lands, self._after = raises, returns, lands, after
+        self.reorder_calls = []
+
+    def canReorder(self, _before):
+        raise AssertionError("canReorder was consulted")
+
+    def reorder(self, beforeIndex):
+        self.reorder_calls.append(beforeIndex)
+        items = self.timeline._items
+        if beforeIndex == -1 or beforeIndex >= len(items):   # measure_api timeline-reorder-past-end-raises
+            raise RuntimeError("2 : InternalValidationError : featureAtIndex")
+        if self._returns:
+            anchor = items[beforeIndex]
+            items.remove(self)
+            items.insert(items.index(anchor) if self._lands is None else self._lands, self)
+            _reindex(items)
+            (self._after or (lambda: None))()
+        if self._raises:
+            raise RuntimeError(self._raises)
+        return self._returns
+
+
+def _reindex(items):
+    for i, obj in enumerate(items):
+        obj.index = i
+
+
+class TestReorder:
+    def _wired(self, wire, at=4, names="ABCDE", **kw):
+        items = [_Movable(n, i, **kw) if i == at else
+                 FakeTimelineObject(n, i, entity=types.SimpleNamespace(entityToken=f"tok-{n}"))
+                 for i, n in enumerate(names)]
+        return wire(FakeTimeline(items))
+
+    def _order(self, tl):
+        return [o.name for o in tl._items]
+
+    def test_a_move_after_the_last_item_is_refused_with_the_two_moves_before_any_write(self, wire):
+        tl = self._wired(wire, at=2)
+        msg = error_message(et.handler(action="reorder", feature="C", to="after", end_feature="E"))
+        assert self._order(tl) == ["A", "B", "C", "D", "E"] and tl._items[2].reorder_calls == []
+        assert msg == ("Fusion cannot place an item after the last timeline row, so 'C' cannot go "
+                       "after 'E'. Nothing moved. To make 'C' last, run design_edit_timeline("
+                       "action='reorder', feature='C@2', to='before', end_feature='E@4'), then "
+                       "design_edit_timeline(action='reorder', feature='E@4', to='before', "
+                       "end_feature='C@3').")
+
+    def test_the_two_moves_the_refusal_names_make_the_item_last(self, wire):
+        tl = wire(FakeTimeline([_Movable(n, i) for i, n in enumerate("ABCDE")]))
+        payload(et.handler(action="reorder", feature="C@2", to="before", end_feature="E@4"))
+        assert self._order(tl) == ["A", "B", "D", "C", "E"]
+        payload(et.handler(action="reorder", feature="E@4", to="before", end_feature="C@3"))
+        assert self._order(tl) == ["A", "B", "D", "E", "C"]
+
+    def test_an_item_just_before_the_last_needs_one_move(self, wire):
+        self._wired(wire, at=3)
+        msg = error_message(et.handler(action="reorder", feature="D", to="after", end_feature="E"))
+        assert msg.endswith("To make 'D' last, run design_edit_timeline(action='reorder', "
+                            "feature='E@4', to='before', end_feature='D@3').")
+
+    def test_a_true_return_that_moved_nothing_says_nothing_moved(self, wire):
+        tl = self._wired(wire, lands=4)          # re-inserts E where it was
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert self._order(tl) == ["A", "B", "C", "D", "E"]
+        assert msg == ("reorder returned true, but the timeline re-reads unchanged: 'E' is still "
+                       "at index 4. Nothing moved.")
+
+    def test_a_move_that_also_shuffled_other_items_is_not_ok(self, wire):
+        tl = self._wired(wire, after=lambda: (tl._items.insert(3, tl._items.pop(4)),
+                                              _reindex(tl._items)))
+        res = et.handler(action="reorder", feature="E", end_feature="B")
+        assert self._order(tl) == ["A", "E", "B", "D", "C"]
+        assert error_message(res) == ("reorder returned true, but the re-read has 'E' at index 1, "
+                                      "and other items changed order. No verified tool sequence restores this order. "
+                                      "design_get(include=['timeline']) reads the order. "
+                                      "Inspect and restore the order manually in Fusion.")
+        assert res["isError"] is True and "reordered" not in str(res)
+
+    @pytest.mark.parametrize("to,anchor", [("before", "B"), ("after", "A")])
+    def test_a_later_item_lands_beside_the_anchor_by_reread(self, wire, to, anchor):
+        tl = self._wired(wire)
+        out = payload(et.handler(action="reorder", feature="E", to=to, end_feature=anchor))
+        assert self._order(tl) == ["A", "E", "B", "C", "D"]
+        assert tl._items[1].reorder_calls == [1]
+        assert (out["reordered"], out["index_before"], out["index_after"]) == (True, 4, 1)
+        assert out["note"] == (f"'E' now sits immediately {to} '{anchor}'; every other item kept "
+                               "its order (re-read).")
+
+    def test_a_raise_quotes_fusion_after_the_rows_reread_unchanged(self, wire):
+        tl = self._wired(wire, returns=False,
+                         raises="3 : CIRCULAR_DEPENDENCY - Circular dependency found: from E to "
+                                "B. / First feature in timeline: E // E")
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert msg == ("Fusion refused to move 'E' before 'B': 3 : CIRCULAR_DEPENDENCY - Circular "
+                       "dependency found: from E to B. Nothing moved (the timeline re-reads "
+                       "unchanged).")
+        assert self._order(tl) == ["A", "B", "C", "D", "E"]
+
+    def test_a_raise_after_rows_moved_does_not_claim_nothing_moved(self, wire):
+        self._wired(wire, raises="3 : reorder failed")
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert "Nothing moved" not in msg and "re-reads changed" in msg
+
+    def test_a_false_return_is_a_refusal(self, wire):
+        self._wired(wire, returns=False)
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert msg.startswith("Fusion refused to move 'E' before 'B': reorder returned false. "
+                              "Nothing moved")
+
+    def test_a_true_return_that_landed_elsewhere_names_the_move_back(self, wire):
+        tl = self._wired(wire, at=3, lands=2)
+        msg = error_message(et.handler(action="reorder", feature="D", end_feature="B"))
+        assert self._order(tl) == ["A", "B", "D", "C", "E"]
+        assert msg == ("reorder returned true, but the re-read has 'D' at index 2, not immediately "
+                       "before 'B' (index 1). Move it back with design_edit_timeline("
+                       "action='reorder', feature='D@2', to='before', end_feature='E@4'); "
+                       "design_get(include=['timeline']) reads the order.")
+
+    def test_an_item_that_was_last_requires_a_read_and_manual_restoration(self, wire):
+        tl = wire(FakeTimeline([_Movable(n, i, lands=2 if n == "E" else None)
+                                for i, n in enumerate("ABCDE")]))
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert self._order(tl) == ["A", "B", "E", "C", "D"]
+        assert "No verified tool sequence restores this order" in msg
+        assert "design_get(include=['timeline'])" in msg
+        assert "restore the order manually in Fusion" in msg
+        assert "Move it back with" not in msg
+
+    def test_a_move_back_whose_index_does_not_read_names_the_read(self, wire):
+        tl = self._wired(wire, at=3, lands=2, after=lambda: setattr(tl._items[4], "index", None))
+        msg = error_message(et.handler(action="reorder", feature="D", end_feature="B"))
+        assert "No verified tool sequence restores this order" in msg
+        assert "design_get(include=['timeline'])" in msg
+        assert "Undo it in Fusion" not in msg
+
+    def test_new_errors_after_the_move_are_reported_as_kept(self, wire):
+        tl = self._wired(wire, at=3, after=lambda: setattr(tl._items[3], "healthState", 2))
+        msg = error_message(et.handler(action="reorder", feature="D", end_feature="B"))
+        assert msg == ("Moving 'D' before 'B' left new timeline errors or warnings: C. This STAYED "
+                       "APPLIED (not rolled back): 'D' timeline index now reads 1 (was 3). Move it "
+                       "back with design_edit_timeline(action='reorder', feature='D@1', to='before', "
+                       "end_feature='E@4'); design_get(include=['timeline']) reads the order.")
+
+    @pytest.mark.parametrize("to,anchor,why", [
+        ("before", "E", "is the anchor itself"),
+        ("after", "D", "already sits immediately after 'D'"),
+        ("before", "", "needs 'feature' (the item to move) and 'end_feature'")])
+    def test_a_move_with_nowhere_to_go_is_refused_unattempted(self, wire, to, anchor, why):
+        tl = self._wired(wire)
+        msg = error_message(et.handler(action="reorder", feature="E", to=to, end_feature=anchor))
+        assert why in msg and tl._items[4].reorder_calls == []
+
+    def test_tokenless_namesakes_are_refused_before_any_move(self, wire):
+        tl = self._wired(wire, at=3, names="AGBGE")
+        tl._items[1].entity = tl._items[3].entity = None
+        msg = error_message(et.handler(action="reorder", feature="G@3", end_feature="A"))
+        assert msg == ("The timeline did not list with every item told apart, so a move could not "
+                       "be verified. Nothing moved.")
+        assert tl._items[3].reorder_calls == []
+
+    def test_a_true_return_the_census_cannot_reread_is_unconfirmed(self, wire):
+        tl = self._wired(wire, after=lambda: setattr(tl, "_raises", "3 : count unreadable"))
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert msg == ("reorder returned true, but the timeline did not re-read with every item "
+                       "told apart, so where 'E' sits is UNCONFIRMED. Read "
+                       "design_get(include=['timeline']).")
+
+    def test_an_unread_landing_index_is_refused_before_any_move(self, wire):
+        tl = self._wired(wire)
+        tl._items[1].index = None
+        msg = error_message(et.handler(action="reorder", feature="E", end_feature="B"))
+        assert msg == ("The timeline index of 'E' or of the item it would land in front of does "
+                       "not read. Nothing moved.")
+        assert tl._items[4].reorder_calls == []
 
 
 class TestVerificationPathsBite:
@@ -1230,3 +1650,23 @@ class TestVerificationPathsBite:
         wire(FakeTimeline(self._items(), marker=1, delete_removes=False))
         res = et.handler(action="delete_after_marker", confirm_delete_after_marker=True)
         assert res["isError"] is True and "still holds" in res["message"]
+
+
+def test_hidden_unfold_uncertain_hint_keeps_all_readable_group_names():
+    common = load_tool("_design_common")
+    groups = [FakeTimelineGroup("First", 0, collapsed=False),
+              FakeTimelineGroup("Second", 1, collapsed=False),
+              types.SimpleNamespace(name="Unread", isCollapsed=None)]
+    message = common._collapsed_unfold_hint(FakeTimeline([], groups=groups), "Missing")
+    assert all("group=" + repr(name) in message for name in ("First", "Second", "Unread"))
+    assert "<group name>" not in message
+
+
+def test_hidden_unfold_uncertain_hint_bounds_readable_group_commands():
+    common = load_tool("_design_common")
+    groups = [FakeTimelineGroup("Group" + str(i), i, collapsed=False) for i in range(7)]
+    groups.append(types.SimpleNamespace(name="Unread", isCollapsed=None))
+    message = common._collapsed_unfold_hint(FakeTimeline([], groups=groups), "Missing")
+    assert message.count("design_get(") == 5
+    assert all("group=" + repr("Group" + str(i)) in message for i in range(5))
+    assert "3 more groups not listed" in message and "group='Unread'" not in message

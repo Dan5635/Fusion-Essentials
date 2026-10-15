@@ -11,12 +11,13 @@ import adsk.cam
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import CM_TO_UNIT, named_with_remainder, ok, error, safe, scale, set_verified
+from ._common import (CM_TO_UNIT, named_with_remainder, native_identity, ok, error, safe, scale,
+                      set_verified)
 from ._cam_common import (MACHINE_MODE_MEMBERS, PARAM_READ, SWARF_CONTOURS_PARAM, avoid_groups,
-                          choice_quoting, enumeration_remedy, expression_error, get_cam,
+                          choice_expressions, choice_quoting, enumeration_remedy, expression_error, get_cam,
                           group_record, machine_mode_value, matched_quoting, offset_mm_per_unit,
-                          owning_setup, resolve_cam_node, register_future,
-                          strategy_generation_allowed, unquote_expression)
+                          owning_setup, refresh_flat_setup_models, resolve_cam_node, register_future,
+                          strategy_generation_allowed, sync_validity, unquote_expression)
 from . import _inputs
 from . import _sketch_detail
 
@@ -132,12 +133,13 @@ _DIRECT_MISS = {_HOLES: "drilling/boring strategies (drill / bore / circular / t
                 _ORIENTATION: "a strategy that takes tool-axis orientations, e.g. three_plus_two",
                 _CHAMFER: "the turning_chamfer strategy"}
 
-# 'surfaces' = the same shape, one parameter per ROLE, and an op can carry several at once - so the
-# role is an input, not a probe order. The op's 'model' parameter is the same class but is NOT one
+# One parameter per ROLE (an op can carry several, so the role is an input); a role's names are
+# probed in order - a legacy swarf op carries 'swarfSurfaces'. The op's 'model' parameter is NOT one
 # of these: assigning a face list to it raises 'Parameter is not available through the API.'
-_SURFACE_TARGET_PARAM = {"drive": "driveSurfaces", "floor": "floorSurfaces",
-                         "wall": "wallSurfaces", "ceiling": "ceilingSurfaces",
-                         "check": "checkSurfaceSelection", "swarf": "advancedSwarfSurfaces"}
+_SURFACE_TARGET_PARAM = {"drive": ("driveSurfaces",), "floor": ("floorSurfaces",),
+                         "wall": ("wallSurfaces",), "ceiling": ("ceilingSurfaces",),
+                         "check": ("checkSurfaceSelection",),
+                         "swarf": ("advancedSwarfSurfaces", "swarfSurfaces")}
 _DEFAULT_SURFACE_TARGET = "drive"
 
 _CURVE_BUILDER = {
@@ -221,7 +223,9 @@ _KNOB_SELECTIONS = {"is_open": (_CHAIN,), "reverted": (_CHAIN,),
 # The geometry inputs the body/sketch kinds resolve through, one instance each for the schema and
 # the resolver. Both take scope_input because Fusion's own defaults make those names shared - it
 # numbers sketches per component from 1 and names every component's first body 'Body1'.
-BODIES = _inputs.BodyRefList("bodies", scope_input="component")
+BODIES = _inputs.BodyRefList(
+    "bodies", scope_input="component",
+    description="Omit to use setup models (including flat bodies); named bodies select design bodies.")
 SKETCHES = _inputs.SketchRefList("sketches", scope_input="component", required=True)
 
 
@@ -820,9 +824,9 @@ def _direct_params(op):
     return out, blocked
 
 
-def _set_object_set(nm, p, entities, noun):
+def _set_object_set(nm, p, entities, noun, extra):
     """(count, None) or (None, error) - assign a CAD-object list to ONE direct-family parameter and
-    read the count back off the parameter, since an assignment that raises nothing proves nothing."""
+    read it back off the parameter, since an assignment that raises nothing proves nothing."""
     pv = safe(lambda: p.value)
     if pv is None:
         return None, f"Could not read the operation's '{nm}' parameter value."
@@ -835,10 +839,17 @@ def _set_object_set(nm, p, entities, noun):
     if back is None:
         return None, (f"{nm} cannot be read back after {len(wanted)} {noun}(s) were assigned, so "
                       f"the selection is UNCONFIRMED - re-read the operation with {PARAM_READ}.")
-    if len(back) != len(wanted):
+    if len(back) == len(wanted):
+        return len(back), None
+    # A legacy swarf op's swarfSurfaces reads back more entries than it was assigned, so a longer
+    # read-back is judged by whether it holds every assigned entity.
+    held = {native_identity(e) for e in back}
+    asked = [native_identity(e) for e in wanted]
+    if len(back) < len(wanted) or None in asked or any(key not in held for key in asked):
         return None, (f"Setting {nm} did not take - {len(wanted)} {noun}(s) were assigned and the "
                       f"operation reads back {len(back)}.")
-    return len(back), None
+    extra["assigned"], extra["stored"] = len(wanted), len(back)
+    return len(wanted), None
 
 
 def _not_editable(op_name, listed, selection):
@@ -871,7 +882,7 @@ def _apply_direct(op, selection, entities, extra):
             return None, merr
         if safe(lambda p=p: p.isEditable) is not True:
             return None, _mode_retained(nm, _not_editable(name, f"'{nm}'", selection), held)
-        count, err = _set_object_set(nm, p, entities, _HANDLE_REQUIRE[selection])
+        count, err = _set_object_set(nm, p, entities, _HANDLE_REQUIRE[selection], extra)
         return (None, _mode_retained(nm, err, held)) if err else (count, None)
     if blocked:
         return None, _not_editable(name, named_with_remainder(blocked), selection)
@@ -1018,17 +1029,30 @@ def _apply_probe_stock(op, names, extra, setup=None):
     return (None, _mode_retained(_PROBE_STOCK_PARAM, err, held)) if err else (count, None)
 
 
-def _apply_probing_type(op, probing_type, extra):
-    """The error for writing probingType, or None - written once the selection has landed, since
-    the selection is what decides which probing types are allowed."""
+def _probing_type_request(op, probing_type):
+    """(parameter, expression, quoted, error) for a probingType request validated against its choices."""
     p = safe(lambda: op.parameters.itemByName(_PROBING_TYPE_PARAM))
     if p is None:
-        return (f"Operation '{safe(lambda: op.name)}' has no '{_PROBING_TYPE_PARAM}' parameter, so "
-                "'probing_type' cannot be set on it. Drop 'probing_type'.")
-    before = safe(lambda: p.expression)
-    written, quoted, cerr = choice_quoting(p, before, probing_type)
+        return None, None, False, (
+            f"Operation '{safe(lambda: op.name)}' has no '{_PROBING_TYPE_PARAM}' parameter, so "
+            "'probing_type' cannot be set on it. Drop 'probing_type'.")
+    if not choice_expressions(p):
+        operation = safe(lambda: op.name) or "<operation>"
+        return None, None, False, (
+            f"Could not read this parameter's {_PROBING_TYPE_PARAM} choices before changing the "
+            f"operation. Inspect them with cam_get(include=['parameters'], operation='{operation}', "
+            f"parameter_names=['{_PROBING_TYPE_PARAM}']).")
+    written, quoted, cerr = choice_quoting(p, safe(lambda: p.expression), probing_type)
     if cerr:
-        return f"probing_type='{probing_type}' {cerr}"
+        return None, None, False, f"probing_type='{probing_type}' {cerr}"
+    return p, written, quoted, None
+
+
+def _apply_probing_type(op, probing_type, extra):
+    """Write a requested probingType and verify the expression it holds."""
+    p, written, quoted, cerr = _probing_type_request(op, probing_type)
+    if cerr:
+        return cerr
     try:
         p.expression = written             # MUTATION
     except Exception as e:
@@ -1036,16 +1060,28 @@ def _apply_probing_type(op, probing_type, extra):
                 + enumeration_remedy(str(e), written, PARAM_READ, p))
     after = safe(lambda: p.expression)
     if after is None or unquote_expression(after) != unquote_expression(str(probing_type)):
-        shown = "UNCONFIRMED" if after is None else f"reads back '{unquote_expression(after)}'"
-        gate = "allow_" + unquote_expression(str(probing_type)).replace("-", "_")
-        allowed = safe(lambda: op.parameters.itemByName(gate).expression)
-        why = (f" {gate} reads '{allowed}' for this selection - pick faces that type can probe, "
-               "or a type this selection allows." if allowed is not None else "")
-        return f"Setting {_PROBING_TYPE_PARAM}='{probing_type}' did not take - it {shown}.{why}"
+        shown = "UNCONFIRMED" if after is None else f"reads back '{after}'"
+        operation = safe(lambda: op.name) or "<operation>"
+        return (f"Setting {_PROBING_TYPE_PARAM}='{probing_type}' did not take - it {shown}. Read "
+                f"its values with cam_get(include=['parameters'], operation='{operation}', "
+                f"parameter_names=['{_PROBING_TYPE_PARAM}']).")
     extra["probing_type"] = unquote_expression(after)
     if quoted:
         extra.setdefault("quoted", []).append(_PROBING_TYPE_PARAM)
     return None
+
+
+def _probe_selection_remains(extra, count):
+    """Name the probe faces and mode retained when a later probingType read or write fails."""
+    param = extra.get("selection_param")
+    text = f" The {count} probe face(s) remain selected"
+    if param:
+        text += f" on '{param}'"
+    text += "."
+    mode = extra.get("probe_mode")
+    if mode:
+        text += f" probe_mode remains '{mode}'."
+    return text
 
 
 def _surface_params(op):
@@ -1056,14 +1092,16 @@ def _surface_params(op):
     # it raises '3 : Parameter is deprecated', while advancedSwarfSurfaces reads True. So a SURFACE
     # set is offered only where isEditable reads True; the curve params route by presence.
     out, blocked = {}, []
-    for key, nm in _SURFACE_TARGET_PARAM.items():
-        p = safe(lambda nm=nm: op.parameters.itemByName(nm))
-        if p is None:
-            continue
-        if safe(lambda p=p: p.isEditable) is True:
-            out[key] = (nm, p)
-        else:
-            blocked.append(nm)
+    for key, names in _SURFACE_TARGET_PARAM.items():
+        for nm in names:
+            p = safe(lambda nm=nm: op.parameters.itemByName(nm))
+            if p is None:
+                continue
+            if safe(lambda p=p: p.isEditable) is True:
+                out[key] = (nm, p)
+            else:
+                blocked.append(nm)
+            break
     return out, blocked
 
 
@@ -1085,14 +1123,16 @@ def _apply_surfaces(op, faces, target, extra):
     listed = named_with_remainder([k for k in _SURFACE_TARGET_PARAM if k in carried])
     if not target:
         if _DEFAULT_SURFACE_TARGET not in carried:
+            default = "/".join(_SURFACE_TARGET_PARAM[_DEFAULT_SURFACE_TARGET])
             return None, (f"'surface_target' is needed here: operation '{name}' has no "
-                          f"'{_SURFACE_TARGET_PARAM[_DEFAULT_SURFACE_TARGET]}' parameter to default "
+                          f"'{default}' parameter to default "
                           f"to. It carries {listed} - pass whichever of those these faces are.")
         target = _DEFAULT_SURFACE_TARGET
     if target not in carried:
         # A blocked set is PRESENT on the operation, so 'has no parameter' would be the wrong read
         # to hand back - the refusal says which of the two it saw.
-        param = _SURFACE_TARGET_PARAM[target]
+        names = _SURFACE_TARGET_PARAM[target]
+        param = next((nm for nm in names if nm in blocked), "/".join(names))
         if param in blocked:
             return None, (f"Operation '{name}' carries '{param}' but it did not read isEditable "
                           f"true, so surface_target='{target}' is not offered on it. It carries "
@@ -1100,7 +1140,7 @@ def _apply_surfaces(op, faces, target, extra):
         return None, (f"Operation '{name}' has no '{param}' parameter, so surface_target="
                       f"'{target}' cannot be applied to it. It carries {listed}.")
     nm, p = carried[target]
-    count, err = _set_object_set(nm, p, faces, _HANDLE_REQUIRE[_SURFACES])
+    count, err = _set_object_set(nm, p, faces, _HANDLE_REQUIRE[_SURFACES], extra)
     if err:
         return None, err
     extra["surface_target"] = target
@@ -1341,6 +1381,23 @@ def _sketch_scope_tail(result) -> str:
     return _SKETCH_SCOPE_NOTE if result.get("selection") == _SKETCH else ""
 
 
+def _probe_type_tail(result) -> str:
+    """The clause for an omitted-type probe selection whose probingType read changed across it."""
+    if not result.get("probing_type_changed"):
+        return ""
+    return (f" probingType read '{result['probing_type_before']}' before this selection and "
+            f"'{result['probing_type']}' after it.")
+
+
+def _stored_tail(result) -> str:
+    """The clause for a set that reads back more entries than the faces assigned to it."""
+    if "stored" not in result:
+        return ""
+    return (f" {result.get('surface_param') or result.get('selection_param')} reads back "
+            f"{result['stored']} entries for the {result['assigned']} assigned, each assigned one "
+            "among them.")
+
+
 def _seed_loop_tail(result) -> str:
     """The clause for a per-reference 'curves' chain (trace/project/morph/multi_axis_contour) whose
     resolved paths equal its seed count - the structural norm for this family (each seed expands
@@ -1438,6 +1495,8 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
     cam, cerr = get_cam()
     if cerr:
         return error(cerr)
+    if generate and not sync_validity(cam):
+        return error("CAM.checkValidity failed before selection; no selection or generation was attempted.")
     node, oerr = resolve_cam_node(cam, operation, kinds=("operation",), label="operation")
     if oerr:
         return error(oerr)
@@ -1493,22 +1552,20 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
         if not faces:
             return error("No cylinder faces left after the diameter filter. " + diam_note)
 
-    # A probe op whose probingType still reads its 'probing-unknown' default cannot generate a
-    # path ('No valid probe operations found.') - refused here, before ANYTHING lands, rather than
-    # letting the selection through for a launch that cannot succeed.
+    # Validate an explicit type before any operation parameter is changed.
     if selection == _PROBE and probing_type is not None:
-        p = safe(lambda: op.parameters.itemByName(_PROBING_TYPE_PARAM))
-        if p is None:
-            return error(f"Operation '{safe(lambda: op.name)}' has no '{_PROBING_TYPE_PARAM}' "
-                         "parameter, so 'probing_type' cannot be set on it. Drop 'probing_type'. "
-                         "Nothing was changed.")
-        _w, _q, cerr = choice_quoting(p, safe(lambda: p.expression), probing_type)
-        if cerr:
-            return error(f"probing_type='{probing_type}' {cerr} Nothing was changed.")
+        _p, _written, _quoted, perr = _probing_type_request(op, probing_type)
+        if perr:
+            return error(perr)
+
+    # A normal probe left at probing-unknown cannot produce a path. Probe geometry can infer a
+    # type from the selected face, so its final parameter is checked after that selection lands.
+    type_before = None
     if selection == _PROBE and probing_type is None:
         p = safe(lambda: op.parameters.itemByName(_PROBING_TYPE_PARAM))
         current = unquote_expression(safe(lambda: p.expression) or "") if p is not None else None
-        if current == _PROBING_TYPE_UNKNOWN:
+        type_before = current
+        if current == _PROBING_TYPE_UNKNOWN and safe(lambda: op.strategy) != "probe_geometry":
             return error(
                 f"Operation '{safe(lambda: op.name)}' still reads {_PROBING_TYPE_PARAM}="
                 f"'{_PROBING_TYPE_UNKNOWN}' and no 'probing_type' was given - generation would "
@@ -1533,6 +1590,26 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
     if applied:
         result["heights_set"] = applied
 
+    flat_refreshed = 0
+    allowed = None
+    if generate:
+        strategy = safe(lambda: op.strategy)
+        allowed = strategy_generation_allowed(strategy)
+        if allowed is not False:
+            setup_obj = owning_setup(node)
+            if setup_obj is None:
+                return error(_retained(applied,
+                             f"Operation '{result['operation'] or operation}' has no readable "
+                             "owning setup; selection and generation were not attempted."))
+            flat_refreshed, ferr = refresh_flat_setup_models(setup_obj)
+            if ferr:
+                return error(_retained(applied, f"Setup model refresh failed: {ferr} "
+                             "Selection and generation were not attempted."))
+            if flat_refreshed:
+                result["flat_models_refreshed"] = flat_refreshed
+    refresh_effect = (f" {flat_refreshed} flat setup model(s) were refreshed."
+                      if flat_refreshed else "")
+
     # ── apply the selection ──
     # 'quoted' names every parameter this call WRAPPED to match what it already stored - the mode
     # engage below appends to the same list. Absent means each request was written as it was sent.
@@ -1556,21 +1633,48 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
                                     explicit_groups=explicit_groups,
                                     require_resolved=flat_chain)
     if aerr:
-        return error(_retained(applied, aerr))
+        return error(_retained(applied, aerr) + refresh_effect)
     if not record.get("selections"):
         return error(_retained(applied,
                      "Selection applied but the operation reports 0 selections - the geometry was "
                      "rejected. Check the geometry matches the strategy (edges for chain, the pocket "
                      "floor face for pocket, bodies for silhouette/pocket_recognition, whole sketches "
-                     "for sketch, cylinder faces for holes, the surface set's faces for surfaces)."))
-    # probingType lands AFTER the selection: its allow_probing_* gates are computed from the
-    # selected faces, and before one exists a write is silently dropped (measured, 2705.1.30).
-    if selection == _PROBE and probing_type is not None:
-        perr = _apply_probing_type(op, probing_type, extra)
-        if perr:
-            return error(_retained(applied, f"{perr} The selection ({record['selections']} "
-                                   "item(s)) was applied before this failure and REMAINS on the "
-                                   "operation."))
+                     "for sketch, cylinder faces for holes, the surface set's faces for surfaces).")
+                     + refresh_effect)
+    if selection == _PROBE and (probing_type is not None
+                                or safe(lambda: op.strategy) in ("probe", "probe_geometry")):
+        if probing_type is not None:
+            perr = _apply_probing_type(op, probing_type, extra)
+            if perr:
+                return error(_retained(applied, perr)
+                             + _probe_selection_remains(extra, record["selections"])
+                             + refresh_effect)
+        else:
+            p = safe(lambda: op.parameters.itemByName(_PROBING_TYPE_PARAM))
+            expression = safe(lambda: p.expression) if p is not None else None
+            if expression is None:
+                return error(_retained(applied,
+                             f"The probe face selection landed, but {_PROBING_TYPE_PARAM} did not "
+                             f"read back; inspect it with cam_get(include=['parameters'], "
+                             f"operation='{result['operation'] or operation}', "
+                             f"parameter_names=['{_PROBING_TYPE_PARAM}']).")
+                             + _probe_selection_remains(extra, record["selections"])
+                             + refresh_effect)
+            actual_type = unquote_expression(expression)
+            if not actual_type or actual_type == _PROBING_TYPE_UNKNOWN:
+                return error(_retained(applied,
+                             f"The probe face selection landed, but {_PROBING_TYPE_PARAM} still "
+                             f"reads '{actual_type or _PROBING_TYPE_UNKNOWN}'. Pass 'probing_type' "
+                             f"from its choices; inspect them with cam_get(include=['parameters'], "
+                             f"operation='{result['operation'] or operation}', "
+                             f"parameter_names=['{_PROBING_TYPE_PARAM}']).")
+                             + _probe_selection_remains(extra, record["selections"])
+                             + refresh_effect)
+            extra["probing_type"] = actual_type
+            # The platform re-infers probingType from the selected face when none is passed.
+            if type_before and type_before != actual_type:
+                extra["probing_type_before"] = type_before
+                extra["probing_type_changed"] = True
     result.update(record)
     result.update(extra)
     # Bounded through the shared capped-list renderer: this list is as long as the selection, and a
@@ -1582,7 +1686,8 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
         result["diameter_filter"] = diam_note
 
     # ── generate: LAUNCH async and return - generation runs in the background on its own ──
-    tails = _contour_tail(result) + _sketch_scope_tail(result) + _seed_loop_tail(result)
+    tails = (_contour_tail(result) + _sketch_scope_tail(result) + _seed_loop_tail(result)
+             + _probe_type_tail(result) + _stored_tail(result))
     if not generate:
         result["note"] = ("Selection applied; pass generate=true (or cam_generate) to compute the "
                           "toolpath.") + tails
@@ -1591,8 +1696,6 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
     op_name = result["operation"] or operation
     # The entitlement pre-flight, before the launch and on the same seam cam_generate excludes on.
     # `is False`, not a falsiness test: None is the flag that would not read.
-    strategy = safe(lambda: op.strategy)
-    allowed = strategy_generation_allowed(strategy)
     if allowed is False:
         result["launched"] = False
         result["entitlement_blocked"] = {"operation": op_name, "strategy": strategy}
@@ -1617,8 +1720,7 @@ def handler(operation: str = "", selection: str = "", handles=None, bodies=None,
 
 
 TOOL_DESCRIPTION = (
-    "Select the machining geometry on a CAM operation; 'selection' picks the family and fixes "
-    "which input carries it. Native pocket recognition requires allow_pocket_recognition=true."
+    "Select CAM geometry. Pocket recognition requires allow_pocket_recognition=true."
 )
 
 tool = (

@@ -35,6 +35,55 @@ def _newly_unhealthy(before_errors, before_warnings, before_total, design):
             + [n for n in warnings if n not in before_warnings])
 
 
+def _number(label, value):
+    """(float, None) for a finite number, 0.0 for an omitted one; (None, refusal) otherwise."""
+    if value is None:
+        return 0.0, None
+    number = _common.finite_number(value)
+    if number is None:
+        return None, (f"'{label}' must be a number; received {_common.short_ref(ascii(value))}. "
+                      "Nothing was constrained.")
+    return number, None
+
+
+_UNREAD = object()
+_OWNER_REMEDY = ("Select one entity on occurrence_one first, then one on occurrence_two, or use "
+                 "'relationships' with explicit '<occurrence>:<snap>' pairs.")
+
+
+def _path_is_unique(design, path):
+    """Whether exactly one occurrence in the design's walk reads fullPathName `path`."""
+    occs = _common.all_occurrences(design)
+    return sum(1 for o in occs if safe(lambda o=o: o.fullPathName) == path) == 1
+
+
+def _owner_refusal(design, i, entity, requested, value):
+    """Why selected entity `i` is not on the `requested` occurrence, or None when it is."""
+    owner = safe(lambda: entity.assemblyContext, _UNREAD)
+    if owner is None:
+        return (f"Selected entity {i} is root-component geometry with no placed owner; a constraint "
+                "locates occurrences - select a face on an occurrence, or pass "
+                "'<occurrence>:<snap>' relationships.")
+    owner_path = safe(lambda: owner.fullPathName) if owner is not _UNREAD else None
+    requested_path = safe(lambda: requested.fullPathName)
+    if not owner_path or not requested_path:
+        return (f"Selected entity {i}'s placed owner cannot be confirmed for "
+                f"'{_common.short_ref(value)}'. {_OWNER_REMEDY}")
+    mismatch = (f"Selected entity {i} belongs to '{_common.short_ref(owner_path)}', not requested "
+                f"'{_common.short_ref(value)}'. {_OWNER_REMEDY}")
+    if owner_path != requested_path:
+        return mismatch
+    owner_key = _common.native_identity(owner)
+    requested_key = _common.native_identity(requested)
+    if owner_key is not None and requested_key is not None:
+        return None if owner_key == requested_key else mismatch
+    # A nested placement's native token raises, so its identity is the path the walk holds once.
+    if _path_is_unique(design, owner_path):
+        return None
+    return (f"Selected entity {i}'s placed owner cannot be confirmed for "
+            f"'{_common.short_ref(value)}'. {_OWNER_REMEDY}")
+
+
 def handler(occurrence_one: str = "", occurrence_two: str = "",
             snap_one: str = "", snap_two: str = "", relationships=None,
             offset: float = 0.0, angle_deg: float = 0.0,
@@ -43,11 +92,15 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
     flip?, offset?, angle_deg?} geometry pairs added to ONE constraint and solved together;
     snap_one/snap_two is the single-pair shorthand, and no snaps takes the Fusion selection. The
     relationship type is INFERRED from the geometry. WRITES."""
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     # Normalize inputs into a list of relationship specs: {snap_one, snap_two, flip, offset, angle}.
+    offset_v, refusal = _number("offset", offset)
+    angle_v, angle_refusal = _number("angle_deg", angle_deg)
+    if refusal or angle_refusal:
+        return error(refusal or angle_refusal)
     specs = []
     if relationships:
         if not isinstance(relationships, (list, tuple)):
@@ -55,21 +108,25 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
         for i, r in enumerate(relationships):
             if not isinstance(r, dict) or not r.get("snap_one") or not r.get("snap_two"):
                 return error(f"relationships[{i}] needs both 'snap_one' and 'snap_two'.")
+            if type(r.get("flip", False)) is not bool:
+                return error(f"Invalid Boolean for 'relationships[{i}].flip': "
+                             f"{_common.short_ref(ascii(r['flip']))}. Use true or false. "
+                             "Nothing was constrained.")
+            r_offset, refusal = _number(f"relationships[{i}].offset", r.get("offset"))
+            r_angle, angle_refusal = _number(f"relationships[{i}].angle_deg", r.get("angle_deg"))
+            if refusal or angle_refusal:
+                return error(refusal or angle_refusal)
             specs.append({"snap_one": r["snap_one"], "snap_two": r["snap_two"],
-        "flip": bool(r.get("flip", False)),
-        "offset": float(r.get("offset", 0.0)),
-        "angle_deg": float(r.get("angle_deg", 0.0))})
+        "flip": r.get("flip", False), "offset": r_offset, "angle_deg": r_angle})
     elif (snap_one or "").strip() or (snap_two or "").strip():
         specs.append({"snap_one": snap_one, "snap_two": snap_two, "flip": bool(flipped),
-        "offset": float(offset or 0.0), "angle_deg": float(angle_deg or 0.0)})
+        "offset": offset_v, "angle_deg": angle_v})
 
     k = _common.scale(units)
     if k is None:
         return error(f"Unknown units '{units}'. Valid: mm, cm, in.")
 
     try:
-        cin = design.rootComponent.assemblyConstraints.createInput()
-        rels = cin.geometricRelationships
         names = set()
         # label -> occurrence for the parts this constraint locates. A label whose occurrence could
         # not be re-resolved maps to None and is reported as unmeasured, never as "did not move".
@@ -77,6 +134,8 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
         targets, labels = {}, {}
 
         if specs:
+            cin = design.rootComponent.assemblyConstraints.createInput()
+            rels = cin.geometricRelationships
             # Autonomous snap path - resolve every pair and add it to the SAME constraint input.
             for i, sp in enumerate(specs):
                 occ1, sn1 = _parse_snap(sp["snap_one"])
@@ -120,17 +179,24 @@ def handler(occurrence_one: str = "", occurrence_two: str = "",
                 return error(e1 if not o1 else e2)
             sel = safe(lambda: app.userInterface.activeSelections)
             sel_count = safe(lambda: sel.count, 0) if sel else 0
-            if sel_count < 2:
+            if sel_count != 2:
                 return error("Provide 'relationships' or 'snap_one'/'snap_two' ('<occurrence>:"
                               "<snap>') for autonomous geometry, OR select ONE entity on each "
                               "occurrence in Fusion first then call again. "
-                              f"(Got {sel_count} selected; need 2.)")
+                              f"(Got {sel_count} selected; need exactly 2 in requested order.)")
             e1 = safe(lambda: sel.item(0).entity)
             e2 = safe(lambda: sel.item(1).entity)
             if not e1 or not e2:
                 return error("Could not read the two selected entities. Re-select and try again.")
-            val = (adsk.core.ValueInput.createByString(f"{float(angle_deg)} deg") if angle_deg
-                   else adsk.core.ValueInput.createByReal(float(offset or 0.0) * k))
+            for i, (entity, requested, value) in enumerate(
+                    ((e1, o1, occurrence_one), (e2, o2, occurrence_two)), 1):
+                refusal = _owner_refusal(design, i, entity, requested, value)
+                if refusal:
+                    return error(refusal)
+            cin = design.rootComponent.assemblyConstraints.createInput()
+            rels = cin.geometricRelationships
+            val = (adsk.core.ValueInput.createByString(f"{angle_v} deg") if angle_v
+                   else adsk.core.ValueInput.createByReal(offset_v * k))
             rels.add(e1, e2, bool(flipped), val)
             for o in (o1, o2):
                 lbl = safe(lambda o=o: o.fullPathName) or safe(lambda o=o: o.name)

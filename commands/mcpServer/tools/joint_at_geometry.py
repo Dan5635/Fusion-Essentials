@@ -18,6 +18,7 @@ from . import _common
 from . import _inputs
 from . import _outputs
 from . import _assert
+from ._assembly_common import _move_delta, _occ_origin
 from ._joints import (AXES as _AXES, FLIP_HINT, OFFSET_PARAM_NOTE, apply_motion,
                       build_joint_geometry as _joint_geometry_for,
                       is_joint_origin as _is_joint_origin, motion_param_names,
@@ -59,39 +60,6 @@ def _joint_input_for(entity):
     if _is_joint_origin(entity):
         return entity, "joint_origin", None
     return _joint_geometry_for(entity)
-
-
-def _occ_origin(occ):
-    """The moving occurrence's origin as (x,y,z) cm in WORLD space, None if unreadable."""
-    # transform2, not transform: .transform is the occurrence's LOCAL matrix with no parent
-    # composed in, so the two agree only while every ancestor is identity. .transform is the
-    # fallback for a build that does not carry transform2.
-    m = safe(lambda: occ.transform2) or safe(lambda: occ.transform)
-    t = safe(lambda: m.translation) if m is not None else None
-    if t is None:
-        return None
-    return (safe(lambda: t.x, 0.0) or 0.0, safe(lambda: t.y, 0.0) or 0.0, safe(lambda: t.z, 0.0) or 0.0)
-
-
-# Above this the reposition is reported as moved_by. 0.005 cm = 0.05 mm - below it the move is joint
-# solver noise, not a teleport worth flagging.
-_MOVE_TOL_CM = 0.005
-
-
-def _move_delta(before, after):
-    """{distance_mm, direction} if the moving occurrence shifted more than _MOVE_TOL_CM, else
-    None."""
-    # joint_at aligns the two picked KEYPOINTS (a planar face's centroid, an edge's midpoint), so
-    # pairing a small feature with a large one repositions the part by the keypoint gap.
-    if before is None or after is None:
-        return None
-    dx, dy, dz = after[0] - before[0], after[1] - before[1], after[2] - before[2]
-    dist = (dx * dx + dy * dy + dz * dz) ** 0.5
-    if dist <= _MOVE_TOL_CM:
-        return None
-    inv = 1.0 / dist
-    return {"distance_mm": round(dist * 10.0, 3),
-            "direction": [round(dx * inv, 4), round(dy * inv, 4), round(dz * inv, 4)]}
 
 
 def _axis_entity(entity):
@@ -169,9 +137,9 @@ def handler(handle_one: str = "", handle_two: str = "", motion: str = "revolute"
     if ax_err:
         return error(ax_err)
 
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     pending = pending_move_guard(design)
     if pending:
@@ -277,8 +245,13 @@ def handler(handle_one: str = "", handle_two: str = "", motion: str = "revolute"
         # _assert's condensation: Fusion's errorOrWarningMessage repeats its sentence joined by
         # 'Compute Failed' plus the joint's name, and a raw slice of that blob lands mid-word.
         msg = _assert.compute_failure_message(failure_message, 200)
-        out["health_warning"] = ("This joint FAILED TO COMPUTE (likely over-constrained): "
-                                 + (msg or "conflicts with assembly relationships"))
+        removal = (f"design_delete_feature(feature={joint_name_final!r})" if joint_name_final else
+                   "design_delete_feature(feature=...) after assembly_get names it")
+        return error(f"Joint {joint_name_final!r} WAS CREATED but FAILED TO COMPUTE "
+                     f"(health state: {health_state}): {msg or 'conflicts with assembly relationships'}. "
+                     f"It REMAINS in the timeline; remove it with {removal}, or fix its inputs with "
+                     "joint_edit. Read assembly_get before relying on its positions; a part locked "
+                     "by assembly_ground(ground_to_parent=true) can conflict with a joint that moves it.")
     elif healthy is None:
         # NEITHER the joint nor its timeline item answered a state - not a failure and not a clean
         # compute; claiming either would be a verdict this read never took.
@@ -300,8 +273,14 @@ def handler(handle_one: str = "", handle_two: str = "", motion: str = "revolute"
     # Report how far a part was repositioned to align the keypoints. The move is legitimate joint
     # behavior (keypoints align at a face CENTROID / edge MIDPOINT) - flagging it just ends the silence
     # that let a mismatched-size pair teleport a part unnoticed. Whichever occurrence moved more wins.
-    candidates = [(o1, _move_delta(before_one, _occ_origin(occ_one))),
-                  (o2, _move_delta(before_two, _occ_origin(occ_two)))]
+    after_one, after_two = _occ_origin(occ_one), _occ_origin(occ_two)
+    if any(occ is not None and (before is None or after is None)
+           for occ, before, after in ((occ_one, before_one, after_one),
+                                      (occ_two, before_two, after_two))):
+        out["movement_warning"] = ("Occurrence translation was not read on both sides; moved_by "
+                                   "is incomplete. Re-read positions with assembly_get.")
+    candidates = [(o1, _move_delta(before_one, after_one)),
+                  (o2, _move_delta(before_two, after_two))]
     moved_name, moved = max(((n, m) for n, m in candidates if m),
                             key=lambda nm: nm[1]["distance_mm"], default=(None, None))
     if moved:

@@ -230,8 +230,7 @@ FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)
 tool = (
     Tool.create_simple(name="drawing_export", description=FULL_DESCRIPTION)
     .add_input_property(*_FORMAT.as_property())
-    .add_input_property("file_path", {"type": "string",
-            "description": "Output path."})
+    .add_input_property("file_path", {"type": "string"})
     .add_input_property("sheet_range", {"type": "string",
             "description": "Sheets, e.g. '1-3'; omit for all. Run it FIRST: after another export "
                            "of the same drawing it can block the main thread and the file never "

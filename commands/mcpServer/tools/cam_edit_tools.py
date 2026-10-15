@@ -14,11 +14,13 @@ import adsk.cam
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import (CM_TO_UNIT, counted, iter_collection, named_with_remainder, ok, error,
-                      read_flag, safe)
-from ._cam_common import (assets_named, get_cam, expression_error, library_assets, quote_expression,
-                          tool_dimension_value, unquote_expression)
+from ._common import (CM_TO_UNIT, iter_collection, named_with_remainder, ok, error, read_flag,
+                      safe)
+from ._cam_common import (asset_leaf, asset_leaf_keys, assets_named, get_cam, expression_error,
+                          library_assets, quote_expression, tool_dimension_value,
+                          unquote_expression)
 from ._cam_presets import (_apply_preset_values, _persist_preset_change, _persisted_preset_names,
+                           _preset_expressions,
                            _preset_names, _preset_spec_error, _preset_tool, _presets_named)
 
 app = adsk.core.Application.get()
@@ -91,6 +93,19 @@ class _Target:
         """The preset names of one tool off the re-read library, None when it cannot be re-read -
         the only read that covers a preset change, which moves no tool COUNT."""
         return _persisted_preset_names(self._refetch_tool(index))
+
+    def reread_preset_expressions(self, index, name, parameter_names):
+        """The named preset's requested expressions off a freshly fetched tool, or None."""
+        tool = self._refetch_tool(index)
+        if tool is None:
+            return None
+        matches = _presets_named(safe(lambda: tool.presets), name)
+        if len(matches) != 1:
+            return {"matches": len(matches)}
+        params = safe(lambda: matches[0][1].parameters)
+        return {"matches": 1, "expressions": {
+            pname: safe(lambda pname=pname: params.itemByName(pname).expression)
+            for pname in parameter_names}}
 
     def stored_tool_numbers(self):
         """Every tool_number the STORED library holds, re-read from its url (None when it cannot be
@@ -199,6 +214,15 @@ def _resolve_target(scope, library):
                      f"{', '.join(safe(lambda a=a: a.leafName) for a in found)}.{capped}"
     lib_url = next((a for a in found if safe(lambda a=a: a.toString()) == target), None)
     if lib_url is None:
+        if truncated:
+            candidates = assets_named(found, {target.lower()})
+            urls = [str(safe(lambda a=a: a.toString())) for a in candidates]
+            return None, (f"Cannot resolve {scope} library '{target}': the library walk "
+                          "was capped, so uniqueness or absence is unknown. "
+                          + (f"Known matching urls: {', '.join(urls)}. " if urls else "")
+                          + "Choose an enumerated library URL instead; URLs outside this walk "
+                            "cannot be resolved. See cam_get(include=['library'], scope='"
+                          + scope + "').")
         # The leafName-or-stem matcher every library resolve shares - refuses two assets answering
         # one name rather than picking the first the folder walk reached.
         named = assets_named(found, {target.lower()})
@@ -212,6 +236,7 @@ def _resolve_target(scope, library):
         return None, (f"No {scope} library '{target}'. Available: "
                       f"{', '.join(str(a) for a in avail)}.{capped}")
     lib = safe(lambda: libs.toolLibraryAtURL(lib_url))
+    # `is None`, not falsiness: a loaded library holding 0 tools tests falsy.
     if lib is None:
         return None, f"Could not load {scope} library '{target}'."
     # A write to this library makes any cached copy of it stale, so persist drops that entry.
@@ -745,6 +770,9 @@ def _build_entry(ref):
         serr = _preset_spec_error(ps)
         if serr:
             return None, None, serr
+        if any(ps.get(key) is not None for key in ("surface_speed", "feed_per_revolution")):
+            return None, None, ("Create the tool first, then use action='add_preset' to set "
+                                "surface_speed or feed_per_revolution with a library re-read.")
         preset = safe(lambda: tool.presets.add())
         if preset is None:
             return None, None, ("Could not add a preset to the tool - the requested presets were "
@@ -1069,7 +1097,13 @@ def _do_add_preset(target, tool_index, spec):
     if len(matches) != 1:
         return error(f"Added a preset named '{name}' but the tool's presets read back as "
                      f"{_preset_names(presets)} - the add did not take.")
-    stored, perr = _persist_preset_change(target, tool, tool_index, name, expect_present=True)
+    checked = {}
+    for key, pname in (("surface_speed", "tool_surfaceSpeed"),
+                       ("feed_per_revolution", "tool_feedCuttingRel")):
+        if spec.get(key) is not None:
+            checked[pname] = safe(lambda pname=pname: preset.parameters.itemByName(pname).expression)
+    stored, perr = _persist_preset_change(target, tool, tool_index, name, expect_present=True,
+                                          expected_expressions=checked)
     if perr:
         return error(perr)
     return ok({"tool": tool_index, "preset": name, "preset_index": matches[0][0],
@@ -1164,6 +1198,33 @@ def _empty_library():
     return adsk.cam.ToolLibrary.createEmpty()
 
 
+_SEED_KEYS = ("index", "library_url")
+
+
+def _seed_shape_error(position, ref):
+    """The refusal for a create_library seed that is not exactly {library_url, index}, else None."""
+    keys = sorted(ref) if isinstance(ref, dict) else None
+    if (keys == list(_SEED_KEYS) and isinstance(ref["library_url"], str)
+            and ref["library_url"].strip() and isinstance(ref["index"], int)
+            and not isinstance(ref["index"], bool)):
+        return None
+    got = ("keys " + ", ".join(keys)) if keys else repr(ref)
+    return (f"create_library seed {position} has {got}: a seed copies one existing tool and takes "
+            "exactly 'library_url' (a string) and 'index' (an integer). 'from_type' and the "
+            "overrides apply to action='add' only. Nothing was created. action='list' at "
+            "scope='fusion' lists the sample libraries; with 'library' it lists their tool indices.")
+
+
+def _listed_url(libs, root, new_url):
+    """The listed url of the one asset answering to the returned url's leaf, else None."""
+    keys = asset_leaf_keys(new_url)
+    if not any(keys):
+        return None
+    listed, _truncated = library_assets(libs, root)
+    hits = [a for a in listed if asset_leaf_keys(a) & keys]
+    return safe(lambda: hits[0].toString()) if len(hits) == 1 else None
+
+
 def _do_create_library(scope, name, seed_tools):
     """Create + persist a NEW tool library at a shared scope (Local/Cloud/Hub). Fusion360 is read-only;
     document scope can't host a new library. Seeds validated before the persistent write."""
@@ -1186,10 +1247,11 @@ def _do_create_library(scope, name, seed_tools):
         root = child[0]
     # resolve seed tools BEFORE the persistent write
     resolved = []
-    for ref in (seed_tools or []):
-        if not isinstance(ref, dict):
-            return error(f"Each seed entry must be {{library_url, index}}; got {ref!r}.")
-        t, terr = _source_tool(ref.get("library_url"), ref.get("index"))
+    for position, ref in enumerate(seed_tools or []):
+        serr = _seed_shape_error(position, ref)
+        if serr:
+            return error(serr)
+        t, terr = _source_tool(ref["library_url"], ref["index"])
         if terr:
             return error(terr)
         resolved.append(t)
@@ -1197,13 +1259,17 @@ def _do_create_library(scope, name, seed_tools):
     lib = safe(lambda: _empty_library())
     if lib is None:
         return error("Could not create an empty tool library.")
-    for t in resolved:
-        safe(lambda t=t: lib.add(t))
-    seeded = counted(lambda: lib.count)
-    if seeded is not None and seeded != len(resolved):
-        return error(f"Only {seeded} of {len(resolved)} seed tools went into the new library, so "
-                     f"'{name}' was not created. Check each seed's library_url and index with "
-                     "action='list'.")
+    if safe(lambda: lib.count) != 0:
+        return error("The new tool library's empty count could not be verified; nothing was imported.")
+    for index, t in enumerate(resolved):
+        try:
+            lib.add(t)
+        except Exception as e:
+            return error(f"Seed {index} could not be added: {e}. Nothing was imported.")
+        count = safe(lambda: lib.count)
+        if count != index + 1:
+            return error(f"Seed {index} addition is unconfirmed: library count reads {count}, "
+                         f"expected {index + 1}. Nothing was imported.")
     try:
         new_url = libs.importToolLibrary(lib, root, name)
     except Exception as e:
@@ -1212,22 +1278,35 @@ def _do_create_library(scope, name, seed_tools):
         return error(f"Creating library '{name}' at {scope} failed: {e}.{hint}")
     if not new_url:
         return error(f"Creating library '{name}' at {scope} returned no URL.")
-    loaded = safe(lambda: libs.toolLibraryAtURL(new_url))
-    if loaded is None:
+    stored = safe(lambda: libs.toolLibraryAtURL(new_url))
+    if stored is None:
         return error(f"importToolLibrary returned a URL but no library loads back from it - the "
-                     "create did not land.")
-    landed = counted(lambda: loaded.count)
-    if landed is not None and landed != len(resolved):
-        return error(f"Library '{name}' was created at {scope} but loads back holding {landed} of "
-                     f"the {len(resolved)} seed tools. Inspect it with action='list' and add the "
-                     "missing ones with action='add'.")
-    return ok({"created_library": name, "scope": scope, "url": safe(lambda: new_url.toString()),
-               "tool_count": landed,
-               "note": "Library created and persisted. List it with action='list'. (Local=disk, "
-                       "Cloud/Hub=your Autodesk account; a duplicate name gets a numeric suffix.)"})
+                     f"create is unconfirmed at '{safe(lambda: new_url.toString())}'. "
+                     "Inspect that library before retrying; it was not rolled back.")
+    stored_count = safe(lambda: stored.count)
+    if stored_count != len(resolved):
+        return error(f"Created library at '{safe(lambda: new_url.toString())}' reads "
+                     f"{stored_count} tools, expected {len(resolved)}. Seed persistence is "
+                     "unconfirmed; inspect that library before retrying. It was not rolled back.")
+    returned = safe(lambda: new_url.toString())
+    listed = _listed_url(libs, root, new_url)
+    out = {"created_library": name, "scope": scope, "url": listed or returned,
+           "tool_count": stored_count,
+           "note": "Library created and persisted. List it with action='list'. (Local=disk, "
+                   "Cloud/Hub=your Autodesk account; a duplicate name gets a numeric suffix.)"}
+    # On Local, importToolLibrary returns '<name>.json', which list/add do not resolve; the
+    # listing's own url does.
+    if listed is not None and listed != returned:
+        out["import_url"] = returned
+    if listed is None:
+        out["note"] += (f" The {scope} listing shows no single library named "
+                        f"'{asset_leaf(new_url) or name}'; action='list' at scope='{scope}' "
+                        "lists what it holds.")
+    return ok(out)
 
 
-def read_library(scope: str = "document", library: str = "", tool_type: str = "") -> dict:
+def read_library(scope: str = "document", library: str = "", tool_type: str = "",
+                 tool_index=None, preset: str = "") -> dict:
     """The READ-ONLY library listing, shared with cam_get(include=['library']). Lists the tools in the
     target library (or, for a shared scope with no 'library', the libraries at that location). The write
     actions (add/remove/edit) stay on the cam_edit_tools tool - this is just the read half."""
@@ -1235,10 +1314,41 @@ def read_library(scope: str = "document", library: str = "", tool_type: str = ""
     if scope not in _SCOPES:
         return error(f"Unknown scope '{scope}'. Use one of: {', '.join(_SCOPES)}.")
     if scope != "document" and not (library or "").strip():
+        if tool_index is not None:
+            return error("'library_tool' needs a named library at this scope. List libraries, then "
+                         "pass library= and its tool index.")
         return _do_list_libraries(scope)
     target, terr = _resolve_target(scope, library)
     if terr:
         return error(terr)
+    if tool_index is not None:
+        tools = target.tools
+        if type(tool_index) is not int or not (0 <= tool_index < len(tools)):
+            return error(f"'library_tool'={tool_index!r} is not a tool index in this library "
+                         f"(0..{len(tools) - 1}). Read include=['library'] for its indices.")
+        chosen = tools[tool_index]
+        collection = safe(lambda: chosen.presets)
+        names = _preset_names(collection) if collection is not None else None
+        out = {"tool": _tool_summary(chosen, tool_index), "preset_names": names,
+               "preset_count": len(names) if names is not None else None}
+        if preset:
+            if names is None:
+                return error(f"Preset names on library tool {tool_index} did not read; retry "
+                             "this library-tool read before choosing a preset.")
+            matches = _presets_named(collection, preset)
+            if not matches:
+                return error(f"No preset named '{preset}' on library tool {tool_index}. "
+                             f"Presets on this tool: {named_with_remainder([n for n in names if n])}.")
+            if len(matches) > 1:
+                return error(f"'{preset}' names {len(matches)} presets on library tool {tool_index} "
+                             f"(indices {[i for i, _ in matches]}). Choose an unambiguous tool "
+                             "or repair duplicate preset names before assignment.")
+            _, chosen_preset = matches[0]
+            out["preset"] = {"name": safe(lambda: chosen_preset.name),
+                             "expressions": _preset_expressions(chosen_preset)}
+        out["note"] = ("Preset names belong to this library tool before operation assignment. "
+                       "Pass preset= with the same library_tool to read one cutting recipe.")
+        return ok(out)
     return _do_list(target, tool_type)
 
 
@@ -1317,8 +1427,10 @@ tool = (
             "description": "list: tool-type substring, e.g. 'ball'."})
     .add_input_property("preset", {"type": "object", "properties": {
                 "name": {"type": "string"}, "spindle_speed": {"type": ["number", "string"]},
-                "feed": {"type": ["number", "string"]}},
-            "description": "A bare number is rpm / mm-per-min in the document's units; a string carries its own ('35in/min')."})
+                "feed": {"type": ["number", "string"]},
+                "surface_speed": {"type": ["number", "string"]},
+                "feed_per_revolution": {"type": ["number", "string"]}},
+            "description": "Bare spindle_speed: rpm; feed/surface_speed: mm/min; feed_per_revolution: mm/rev. Strings may carry units ('35in/min'). For per-rev use 0.18 or '0.18 mm'; /rev is implicit. Modes must be active."})
     .strict_schema()
 )
 item = Item.create_tool_item(

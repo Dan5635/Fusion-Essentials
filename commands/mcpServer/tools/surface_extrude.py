@@ -47,9 +47,9 @@ def handler(sketch_name: str = "", curves=None, distance: float = 0.0,
     if op_key not in _SURFACE_OPS:
         return error(f"Unknown operation '{operation}'. Surface extrude supports: new, join.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     # profile: from explicit curve handles, else from a sketch's open chain. Build the profile AND the
@@ -86,7 +86,15 @@ def handler(sketch_name: str = "", curves=None, distance: float = 0.0,
         ext_input = host.features.extrudeFeatures.createInput(profile, op)
         ext_input.isSolid = False        # THE surface switch: no end caps, an open sheet body
         dist_val = adsk.core.ValueInput.createByReal(float(distance) * k)
-        if not ext_input.setDistanceExtent(bool(symmetric), dist_val):
+        if symmetric:
+            # isFullLength=False -> 'distance' is the per-side half-length.
+            landed = ext_input.setSymmetricExtent(dist_val, False)
+        else:
+            # The signed distance carries the side.
+            landed = ext_input.setOneSideExtent(
+                adsk.fusion.DistanceExtentDefinition.create(dist_val),
+                adsk.fusion.ExtentDirections.PositiveExtentDirection)
+        if not landed:
             return error(f"Fusion refused a {'symmetric ' if symmetric else ''}distance extent of "
                          f"{distance} {units}, so no surface was extruded.")
         feature = host.features.extrudeFeatures.add(ext_input)
@@ -140,7 +148,7 @@ def handler(sketch_name: str = "", curves=None, distance: float = 0.0,
 
 
 TOOL_DESCRIPTION = (
-"Extrude an open profile into a sheet body; model_extrude makes a capped solid."
+"Extrude an open profile into a sheet body; model_extrude takes closed regions (solid, or as_surface)."
 )
 
 tool = (

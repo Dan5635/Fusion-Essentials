@@ -55,7 +55,7 @@ class TestPristineSeamCapture:
         assert conftest._PRISTINE_SEAMS[_FULL], f"{_MODULE} carries no seam - pick another vehicle"
 
     def test_a_test_body_patch_never_becomes_the_pristine_value(self, freshly_imported):
-        # the imperative patch shape the autouse restore exists to undo (tests/CLAUDE.md), applied
+        # the imperative patch shape the autouse restore exists to undo (tests/AGENTS.md), applied
         # to a module this very test imported: the recorded value must still be the imported one, or
         # the restore hands the patch to every test that follows.
         mod = freshly_imported

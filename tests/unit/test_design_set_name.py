@@ -10,6 +10,7 @@ The fakes model two measured platform behaviours the shared conftest fakes do no
 that dedupes against its siblings, and an occurrence whose displayed name derives from its
 component's.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -277,8 +278,7 @@ class TestGuards:
         assert root_bolt.name == "Bolt" and sub_bolt.name == "Bolt"
 
     def test_no_active_design_refused(self, monkeypatch):
-        monkeypatch.setattr(sn._common, "design", lambda: None)
-        monkeypatch.setattr(sn._inputs._common, "design", lambda: None)
+        _install_design(sn, None)
         assert "No active design" in error_message(sn.handler(target="Body1", new_name="Plate"))
 
     def test_no_op_rename_is_a_clean_ok(self, wire):
@@ -356,3 +356,233 @@ class TestMeshRename:
         res = sn.handler(target="Scan1", new_name="ScannedHousing")
         assert res["isError"] is True
         assert "did not take" in error_message(res)
+
+
+class TestNamespaceRename:
+    def test_feature_kind_uses_the_feature_resolver_when_a_body_shares_its_name(self, wire, monkeypatch):
+        owner = MakeComp(name="Owner")
+        feature = SimpleNamespace(name="Pad", parentComponent=owner,
+                                  timelineObject=SimpleNamespace(index=2))
+        _design, root = wire(bodies=[BRepBody("Pad")], components=[owner])
+        monkeypatch.setattr(sn._FEATURE, "resolve", lambda raw: ((feature, "Pad"), None))
+
+        out = payload(sn.handler(kind="feature", target="Owner/Pad", new_name="Boss"))
+
+        assert out["kind"] == "feature" and out["addressed"] == "feature '2'"
+        assert feature.name == "Boss"
+        assert root.bRepBodies.item(0).name == "Pad"
+
+    def test_unknown_kind_refuses_without_falling_through_to_target(self, wire, monkeypatch):
+        _design, root = wire(bodies=[BRepBody("Pad")])
+        monkeypatch.setattr(sn._TARGET, "resolve",
+                            lambda _raw: (_ for _ in ()).throw(AssertionError("target resolved")))
+
+        msg = error_message(sn.handler(kind="datum", target="Pad", new_name="Boss"))
+
+        assert "Unknown rename kind 'datum'" in msg
+        assert root.bRepBodies.item(0).name == "Pad"
+
+    @pytest.mark.parametrize("kind,resolver_name,object_type", [
+        ("joint_origin", "_JOINT_ORIGIN", "JointOrigin"),
+        ("plane", "_PLANE", "ConstructionPlane"),
+        ("axis", "_AXIS", "ConstructionAxis"),
+        ("point", "_POINT", "ConstructionPoint"),
+    ])
+    def test_unprefixed_handle_is_sent_to_its_typed_resolver(self, wire, monkeypatch,
+                                                              kind, resolver_name, object_type):
+        owner = MakeComp(name="Owner")
+        owner_field = {"parentComponent": owner} if kind == "joint_origin" else {"component": owner}
+        entity = SimpleNamespace(name="Datum", objectType=object_type, **owner_field)
+        wire(components=[owner])
+        resolver = getattr(sn, resolver_name)
+        seen = []
+        if kind == "axis":
+            def resolve(raw, **kwargs):
+                seen.append((raw, kwargs))
+                return ("edge", entity), None
+        else:
+            def resolve(raw, **kwargs):
+                seen.append((raw, kwargs))
+                return entity, None
+        monkeypatch.setattr(resolver, "resolve", resolve)
+        handle = "unprefixedEntityTokenThatIsLongEnoughToBeAHandle123456789"
+
+        out = payload(sn.handler(kind=kind, target=handle, new_name="RenamedDatum"))
+
+        assert out["changed"] is True and entity.name == "RenamedDatum"
+        assert seen[0][0] == handle
+        assert not seen[0][1]
+
+    @pytest.mark.parametrize("kind,resolver_name,object_type", [
+        ("joint_origin", "_JOINT_ORIGIN", "JointOrigin"),
+        ("plane", "_PLANE", "ConstructionPlane"),
+        ("axis", "_AXIS", "ConstructionAxis"),
+        ("point", "_POINT", "ConstructionPoint"),
+    ])
+    def test_owner_qualified_datum_name_selects_the_requested_component(self, wire, monkeypatch,
+                                                                         kind, resolver_name,
+                                                                         object_type):
+        first, second = MakeComp(name="First"), MakeComp(name="Second")
+        owner_field = "parentComponent" if kind == "joint_origin" else "component"
+        entities = {"First": SimpleNamespace(name="Datum", objectType=object_type,
+                                              **{owner_field: first}),
+                    "Second": SimpleNamespace(name="Datum", objectType=object_type,
+                                               **{owner_field: second})}
+        owners = {"First": first, "Second": second}
+        wire(components=[first, second])
+        monkeypatch.setattr(sn._OWNER, "resolve",
+                            lambda raw: ((owners[raw], "component"), None))
+        resolver = getattr(sn, resolver_name)
+        seen = []
+        if kind == "axis":
+            def resolve(raw, **kwargs):
+                seen.append((raw, kwargs))
+                return ("edge", entities["Second"]), None
+        else:
+            def resolve(raw, **kwargs):
+                seen.append((raw, kwargs))
+                return entities["Second"], None
+        monkeypatch.setattr(resolver, "resolve", resolve)
+
+        out = payload(sn.handler(kind=kind, target="Second/Datum", new_name="RenamedDatum"))
+
+        assert out["changed"] is True
+        assert out["addressed"] == f"{kind} 'Second/RenamedDatum'"
+        assert entities["First"].name == "Datum"
+        assert entities["Second"].name == "RenamedDatum"
+        assert seen[0][0] == "Datum"
+        assert seen[0][1].get("component") is second or \
+               seen[0][1].get("owner_component") is second
+
+    def test_joint_owner_scope_is_passed_to_the_shared_joint_resolver(self, wire, monkeypatch):
+        first, second = MakeComp(name="First"), MakeComp(name="Second")
+        joint = SimpleNamespace(name="Joint", parentComponent=second)
+        design, _root = wire(components=[first, second])
+        monkeypatch.setattr(sn._OWNER, "resolve",
+                            lambda raw: ((second, "component"), None))
+        seen = []
+        monkeypatch.setattr(sn._joints, "find_joint",
+                            lambda des, name, component=None:
+                            (seen.append((des, name, component)) or (joint, None)))
+
+        out = payload(sn.handler(kind="joint", target="Second/Joint", new_name="MovedJoint"))
+
+        assert out["changed"] is True and joint.name == "MovedJoint"
+        assert out["addressed"] == "joint 'Second/MovedJoint'"
+        assert seen == [(design, "Joint", second)]
+
+    def test_occurrence_qualified_joint_uses_that_occurrences_component(self, wire, monkeypatch):
+        first, second = MakeComp(name="First"), MakeComp(name="Second")
+        first_joint = SimpleNamespace(name="Mate", parentComponent=first)
+        second_joint = SimpleNamespace(name="Mate", parentComponent=second)
+        first.joints = _NamedCollection([first_joint])
+        second.joints = _NamedCollection([second_joint])
+        first_occ = FakeOccurrence(path="First:1", component=first)
+        second_occ = FakeOccurrence(path="Second:1", component=second)
+        design, _root = wire(occurrences=[first_occ, second_occ], components=[first, second])
+        seen = []
+
+        def find_joint(des, name, component=None):
+            seen.append((des, name, component))
+            return (second_joint, None) if component is second else (None, None)
+
+        monkeypatch.setattr(sn._joints, "find_joint", find_joint)
+        out = payload(sn.handler(kind="joint", target="Second:1:Mate", new_name="RenamedMate"))
+
+        assert out["changed"] is True and second_joint.name == "RenamedMate"
+        assert out["addressed"] == "joint 'Second:1:RenamedMate'"
+        assert first_joint.name == "Mate"
+        assert seen == [(design, "Mate", second)]
+
+    def test_owner_name_collapsing_multiple_placements_scopes_to_one_definition(self, wire, monkeypatch):
+        shared = MakeComp(name="Shared")
+        occurrences = [_Occurrence(shared, index=1), _Occurrence(shared, index=2)]
+        origin = SimpleNamespace(name="RenameSharedOrigin", parentComponent=shared,
+                                 objectType="JointOrigin")
+        wire(occurrences=occurrences, components=[shared])
+        seen = []
+
+        def resolve(raw, component=None):
+            seen.append((raw, component))
+            return (origin, None) if component is shared else (None, "wrong component")
+
+        monkeypatch.setattr(sn._JOINT_ORIGIN, "resolve", resolve)
+        out = payload(sn.handler(kind="joint_origin",
+                                 target="Shared/RenameSharedOrigin",
+                                 new_name="MovedOrigin"))
+
+        assert out["changed"] is True
+        assert out["addressed"] == "joint_origin 'Shared/MovedOrigin'"
+        assert origin.name == "MovedOrigin"
+        assert seen == [("RenameSharedOrigin", shared)]
+
+    def test_same_named_distinct_component_definitions_remain_ambiguous(self, wire, monkeypatch):
+        first, second = MakeComp(name="Shared"), MakeComp(name="Shared")
+        occurrences = [_Occurrence(first, index=1), _Occurrence(second, index=1)]
+        first_origin = SimpleNamespace(name="Origin", parentComponent=first,
+                                       objectType="JointOrigin")
+        second_origin = SimpleNamespace(name="Origin", parentComponent=second,
+                                        objectType="JointOrigin")
+        wire(occurrences=occurrences, components=[first, second])
+        seen = []
+        monkeypatch.setattr(sn._JOINT_ORIGIN, "resolve",
+            lambda raw, component=None: (seen.append((raw, component))
+                                         or (second_origin, None)))
+
+        msg = error_message(sn.handler(kind="joint_origin",
+                                       target="Shared/Origin", new_name="MovedOrigin"))
+
+        assert "ambiguous" in msg.lower()
+        assert first_origin.name == second_origin.name == "Origin"
+        assert seen == []
+
+    def test_qualified_owner_refuses_when_resolver_returns_another_definition(self, wire, monkeypatch):
+        first, second = MakeComp(name="First"), MakeComp(name="Second")
+        origin = SimpleNamespace(name="Origin", parentComponent=second, objectType="JointOrigin")
+        wire(components=[first, second])
+        monkeypatch.setattr(sn._JOINT_ORIGIN, "resolve",
+                            lambda raw, component=None: (origin, None))
+
+        msg = error_message(sn.handler(kind="joint_origin", target="First/Origin",
+                                       new_name="MovedOrigin"))
+
+        assert "different component" in msg
+        assert origin.name == "Origin"
+
+    def test_joint_origin_refuses_when_measured_owner_property_is_unreadable(self, wire, monkeypatch):
+        class UnreadableOrigin:
+            name = "Origin"
+            objectType = "JointOrigin"
+
+            @property
+            def parentComponent(self):
+                raise AttributeError("owner unavailable")
+
+        entity = UnreadableOrigin()
+        owner = MakeComp(name="Owner")
+        wire(components=[owner])
+        monkeypatch.setattr(sn._JOINT_ORIGIN, "resolve", lambda raw: (entity, None))
+        handle = "unreadableJointOriginEntityTokenLongEnoughForAHandle123"
+
+        msg = error_message(sn.handler(kind="joint_origin", target=handle,
+                                       new_name="MovedOrigin"))
+
+        assert "owning component could not be read" in msg
+        assert "design_get(include=['tree'])" in msg
+        assert entity.name == "Origin"
+
+    def test_duplicate_owner_names_publish_a_fresh_typed_entity_token(self, wire, monkeypatch):
+        first = MakeComp(name="Shared", entity_token="TOKEN:First")
+        second = MakeComp(name="Shared", entity_token="TOKEN:Second")
+        entity = SimpleNamespace(name="Plane", component=second, objectType="ConstructionPlane",
+                                 entityToken="TOKEN:SecondPlaneEntityTokenThatIsLongEnoughToBeAHandle")
+        wire(components=[first, second])
+        monkeypatch.setattr(sn._PLANE, "resolve", lambda raw, **kwargs:
+                            (entity, None) if raw == entity.entityToken else (None, "miss"))
+
+        out = payload(sn.handler(kind="plane", target=entity.entityToken, new_name="MountPlane"))
+
+        assert out["addressed"] == f"plane '{entity.entityToken}'"
+        addressed = out["addressed"].split("'", 2)[1]
+        resolved, error = sn._PLANE.resolve(addressed)
+        assert error is None and resolved is entity

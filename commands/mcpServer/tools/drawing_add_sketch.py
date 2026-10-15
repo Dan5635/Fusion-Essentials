@@ -38,6 +38,9 @@ _KINDS = {
 # The curve collections a DrawingSketch carries - the counts the draw is verified against.
 _COLLECTIONS = ("lines", "rectangles", "arcs", "circles", "ellipses")
 
+# Bound the curve entities one drawing sketch can add in a single call.
+_MAX_CURVES = 16
+
 # kind -> what its points MEAN, in the order its factory takes them. Named in the arity refusal, so
 # a caller who miscounts learns the form there rather than from the wire description.
 _POINT_FORM = {
@@ -82,7 +85,7 @@ def _plan(geometry):
         return None, None, ("Provide 'geometry' - a non-empty list of entities to draw, each "
                             "{'kind': ..., 'points': [[x, y], ...]}. Kinds: "
                             + ", ".join(sorted(_KINDS)) + ".")
-    entries, expected = [], {c: 0 for c in _COLLECTIONS}
+    entries, expected, workload = [], {c: 0 for c in _COLLECTIONS}, 0
     for i, spec in enumerate(geometry):
         if not isinstance(spec, dict):
             return None, None, (f"geometry[{i}] is {spec!r} - each entity is an object with a 'kind' "
@@ -96,6 +99,15 @@ def _plan(geometry):
         if not isinstance(raw_points, (list, tuple)):
             return None, None, (f"geometry[{i}] ('{kind}') needs 'points' - a list of [x, y] pairs. "
                                 f"Got {raw_points!r}.")
+        point_count = len(raw_points)
+        if (kind == "line" and point_count >= need) or (
+                kind != "line" and point_count == need):
+            workload += point_count - 1 if kind == "line" else 1
+            if workload > _MAX_CURVES:
+                return None, None, (f"geometry[{i}] brings this request to {workload} curves; "
+                                    f"the limit is {_MAX_CURVES}. A line with N points counts "
+                                    "as N-1 segments, and each other entity counts as one. "
+                                    "Split into smaller sketches. Nothing was drawn.")
         points = []
         for j, raw in enumerate(raw_points):
             if not isinstance(raw, (list, tuple)) or len(raw) != 2:
@@ -328,7 +340,7 @@ def handler(geometry=None, sheet_name: str = "", name: str = "") -> dict:
 
 
 TOOL_DESCRIPTION = (
-    "Draw 2D geometry on a NEW sketch on a sheet of the active 2D drawing document."
+    f"New sheet sketch, max {_MAX_CURVES} curves. Notes: Fusion drawing UI."
 )
 
 FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)

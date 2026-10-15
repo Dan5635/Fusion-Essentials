@@ -13,10 +13,9 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error
+from ._common import ok, error
 
-# Returns a status SENTENCE as its content text rather than _common.ok()'s json.dumps'd payload;
-# the refusal path uses _common.error unchanged.
+# The scheduled-reload response carries plain text and a next-tool pointer.
 app = adsk.core.Application.get()
 
 # Dedicated custom event for the deferred reload (separate from TaskManager's).
@@ -178,9 +177,8 @@ def handler() -> dict:
     # Delayed so this handler returns and the HTTP response flushes before the teardown.
     threading.Timer(_RELOAD_DELAY_SECONDS, _fire).start()
 
-    return {
-    "content": [{
-            "type": "text",
+    result = ok(content=[{
+        "type": "text",
         "text": (
                 "Reload scheduled. Wait ~3 seconds, verify /health identifies Fusion-Essentials, "
                 "then reconnect or refresh the tool list. Compare sys_capability_map's "
@@ -189,10 +187,9 @@ def handler() -> dict:
                 "client schema comma-mangles a json-array argument whose property it lacks; a "
                 "scalar passes."
             ),
-        }],
-    "isError": False,
-    "next": "sys_capability_map",
-    }
+    }])
+    result["next"] = "sys_capability_map"
+    return result
 
 
 TOOL_DESCRIPTION = (

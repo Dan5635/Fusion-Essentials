@@ -4,7 +4,7 @@ _Auto-generated from the live registry by `tests/gen_posture.py`. Do not edit by
 
 Every tool declares a write= kind (read / write / destructive); the MCP readOnlyHint / destructiveHint annotations derive from it. That machine-checked fact decides which tools are safe to auto-run under Claude Code. This file maps every tool to a posture bucket and emits ready-to-paste `settings.json` presets. Rules target the MCP wire name `mcp__fusion-essentials__<tool>`.
 
-**Tools:** 196  |  read: 34  |  write: 142  |  destructive: 19  |  script-hatch: 1
+**Tools:** 224  |  read: 37  |  write: 166  |  destructive: 20  |  script-hatch: 1
 
 ## Posture buckets
 
@@ -37,7 +37,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 
 ## Every tool by bucket
 
-### read - safe to auto-allow (34)
+### read - safe to auto-allow (37)
 
 - `mcp__fusion-essentials__assembly_get`
 - `mcp__fusion-essentials__assembly_inspect_interference`
@@ -55,6 +55,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__drawing_get_status`
 - `mcp__fusion-essentials__find_geometry`
 - `mcp__fusion-essentials__form_get`
+- `mcp__fusion-essentials__mesh_find`
 - `mcp__fusion-essentials__mesh_get`
 - `mcp__fusion-essentials__model_compute_holder`
 - `mcp__fusion-essentials__model_inspect`
@@ -63,6 +64,8 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__model_measure_relation`
 - `mcp__fusion-essentials__param_get`
 - `mcp__fusion-essentials__pmi_get`
+- `mcp__fusion-essentials__render_get`
+- `mcp__fusion-essentials__sheet_get`
 - `mcp__fusion-essentials__sketch_get`
 - `mcp__fusion-essentials__sys_capability_map`
 - `mcp__fusion-essentials__sys_find_tool`
@@ -74,7 +77,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__view_screenshot_multi`
 - `mcp__fusion-essentials__workspace_orient`
 
-### write - ask (142)
+### write - ask (166)
 
 - `mcp__fusion-essentials__appearance_set`
 - `mcp__fusion-essentials__assembly_capture_position`
@@ -91,6 +94,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__cam_edit_operation`
 - `mcp__fusion-essentials__cam_edit_setup`
 - `mcp__fusion-essentials__cam_edit_tools`
+- `mcp__fusion-essentials__cam_export_setup`
 - `mcp__fusion-essentials__cam_generate`
 - `mcp__fusion-essentials__cam_generate_setup_sheet`
 - `mcp__fusion-essentials__cam_post`
@@ -108,6 +112,8 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__design_activate_component`
 - `mcp__fusion-essentials__design_add_instance`
 - `mcp__fusion-essentials__design_configure`
+- `mcp__fusion-essentials__design_edit_plastic_rule`
+- `mcp__fusion-essentials__design_edit_reference_image`
 - `mcp__fusion-essentials__design_export`
 - `mcp__fusion-essentials__design_move_occurrence`
 - `mcp__fusion-essentials__design_recompute`
@@ -127,12 +133,14 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__doc_save_milestone`
 - `mcp__fusion-essentials__doc_update_xref`
 - `mcp__fusion-essentials__drawing_add_sketch`
+- `mcp__fusion-essentials__drawing_add_symbol`
 - `mcp__fusion-essentials__drawing_create`
 - `mcp__fusion-essentials__drawing_dimension`
 - `mcp__fusion-essentials__drawing_export`
 - `mcp__fusion-essentials__drawing_insert_image`
 - `mcp__fusion-essentials__drawing_update`
 - `mcp__fusion-essentials__form_create`
+- `mcp__fusion-essentials__form_edit`
 - `mcp__fusion-essentials__joint_at_geometry`
 - `mcp__fusion-essentials__joint_create`
 - `mcp__fusion-essentials__joint_create_as_built`
@@ -159,7 +167,13 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__model_combine`
 - `mcp__fusion-essentials__model_construction`
 - `mcp__fusion-essentials__model_create_component`
+- `mcp__fusion-essentials__model_create_rib`
 - `mcp__fusion-essentials__model_draft`
+- `mcp__fusion-essentials__model_edit_body`
+- `mcp__fusion-essentials__model_edit_extrude`
+- `mcp__fusion-essentials__model_edit_feature`
+- `mcp__fusion-essentials__model_edit_loft`
+- `mcp__fusion-essentials__model_edit_sweep`
 - `mcp__fusion-essentials__model_emboss`
 - `mcp__fusion-essentials__model_extrude`
 - `mcp__fusion-essentials__model_fillet`
@@ -187,7 +201,19 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__param_set_favorite`
 - `mcp__fusion-essentials__pmi_create`
 - `mcp__fusion-essentials__pmi_edit`
+- `mcp__fusion-essentials__render_create`
+- `mcp__fusion-essentials__render_edit`
 - `mcp__fusion-essentials__save_as_mesh`
+- `mcp__fusion-essentials__sheet_convert`
+- `mcp__fusion-essentials__sheet_create_flange`
+- `mcp__fusion-essentials__sheet_create_flat_pattern`
+- `mcp__fusion-essentials__sheet_create_fold`
+- `mcp__fusion-essentials__sheet_create_hem`
+- `mcp__fusion-essentials__sheet_create_join_by_bend`
+- `mcp__fusion-essentials__sheet_create_refold`
+- `mcp__fusion-essentials__sheet_create_rip`
+- `mcp__fusion-essentials__sheet_create_unfold`
+- `mcp__fusion-essentials__sheet_edit_rule`
 - `mcp__fusion-essentials__sketch_add_3d_line`
 - `mcp__fusion-essentials__sketch_add_3d_spline`
 - `mcp__fusion-essentials__sketch_add_geometry`
@@ -195,6 +221,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__sketch_copy`
 - `mcp__fusion-essentials__sketch_create`
 - `mcp__fusion-essentials__sketch_dimension`
+- `mcp__fusion-essentials__sketch_edit`
 - `mcp__fusion-essentials__sketch_edit_curve`
 - `mcp__fusion-essentials__sketch_insert_svg`
 - `mcp__fusion-essentials__sketch_move`
@@ -219,7 +246,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__view_set`
 - `mcp__fusion-essentials__view_switch_workspace`
 
-### destructive - ask / deny (19)
+### destructive - ask / deny (20)
 
 - `mcp__fusion-essentials__assembly_edit_contacts`
 - `mcp__fusion-essentials__assembly_edit_relations`
@@ -234,6 +261,7 @@ A write= kind says the model changes; it does not say WHERE the change lands. Th
 - `mcp__fusion-essentials__design_set_mode`
 - `mcp__fusion-essentials__doc_close`
 - `mcp__fusion-essentials__drawing_delete_sketch`
+- `mcp__fusion-essentials__drawing_edit_revisions`
 - `mcp__fusion-essentials__drawing_edit_sheet`
 - `mcp__fusion-essentials__mesh_delete`
 - `mcp__fusion-essentials__param_delete`
@@ -269,6 +297,7 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__drawing_get_status",
       "mcp__fusion-essentials__find_geometry",
       "mcp__fusion-essentials__form_get",
+      "mcp__fusion-essentials__mesh_find",
       "mcp__fusion-essentials__mesh_get",
       "mcp__fusion-essentials__model_compute_holder",
       "mcp__fusion-essentials__model_inspect",
@@ -277,6 +306,8 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__model_measure_relation",
       "mcp__fusion-essentials__param_get",
       "mcp__fusion-essentials__pmi_get",
+      "mcp__fusion-essentials__render_get",
+      "mcp__fusion-essentials__sheet_get",
       "mcp__fusion-essentials__sketch_get",
       "mcp__fusion-essentials__sys_capability_map",
       "mcp__fusion-essentials__sys_find_tool",
@@ -304,6 +335,7 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__cam_edit_operation",
       "mcp__fusion-essentials__cam_edit_setup",
       "mcp__fusion-essentials__cam_edit_tools",
+      "mcp__fusion-essentials__cam_export_setup",
       "mcp__fusion-essentials__cam_generate",
       "mcp__fusion-essentials__cam_generate_setup_sheet",
       "mcp__fusion-essentials__cam_post",
@@ -321,6 +353,8 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__design_activate_component",
       "mcp__fusion-essentials__design_add_instance",
       "mcp__fusion-essentials__design_configure",
+      "mcp__fusion-essentials__design_edit_plastic_rule",
+      "mcp__fusion-essentials__design_edit_reference_image",
       "mcp__fusion-essentials__design_export",
       "mcp__fusion-essentials__design_move_occurrence",
       "mcp__fusion-essentials__design_recompute",
@@ -340,12 +374,14 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__doc_save_milestone",
       "mcp__fusion-essentials__doc_update_xref",
       "mcp__fusion-essentials__drawing_add_sketch",
+      "mcp__fusion-essentials__drawing_add_symbol",
       "mcp__fusion-essentials__drawing_create",
       "mcp__fusion-essentials__drawing_dimension",
       "mcp__fusion-essentials__drawing_export",
       "mcp__fusion-essentials__drawing_insert_image",
       "mcp__fusion-essentials__drawing_update",
       "mcp__fusion-essentials__form_create",
+      "mcp__fusion-essentials__form_edit",
       "mcp__fusion-essentials__joint_at_geometry",
       "mcp__fusion-essentials__joint_create",
       "mcp__fusion-essentials__joint_create_as_built",
@@ -372,7 +408,13 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__model_combine",
       "mcp__fusion-essentials__model_construction",
       "mcp__fusion-essentials__model_create_component",
+      "mcp__fusion-essentials__model_create_rib",
       "mcp__fusion-essentials__model_draft",
+      "mcp__fusion-essentials__model_edit_body",
+      "mcp__fusion-essentials__model_edit_extrude",
+      "mcp__fusion-essentials__model_edit_feature",
+      "mcp__fusion-essentials__model_edit_loft",
+      "mcp__fusion-essentials__model_edit_sweep",
       "mcp__fusion-essentials__model_emboss",
       "mcp__fusion-essentials__model_extrude",
       "mcp__fusion-essentials__model_fillet",
@@ -400,7 +442,19 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__param_set_favorite",
       "mcp__fusion-essentials__pmi_create",
       "mcp__fusion-essentials__pmi_edit",
+      "mcp__fusion-essentials__render_create",
+      "mcp__fusion-essentials__render_edit",
       "mcp__fusion-essentials__save_as_mesh",
+      "mcp__fusion-essentials__sheet_convert",
+      "mcp__fusion-essentials__sheet_create_flange",
+      "mcp__fusion-essentials__sheet_create_flat_pattern",
+      "mcp__fusion-essentials__sheet_create_fold",
+      "mcp__fusion-essentials__sheet_create_hem",
+      "mcp__fusion-essentials__sheet_create_join_by_bend",
+      "mcp__fusion-essentials__sheet_create_refold",
+      "mcp__fusion-essentials__sheet_create_rip",
+      "mcp__fusion-essentials__sheet_create_unfold",
+      "mcp__fusion-essentials__sheet_edit_rule",
       "mcp__fusion-essentials__sketch_add_3d_line",
       "mcp__fusion-essentials__sketch_add_3d_spline",
       "mcp__fusion-essentials__sketch_add_geometry",
@@ -408,6 +462,7 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__sketch_copy",
       "mcp__fusion-essentials__sketch_create",
       "mcp__fusion-essentials__sketch_dimension",
+      "mcp__fusion-essentials__sketch_edit",
       "mcp__fusion-essentials__sketch_edit_curve",
       "mcp__fusion-essentials__sketch_insert_svg",
       "mcp__fusion-essentials__sketch_move",
@@ -446,6 +501,7 @@ Auto-allow reads only. Every write asks; destructive writes and the arbitrary-co
       "mcp__fusion-essentials__design_set_mode",
       "mcp__fusion-essentials__doc_close",
       "mcp__fusion-essentials__drawing_delete_sketch",
+      "mcp__fusion-essentials__drawing_edit_revisions",
       "mcp__fusion-essentials__drawing_edit_sheet",
       "mcp__fusion-essentials__mesh_delete",
       "mcp__fusion-essentials__param_delete",
@@ -482,6 +538,7 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__drawing_get_status",
       "mcp__fusion-essentials__find_geometry",
       "mcp__fusion-essentials__form_get",
+      "mcp__fusion-essentials__mesh_find",
       "mcp__fusion-essentials__mesh_get",
       "mcp__fusion-essentials__model_compute_holder",
       "mcp__fusion-essentials__model_inspect",
@@ -490,6 +547,8 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__model_measure_relation",
       "mcp__fusion-essentials__param_get",
       "mcp__fusion-essentials__pmi_get",
+      "mcp__fusion-essentials__render_get",
+      "mcp__fusion-essentials__sheet_get",
       "mcp__fusion-essentials__sketch_get",
       "mcp__fusion-essentials__sys_capability_map",
       "mcp__fusion-essentials__sys_find_tool",
@@ -513,6 +572,7 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__cam_edit_folders",
       "mcp__fusion-essentials__cam_edit_operation",
       "mcp__fusion-essentials__cam_edit_setup",
+      "mcp__fusion-essentials__cam_export_setup",
       "mcp__fusion-essentials__cam_generate",
       "mcp__fusion-essentials__cam_reorder",
       "mcp__fusion-essentials__cam_select_geometry",
@@ -521,17 +581,21 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__design_activate_component",
       "mcp__fusion-essentials__design_add_instance",
       "mcp__fusion-essentials__design_configure",
+      "mcp__fusion-essentials__design_edit_plastic_rule",
+      "mcp__fusion-essentials__design_edit_reference_image",
       "mcp__fusion-essentials__design_move_occurrence",
       "mcp__fusion-essentials__design_recompute",
       "mcp__fusion-essentials__design_remove_feature",
       "mcp__fusion-essentials__design_set_metadata",
       "mcp__fusion-essentials__design_set_name",
       "mcp__fusion-essentials__drawing_add_sketch",
+      "mcp__fusion-essentials__drawing_add_symbol",
       "mcp__fusion-essentials__drawing_create",
       "mcp__fusion-essentials__drawing_dimension",
       "mcp__fusion-essentials__drawing_insert_image",
       "mcp__fusion-essentials__drawing_update",
       "mcp__fusion-essentials__form_create",
+      "mcp__fusion-essentials__form_edit",
       "mcp__fusion-essentials__joint_at_geometry",
       "mcp__fusion-essentials__joint_create",
       "mcp__fusion-essentials__joint_create_as_built",
@@ -557,7 +621,13 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__model_combine",
       "mcp__fusion-essentials__model_construction",
       "mcp__fusion-essentials__model_create_component",
+      "mcp__fusion-essentials__model_create_rib",
       "mcp__fusion-essentials__model_draft",
+      "mcp__fusion-essentials__model_edit_body",
+      "mcp__fusion-essentials__model_edit_extrude",
+      "mcp__fusion-essentials__model_edit_feature",
+      "mcp__fusion-essentials__model_edit_loft",
+      "mcp__fusion-essentials__model_edit_sweep",
       "mcp__fusion-essentials__model_emboss",
       "mcp__fusion-essentials__model_extrude",
       "mcp__fusion-essentials__model_fillet",
@@ -585,7 +655,19 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__param_set_favorite",
       "mcp__fusion-essentials__pmi_create",
       "mcp__fusion-essentials__pmi_edit",
+      "mcp__fusion-essentials__render_create",
+      "mcp__fusion-essentials__render_edit",
       "mcp__fusion-essentials__save_as_mesh",
+      "mcp__fusion-essentials__sheet_convert",
+      "mcp__fusion-essentials__sheet_create_flange",
+      "mcp__fusion-essentials__sheet_create_flat_pattern",
+      "mcp__fusion-essentials__sheet_create_fold",
+      "mcp__fusion-essentials__sheet_create_hem",
+      "mcp__fusion-essentials__sheet_create_join_by_bend",
+      "mcp__fusion-essentials__sheet_create_refold",
+      "mcp__fusion-essentials__sheet_create_rip",
+      "mcp__fusion-essentials__sheet_create_unfold",
+      "mcp__fusion-essentials__sheet_edit_rule",
       "mcp__fusion-essentials__sketch_add_3d_line",
       "mcp__fusion-essentials__sketch_add_3d_spline",
       "mcp__fusion-essentials__sketch_add_geometry",
@@ -593,6 +675,7 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__sketch_copy",
       "mcp__fusion-essentials__sketch_create",
       "mcp__fusion-essentials__sketch_dimension",
+      "mcp__fusion-essentials__sketch_edit",
       "mcp__fusion-essentials__sketch_edit_curve",
       "mcp__fusion-essentials__sketch_insert_svg",
       "mcp__fusion-essentials__sketch_move",
@@ -654,6 +737,7 @@ Auto-allow reads and LOCAL model writes (extrude, joint, sketch, ...). Cloud/doc
       "mcp__fusion-essentials__doc_save_milestone",
       "mcp__fusion-essentials__doc_update_xref",
       "mcp__fusion-essentials__drawing_delete_sketch",
+      "mcp__fusion-essentials__drawing_edit_revisions",
       "mcp__fusion-essentials__drawing_edit_sheet",
       "mcp__fusion-essentials__drawing_export",
       "mcp__fusion-essentials__mesh_delete",

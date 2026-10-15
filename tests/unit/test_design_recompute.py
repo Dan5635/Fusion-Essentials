@@ -1,19 +1,19 @@
 """Unit tests for ``design_recompute.py`` (computeAll() then re-reports health; surfaces a computeAll
 failure) and the timeline health rollup design_get's health slice reads (feature healthState into
 errors/warnings + a healthy flag). Pure logic over a faked timeline; no live Fusion."""
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import math
 
-import live_api_facts as _api_facts
 from conftest import (FakeTimeline, FakeTimelineObject, MakeComp, MakeDesign, error_message,
                       install, load_tool, make_design, make_joint, payload)
 
 dops = load_tool("design_recompute")
 dm = load_tool("_design_common")
 
-_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
 _WARNING = _api_facts.ENUMS["fusion.FeatureHealthStates"]["WarningFeatureHealthState"]
-_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 
 def _timeline(*rows):
@@ -105,7 +105,9 @@ class TestDrivenJointsReset:
         out = payload(dops.handler())
         assert out["driven_joints_reset"] == [
             {"name": "Elbow", "before": {"angle_deg": 30.0}, "after": {"angle_deg": 0.0}}]
-        assert "1 driven joint(s) reset" in out["note"]
+        assert "Observed value changes in 1 driven joint(s)" in out["note"]
+        assert "their cause is not identified" in out["note"]
+        assert "If the pose is uncaptured" in out["note"]
 
     def test_a_joint_holding_its_value_is_not_reported(self):
         joint = make_joint(name="Elbow", kind="revolute", rotation=math.radians(30))

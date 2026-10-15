@@ -60,14 +60,22 @@ class FakeRevolveInput:
 
 
 class FakeRevolveFeatures:
-    def __init__(self, result_bodies=None):
+    """revolveFeatures; the added feature's AngleExtentDefinition echoes the input unless
+    `extent_readable` is False."""
+    def __init__(self, result_bodies=None, extent_readable=True):
         self.last_input = None
         self._result = result_bodies
+        self._extent_readable = extent_readable
     def createInput(self, profile, axis, op):
         self.last_input = FakeRevolveInput(profile, axis, op)
         return self.last_input
     def add(self, inp):
-        return FakeFeature(bodies=self._result)
+        feature = FakeFeature(bodies=self._result)
+        if self._extent_readable and inp.angle_extent is not None:
+            sym, (_kind, radians) = inp.angle_extent
+            feature.extentDefinition = types.SimpleNamespace(
+                isSymmetric=sym, angle=types.SimpleNamespace(value=radians))
+        return feature
 
 
 class FakeFeatures(_SharedFeatures):
@@ -139,6 +147,19 @@ class TestSurfaceRevolve:
         wire(_comp(FakeFeatures(rf=rf), sketches=[_sketch("S")]))
         out = payload(sc.handler(sketch_name="S", angle_deg=360))
         assert out["created"] is True and out["is_solid"] is False
+
+    @pytest.mark.parametrize("symmetric,total", [(True, 178.8), (False, None)])
+    def test_a_symmetric_angle_is_read_back_per_side_with_its_total(self, wire, symmetric, total):
+        wire(_comp(FakeFeatures(rf=FakeRevolveFeatures()), sketches=[_sketch("S")]))
+        out = payload(sc.handler(sketch_name="S", angle_deg=89.4, symmetric=symmetric))
+        assert out["angle_deg"] == 89.4 and out["symmetric"] is symmetric
+        assert out.get("total_angle_deg") == total and "unverified" not in out
+
+    def test_an_unreadable_extent_echoes_the_request_as_unverified(self, wire):
+        rf = FakeRevolveFeatures(extent_readable=False)
+        wire(_comp(FakeFeatures(rf=rf), sketches=[_sketch("S")]))
+        out = payload(sc.handler(sketch_name="S", angle_deg=89.4, symmetric=True))
+        assert out["unverified"] == ["angle_deg", "symmetric"] and "total_angle_deg" not in out
 
     def test_zero_angle_guard(self, wire):
         wire(_comp(FakeFeatures(rf=FakeRevolveFeatures()), sketches=[_sketch("S")]))

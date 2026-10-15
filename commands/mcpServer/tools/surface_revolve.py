@@ -41,9 +41,9 @@ def handler(sketch_name: str = "", curves=None, axis: str = "z",
     if a not in _inputs.WORLD_AXIS_ATTRS:
         return error(f"Unknown axis '{axis}'. Use x, y, or z.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     # Build the profile, take the axis and create the feature on the SOURCE's owning component: a
@@ -106,20 +106,29 @@ def handler(sketch_name: str = "", curves=None, axis: str = "z",
     else:
         note = ("Surface body created, but no result body's isSolid flag could be read back - "
                 "whether it is an open sheet is UNVERIFIED.")
+    # A symmetric angle extent spans its angle on EACH side (measured: a symmetric 89.4 deg
+    # revolve adds the area of a one-sided 178.8 deg one).
+    extent = safe(lambda: feature.extentDefinition)
+    landed = _common.measured(lambda: extent.angle.value, 180.0 / math.pi)
+    landed_sym = _common.read_flag(lambda: extent.isSymmetric)
     payload = {
         "created": True,
         "feature": safe(lambda: feature.name),
         "operation": op_key,
         "source": source,
         "axis": f"{a}-axis",
-        "angle_deg": round(ang, 6),
+        "angle_deg": landed if landed is not None else round(ang, 6),
         "result_bodies": names,
         "is_solid": any_solid,       # read back from the body, not assumed (expected False for a shell)
-        "symmetric": bool(symmetric),
+        "symmetric": landed_sym if landed_sym is not None else bool(symmetric),
         "note": note,
     }
-    if any_solid is None:
-        payload["unverified"] = ["is_solid"]
+    if landed_sym and landed is not None:
+        payload["total_angle_deg"] = round(2 * landed, 6)
+    unverified = [k for k, v in (("is_solid", any_solid), ("angle_deg", landed),
+                                 ("symmetric", landed_sym)) if v is None]
+    if unverified:
+        payload["unverified"] = unverified
     return ok(payload)
 
 
@@ -134,8 +143,9 @@ tool = (
     .add_input_property("curves", _CURVES.schema())
     .add_input_property(*_inputs.frame_axis("axis", default="z", description="Component origin axis.").as_property())
     .add_input_property("angle_deg", {"type": "number"})
-    .add_input_property("symmetric", {"type": "boolean"})
-    .add_input_property(*_inputs.boolean_op(options=("new", "join"), default="new").as_property())
+    .add_input_property("symmetric", {"type": "boolean", "description": "angle_deg is per side."})
+    .add_input_property(*_inputs.boolean_op(options=("new", "join"), default="new",
+                                            description="").as_property())
     .add_input_property(*_sketch_detail.COMPONENT_SCOPE)
     .strict_schema()
 )

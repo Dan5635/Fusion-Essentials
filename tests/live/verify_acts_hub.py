@@ -6,11 +6,15 @@
 The world the CAM competence beats address, built through the tools instead of kept as a saved
 document. Its three dimensioned sketches read is_fully_constrained true before a feature consumes
 them, which is the sketch recipes' own bar; the two setups at the bottom are the names a machining
-beat addresses. The hub is authored a metre out along X on the XZ plane, and a chunk holding an XZ
-sketch is left exactly where it was written - see verify_layout._place_slots.
+beat addresses. The hub is authored a metre out along X on the XZ plane and stays there.
 """
 
+import json
+import os
 import time
+import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 
 import _dump_reader
 from verify_acts_cam import (
@@ -41,6 +45,7 @@ HUB_ROT_WCS = "HubRotaryWCS"     # that setup's origin, a Joint Origin at the hu
 HUB_TURN_CYCLES = ("TurnFace", "TurnRough", "TurnFinish", "TurnPart")
 # What the roughing cycle leaves for the finishing pass, sent and read back through one spelling.
 _ROUGH_ALLOWANCE = {"useStockToLeave": "true", "xStockToLeave": "0.5mm", "zStockToLeave": "0.5mm"}
+_TURN_PRESET = "SweepTurnCutting"
 # The rotary families, each wrapped about the hub axis.
 HUB_ROT_OPS = ("RotContour", "RotPocket", "RotFinish")
 
@@ -346,6 +351,22 @@ def _hub_tools_landed(p):
         g[0] == w[0] and (w[1] is None or _near(g[1], w[1], 0.01)) for g, w in zip(got, want))
     return _measured(f"{len(want)} hub cutters at index {base}, in the order they were added",
                      {"tool_count": p.get("tool_count"), "base": base, "landed": got}, ok_)
+
+
+def _turn_preset_values(p):
+    """The turning operation uses the new preset with both authored cutting expressions."""
+    tool = p.get("tool") or {}
+    preset = tool.get("preset") or {}
+    expressions = preset.get("expressions") or {}
+    active = tool.get("active_preset") or {}
+    return _measured("turning preset surface speed and feed per revolution",
+                     {"active": active.get("name"), "expressions": expressions},
+                     active.get("name") == _TURN_PRESET
+                     and preset.get("name") == _TURN_PRESET
+                     and expressions.get("tool_useConstantSurfaceSpeed") == "true"
+                     and expressions.get("tool_surfaceSpeed") in ("180000 mm/min", "180000.")
+                     and expressions.get("tool_useFeedPerRevolution") == "true"
+                     and expressions.get("tool_feedCuttingRel") in ("0.18 mm", "0.18"))
 
 
 def _sized_by(field, request, mm):
@@ -941,6 +962,11 @@ _HUB_JOB = [
      lambda p: p.get("added") == len(_HUB_TOOLS)
      and p.get("tool_count") == _RECALL.get("hub_tool_base") + len(_HUB_TOOLS), None),
     ("cam_edit_tools", {"action": "list", "scope": "document"}, _hub_tools_landed, None),
+    ("cam_edit_tools", lambda c: {"action": "add_preset", "scope": "document",
+                                  "tool": _ctx_get(c, "hub_tool_base", "the hub tool base") + _TURN_AT,
+                                  "preset": {"name": _TURN_PRESET, "surface_speed": 180000,
+                                             "feed_per_revolution": 0.18}},
+     lambda p: _TURN_PRESET in (p.get("presets") or []), None),
     # THE LATHE JOB FIRST, because that is the order the part is made in: the hub is turned from a
     # cylinder of stock before anything is milled into it. A turning setup of the other
     # operation_type, read back off the Setup itself as the API's own enum name, and carrying no
@@ -983,6 +1009,10 @@ _HUB_JOB = [
                 "tool_index": _ctx_get(c, "hub_tool_base", "the hub tool base") + _TURN_AT,
                 "generate": False},
      _op_named(HUB_TURN_SETUP, "turning_face", HUB_TURN_CYCLES[0]), None),
+    ("cam_edit_operation", {"operation": HUB_TURN_CYCLES[0], "preset": _TURN_PRESET},
+     lambda p: p.get("preset") == _TURN_PRESET and _num(p.get("preset_index")), None),
+    ("cam_get", {"include": ["tool"], "operation": HUB_TURN_CYCLES[0],
+                 "preset": _TURN_PRESET}, _turn_preset_values, None),
     # a TURNING tool's holder carries none of the milling keys (description/product-id/vendor/
     # segments), so it reads through its OWN keys instead - overall_length is one of them, a number.
     ("cam_get", {"include": ["tool"], "operation": HUB_TURN_CYCLES[0]},
@@ -1053,6 +1083,11 @@ _HUB_TURNED_READ = [
     ("cam_post", {"scope": HUB_TURN_SETUP, "post": "fanuc turning", "post_scope": "fusion",
                   "output_folder": EXPORT_DIR + "/nc", "program_name": "3001"},
      _posted_turning(HUB_TURN_SETUP, "3001"), None),
+    ("cam_post", {"scope": HUB_TURN_SETUP, "post": "system://fanuc turning.cps",
+                  "post_scope": "fusion", "output_folder": EXPORT_DIR + "/nc",
+                  "program_name": "3002"},
+     lambda p: _posted_turning(HUB_TURN_SETUP, "3002")(p)
+     and p.get("post_config") == "system://fanuc turning.cps", None),
 ]
 
 
@@ -1196,6 +1231,7 @@ _ADD_SETTING_CAP = 400
 _TWIN_TECH = "FORMLABS_SLS"
 _TWIN_SETTING = "Formlabs SLS"
 _TWIN_PICK = "Fuse 1+ 30 W"
+_TWIN_MACHINE = "Formlabs|Fuse 1+ 30W (Nylon 12)"
 
 
 def _printers_listed(vendor):
@@ -1244,6 +1280,13 @@ def _facet_narrowed(bare_count):
                          {"bare": bare_count, "narrowed": count},
                          _num(count) and _num(bare_count) and 0 < count < bare_count)
     return check
+
+
+def _additive_slices(p):
+    """cam_get(include=['operations']): the names of the additive setup's slice operations."""
+    return [r.get("name") for rec in ((p.get("operations") or {}).get("setups") or [])
+            if rec.get("setup") == _ADD_SETUP for r in rec.get("operations") or []
+            if r.get("strategy") == "additive_buildstyle"]
 
 
 def _additive_no_tool_blockers(setup, op_name):
@@ -1396,6 +1439,602 @@ def _additive_names_absent(tool, labels):
                      {"empty_toolpaths": labels, "additive": names}, all(names) and not hits)
 
 
+def _additive_time_row(op=None):
+    """cam_get time on an additive setup: additive true, no figure, no cam_generate remedy."""
+    def check(p):
+        row = ((p.get("time") or {}).get("setups") or [{}])[0]
+        return _measured("the additive setup's time row", row,
+                         row.get("additive") is True and row.get("machining_time_seconds") is None
+                         and "error" not in row and "cam_generate" not in str(p)
+                         and row.get("operation") == op)
+    return check
+
+
+def _container_order(first, second):
+    """cam_reorder inside an additive container: the order re-read, first before second."""
+    def check(p):
+        order = p.get("order") or []
+        return _measured(f"{first} before {second}, re-read", p,
+                         "order_unverified" not in p and first in order and second in order
+                         and order.index(first) < order.index(second))
+    return check
+
+
+
+_SLICE_SETUP = "SliceBuild"
+_SLICE_3MF = EXPORT_DIR + "/slice-build-" + uuid.uuid4().hex + ".3mf"
+_SLICE_NATIVE = (
+    "import adsk.core, adsk.cam, json\n"
+    "def run(context):\n"
+    "    doc=adsk.core.Application.get().activeDocument\n"
+    "    cam=adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))\n"
+    "    rows=[[o.name,o.strategy,o.hasToolpath,o.isToolpathValid,int(o.operationState)]\n"
+    "          for s in cam.setups for o in s.allOperations if o.strategy=='additive_buildstyle']\n"
+    "    print(json.dumps({'slices':rows}))\n")
+
+
+def _slice_row(p):
+    """cam_get(include=['operations']): the one additive_buildstyle row of the slice setup."""
+    rows = [r for rec in ((p.get("operations") or {}).get("setups") or [])
+            if rec.get("setup") == _SLICE_SETUP for r in rec.get("operations") or []
+            if r.get("strategy") == "additive_buildstyle"]
+    return rows[0] if len(rows) == 1 else {}
+
+
+def _slice_native(p):
+    """The native flags of the generated slice, read apart from every tool reply."""
+    reply = p if isinstance(p, dict) else {}
+    if not reply:
+        for line in str(p or "").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and "slices" in row:
+                reply = row
+    rows = reply.get("slices") or []
+    return _measured("the generated slice natively", rows,
+                     len(rows) == 1 and rows[0][0] == _RECALL["slice_op"]
+                     and rows[0][2] is True and rows[0][3] is True and rows[0][4] == 0)
+
+
+def _slice_3mf(p):
+    """Judge an ungated FFF export from the written 3MF model, not its tool reply."""
+    facts = {"path": _SLICE_3MF, "size_bytes": None, "vertices": None,
+             "triangles": None, "millimeter": False, "extents_mm": None}
+    try:
+        facts["size_bytes"] = os.path.getsize(_SLICE_3MF)
+        with zipfile.ZipFile(_SLICE_3MF) as archive:
+            model = archive.read("3D/3dmodel.model")
+        root = ET.fromstring(model)
+        vertices = [node for node in root.iter() if node.tag.endswith("}vertex")]
+        triangles = [node for node in root.iter() if node.tag.endswith("}triangle")]
+        axes = [[float(node.attrib[axis]) for node in vertices] for axis in ("x", "y", "z")]
+        facts["vertices"] = len(vertices)
+        facts["triangles"] = len(triangles)
+        facts["millimeter"] = root.attrib.get("unit") == "millimeter"
+        facts["extents_mm"] = sorted(round(max(values) - min(values), 3) for values in axes)
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile, ET.ParseError):
+        pass
+    return _measured("the FFF 3MF holds the 30 x 20 x 10 mm box on disk", facts,
+                     p.get("exported") is True and p.get("setup") == _SLICE_SETUP
+                     and p.get("file_path") == _SLICE_3MF
+                     and p.get("left_out") == ["supports", "slices"]
+                     and facts["size_bytes"] == p.get("size_bytes")
+                     and facts["millimeter"] and (facts["vertices"] or 0) >= 8
+                     and (facts["triangles"] or 0) >= 12
+                     and facts["extents_mm"] == [10.0, 20.0, 30.0])
+
+
+def _additive_slice_rows():
+    """An FFF slice generated through the public tools: pathless before, a valid toolpath after."""
+    from verify_acts_cam import _face_op_settled
+    from verify_acts_sketch import _family_rows
+    rows, write, read, close = _family_rows("as_doc")
+    write("sketch_create", {"plane": "xy", "name": "AsSk"})
+    write("sketch_add_geometry", {"sketch_name": "AsSk", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 30, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "AsSk", "distance": 10})
+    write("view_switch_workspace", {"workspace": "manufacture"})
+    write("cam_create_setup", {"operation_type": "additive", "name": _SLICE_SETUP,
+                               "machine": "Autodesk|Generic FFF Machine",
+                               "print_setting": "PLA (Bowden Tube)"},
+          lambda p: p.get("created") is True and p.get("print_setting_technology") == "FFF")
+    write("cam_export_setup", {"setup": _SLICE_SETUP, "file_path": _SLICE_3MF}, _slice_3mf)
+    read("cam_get", {"include": ["operations"], "setup": _SLICE_SETUP},
+         lambda p: _measured("the ungenerated slice row", _slice_row(p),
+                             _slice_row(p).get("has_toolpath") is False
+                             and _slice_row(p).get("state") == "no_toolpath"),
+         ("slice_op", _recall("slice_op", lambda p: _slice_row(p)["name"])))
+    write("cam_show_toolpath", lambda c: {"action": "show",
+                                          "operation": _ctx_get(c, "slice_op", "the slice")},
+          lambda p: p.get("has_toolpath") is False
+          and "Generate it first" in (p.get("warning") or ""))
+    write("cam_generate", lambda c: {"target": _ctx_get(c, "slice_op", "the slice"),
+                                     "skip_valid": False},
+          lambda p: p.get("launched") is True and bool(p.get("handle")),
+          ("slice_gen", _recall("slice_gen", lambda p: p["handle"])))
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "slice_gen", "the slice generation")},
+         _face_op_settled("slice_gen", "the slice generation settled valid", {"valid": 1}))
+    # cam_get omits has_toolpath and toolpath_valid only when their native read is True.
+    read("cam_get", {"include": ["operations"], "setup": _SLICE_SETUP},
+         lambda p: _measured("the generated slice row", _slice_row(p),
+                             _slice_row(p).get("state") == "valid"
+                             and _slice_row(p).get("has_toolpath", True) is True
+                             and _slice_row(p).get("toolpath_valid", True) is True
+                             and "error" not in _slice_row(p)))
+    read("sys_execute_script", {"script": _SLICE_NATIVE, "read_only": True}, _slice_native)
+    # The shipped FFF post asks the machine for its extruders, so the program must carry the
+    # setup's machine; the file is then read from disk, apart from the reply.
+    write("cam_post", {"scope": _SLICE_SETUP, "post": "generic fff machine", "post_scope": "fusion",
+                       "output_folder": EXPORT_DIR + "/fff", "program_name": "4001"},
+          lambda p: p.get("posted") is True and p.get("machine") == "Autodesk Generic FFF Machine"
+          and p.get("file_count") == 1 and str(p["files"][0].get("file_path")).endswith(".gcode"),
+          ("slice_gcode", _recall("slice_gcode", lambda p: p["files"][0]["file_path"])))
+
+    def gcode_on_disk(p, program_name="4001", file_key="slice_gcode"):
+        programs = (p.get("nc_programs") or {}).get("nc_programs") or []
+        matches = [row for row in programs if row.get("name") == program_name]
+        path = _RECALL[file_key]
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+        head = lines[:40]
+        facts = {"size_bytes": os.path.getsize(path), "path": path,
+                 "lines": len(lines), "moves": sum(1 for line in lines if line.startswith("G1")),
+                 "printer": next((line for line in head if line.startswith(";Printer name:")), None),
+                 "extruder_offset": any(line.startswith(";Extruder 1 offset x:") for line in head),
+                 "last": lines[-1] if lines else None}
+        return _measured("the FFF program file on disk", facts,
+                         len(programs) == (1 if program_name == "4001" else 2)
+                         and len(matches) == 1 and matches[0].get("program_number") == program_name
+                         and matches[0].get("machine") == "Autodesk Generic FFF Machine"
+                         and matches[0].get("operation_count") == 1
+                         and matches[0].get("posted_operations") == 1
+                         and os.path.basename(path) == program_name + ".gcode"
+                         and (program_name == "4001" or path != _RECALL["slice_gcode"])
+                         and facts["size_bytes"] > 0
+                         and facts["printer"] == ";Printer name: Autodesk Generic FFF Machine"
+                         and facts["extruder_offset"] and facts["moves"] > 100
+                         and facts["last"] == ";END OF GCODE"
+                         and not any("!Error" in line for line in lines))
+    read("cam_get", {"include": ["nc_programs"]}, gcode_on_disk)
+    write("cam_post", lambda c: {"scope": _ctx_get(c, "slice_op", "the slice"),
+                                  "post": "generic fff machine", "post_scope": "fusion",
+                                  "output_folder": EXPORT_DIR + "/fff", "program_name": "4002"},
+          lambda p: p.get("posted") is True and p.get("scope") == "operation"
+          and p.get("machine") == "Autodesk Generic FFF Machine"
+          and p.get("membership_verified") is True and p.get("posted_operations") == 1
+          and p.get("file_count") == 1 and str(p["files"][0].get("file_path")).endswith(".gcode"),
+          ("slice_op_gcode", _recall("slice_op_gcode", lambda p: p["files"][0]["file_path"])))
+    read("cam_get", {"include": ["nc_programs"]},
+         lambda p: gcode_on_disk(p, "4002", "slice_op_gcode"))
+    write("cam_show_toolpath", lambda c: {"action": "show",
+                                          "operation": _ctx_get(c, "slice_op", "the slice")},
+          lambda p: p.get("has_toolpath") is not False and "warning" not in p)
+    write("cam_show_toolpath", {"action": "hide_all"})
+    write("view_switch_workspace", {"workspace": "design"})
+    close()
+    return rows
+
+
+_PB_SETUP = "PartsBuild"
+_PB_A, _PB_B = "PartA:1", "PartB:1"
+_PB_INCLUDED_3MF = EXPORT_DIR + "/parts-build-included-" + uuid.uuid4().hex + ".3mf"
+_PB_OMITTED_3MF = EXPORT_DIR + "/parts-build-omitted-" + uuid.uuid4().hex + ".3mf"
+_PB_POSITIVE_NATIVE = """def run(context):
+    import adsk.core, adsk.cam, os, json
+    path = __PATH__
+    doc = adsk.core.Application.get().activeDocument
+    if doc is None or doc.isSaved:
+        raise ValueError('positive export requires the active unsaved PartsBuild scratch')
+    cam = adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))
+    setups = [s for s in cam.setups if s.name == 'PartsBuild'] if cam else []
+    if len(setups) != 1 or sorted(m.name for m in setups[0].models) != ['PartA:1', 'PartB:1']:
+        raise ValueError('positive export requires the unique two-part PartsBuild setup')
+    ops = list(setups[0].allOperations)
+    if len(ops) > 24:
+        raise ValueError('PartsBuild has more than 24 operations')
+    support = [o for o in ops if o.strategy == 'solid_volume_support']
+    slices = [o for o in ops if o.strategy == 'additive_buildstyle']
+    if (len(support) != 1 or support[0].hasError is not False or len(slices) != 1
+            or slices[0].hasToolpath is not True or slices[0].isToolpathValid is not True):
+        raise ValueError('populated support and valid slice are not confirmed')
+    if not os.path.isdir(os.path.dirname(path)) or os.path.exists(path):
+        raise ValueError('positive control directory is missing or output path exists')
+    options = cam.exportManager.create3MFOptions()
+    options.exportObject = setups[0]
+    options.fullFilename = path
+    options.supportInclusion = adsk.cam.CAM3MFSupportInclusionType.IncludeAsSupportType
+    options.isSliceDataIncluded = True
+    if (options.exportObject != setups[0]
+            or os.path.normcase(os.path.normpath(options.fullFilename))
+            != os.path.normcase(os.path.normpath(path))
+            or options.supportInclusion != adsk.cam.CAM3MFSupportInclusionType.IncludeAsSupportType
+            or options.isSliceDataIncluded is not True):
+        raise ValueError('positive control options did not read back')
+    answered = cam.exportManager.execute(options)
+    if answered is not True or not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise RuntimeError('positive control 3MF was not written')
+    print(json.dumps({'positive_3mf': {'path': path, 'size_bytes': os.path.getsize(path),
+                                      'support': support[0].name, 'slice': slices[0].name}}))
+""".replace("__PATH__", repr(_PB_INCLUDED_3MF))
+
+
+def _pb_positive(p):
+    """The one JSON result printed by the positive native export."""
+    if isinstance(p, dict) and "positive_3mf" in p:
+        return p["positive_3mf"]
+    for line in str((p or {}).get("output") if isinstance(p, dict) else p or "").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and "positive_3mf" in row:
+            return row["positive_3mf"]
+    return {}
+
+
+def _pb_3mf_inventory(path):
+    """Bounded independent count of model meshes, support content and slice XML."""
+    core = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
+    slice_ns = "{http://schemas.microsoft.com/3dmanufacturing/slice/2015/07}"
+    with zipfile.ZipFile(path) as archive:
+        members = archive.infolist()
+        names = [member.filename for member in members]
+        if len(names) > 64 or "3D/3dmodel.model" not in names:
+            raise ValueError("3MF model is absent or archive has more than 64 members")
+        if sum(member.file_size for member in members) > 12000000:
+            raise ValueError("3MF archive exceeds the 12 MB inspection cap")
+        roots = {name: ET.fromstring(archive.read(name)) for name in names
+                 if name.lower().endswith(".model")}
+        support_members = [name for name in names if "support" in name.lower()]
+        support_xml = []
+        for name in support_members:
+            if name.lower().endswith(".xml"):
+                root = ET.fromstring(archive.read(name))
+                support_xml.append((root.tag.split("}")[-1],
+                                    sum(node.tag.split("}")[-1] == "anchor" for node in root.iter()),
+                                    sum(node.tag.split("}")[-1] == "entity" for node in root.iter())))
+    objects = [(obj.get("name") or "", obj.get("type") or "model",
+                sum(1 for _ in obj.iter(core + "vertex")),
+                sum(1 for _ in obj.iter(core + "triangle")))
+               for root in roots.values() for obj in root.iter(core + "object")]
+    support_objects = [obj for obj in objects if obj[1] != "model" or "support" in obj[0].lower()]
+    part_meshes = sorted((name, vertices, triangles) for name, kind, vertices, triangles in objects
+                         if kind == "model" and "support" not in name.lower() and vertices > 0)
+    slice_elements = sum(node.tag.startswith(slice_ns) for root in roots.values()
+                         for node in root.iter())
+    slice_attributes = sum(key.startswith(slice_ns) for root in roots.values()
+                           for node in root.iter() for key in node.attrib)
+    volsupport_slices = sum(node.tag.startswith(slice_ns) for name, root in roots.items()
+                            if "volsupport" in name.lower() for node in root.iter())
+    model = roots["3D/3dmodel.model"]
+    points = [tuple(float(node.get(axis)) for axis in ("x", "y", "z"))
+              for node in model.iter(core + "vertex")]
+    return {"size_bytes": os.path.getsize(path), "member_count": len(names),
+            "unit": model.get("unit"), "part_meshes": part_meshes,
+            "mesh_count": sum(obj[2] > 0 for obj in objects),
+            "support_members": support_members, "support_objects": support_objects,
+            "support_xml": support_xml, "slice_elements": slice_elements,
+            "slice_attributes": slice_attributes, "volsupport_slices": volsupport_slices,
+            "placed_by_transform": any("transform" in node.attrib for node in model.iter()),
+            "file_min": [min(pt[i] for pt in points) for i in range(3)] if points else None,
+            "file_max": [max(pt[i] for pt in points) for i in range(3)] if points else None}
+
+_PB_NATIVE = (
+    "import adsk.core, adsk.cam, json\n"
+    "def run(context):\n"
+    "    doc=adsk.core.Application.get().activeDocument\n"
+    "    cam=adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))\n"
+    "    s=[x for x in cam.setups if x.name=='PartsBuild'][0]\n"
+    "    names=('optimizeOrientationTarget','supportTarget','supportTargetModel',\n"
+    "           'interferenceAnalysisTargets')\n"
+    "    targets={}\n"
+    "    for o in s.allOperations:\n"
+    "        for n in names:\n"
+    "            p=o.parameters.itemByName(n)\n"
+    "            if p:\n"
+    "                targets[o.name]=sorted(e.fullPathName.split('+')[-1] for e in p.value.value)\n"
+    "    poses={o.name:list(o.transform2.asArray()) for o in cam.designRootOccurrence.childOccurrences}\n"
+    "    print(json.dumps({'parts_build':{'setting':s.printSetting.name,'targets':targets,\n"
+    "                                     'poses':poses}}))\n")
+
+
+def _pb_native(p):
+    """The parts build read natively: print setting name, each operation's parts, each part's pose."""
+    if isinstance(p, dict) and "parts_build" in p:
+        return p["parts_build"]
+    for line in str((p or {}).get("output") if isinstance(p, dict) else p or "").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and "parts_build" in row:
+            return row["parts_build"]
+    return {}
+
+
+def _pb_turn(cells):
+    """The nine rotation cells of a 16-cell transform, each column at unit length."""
+    columns = [[cells[4 * row + col] for row in range(3)] for col in range(3)]
+    lengths = [sum(v * v for v in column) ** 0.5 for column in columns]
+    return [cells[4 * row + col] / lengths[col] for row in range(3) for col in range(3)]
+
+
+def _pb_same(a, b, tol=1e-6):
+    return bool(a) and bool(b) and len(a) == len(b) and max(abs(x - y) for x, y in zip(a, b)) <= tol
+
+
+def _additive_parts_rows():
+    """An FFF build of two parts: setting swap, interference, support, orientation and arrange."""
+    from verify_acts_cam import _face_op_settled
+    from verify_acts_sketch import _scratch_rows
+    rows, write, read, close = _scratch_rows("pb_doc")
+    # PartA has a 20 mm overhang above a column; PartB overlaps the column at the origin.
+    write("model_create_component", {"name": "PartA", "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "PbA"})
+    write("sketch_add_geometry", {"sketch_name": "PbA", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "PbA", "distance": 20, "operation": "new"}, _extruded)
+    write("model_construction", {"kind": "plane", "plane": "xy", "offset": 20, "name": "PbSlabPlane"})
+    write("sketch_create", {"plane": "PbSlabPlane", "name": "PbSlab"})
+    write("sketch_add_geometry", {"sketch_name": "PbSlab", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 30, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "PbSlab", "distance": 5, "operation": "join"}, _extruded)
+    read("model_inspect", {"target": _PB_A, "include": ["default", "mass"], "units": "cm"},
+         lambda p: _measured("the column and overhanging slab material", p.get("mass"),
+                             _near((p.get("mass") or {}).get("volume"), 7, 1e-6)))
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "PartB", "activate": True}, _made_component)
+    write("sketch_create", {"plane": "xy", "name": "PbB"})
+    write("sketch_add_geometry", {"sketch_name": "PbB", "geometry": [
+        {"kind": "rectangle", "x1": -5, "y1": -5, "x2": 5, "y2": 5}]})
+    write("model_extrude", {"sketch_name": "PbB", "distance": 10, "symmetric": True,
+                            "operation": "new"}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("view_switch_workspace", {"workspace": "manufacture"})
+    fff = {"operation_type": "additive", "name": _PB_SETUP, "machine": "Autodesk|Generic FFF Machine",
+           "models": [_PB_A, _PB_B]}
+    # A metal setting on the FFF printer is refused before the setup exists.
+    write("cam_create_setup", {**fff, "print_setting": _ADD_SETTING},
+          _refused("is not compatible with machine", "was not assigned"))
+    read("cam_get", {}, lambda p: _measured("no setup after the refused create", p.get("setups"),
+                                            _PB_SETUP not in json.dumps(p)))
+    write("cam_create_setup", {**fff, "print_setting": "PLA (Bowden Tube)"},
+          lambda p: p.get("created") is True and p.get("print_setting_technology") == "FFF")
+
+    def setting_read(name):
+        def check(p):
+            row = p.get("print_setting") or {}
+            printer = row.get("printer") or {}
+            return _measured(f"the setup's print setting reads '{name}' on the FFF printer", row,
+                             row.get("name") == name and row.get("compatible_with_machine") is True
+                             and (printer.get("platform") or {}).get("size") == [300.0, 300.0, 300.0]
+                             and len(printer.get("extruders") or []) == 2
+                             and len(row.get("general") or []) > 0)
+        return check
+    read("cam_get", {"include": ["print_setting"], "setup": _PB_SETUP},
+         setting_read("PLA (Bowden Tube)"))
+    write("cam_edit_setup", {"setup": _PB_SETUP, "print_setting": "PLA (Direct Drive)"},
+          lambda p: p.get("print_setting_set") == "PLA (Direct Drive)"
+          and p.get("print_setting_technology") == "FFF")
+    write("cam_edit_setup", {"setup": _PB_SETUP, "print_setting": _ADD_SETTING},
+          _refused("is not compatible with machine", "was not assigned"))
+    read("cam_get", {"include": ["print_setting"], "setup": _PB_SETUP},
+         setting_read("PLA (Direct Drive)"))
+
+    def native(label, judge, save=None):
+        read("sys_execute_script", {"script": _PB_NATIVE, "read_only": True},
+             lambda p: _measured(label, _pb_native(p), bool(_pb_native(p)) and judge(_pb_native(p))),
+             save)
+
+    def op(key, strategy, parts):
+        """Create one additive operation, give it its parts, generate it and wait for it."""
+        write("cam_create_operation", {"setup": _PB_SETUP, "strategy": strategy},
+              _additive_op_created(_PB_SETUP, strategy),
+              (key, _recall(key, lambda p: p["operation"])))
+        if parts:
+            write("cam_edit_operation", lambda c: {"operation": _ctx_get(c, key, strategy),
+                                                   "parts": parts},
+                  lambda p: p.get("parts") == sorted(parts) and p.get("parts_before") == [])
+        write("cam_generate", lambda c: {"target": _ctx_get(c, key, strategy), "skip_valid": False},
+              lambda p: p.get("launched") is True and bool(p.get("handle")),
+              (key + "_gen", _recall(key + "_gen", lambda p: p["handle"])))
+        read("cam_get_status", lambda c: {"handle": _ctx_get(c, key + "_gen", strategy)},
+             _face_op_settled(key + "_gen", f"the {strategy} generation settled valid", {"valid": 1}))
+
+    def results(key, judge, save=None):
+        read("cam_get", lambda c: {"include": ["additive_results"], "setup": _PB_SETUP,
+                                   "operation": _ctx_get(c, key, "the operation")},
+             lambda p: _measured(f"additive results of {_RECALL[key]}", p.get("additive_results"),
+                                 judge(p.get("additive_results") or {})), save)
+
+    # INTERFERENCE: both parts in one assignment; the result names the pair that overlaps.
+    op("pb_clash", "additive_interference", [_PB_A, _PB_B])
+    results("pb_clash", lambda r: r.get("interfering_parts") == [_PB_A, _PB_B]
+            and r.get("parts") == [_PB_A, _PB_B] and "Interference detected" in (r.get("warning") or ""))
+    # SUPPORT on the overhanging part, as drawn.
+    op("pb_support", "solid_volume_support", [_PB_A])
+    results("pb_support", lambda r: r.get("parts") == [_PB_A] and r.get("has_error") is False)
+    # ORIENTATION: a candidate cannot be chosen before the candidates exist.
+    write("cam_create_operation", {"setup": _PB_SETUP, "strategy": "automatic_orientation"},
+          _additive_op_created(_PB_SETUP, "automatic_orientation"),
+          ("pb_orient", _recall("pb_orient", lambda p: p["operation"])))
+    write("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "pb_orient", "the orientation"),
+                                           "parts": [_PB_A]},
+          lambda p: p.get("parts") == [_PB_A] and p.get("parameter") == "optimizeOrientationTarget")
+    write("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "pb_orient", "the orientation"),
+                                           "orientation_candidate": 0},
+          _refused("orientation result sets", "cam_generate"))
+    write("cam_generate", lambda c: {"target": _ctx_get(c, "pb_orient", "the orientation"),
+                                     "skip_valid": False},
+          lambda p: p.get("launched") is True and bool(p.get("handle")),
+          ("pb_orient_gen", _recall("pb_orient_gen", lambda p: p["handle"])))
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_orient_gen", "the orientation")},
+         _face_op_settled("pb_orient_gen", "the orientation generation settled valid", {"valid": 1}))
+    native("each operation's parts and the poses before a candidate is chosen",
+           lambda n: n["setting"] == "PLA (Direct Drive)"
+           and n["targets"].get(_RECALL["pb_clash"]) == [_PB_A, _PB_B]
+           and n["targets"].get(_RECALL["pb_support"]) == [_PB_A]
+           and n["targets"].get(_RECALL["pb_orient"]) == [_PB_A],
+           ("pb_before", _recall("pb_before", lambda p: _pb_native(p)["poses"])))
+
+    def turned(r):
+        """The first supported candidate with a rotation different from PartA's pose."""
+        now = _pb_turn(_RECALL["pb_before"][_PB_A])
+        rows_ = (r.get("orientation") or {}).get("candidates") or []
+        return next((c for c in rows_ if c.get("transformation")
+                     and (c.get("support_volume") or 0) > 0
+                     and not _pb_same(_pb_turn(c["transformation"]), now)), None)
+    results("pb_orient", lambda r: (r.get("orientation") or {}).get("count") == 9
+            and (r.get("orientation") or {}).get("current_index") is None and turned(r) is not None,
+            ("pb_pick", _recall("pb_pick", lambda p: turned(p["additive_results"]))))
+    write("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "pb_orient", "the orientation"),
+                                           "orientation_candidate": _RECALL["pb_pick"]["index"]},
+          lambda p: p.get("orientation_candidate") == _RECALL["pb_pick"]["index"]
+          and p.get("part") == _PB_A
+          and _pb_same(_pb_turn(p.get("pose") or [0] * 16),
+                       _pb_turn(_RECALL["pb_pick"]["transformation"])))
+    results("pb_orient",
+            lambda r: (r.get("orientation") or {}).get("current_index") == _RECALL["pb_pick"]["index"])
+    native("PartA turned to the chosen candidate natively, PartB where it was",
+           lambda n: _pb_same(_pb_turn(n["poses"][_PB_A]), _pb_turn(_RECALL["pb_pick"]["transformation"]))
+           and _pb_same(n["poses"][_PB_B], _RECALL["pb_before"][_PB_B]),
+           ("pb_turned", _recall("pb_turned", lambda p: _pb_native(p)["poses"])))
+
+    def placement(label, judge):
+        def check(p):
+            got = {r.get("part"): r for r in (p.get("placement") or {}).get("parts") or []}
+            return _measured(label, got, set(got) == {_PB_A, _PB_B}
+                             and all(r.get("read") is True for r in got.values()) and judge(got))
+        read("cam_get", {"include": ["placement"], "setup": _PB_SETUP, "units": "cm"}, check)
+    # The placement read against the native poses: the same 16 cells, translation in the units asked.
+    placement("the placement read equals the native poses",
+              lambda got: all(_pb_same(got[part]["pose"], _RECALL["pb_turned"][part], 1e-6)
+                              for part in (_PB_A, _PB_B)))
+    # ARRANGE takes no parts of its own and moves the build's parts on the Manufacture side.
+    op("pb_arrange", "additive_arrange", None)
+    native("the arrange moved both parts natively",
+           lambda n: not _pb_same(n["poses"][_PB_A], _RECALL["pb_turned"][_PB_A])
+           and not _pb_same(n["poses"][_PB_B], _RECALL["pb_turned"][_PB_B]),
+           ("pb_arranged", _recall("pb_arranged", lambda p: _pb_native(p)["poses"])))
+    placement("the placement read follows the arrange",
+              lambda got: all(_pb_same(got[part]["pose"], _RECALL["pb_arranged"][part], 1e-6)
+                              for part in (_PB_A, _PB_B)))
+    # Arrange changes placement after the first support generation; refresh that support once.
+    write("cam_generate", lambda c: {"target": _ctx_get(c, "pb_support", "the support"),
+                                     "skip_valid": False},
+          lambda p: p.get("launched") is True and bool(p.get("handle")),
+          ("pb_support_final_gen", _recall("pb_support_final_gen", lambda p: p["handle"])))
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_support_final_gen", "the support")},
+         _face_op_settled("pb_support_final_gen", "the placed support settled valid", {"valid": 1}))
+    # The count reads 0 on the valid support whose structures the 3MF below carries.
+    results("pb_support", lambda r: r.get("parts") == [_PB_A] and r.get("has_error") is False
+            and r.get("generated_result_count") == 0
+            and "does not say whether support was generated" in (r.get("note") or ""))
+    # Generate the setup's default slice after arrange and refreshed support.
+    def buildstyle(p):
+        rows_ = [r for rec in ((p.get("operations") or {}).get("setups") or [])
+                 if rec.get("setup") == _PB_SETUP for r in rec.get("operations") or []
+                 if r.get("strategy") == "additive_buildstyle"]
+        return rows_[0] if len(rows_) == 1 else {}
+    read("cam_get", {"include": ["operations"], "setup": _PB_SETUP},
+         lambda p: _measured("the unique default PartsBuild slice", buildstyle(p),
+                             bool(buildstyle(p).get("name"))),
+         ("pb_slice", _recall("pb_slice", lambda p: buildstyle(p)["name"])))
+    write("cam_generate", lambda c: {"target": _ctx_get(c, "pb_slice", "the slice"),
+                                     "skip_valid": False},
+          lambda p: p.get("launched") is True and bool(p.get("handle")),
+          ("pb_slice_gen", _recall("pb_slice_gen", lambda p: p["handle"])))
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_slice_gen", "the slice")},
+         _face_op_settled("pb_slice_gen", "the PartsBuild slice settled valid", {"valid": 1}))
+    # Native positive control uses the same owned scratch and exports only once.
+    write("sys_execute_script", {"script": _PB_POSITIVE_NATIVE, "read_only": False},
+          lambda p: _measured("the populated support and valid slice exported natively",
+                              _pb_positive(p), _pb_positive(p).get("path") == _PB_INCLUDED_3MF
+                              and (_pb_positive(p).get("size_bytes") or 0) > 0
+                              and _pb_positive(p).get("support") == _RECALL["pb_support"]
+                              and _pb_positive(p).get("slice") == _RECALL["pb_slice"]))
+
+    def included_file(p):
+        try:
+            facts = _pb_3mf_inventory(_PB_INCLUDED_3MF)
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+            return _measured("the populated 3MF positive control", {"error": str(exc)}, False)
+        want = [("PartA:1+Body1", 12, 20), ("PartB:1+Body1", 8, 12)]
+        structure = any(root == "supportstructures" and anchors > 0 and entities > 0
+                        for root, anchors, entities in facts["support_xml"])
+        return _measured("the same PartsBuild has real support and slice payloads", facts,
+                         buildstyle(p).get("name") == _RECALL["pb_slice"]
+                         and facts["part_meshes"] == want and facts["support_objects"]
+                         and structure and facts["volsupport_slices"] > 0
+                         and facts["slice_elements"] > 0 and facts["slice_attributes"] > 0)
+    read("cam_get", {"include": ["operations"], "setup": _PB_SETUP}, included_file)
+
+    # The public tool now exports the same populated setup with both inclusion knobs off.
+    write("cam_export_setup", {"setup": _PB_SETUP, "file_path": _PB_OMITTED_3MF},
+          lambda p: p.get("exported") is True and p.get("setup") == _PB_SETUP
+          and p.get("file_path") == _PB_OMITTED_3MF
+          and p.get("left_out") == ["supports", "slices"] and (p.get("size_bytes") or 0) > 0)
+
+    def parts_file(p):
+        try:
+            facts = _pb_3mf_inventory(_PB_OMITTED_3MF)
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+            return _measured("the public 3MF omission export", {"error": str(exc)}, False)
+        boxes = [r for r in (p.get("placement") or {}).get("parts") or [] if r.get("read") is True]
+        read_min = [min(r["min_point"][i] for r in boxes) for i in range(3)] if boxes else None
+        read_max = [max(r["max_point"][i] for r in boxes) for i in range(3)] if boxes else None
+        want = [("PartA:1+Body1", 12, 20), ("PartB:1+Body1", 8, 12)]
+        return _measured("the public 3MF retains placed parts within the padded box, no support or slice",
+                         {"read_min": read_min, "read_max": read_max, **facts},
+                         facts["part_meshes"] == want and facts["mesh_count"] == 2
+                         and facts["unit"] == "millimeter" and not facts["placed_by_transform"]
+                         and not facts["support_members"] and not facts["support_objects"]
+                         and facts["slice_elements"] == 0 and facts["slice_attributes"] == 0
+                         and len(boxes) == 2 and _pb_same(facts["file_min"], read_min, 5e-2)
+                         and _pb_same(facts["file_max"], read_max, 5e-2))
+    read("cam_get", {"include": ["placement"], "setup": _PB_SETUP, "units": "mm"}, parts_file)
+    # The METAL printer reports FFF support incompatibility after async generation settles.
+    write("cam_create_setup", {"operation_type": "additive", "name": _PB_SETUP + "Metal",
+                               "machine": _ADD_MACHINE, "print_setting": _ADD_SETTING,
+                               "models": [_PB_A]},
+          lambda p: p.get("created") is True)
+    def metal_started(p):
+        landed = (p.get("generation_started") is True and bool(p.get("generation_handle"))
+                  and bool(p.get("operation")) and p.get("setup") == _PB_SETUP + "Metal"
+                  and p.get("strategy") == "solid_volume_support")
+        if landed:
+            _RECALL["pb_refused_op"] = p["operation"]
+        return _measured("metal support generation launched", p, landed)
+    write("cam_create_operation", {"setup": _PB_SETUP + "Metal", "strategy": "solid_volume_support",
+                                   "generate": True},
+          metal_started,
+          ("pb_refused_gen", _recall("pb_refused_gen", lambda p: p["generation_handle"])))
+    # The launch handle belongs to this operation; the status poll must finish with one fault.
+    read("cam_get_status", lambda c: {"handle": _ctx_get(c, "pb_refused_gen", "the metal support")},
+         _face_op_settled("pb_refused_gen", "metal support generation settled errored", {"errored": 1}))
+    read("cam_get_status", lambda c: {"target": _RECALL["pb_refused_op"]},
+         lambda p: _measured("the settled metal support names its compatibility error",
+                             p.get("operations_with_errors"),
+                             p.get("completed") is True and p.get("operations_with_errors") == [
+                                 {"name": _RECALL["pb_refused_op"],
+                                  "error": "The support object is not compatible with the machine."}]))
+    read("cam_get", lambda c: {"include": ["additive_results"], "setup": _PB_SETUP + "Metal",
+                               "operation": _RECALL["pb_refused_op"]},
+         lambda p: _measured("the support operation independently reads its compatibility error",
+                             p.get("additive_results"),
+                             (p.get("additive_results") or {}).get("operation") == _RECALL["pb_refused_op"]
+                             and (p.get("additive_results") or {}).get("has_error") is True
+                             and str((p.get("additive_results") or {}).get("error") or "").strip()
+                             == "The support object is not compatible with the machine."))
+    write("cam_delete", lambda c: {"entity": _RECALL["pb_refused_op"]},
+          lambda p: p.get("deleted") is True and p.get("entity") == _RECALL["pb_refused_op"])
+    write("view_switch_workspace", {"workspace": "design"})
+    close()
+    return rows
+
+
 _HUB_ADDITIVE = [
     _watch(HUB_COMP + ":1"),
     # The catalog reads first: the names the setup below is built from are READ, not assumed.
@@ -1421,11 +2060,20 @@ _HUB_ADDITIVE = [
               "print_setting_description"), None),
     # And the remedy that refusal names, taken: the qualifier reaches the twin the platform's own
     # asset url does not, and the setup's OWN description is what says which one landed.
-    ("cam_create_setup", {"operation_type": "additive", "machine": _ADD_MACHINE,
+    ("cam_create_setup", {"operation_type": "additive", "machine": _TWIN_MACHINE,
                           "print_setting": _TWIN_SETTING,
                           "print_setting_description": _TWIN_PICK,
                           "models": [HUB_COMP + ":1"], "name": _ADD_SETUP + "Twin"},
      _twin_picked(_ADD_SETUP + "Twin", _TWIN_SETTING, _TWIN_PICK), None),
+    ("cam_get", {"include": ["print_setting"], "setup": _ADD_SETUP + "Twin"},
+     lambda p: _measured("the qualified twin setting is compatible with its Formlabs printer",
+                         p.get("print_setting"),
+                         (p.get("print_setting") or {}).get("setup") == _ADD_SETUP + "Twin"
+                         and (p.get("print_setting") or {}).get("name") == _TWIN_SETTING
+                         and _TWIN_PICK in (p.get("print_setting") or {}).get("description", "")
+                         and (p.get("print_setting") or {}).get("compatible_with_machine") is True
+                         and ((p.get("print_setting") or {}).get("printer") or {}).get("vendor") == "Formlabs"
+                         and ((p.get("print_setting") or {}).get("printer") or {}).get("model") == "Fuse 1+ 30W (Nylon 12)"), None),
     ("cam_delete", {"entity": _ADD_SETUP + "Twin"},
      lambda p: p.get("deleted") is True and p.get("entity") == _ADD_SETUP + "Twin", None),
     # The machine is REQUIRED on this arm: measured, setups.add of a machineless additive input
@@ -1467,13 +2115,49 @@ _HUB_ADDITIVE = [
     ("cam_get", {"include": ["operations", "default"], "setup": _ADD_SETUP},
      lambda p: _container_rows(_ADD_SETUP, (_RECALL["add_orient_op"],
                                             _RECALL["add_support_op"]))(p), None),
+    # the time slice classifies the additive setup before its toolpath gate, on both routes
+    ("cam_get", {"include": ["time"], "setup": _ADD_SETUP}, _additive_time_row(), None),
+    ("cam_get", lambda c: {"include": ["time"], "setup": _ADD_SETUP,
+                           "operation": _ctx_get(c, "add_orient_op", "the orientation op")},
+     lambda p: _additive_time_row(_RECALL["add_orient_op"])(p), None),
+    # a second orientation in the same container, moved before the first and back: the order is
+    # re-read off the container's children
+    ("cam_create_operation", {"setup": _ADD_SETUP, "strategy": "automatic_orientation"},
+     _additive_op_created(_ADD_SETUP, "automatic_orientation"),
+     ("add_orient_op2", _recall("add_orient_op2", lambda p: p["operation"]))),
+    ("cam_reorder", lambda c: {"entity": _ctx_get(c, "add_orient_op2", "the second orientation"),
+                               "position": "before",
+                               "reference": _ctx_get(c, "add_orient_op", "the orientation op")},
+     lambda p: _container_order(_RECALL["add_orient_op2"], _RECALL["add_orient_op"])(p), None),
+    ("cam_reorder", lambda c: {"entity": _ctx_get(c, "add_orient_op2", "the second orientation"),
+                               "position": "after",
+                               "reference": _ctx_get(c, "add_orient_op", "the orientation op")},
+     lambda p: _container_order(_RECALL["add_orient_op"], _RECALL["add_orient_op2"])(p), None),
     # An additive row never carries tool_unselected or a spindle_check, and the setup's own
     # readiness never sends it to cam_edit_operation for a tool - additive rows take neither by
     # construction, the manual-NC exclusion's additive sibling.
     ("cam_get", {"include": ["operations"], "setup": _ADD_SETUP},
      lambda p: _additive_no_tool_blockers(_ADD_SETUP, _RECALL["add_orient_op"])(p), None),
-    # The status health names no additive row as an empty toolpath: an additive build op carries
-    # no toolpath by construction, the same exclusion the operations reader applies.
+    # Showing a pathless additive operation: the orientation is not sent to cam_generate, the
+    # setup's own slice is - it is the one additive strategy measured reading a toolpath.
+    ("cam_show_toolpath", lambda c: {"action": "show",
+                                     "operation": _ctx_get(c, "add_orient_op", "the orientation")},
+     lambda p: _measured("the orientation's pathless warning", p.get("warning"),
+                         p.get("has_toolpath") is False
+                         and "currently reads no toolpath" in (p.get("warning") or "")
+                         and "Generate it first" not in (p.get("warning") or "")), None),
+    ("cam_get", {"include": ["operations"], "setup": _ADD_SETUP},
+     lambda p: len(_additive_slices(p)) == 1,
+     ("add_slice_op", _recall("add_slice_op", lambda p: _additive_slices(p)[0]))),
+    ("cam_show_toolpath", lambda c: {"action": "show",
+                                     "operation": _ctx_get(c, "add_slice_op", "the slice")},
+     lambda p: _measured("the slice's pathless warning", p.get("warning"),
+                         p.get("has_toolpath") is False
+                         and "Generate it first" in (p.get("warning") or "")
+                         and "currently reads" not in (p.get("warning") or "")), None),
+    ("cam_show_toolpath", {"action": "hide_all"}, "ok", None),
+    # The status health names no additive row as an empty toolpath: a valid additive operation
+    # is never reported empty, the same exclusion the operations reader applies.
     ("cam_get_status", {"target": _ADD_SETUP},
      lambda p: _measured("no additive operation named in empty_toolpaths",
                          {"empty_toolpaths": p.get("empty_toolpaths"), "counts": p.get("counts")},
@@ -1506,3 +2190,7 @@ _HUB_ADDITIVE = [
     # act's boundary poll certifies it before the next act reads its times.
     ("cam_generate", {"target": _MX_SETUP, "skip_valid": True}, _relaunched(_MX_SETUP), None),
 ]
+
+# The base-license route is a hypothesis until this act runs with the extension absent.
+_FFF_EXPORT = _additive_slice_rows()
+_HUB_ADDITIVE += _additive_parts_rows()

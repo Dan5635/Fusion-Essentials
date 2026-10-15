@@ -4,9 +4,57 @@
 """The sketch world: profiles, the per-kind curve collections, the sketch and its points."""
 
 import types
+import math
 
 from tests.fakes.geometry import FakePoint
 from tests.fakes.scaffold import _NamedCollection, fusion_fake
+
+
+@fusion_fake(scenario_double="Injected text rectangle rotation and read faults; not a measured API shape")
+class TextRectangleRotation:
+    """A numeric rectangle scenario with explicitly injected rotation faults."""
+    def __init__(self, corner=(1.0, 2.0), diagonal=(4.5, 2.7), injected=()):
+        self._injected = frozenset(injected)
+        known = {"rotate_false", "rotate_drop", "rotate_partial", "rotate_raises",
+                 "unread_before", "unread_after", "missing_line", "reversed_edge"}
+        if self._injected - known:
+            raise ValueError(f"Unknown injected text rotation faults: {self._injected - known}")
+        self._corners = [FakePoint(corner[0], corner[1], 0),
+                         FakePoint(diagonal[0], corner[1], 0),
+                         FakePoint(diagonal[0], diagonal[1], 0),
+                         FakePoint(corner[0], diagonal[1], 0)]
+        self._lines = [types.SimpleNamespace(
+            startSketchPoint=types.SimpleNamespace(geometry=self._corners[i]),
+            endSketchPoint=types.SimpleNamespace(geometry=self._corners[(i + 1) % 4]))
+            for i in range(4)]
+        self.calls = []
+
+    @property
+    def rectangleLines(self):
+        if "unread_before" in self._injected or (self.calls and "unread_after" in self._injected):
+            raise RuntimeError("Injected unreadable text rectangle")
+        lines = self._lines[:3] if "missing_line" in self._injected else self._lines
+        if "reversed_edge" in self._injected:
+            return [types.SimpleNamespace(startSketchPoint=lines[0].endSketchPoint,
+                                          endSketchPoint=lines[0].startSketchPoint)] + lines[1:]
+        return lines
+
+    def rotate(self, radians):
+        self.calls.append(radians)
+        if "rotate_raises" in self._injected:
+            raise RuntimeError("Injected rotation raise")
+        if "rotate_false" in self._injected:
+            return False
+        if "rotate_drop" in self._injected:
+            return True
+        cx = sum(p.x for p in self._corners) / 4
+        cy = sum(p.y for p in self._corners) / 4
+        c, s = math.cos(radians), math.sin(radians)
+        points = self._corners[:1] if "rotate_partial" in self._injected else self._corners
+        for p in points:
+            x, y = p.x - cx, p.y - cy
+            p.x, p.y = cx + c * x - s * y, cy + s * x + c * y
+        return True
 
 
 @fusion_fake(live_type="Profile", facts=("shape-dump-design-world",))
@@ -89,6 +137,9 @@ class SketchCurves:
         return iter(self._flat())
 
 
+INJECTED_SKETCH_FAULTS = ("name_write_ignored", "visible_write_ignored", "visible_unreadable")
+
+
 @fusion_fake(live_type="Sketch",
              facts=("shape-dump-design-world", "sketch-profiles-under-compute-deferred"))
 class Sketch:
@@ -98,30 +149,74 @@ class Sketch:
     `is_visible` is the browser bulb a tool hides a helper sketch behind. `entity_token` is the
     identity half two sketch references are compared on and `timeline_object` the timeline entry a
     sketch is addressed by; both are set only when given, since a sketch whose token or timeline
-    item does not read is its own tested state."""
+    item does not read is its own tested state.
+
+    `injected` names INJECTED_SKETCH_FAULTS entries, faults no live measurement backs.
+    `taken_names` are names a sibling sketch holds: writing one adopts '<name> (1)', as measured."""
     def __init__(self, name="Sketch1", curves=None, points=(), profiles=(),
                  is_compute_deferred=False, parent_component=None, is_visible=True,
-                 entity_token=None, timeline_object=None):
+                 entity_token=None, timeline_object=None, transform=None, injected=(),
+                 taken_names=()):
+        self._taken_names = frozenset(taken_names)
+        unknown = sorted(set(injected) - set(INJECTED_SKETCH_FAULTS))
+        if unknown:
+            raise ValueError(f"unknown injected sketch fault(s) {unknown}; "
+                             f"known: {list(INJECTED_SKETCH_FAULTS)}")
+        # The seed values are not assignments a fault swallows, so the faults arm last.
+        self._injected = frozenset()
         self.name = name
         if entity_token is not None:
             self.entityToken = entity_token
         if timeline_object is not None:
             self.timelineObject = timeline_object
+        # `transform` maps sketch space into the component's (a FakeMatrix3D), set only when given.
+        if transform is not None:
+            self.transform = transform
         self.sketchCurves = SketchCurves() if curves is None else curves
         self.sketchPoints = _NamedCollection(points)
         self.profiles = _NamedCollection(profiles)
         self.isComputeDeferred = is_compute_deferred
         self.parentComponent = parent_component
         self.isVisible = is_visible
+        self._injected = frozenset(injected)
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, value):
+        if "name_write_ignored" not in self._injected:
+            self._name = value + " (1)" if value in self._taken_names else value
+
+    @property
+    def isVisible(self):
+        if "visible_unreadable" in self._injected:
+            raise RuntimeError("injected unreadable isVisible")
+        return self._visible
+
+    @isVisible.setter
+    def isVisible(self, value):
+        if "visible_write_ignored" not in self._injected:
+            self._visible = value
 
 
 @fusion_fake(live_type="SketchPoint", facts=("shape-dump-timeline-world",))
 class FakeSketchPoint:
     """One point a sketch owns - the 'point:<index>' address space sketchPoints indexes - carrying
-    its 2D `geometry`. There is no isConstruction: SketchPoint carries none, so a point never reads
-    as construction the way a curve does."""
-    def __init__(self, geometry=None):
+    its SKETCH-space `geometry`; no isConstruction, which SketchPoint lacks. `assembly_context` is
+    the occurrence a PROXY is read through - None on a native - and `native_object`
+    what it stands for; `parent_sketch` and `entity_token` are set only when given."""
+    def __init__(self, geometry=None, parent_sketch=None, entity_token=None,
+                 assembly_context=None, native_object=None):
         self.geometry = geometry
+        self.assemblyContext = assembly_context
+        if parent_sketch is not None:
+            self.parentSketch = parent_sketch
+        if entity_token is not None:
+            self.entityToken = entity_token
+        if native_object is not None:
+            self.nativeObject = native_object
 
 
 @fusion_fake(factory_for="Sketch")

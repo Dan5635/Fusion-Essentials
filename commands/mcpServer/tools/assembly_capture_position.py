@@ -54,9 +54,9 @@ def handler(action: str = "status", marker: str = "") -> dict:
     act, aerr = _CAPTURE_ACTION.resolve(action)
     if aerr:
         return error(aerr)
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     snaps = safe(lambda: design.snapshots)
     if snaps is None:
         return error("This design does not expose snapshots (capture position).")
@@ -69,8 +69,9 @@ def handler(action: str = "status", marker: str = "") -> dict:
 
     if act == "status":
         note = ("has_pending = a moved-but-uncaptured position exists (a joint_drive pose sets it "
-                "the same way a free move does; a design_add_instance placement and an "
-                "assembly_constrain relationship do NOT). Use capture to record it into the "
+                "the same way a free move does; a shared design_add_instance placement and an "
+                "assembly_constrain relationship do NOT). Independent copies can capture their "
+                "placement. Use capture to record a pending move into the "
                 "timeline, revert to drop the latest capture, or delete a specific marker by name.")
         if pending_flag is None:
             note = ("has_pending is null - the pending-position flag could not be read, so whether "

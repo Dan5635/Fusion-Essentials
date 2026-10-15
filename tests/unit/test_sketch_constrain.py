@@ -11,6 +11,7 @@ method each constraint routes to + what it needs), and the read-back gates on th
 geometry. The actual constraint creation is captured on a fake GeometricConstraints whose add*
 methods refuse the operand kinds the live bindings refuse.
 """
+from conftest import install as _install_design
 
 import ast
 import json
@@ -22,8 +23,8 @@ import adsk.core
 import adsk.fusion
 import pytest
 
-from conftest import (MakeComp, Sketch, SketchCurves, _NamedCollection, load_tool, make_design,
-                      install as install_design)
+from conftest import (FakeSketchPoint, MakeComp, Sketch, SketchCurves, _NamedCollection, load_tool,
+                      make_design, install as install_design)
 
 sc = load_tool("sketch_constrain")
 
@@ -82,9 +83,22 @@ class FakePatternConstraint:
 
 
 class FakeOffsetInput:
+    """isTopologyMatched defaults to True, as measured; `sticky` is an input that ignores the set."""
+    sticky = False
+
     def __init__(self, curves, offset):
         self.curves = list(curves)
         self.offset = offset
+        self._matched = True
+
+    @property
+    def isTopologyMatched(self):
+        return self._matched
+
+    @isTopologyMatched.setter
+    def isTopologyMatched(self, value):
+        if not self.sticky:
+            self._matched = value
 
 
 class _SuppressionInput:
@@ -140,6 +154,8 @@ class FakeConstraints:
         # different count than requested, which the tool has to catch instead of echoing the request.
         self.pattern_quantity_is = None
         self.offset_curves_created = None
+        self.offset_collapses = False      # the offset distance swallows a corner of the source
+        self.perpendicular2_solves = True  # False: the constraint is handed back, the line stays
         self.count = 0                 # constraints the sketch holds, as the live collection reports
         # what the CREATED pattern reports for the two settings the input asked for - the platform
         # can decline a symmetry or land a different distance type than the one it was handed.
@@ -163,12 +179,9 @@ class FakeConstraints:
         ka, kb = getattr(a, "kind", None), getattr(b, "kind", None)
         if ka != kb:
             raise TypeError(f"invalid argument value: {ka} and {kb} are different kinds")
-    # live-verified type gates: perpendicular/parallel/collinear/horizontal/vertical and
-    # symmetry's axis take a typed SketchLine; coincident/midpoint take a typed SketchPoint.
-    def addPerpendicular(self, a, b):
-        self._require(a, "line")
-        self._require(b, "line")
-        return self._rec("perpendicular", a, b)
+    # live-verified type gates: parallel/collinear/horizontal/vertical and symmetry's axis take a
+    # typed SketchLine; coincident/midpoint take a typed SketchPoint. The retired addPerpendicular
+    # is absent, so a call that reaches for it fails.
     def addParallel(self, a, b):
         self._require(a, "line")
         self._require(b, "line")
@@ -261,7 +274,21 @@ class FakeConstraints:
         for c in curves:
             self._require(c, *_CURVE_KINDS)
         return FakeOffsetInput(curves, offset)
+    def addPerpendicular2(self, line, curve):
+        # measured: the order is strict and a spline is refused "3 : invalid argument curve".
+        # BINDINGS-SOURCED, not measured: a second LINE is taken ("a line, circle, or arc").
+        self._require(line, "line")
+        if getattr(curve, "kind", None) not in ("line", "arc", "circle"):
+            raise RuntimeError("3 : invalid argument curve")
+        if self.perpendicular2_solves and curve.kind != "line":
+            centre = curve.centerSketchPoint.geometry
+            line.endSketchPoint.geometry.x, line.endSketchPoint.geometry.y = centre.x, centre.y
+        return self._rec("addPerpendicular2", line, curve)
     def addOffset2(self, oin):
+        if self.offset_collapses and oin.isTopologyMatched:
+            raise RuntimeError(
+                "3 : Failed to create constraint: Offset creation failed as the topology of the "
+                "offset curves does not match the topology of the original curves.")
         self._rec("offset", oin)
         return FakeOffsetConstraint(self.offset_curves_created
                                     if self.offset_curves_created is not None else len(oin.curves))
@@ -379,8 +406,11 @@ def install(monkeypatch):
 
 
 def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+    data = json.loads(result["content"][0]["text"])
+    assert result["isError"] is ("failed" in data), result
+    if "failed" in data:
+        assert result["message"] == data["note"]
+    return data
 
 
 def _constrain(sketch_name="S", component="", units="mm", **entry):
@@ -412,7 +442,7 @@ def _wire_curved_face(monkeypatch, design, handle="CYL"):
     monkeypatch.setattr(adsk.fusion, "BRepFace", _CurvedFace)
     monkeypatch.setattr(design, "findEntityByToken",
                         lambda h, _f=_CURVED_FACE: [_f] if h == handle else [], raising=False)
-    monkeypatch.setattr(sc._inputs._common, "design", lambda: design)
+    _install_design(sc, design)
 
 
 def _two_line_sketch():
@@ -529,8 +559,23 @@ class TestTwoCurve:
         s = _two_line_sketch(); install(s)
         out = _one_row(_constrain(constraint="perpendicular", sketch_name="S",
                                   entity_one="line:0", entity_two="line:1"))
-        assert s.geometricConstraints.calls[0][0] == "perpendicular"
+        name, args = s.geometricConstraints.calls[0]
+        lines = s.sketchCurves.sketchLines
+        # entity_one is the call's line and entity_two its curve
+        assert name == "addPerpendicular2" and args == (lines.item(0), lines.item(1))
         assert out["applied"] == "perpendicular"
+
+    @pytest.mark.parametrize("two, remedy", [("arc:0", True), ("circle:0", True),
+                                             ("spline:0", False)])
+    def test_perpendicular_refuses_a_second_operand_that_is_not_a_line(self, install, two, remedy):
+        # addPerpendicular2 takes an arc or circle second, which would land the OTHER constraint
+        s = _spoke_sketch(); install(s)
+        res = _constrain(constraint="perpendicular", sketch_name="S",
+                         entity_one="line:0", entity_two=two)
+        assert res["isError"] is True
+        assert f"'perpendicular' takes two lines. Got '{two}' as entity_two." in res["message"]
+        assert ("constraint=perpendicular_to_curve" in res["message"]) is remedy
+        assert s.geometricConstraints.calls == []
 
     def test_parallel_equal_tangent_concentric_collinear(self, install):
         # tangent needs curves (line+circle is the canonical pair).
@@ -652,6 +697,91 @@ class TestEntityAnchors:
     """sketch_constrain reads the SAME ':start/:end/:mid/:center' anchor forms sketch_dimension
     does (_common.parse_anchor_ref / anchor_point): a point slot handed 'circle:0:center' gets that
     circle's own centre point, so centring a circle takes no hunt for the right 'point:N'."""
+
+    @pytest.mark.parametrize("extra,reason", [({"quantity": 1}, "quantity >= 2"),
+        ({"quantity": 3, "suppressed": [True]}, "needs 2 flag(s)")])
+    def test_circular_inputs_refuse_before_midpoint_minting(self, install, extra, reason):
+        s = _anchored_sketch(); install(s)
+        result = _constrain(constraint="circular_pattern", entities="circle:0", entity_one="line:0:mid", **extra)
+        assert result["isError"] is True and reason in result["message"]
+        assert s.sketchPoints.count == 2 and s.geometricConstraints.count == 0
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+        assert not s.sketchCurves.sketchLines.item(0).isFixed and not s.sketchCurves.sketchCircles.item(0).isFixed
+
+    @pytest.mark.parametrize("entities,reason", [("circle:99", "Could not resolve 'circle:99'"),
+                                                ("", "needs 'entities'")])
+    def test_pattern_sources_are_resolved_before_midpoint_mints(self, install, entities, reason):
+        s = _anchored_sketch(); install(s)
+        result = _constrain(constraint="circular_pattern", entities=entities,
+                            entity_one="line:0:mid", quantity=3)
+        assert result["isError"] is True and reason in result["message"]
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+        assert s.sketchPoints.count == 2 and s.geometricConstraints.count == 0
+
+    @pytest.mark.parametrize("other", ["line:0:mid", "LINE:00:midpoint"])
+    def test_repeated_mid_source_refuses_before_either_anchor_mints(self, install, other):
+        s = _anchored_sketch(); install(s)
+        result = _constrain(constraint="coincident", entity_one="line:0:mid", entity_two=other)
+        assert result["isError"] is True and "SAME line midpoint" in result["message"]
+        assert "sketch_get(include_entities=true)" in result["message"]
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+        assert s.sketchPoints.count == 2 and s.geometricConstraints.count == 0
+
+    @pytest.mark.parametrize("entry, reason", [
+        ({"constraint": "coincident_to_surface", "entity_one": "line:0:mid"}, "needs 'surface'"),
+        ({"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "circle:0:mid"}, "LINE")])
+    def test_required_operands_are_checked_before_either_midpoint(self, install, entry, reason):
+        s = _anchored_sketch(); install(s)
+        result = _constrain(**entry)
+        assert result["isError"] is True and reason in result["message"]
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
+        assert s.sketchPoints.count == 2 and s.geometricConstraints.count == 0
+
+    @pytest.mark.parametrize("prefix", [False, True])
+    def test_solver_refusal_reports_its_own_retained_counts(self, install, monkeypatch, prefix):
+        s = _anchored_sketch(); install(s)
+        s.sketchCurves.sketchLines._items[1] = _AnchoredLine("L1", _endpoint("L1S", 0, 2), _endpoint("L1E", 2, 2))
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        record = s.geometricConstraints._rec
+
+        def counted_record(name, *args):
+            s.geometricConstraints.count += 1
+            return record(name, *args)
+
+        def refuse(*_args):
+            raise RuntimeError("OVERCONSTRAINTS")
+
+        monkeypatch.setattr(s.geometricConstraints, "_rec", counted_record)
+        monkeypatch.setattr(s.geometricConstraints, "addCoincident", refuse)
+        entries = [{"constraint": "horizontal", "entity_one": "line:1"}] if prefix else []
+        entries += [{"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "line:1:mid"},
+                    {"constraint": "vertical", "entity_one": "line:1"}]
+        result = sc.handler(constraints=entries, sketch_name="S")
+        assert s.sketchPoints.count == 4 and s.geometricConstraints.count == 2 + int(prefix)
+        assert [c[0] for c in s.geometricConstraints.calls] == (["horizontal"] if prefix else []) + ["midpoint", "midpoint"]
+        if prefix:
+            out = _payload(result)
+            assert out["constrained"] == 1 and len(out["results"]) == 1 and "retained" not in out
+            assert out["failed"]["index"] == 1 and out["not_attempted"] == 1
+            counts = out["failed_entry_counts"]
+            assert counts["before"]["constraints"] == 1 and counts["after"]["constraints"] == 3
+            assert counts["change"] == {"curves": 0, "points": 2, "constraints": 2, "dimensions": 0}
+        else:
+            assert result["isError"] is True
+            message = result["message"]
+            assert "OVERCONSTRAINTS" in message and "points=+2, constraints=+2" in message
+            assert "1 later entry was not attempted" in message and "sketch_get(include_entities=true)" in message
+            assert "Nothing landed" not in message
+
+    def test_unread_and_negative_counts_stay_unknown(self, install):
+        s = _anchored_sketch(); install(s)
+        s.sketchDimensions = types.SimpleNamespace(count=-1)
+        s.geometricConstraints.count = None
+        result = _constrain(constraint="horizontal", entity_one="circle:0")
+        assert result["isError"] is True and "curves=+0, points=+0" in result["message"]
+        assert "constraints=unknown, dimensions=unknown" in result["message"]
+        assert "Counts do not establish unchanged geometry" in result["message"]
+        assert s.sketchPoints.added == [] and s.geometricConstraints.calls == []
 
     def test_a_centre_anchored_circle_reaches_coincident_as_the_centre_point(self, install):
         s = _anchored_sketch(); install(s)
@@ -799,6 +929,138 @@ class TestEntityAnchors:
         assert args[1].name == "C0C"
 
 
+class _CountedConstraints(FakeConstraints):
+    """GeometricConstraints (no measured shape) whose count is the constraints it holds."""
+    @property
+    def count(self):
+        return len(self.calls)
+
+    @count.setter
+    def count(self, _value):
+        pass
+
+
+class _MintedPoint(FakeSketchPoint):
+    """The shared SketchPoint a 'mid' anchor mints: deleteMe drops it and, with `cascade`, its weld."""
+    def __init__(self, sketch):
+        super().__init__()
+        self.kind = "point"
+        self._sketch = sketch
+
+    def deleteMe(self):
+        s = self._sketch
+        if not s.deletes:
+            return False
+        s.sketchPoints._items.remove(self)
+        if s.cascade:
+            s.geometricConstraints.calls[:] = [c for c in s.geometricConstraints.calls
+                                               if c[1][0] is not self]
+        return True
+
+
+def _retiring_sketch(deletes=True, cascade=True):
+    """The anchored sketch whose minted points and welds count, and can be deleted again."""
+    s = _anchored_sketch()
+    s.deletes, s.cascade = deletes, cascade
+    s.geometricConstraints = _CountedConstraints()
+    s.sketchPoints.add = lambda geometry: (s.sketchPoints._items.append(
+        _MintedPoint(s)) or s.sketchPoints._items[-1])
+    return s
+
+
+class TestFailedEntryEvidence:
+    """What a failed entry reports: count guidance, a raise, and its retired midpoint anchors."""
+
+    def test_count_guidance_follows_a_write_never_a_validation_refusal(self, install):
+        s = _anchored_sketch(); install(s)
+        refused = _constrain(constraint="bogus", entity_one="line:0")["message"]
+        assert "Failed-entry count changes: curves=+0, points=+0" in refused
+        assert "Counts do not establish" not in refused and "sketch_get(" not in refused
+        written = _constrain(constraint="horizontal", entity_one="circle:0")["message"]
+        assert "Counts do not establish unchanged geometry" in written
+
+    def test_a_raising_entry_is_that_entrys_failure_with_the_landed_entries_listed(
+            self, install, monkeypatch):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _anchored_sketch(); install(s)
+
+        def boom(_geometry):
+            raise RuntimeError("3 : point add refused.")
+        s.sketchPoints.add = boom
+        out = _payload(sc.handler(sketch_name="S", constraints=[
+            {"constraint": "horizontal", "entity_one": "line:1"},
+            {"constraint": "coincident", "entity_one": "line:0:mid", "entity_two": "point:1"},
+            {"constraint": "vertical", "entity_one": "line:1"}]))
+        assert out["constrained"] == 1 and [r["index"] for r in out["results"]] == [0]
+        assert out["failed"] == {"index": 1, "error": "The entry raised: 3 : point add refused."}
+        assert out["retained"] is None and out["not_attempted"] == 1
+        assert out["failed_entry_counts"]["change"]["points"] == 0
+        assert "Counts do not establish" in out["note"]
+
+    @pytest.mark.parametrize("deletes,cascade,clause", [
+        (True, True, "The midpoint anchor(s) it made were deleted: the point and constraint "
+                     "counts read back as before the entry."),
+        (True, False, "Deleting the midpoint anchor(s) it made left constraints=+1 against"),
+        (False, True, "Deleting the midpoint anchor(s) it made left points=+1, constraints=+1 "
+                      "against")])
+    def test_a_failed_write_retires_its_midpoint_anchor_as_the_counts_read_back(
+            self, install, monkeypatch, deletes, cascade, clause):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _retiring_sketch(deletes, cascade); install(s)
+
+        def refuse(*_args):
+            raise RuntimeError("OVERCONSTRAINTS")
+        s.geometricConstraints.addCoincident = refuse
+        msg = _constrain(constraint="coincident", entity_one="line:0:mid",
+                         entity_two="point:1")["message"]
+        assert "Could not apply coincident: OVERCONSTRAINTS" in msg and clause in msg
+        assert (s.sketchPoints.count, s.geometricConstraints.count) == (
+            2 + int(not deletes), int(not (deletes and cascade)))
+
+    def test_a_failed_write_retires_an_entity_two_midpoint_anchor(self, install, monkeypatch):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _retiring_sketch(); install(s)
+
+        def refuse(*_args):
+            raise RuntimeError("OVERCONSTRAINTS")
+        s.geometricConstraints.addCoincident = refuse
+        msg = _constrain(constraint="coincident", entity_one="point:1",
+                         entity_two="line:0:mid")["message"]
+        assert "Could not apply coincident: OVERCONSTRAINTS" in msg
+        assert "The midpoint anchor(s) it made were deleted" in msg
+        assert (s.sketchPoints.count, s.geometricConstraints.count) == (2, 0)
+
+    def test_a_write_that_returns_nothing_retires_its_midpoint_anchor(self, install, monkeypatch):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _retiring_sketch(); install(s)
+        s.geometricConstraints.addCoincident = lambda *_args: None
+        msg = _constrain(constraint="coincident", entity_one="line:0:mid",
+                         entity_two="point:1")["message"]
+        assert "Applying coincident returned no constraint object." in msg
+        assert ("The midpoint anchor(s) it made were deleted: the point and constraint counts "
+                "read back as before the entry.") in msg
+        assert (s.sketchPoints.count, s.geometricConstraints.count) == (2, 0)
+
+    def test_a_failed_second_mint_retires_the_first_anchor(self, install, monkeypatch):
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: ("pt", x, y, z))
+        s = _retiring_sketch()
+        s.sketchCurves.sketchLines._items[1] = _AnchoredLine(
+            "L1", _endpoint("L1S", 0, 2), _endpoint("L1E", 2, 2))
+        install(s)
+        add = s.sketchPoints.add
+
+        def second_raises(geometry):
+            if len(s.sketchPoints._items) > 2:
+                raise RuntimeError("3 : point add refused.")
+            return add(geometry)
+        s.sketchPoints.add = second_raises
+        msg = _constrain(constraint="coincident", entity_one="line:0:mid",
+                         entity_two="line:1:mid")["message"]
+        assert "entity_two 'line:1:mid': 3 : point add refused. " in msg
+        assert "The midpoint anchor(s) it made were deleted" in msg
+        assert (s.sketchPoints.count, s.geometricConstraints.count) == (2, 0)
+
+
 # ── the 'component' SCOPE ────────────────────────────────────────────────────
 # Fusion numbers sketches per component from 1, so two components each holding a "Sketch1" is the
 # norm rather than a corner. The design-wide walk is right to REFUSE that name, and the refusal
@@ -894,12 +1156,14 @@ class TestSingleLine:
         out = _one_row(_constrain(constraint="fix", sketch_name="S", entity_one="line:1"))
         assert s.sketchCurves.sketchLines.item(1).isFixed is True
         assert out["applied"] == "fix"
+        assert "endpoints can still move" in out["note"] and "point ids" in out["note"]
 
     def test_unfix(self, install):
         s = _two_line_sketch(); install(s)
         s.sketchCurves.sketchLines.item(0).isFixed = True
-        _payload(_constrain(constraint="unfix", sketch_name="S", entity_one="line:0"))
+        out = _one_row(_constrain(constraint="unfix", sketch_name="S", entity_one="line:0"))
         assert s.sketchCurves.sketchLines.item(0).isFixed is False
+        assert "endpoints can still move" not in out["note"]
 
     def test_fix_failure_is_reported_not_a_false_success(self, install):
         s = _two_line_sketch(); install(s)
@@ -2288,7 +2552,7 @@ class TestBatch:
                                       {"constraint": "vertical", "entity_one": "line:1"}],
                          sketch_name="S")
         assert res["isError"] is True
-        assert "constraints[0]:" in res["message"] and "Nothing landed." in res["message"]
+        assert "constraints[0]:" in res["message"] and "Nothing completed." in res["message"]
         assert s.geometricConstraints.calls == []
 
     def test_an_unknown_field_in_an_entry_is_refused_naming_it(self, install):
@@ -2334,3 +2598,92 @@ class TestEntrySchemaDefaults:
         for field, prop in sc._ENTRY_SCHEMA["properties"].items():
             if "default" in prop:
                 assert prop["default"] in (applied.get(field), kinds.get(field)), field
+
+
+
+# -- perpendicular_to_curve and the offset topology flag ---------------------------------------
+
+
+def _geo(x, y):
+    return types.SimpleNamespace(geometry=types.SimpleNamespace(x=x, y=y, z=0.0))
+
+
+def _spoke_sketch():
+    """line:0 from (0,0) to (1,0); arc:0 centred (3,4); circle:0 centred (-2,5); line:1; spline:0."""
+    spoke, other = FakeCurve("L0", "line"), FakeCurve("L1", "line")
+    spoke.startSketchPoint, spoke.endSketchPoint = _geo(0.0, 0.0), _geo(1.0, 0.0)
+    arc, circle = FakeCurve("A0", "arc"), FakeCurve("C0", "circle")
+    arc.centerSketchPoint, circle.centerSketchPoint = _geo(3.0, 4.0), _geo(-2.0, 5.0)
+    return FakeSketch("S", lines=[spoke, other], arcs=[arc], circles=[circle],
+                      splines=[FakeCurve("SP0", "spline")])
+
+
+class TestPerpendicularToCurve:
+    def test_the_line_goes_first_and_the_reply_names_the_centre_it_passes(self, install):
+        s = _spoke_sketch(); install(s)
+        out = _one_row(_constrain(constraint="perpendicular_to_curve", entity_one="line:0",
+                                  entity_two="arc:0"))
+        name, args = s.geometricConstraints.calls[0]
+        assert name == "addPerpendicular2" and (args[0].name, args[1].name) == ("L0", "A0")
+        # sketch_get lists the constraint with its line AND its curve, so the note claims no gap
+        assert out["note"] == "'line:0' extended now passes through the centre of 'arc:0'."
+
+    def test_a_constraint_that_leaves_the_line_off_the_centre_is_an_error(self, install):
+        s = _spoke_sketch(); install(s)
+        s.geometricConstraints.perpendicular2_solves = False
+        res = _constrain(constraint="perpendicular_to_curve", entity_one="line:0",
+                         entity_two="arc:0", units="mm")
+        assert res["isError"] is True
+        # the centre (3,4) cm sits 4 cm = 40 mm off the X axis the line lies on
+        assert "passes 40 from the centre of 'arc:0'" in res["message"]
+        assert "constraint:<index>" in res["message"]
+
+    @pytest.mark.parametrize("one, two, text", [
+        ("arc:0", "line:0", "needs a LINE as entity_one. Got 'arc:0'"),
+        ("line:0", "spline:0", "needs an ARC or CIRCLE as entity_two. Got 'spline:0'"),
+        ("line:0", "line:1", "Two lines take constraint=perpendicular")])
+    def test_operands_of_the_wrong_kind_are_refused_before_the_call(self, install, one, two, text):
+        s = _spoke_sketch(); install(s)
+        res = _constrain(constraint="perpendicular_to_curve", entity_one=one, entity_two=two)
+        assert res["isError"] is True and text in res["message"]
+        assert s.geometricConstraints.calls == []
+
+
+class TestOffsetTopology:
+    def test_the_default_leaves_the_input_matched(self, install):
+        s = _two_line_sketch(); install(s)
+        out = _one_row(_constrain(constraint="offset", entities="line:0", distance=5))
+        assert s.geometricConstraints.calls[0][1][0].isTopologyMatched is True
+        assert "match_topology" not in out
+
+    def test_false_reaches_the_input_and_is_reported(self, install):
+        s = _two_line_sketch(); install(s)
+        s.geometricConstraints.offset_collapses = True
+        out = _one_row(_constrain(constraint="offset", entities="line:0", distance=5,
+                                  match_topology=False))
+        assert s.geometricConstraints.calls[0][1][0].isTopologyMatched is False
+        assert out["match_topology"] is False
+
+    def test_a_collapsing_offset_names_the_flag_as_the_remedy(self, install):
+        s = _two_line_sketch(); install(s)
+        s.geometricConstraints.offset_collapses = True
+        res = _constrain(constraint="offset", entities="line:0", distance=5)
+        assert res["isError"] is True and "Pass match_topology=false" in res["message"]
+
+    def test_an_input_that_ignores_the_flag_is_an_error_not_a_matched_offset(self, install,
+                                                                           monkeypatch):
+        s = _two_line_sketch(); install(s)
+        monkeypatch.setattr(FakeOffsetInput, "sticky", True)
+        res = _constrain(constraint="offset", entities="line:0", distance=5, match_topology=False)
+        assert res["isError"] is True and "did not take isTopologyMatched" in res["message"]
+        assert s.geometricConstraints.calls == []
+
+    @pytest.mark.parametrize("constraint", ["offset_two_sides", "parallel"])
+    def test_the_flag_is_refused_on_any_other_constraint(self, install, constraint):
+        s = _two_line_sketch(); install(s)
+        res = _constrain(constraint=constraint, entities="line:0", entity_one="line:0",
+                         entity_two="line:1", distance=5, match_topology=False)
+        assert res["isError"] is True
+        assert f"match_topology applies to constraint=offset only. Got it with '{constraint}'" \
+            in res["message"]
+        assert s.geometricConstraints.calls == []

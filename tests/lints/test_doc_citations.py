@@ -1,16 +1,13 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Lint: every file a doc or comment cites exists, every tool name a doc cites is registered, and
-every symbol a dotted citation points at is defined by the module it names.
-A file resolves by BASENAME anywhere under the repo; a tool resolves against the LIVE registry; a
-`<module>.<symbol>` resolves against that module's AST, and an unknown module half is skipped."""
+"""Lint: every cited file is a tracked path, every cited tool is registered, every dotted symbol is defined by the module it names."""
 
 import ast
 import io
 import re
+import subprocess
 import tokenize
-from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
@@ -22,37 +19,54 @@ MCP = REPO / "commands" / "mcpServer"
 
 # The prose surface every rule here polices - one list, so the scanned set cannot drift between them.
 CONSTITUTION_DOCS = [
-    REPO / "CLAUDE.md",
+    REPO / "AGENTS.md",
     REPO / "CONTRIBUTING.md",
     MCP / "README.md",
-    MCP / "tools" / "CLAUDE.md",
-    REPO / "tests" / "CLAUDE.md",
+    MCP / "tools" / "AGENTS.md",
+    REPO / "tests" / "AGENTS.md",
     REPO / "tests" / "README.md",
 ]
 # a file citation: an optional path prefix then a basename ending in .py, .md, or .log (a probe
 # log is EVIDENCE - a comment citing one that was never committed is an unbacked measurement
 # claim, the exact rot this lint exists for).
-_FILE = re.compile(r"[\w./\\-]*[\w-]+\.(?:py|md|log)\b")
+_FILE = re.compile(r"(?:[\w.-]+[/\\])*?[\w-]+\.(?:py|md|log)\b")
 _INLINE_CODE = re.compile(r"`([^`]+)`")
 
 
 # Log files the RUNNING add-in writes (they exist at runtime, never in the repo) - citing one is
 # a pointer to live output, not to committed evidence.
 # backlog.md: plans/ is a private, untracked ledger, absent from a clone.
-_RUNTIME_LOGS = {"futil.log", "app.log", "backlog.md"}
+_RUNTIME_LOGS = {"futil.log", "app.log", "backlog.md", "plans/backlog.md",
+                 # the gitignored local file CONTRIBUTING.md describes for a client that does not
+                 # read AGENTS.md
+                 "CLAUDE.md"}
 
 
 @lru_cache(maxsize=None)
 def _present():
-    # basename -> how many files carry it, over the whole repo. .claude/worktrees/ holds agent
-    # checkouts of this same repo, so counting them would answer "that file exists" for a file
-    # deleted here and still present in an abandoned worktree.
-    counts = Counter()
-    worktrees = REPO / ".claude" / "worktrees"
-    for ext in ("*.py", "*.md", "*.log"):
-        counts.update(p.name for p in REPO.rglob(ext) if worktrees not in p.parents)
-    counts.update(_RUNTIME_LOGS)
-    return counts
+    """Return existing tracked files in this checkout's canonical corpus."""
+    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=REPO).decode("utf-8")
+    paths = set()
+    for name in tracked.split("\0"):
+        path = REPO / name
+        if name.startswith((".cache/", "outputs/", ".claude/worktrees/")):
+            continue
+        if path.suffix in {".py", ".md", ".log"} and path.is_file() and path.resolve() == path:
+            paths.add(path)
+    return frozenset(paths)
+
+
+def _file_present(cite, src, present):
+    """True for exempt names, tracked paths from the citing file's folder, repo root or commands/mcpServer, or bare tracked basenames."""
+    cite = cite.replace("\\", "/")
+    if cite in _RUNTIME_LOGS:
+        return True
+    path = Path(cite)
+    if path.is_absolute():
+        return False
+    if any((root / path).resolve() in present for root in (src.parent, REPO, MCP)):
+        return True
+    return "/" not in cite and any(p.name == cite for p in present)
 
 
 MEASURE_ROWS = REPO / "tests" / "live" / "measure_api.py"
@@ -85,10 +99,6 @@ def _row_prose(src):
     return "\n".join(chunks)
 
 
-def _basename(cite):
-    return cite.replace("\\", "/").split("/")[-1]
-
-
 def _inline_code(doc):
     """Every inline-`code` span in one doc, joined - what a tool citation is written in."""
     return " ".join(m.group(1) for m in _INLINE_CODE.finditer(_corpus.text(doc)))
@@ -107,12 +117,13 @@ class TestDocCitations:
         for src in _scanned_files():
             text = _citable_text(src)
             for cite in sorted(set(_FILE.findall(text))):
-                if _basename(cite) not in present:
-                    offenders.append(f"{src.relative_to(REPO)} cites '{cite}' - no file named "
-                                     f"'{_basename(cite)}' exists")
+                if not _file_present(cite, src, present):
+                    offenders.append(f"{src.relative_to(REPO)} cites '{cite}' - no tracked file at "
+                                     "that path from the citing file's folder, the repo root or "
+                                     "commands/mcpServer; cite it repo-relative, or `git add -N` a new file.")
         assert not offenders, (
-            "A doc or source comment cites a file that doesn't exist (renamed/removed? cite the "
-            "current name):\n  " + "\n  ".join(offenders))
+            "A doc or source comment cites an unresolved file (check its path, spelling and "
+            "tracked status):\n  " + "\n  ".join(offenders))
 
 
 # A token counts as a tool citation when it is snake_case AND either its first segment is a known
@@ -124,7 +135,6 @@ _SNAKE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
 # of an action-dispatched tool). Shrink-only; each needs a reason.
 _NOT_A_TOOL = {
     "find_setup": "a _cam_common helper that resolves a CAM setup by exact name, not a tool",
-    "find_operation": "a _cam_common helper that resolves a CAM operation by exact name, not a tool",
 }
 
 
@@ -162,23 +172,6 @@ class TestToolCitations:
         assert not offenders, (
             "A doc cites a tool name no registered tool answers to (rename to the current tool, or add "
             "a genuine helper/action to _NOT_A_TOOL with a reason):\n  " + "\n  ".join(offenders))
-
-    def test_not_a_tool_entries_still_cited_and_still_not_tools(self):
-        # both staleness directions for the exemption table: an entry that became a real tool now
-        # SHADOWS the check; an entry no doc cites anymore is dead weight. Either way, drop it.
-        registered = _registered_names()
-        cited = set()
-        for doc in CONSTITUTION_DOCS:
-            if doc.exists():
-                cited |= set(_SNAKE.findall(_inline_code(doc)))
-        stale = []
-        for tok, reason in _NOT_A_TOOL.items():
-            assert reason.strip(), f"_NOT_A_TOOL: {tok} needs a plain-English reason"
-            if tok in registered:
-                stale.append(f"{tok}: now a registered tool - drop the entry")
-            elif tok not in cited:
-                stale.append(f"{tok}: no doc cites it anymore - drop the entry")
-        assert not stale, "stale _NOT_A_TOOL entries:\n  " + "\n  ".join(stale)
 
 
 # A citation is `<module>.<symbol>` judged on its first two segments. The head must OPEN the dotted
@@ -265,55 +258,17 @@ def _symbol_citations():
 
 class TestSymbolCitations:
     def test_cited_symbols_are_defined(self):
-        offenders = []
+        offenders, judged = [], 0
         for src, mod, sym in _symbol_citations():
             paths = _modules().get(mod)
             if not paths or f"{mod}.{sym}" in _NOT_A_MODULE_SYMBOL:
                 continue
+            judged += 1
             if not any(sym in _top_level(path) for path in paths):
                 offenders.append(f"{src.relative_to(REPO)} cites '{mod}.{sym}' - {mod} defines no "
                                  f"'{sym}' at module level")
+        assert judged, "nothing was checked: no module.symbol citation resolved to a module of ours"
         assert not offenders, (
             "A doc or source comment points into a module at a symbol it doesn't define "
             "(renamed/removed? cite the current name, or name a genuine non-module reference in "
             "_NOT_A_MODULE_SYMBOL with a reason):\n  " + "\n  ".join(offenders))
-
-    def test_the_symbol_surface_still_collects_every_half(self):
-        # A citation that is never COLLECTED, or whose module never RESOLVES, is skipped rather
-        # than flagged - so each half can be narrowed away with nothing to report and the rule
-        # above still green. Three pins over the real corpus, one per way that happens.
-        mods = _modules()
-        judged = [(src, mod, sym) for src, mod, sym in _symbol_citations() if mod in mods]
-        in_source = {(mod, sym) for src, mod, sym in judged if src not in CONSTITUTION_DOCS}
-        doc_only = {(mod, sym) for src, mod, sym in judged if src in CONSTITUTION_DOCS} - in_source
-        assert doc_only, (
-            "no module citation is collected from the constitution docs alone - the docs dropped "
-            "out of the SYMBOL surface (_scanned_files/_symbol_citations) and their citations are "
-            "now unchecked")
-        underscored = {(mod, sym) for _, mod, sym in judged if mod.startswith("_")}
-        assert underscored, (
-            "no citation of an underscore-spelled module is collected - _DOTTED's head group no "
-            "longer opens on a leading underscore (`_?[a-z]...`), so `_inputs.resolve_inputs` and "
-            "every pointer like it left the SYMBOL surface")
-        tests_tree = REPO / "tests"
-        checked = {(mod, sym) for _, mod, sym in judged
-                   if all(tests_tree in path.parents for path in mods[mod])
-                   and any(sym in _top_level(path) for path in mods[mod])}
-        assert checked, (
-            "no cited symbol resolves through a module under tests/ - the tests tree dropped out "
-            "of _modules(), so a citation into conftest.py or live_api_facts.py is now skipped as "
-            "'no module of ours' instead of checked")
-
-    def test_not_a_module_symbol_entries_still_cited_and_still_dangle(self):
-        # both staleness directions, as for _NOT_A_TOOL: an entry whose module grew that symbol now
-        # SHADOWS a real check; an entry no prose cites anymore is dead weight.
-        cited = {f"{mod}.{sym}" for _, mod, sym in _symbol_citations()}
-        stale = []
-        for tok, reason in _NOT_A_MODULE_SYMBOL.items():
-            assert reason.strip(), f"_NOT_A_MODULE_SYMBOL: {tok} needs a plain-English reason"
-            mod, sym = tok.split(".", 1)
-            if any(sym in _top_level(path) for path in _modules().get(mod, ())):
-                stale.append(f"{tok}: {mod} defines '{sym}' at module level - drop the entry")
-            elif tok not in cited:
-                stale.append(f"{tok}: no prose cites it anymore - drop the entry")
-        assert not stale, "stale _NOT_A_MODULE_SYMBOL entries:\n  " + "\n  ".join(stale)

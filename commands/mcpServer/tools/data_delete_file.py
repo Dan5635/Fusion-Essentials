@@ -9,9 +9,12 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import iter_collection, ok, error, read_flag, safe
-from ._data_common import _MAX_XREFS, _data
+from ._data_common import _MAX_XREFS, _data, absence_after_delete
 
 app = adsk.core.Application.get()
+
+# findFileById RAISES this for a lineage that does not exist, including one just deleted.
+_NOT_FOUND = "file not found"
 
 
 def _parent_ref_summary(data_file):
@@ -72,7 +75,9 @@ def handler(document_id: str = "", confirm_name: str = "", force: bool = False) 
     try:
         df = data.findFileById(document_id)
     except Exception as e:
-        return error(f"findFileById failed for '{document_id}': {e}")
+        if _NOT_FOUND not in str(e):
+            return error(f"findFileById failed for '{document_id}': {e}")
+        df = None
     if not df:
         return error(f"No file found for document_id '{document_id}'. It may already be "
             "deleted. Verify with data_get.")
@@ -115,15 +120,25 @@ def handler(document_id: str = "", confirm_name: str = "", force: bool = False) 
         return error(f"Fusion declined to delete '{actual_name}' (it may be referenced or "
     "open). No change was made.")
 
+    absence_observed, absence_unreadable = absence_after_delete(
+        data.findFileById, document_id, _NOT_FOUND)
+    if absence_observed is False:
+        return error(f"deleteMe answered true for '{actual_name}', but findFileById still resolved "
+                     f"'{document_id}' afterwards, so the file may remain. Confirm with "
+                     f"data_get(file='{document_id}').")
     payload = {
     "deleted": True,
     "name": actual_name,
     "document_id": document_id,
+    "absence_observed": absence_observed,
     # Null, never [], when the reference read did not answer: an empty list says "nothing
     # referenced this file", which is not what an unreadable read supports.
     "was_referenced_by": None if refs_unreadable else parents,
     "forced": bool(force and (parents or refs_unreadable)),
     }
+    if absence_unreadable:
+        payload["absence_unreadable"] = (f"{absence_unreadable}; confirm with "
+                                         f"data_get(file='{document_id}')")
     if refs_unreadable:
         payload["reference_state_unreadable"] = refs_unreadable
         payload["note"] = (f"The file's reference state could not be read ({refs_unreadable} "
@@ -153,12 +168,12 @@ tool = (
 item = Item.create_tool_item(
     tool=tool, write="destructive", handler=handler,
     run_on_main_thread=True,
-    # deleteMe()'s own answer is the whole gate: whether findFileById stops resolving a just-deleted
-    # lineage - and how long the data model takes to show that - is not measured here.
+    # A deleted lineage's findFileById raises 'file not found' from the first read after deleteMe,
+    # so one re-resolve is the absence read; no settle window was observed.
     verification=Verification(
         kind="inline",
-        evidence_test="tests/unit/test_data_delete_file.py::TestDeleteDocument"
-                      "::test_delete_me_false_reported",
+        evidence_test="tests/unit/test_data_delete_file.py::TestAbsenceAfterDelete"
+                      "::test_a_lineage_that_still_resolves_is_an_error",
         rung="exists")
 )
 

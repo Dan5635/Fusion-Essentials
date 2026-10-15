@@ -98,17 +98,12 @@ _ENUM_INPUTS = (
     ("auto_dimension", "DimensionStrategyTypes", _drawing_common.DIMENSION_STRATEGIES),
     ("hole_annotations", "HolePreferencesTypes", _HOLE_PREF_MAP),
     ("parts_list_location", "TableLocationTypes", _TABLE_LOCATION_MAP),
+    ("bend_table_location", "TableLocationTypes", _TABLE_LOCATION_MAP),
     ("tangent_edges", "TangentEdgeDisplayTypes", _TANGENT_EDGE_MAP),
 )
 
-# center_line / center_mark have no enum to reach: adsk.drawing carries no CenterLineDisplayTypes or
-# CenterMarkDisplayTypes family (the namespace holds CenterLineOptions / CenterMarkOptions classes
-# instead), so a non-default request is refused rather than dropped by a best-effort setter.
-_UNREACHABLE_INPUTS = {"center_line": ("CenterLineDisplayTypes", "CenterLineOptions"),
-                       "center_mark": ("CenterMarkDisplayTypes", "CenterMarkOptions")}
 _STANDARD = _inputs.Choice("standard", ["iso", "asme"], default="iso")
-_UNITS = _inputs.Choice("units", ["mm", "inch"], default="mm",
-                        description="Dimension display units.")
+_UNITS = _inputs.Choice("units", ["mm", "inch"], default="mm")
 _CONTENT = _inputs.Choice("content", ["full", "visible"], default="full")
 _SHEET_SIZE = _inputs.Choice("sheet_size",
                              ["default", "a4", "a3", "a2", "a1", "a0", "a", "b", "c", "d", "e", "custom"],
@@ -117,8 +112,8 @@ _ORIENTATION = _inputs.Choice("orientation", ["landscape", "portrait"], default=
 _SHEET_SCOPE = _inputs.Choice("sheet_scope", ["all_levels", "first_level"], default="all_levels")
 _AUTO_DIMENSION = _inputs.Choice("auto_dimension",
                                  ["default", "off"] + list(_drawing_common.DIMENSION_STRATEGIES),
-                                 default="default",
-                                 description="'off' disables it.")
+                                 default="off",
+                                 description="Enabling may require UI chooser.")
 _VIEW_STYLE = _inputs.Choice("view_style",
                              ["default", "visible", "hidden", "shaded_hidden", "shaded_edges"],
                              default="default")
@@ -126,15 +121,10 @@ _CREATION_MODE = _inputs.Choice("creation_mode", ["automatic", "manual"], defaul
 _PARTS_LIST_LOCATION = _inputs.Choice("parts_list_location",
                              ["default", "top_left", "top_right", "bottom_left", "bottom_right"],
                              default="default")
+_BEND_TABLE_LOCATION = _inputs.Choice("bend_table_location", ["default"] + list(_TABLE_LOCATION_MAP), default="default")
 _HOLE_ANNOTATIONS = _inputs.Choice("hole_annotations",
                              ["default", "both", "hole", "thread", "none"],
                              default="default")
-_CENTER_LINE = _inputs.Choice("center_line", ["default", "off", "cylindrical", "holes"], default="default",
-                             description="Refused unless 'default': no enum exists.")
-_CENTER_MARK = _inputs.Choice("center_mark",
-                             ["default", "off", "holes", "fillets", "edges", "punches"],
-                             default="default",
-                             description="Refused unless 'default': no enum exists.")
 _TANGENT_EDGES = _inputs.Choice("tangent_edges", ["default", "off", "full_length", "shortened"],
                              default="default")
 
@@ -184,7 +174,7 @@ _TIMEOUT_IS_NOT_A_VERDICT = (
 
 # CreateDrawingInput.customSize hands out a DEFAULT CustomSheetSize that takes effect only when it
 # is assigned BACK through the setter; its width/height are unitless numbers in the drawing's own
-# document unit, and its two zone counts must each be at least 2. False refuses 'custom' outright.
+# display unit, and its two zone counts must each be at least 2. False refuses 'custom' outright.
 _CUSTOM_SIZE_ENABLED = True
 _CUSTOM_ZONES = 2
 
@@ -198,7 +188,7 @@ _CUSTOM_DISABLED_REFUSAL = (
 def _apply_custom_size(di, cfg):
     """Write the requested custom sheet size onto the input and assign it BACK through the setter:
     '' or the refusal text (nothing is created on a refusal). The getter returns a COPY, so mutating
-    it alone changes nothing; width/height are unitless numbers in cfg's document unit, and both
+    it alone changes nothing; width/height are unitless numbers in cfg's display unit, and both
     zone counts must be at least 2 at creation."""
     spec = cfg["custom_size"]
     cs = safe(lambda: di.customSize)
@@ -261,10 +251,7 @@ def _resolve_members(cfg):
 
 
 def _apply_input_settings(di, cfg, members, template_data_file=None):
-    """Best-effort configuration of the CreateDrawingInput and its automationPreferences tree: '' or
-    the ONE refusal that is not best-effort, the custom sheet size. Every other setter is wrapped in
-    safe() and echoed as 'settings_requested' rather than read back. 'members' and
-    'template_data_file' stay out of cfg - neither is JSON-safe."""
+    """Apply drawing input settings; refuse if required settings do not read back."""
     safe(lambda: setattr(di, "standard", members["standard"]))
     safe(lambda: setattr(di, "units", members["units"]))
     safe(lambda: setattr(di, "content", members["content"]))
@@ -287,13 +274,18 @@ def _apply_input_settings(di, cfg, members, template_data_file=None):
         safe(lambda: setattr(di, "templateFile", template_data_file))
 
     gp = safe(lambda: di.automationPreferences.globalPreferences)
+    if gp is None and cfg["auto_dimension"] == "off":
+        return "Could not read drawing auto-dimension preferences; no drawing created."
     if gp is not None:
         if cfg["sheet_types"] is not None:
             want = set(cfg["sheet_types"])
             for key, attr in _SHEET_TYPE_ATTR.items():
                 safe(lambda a=attr, k=key: setattr(gp, a, k in want))
         if cfg["auto_dimension"] == "off":
-            safe(lambda: setattr(gp, "isAutoDimensionEnabled", False))
+            dim_error = _common.set_verified(gp, "isAutoDimensionEnabled", False,
+                                             "auto_dimension='off'", "DrawingInput")
+            if dim_error:
+                return f"{dim_error} No drawing created."
         elif cfg["auto_dimension"] != "default":
             safe(lambda: setattr(gp, "isAutoDimensionEnabled", True))
         safe(lambda: setattr(gp, "isDetectAndOmitFasteners", bool(cfg["omit_fasteners"])))
@@ -357,17 +349,51 @@ def _apply_input_settings(di, cfg, members, template_data_file=None):
     return ""
 
 
+def _apply_flat_settings(di, cfg, members):
+    """Return the verified flat-sheet input preferences and a refusal, if any."""
+    wanted = {"isFoldedModelIsometricViewAdded": cfg.get("flat_isometric"),
+              "isBendTableIncluded": cfg.get("bend_table")}
+    location = members.get("bend_table_location")
+    if location is not None:
+        wanted["bendTableLocation"] = location
+    wanted = {key: value for key, value in wanted.items() if value is not None}
+    if not wanted:
+        return {}, None
+    node = safe(lambda: di.automationPreferences.flatPatternPreferences.orthogonalViewSheetPreferences)
+    if node is None:
+        return {}, "This build has no flat-sheet preferences. Omit the flat drawing options."
+    applied = {}
+    for prop, value in wanted.items():
+        try:
+            setattr(node, prop, value)
+            actual = getattr(node, prop)
+        except Exception as exc:
+            return applied, f"Flat drawing option {prop}={value!r} failed: {exc}. No drawing created."
+        if actual != value:
+            return applied, f"Flat drawing option {prop}={value!r} read back {actual!r}. No drawing created."
+        applied[prop] = actual
+    return applied, None
+
+
 def handler(standard: str = "iso", units: str = "mm", content: str = "full", isometric: bool = True,
             sheet_size: str = "default", orientation: str = "landscape", sheet_scope: str = "all_levels",
-            sheet_types=None, auto_dimension: str = "default", omit_fasteners: bool = False,
+            sheet_types=None, auto_dimension: str = "off", omit_fasteners: bool = False,
             fastener_keywords: str = "", view_style: str = "default", parts_list: bool = None,
             parts_list_location: str = "default", template_file: str = "",
             custom_width_mm: float = None, custom_height_mm: float = None,
-            hole_annotations: str = "default", center_line: str = "default",
-            center_mark: str = "default", tangent_edges: str = "default",
+            hole_annotations: str = "default", tangent_edges: str = "default",
             show_interference_edges: bool = None, show_thread_edges: bool = None,
-            creation_mode: str = "automatic") -> dict:
+            creation_mode: str = "automatic", flat_isometric=None, bend_table=None,
+            bend_table_location: str = "default") -> dict:
     """See TOOL_DESCRIPTION."""
+    bend_loc, e = _BEND_TABLE_LOCATION.resolve(bend_table_location)
+    if e:
+        return error(e)
+    flat_requested = flat_isometric is not None or bend_table is not None or bend_loc != "default"
+    if flat_requested and "flat_pattern" not in (sheet_types or []):
+        return error("Flat drawing options require 'flat_pattern' in sheet_types; enable that sheet or omit the options.")
+    if bend_table is not True and bend_loc != "default":
+        return error("bend_table_location requires a bend table; omit the location or enable bend_table.")
     std, e = _STANDARD.resolve(standard)
     if e:
         return error(e)
@@ -396,12 +422,6 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
     if e:
         return error(e)
     hole_v, e = _HOLE_ANNOTATIONS.resolve(hole_annotations)
-    if e:
-        return error(e)
-    cl_v, e = _CENTER_LINE.resolve(center_line)
-    if e:
-        return error(e)
-    cmk_v, e = _CENTER_MARK.resolve(center_mark)
     if e:
         return error(e)
     te_v, e = _TANGENT_EDGES.resolve(tangent_edges)
@@ -435,12 +455,11 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
                          f"{custom_width_mm!r} / {custom_height_mm!r}).")
         if w_mm <= 0 or h_mm <= 0:
             return error(f"custom_width_mm and custom_height_mm must be positive (got {w_mm} / {h_mm}).")
-        # The inputs are millimetres; CustomSheetSize takes the DOCUMENT unit, which the standard
-        # fixes - through the same helper the sheet-extent bound converts with, keyed by standard
-        # label since no drawing exists yet to read coordinate_unit off.
-        unit = _drawing_common.DOCUMENT_UNIT[std]
-        custom_size = {"width": round(_drawing_common.extent_in_coordinates(w_mm, standard=std), 6),
-                       "height": round(_drawing_common.extent_in_coordinates(h_mm, standard=std), 6),
+        # CustomSheetSize uses display units, independently of drawing coordinates.
+        unit = "in" if units_v == "inch" else "mm"
+        factor = _common.scale("mm") * _common.CM_TO_UNIT[unit]
+        custom_size = {"width": round(w_mm * factor, 6),
+                       "height": round(h_mm * factor, 6),
                        "unit": unit, "zone_minimum": _CUSTOM_ZONES}
     elif custom_width_mm is not None or custom_height_mm is not None:
         return error("custom_width_mm/custom_height_mm only apply when sheet_size='custom'.")
@@ -471,18 +490,11 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
                          f"{', '.join(_SHEET_TYPE_ATTR)}.")
         types_v = list(sheet_types)
 
-    for input_name, value in (("center_line", cl_v), ("center_mark", cmk_v)):
-        if value != "default":
-            family, present = _UNREACHABLE_INPUTS[input_name]
-            return error(f"{input_name} '{value}' cannot be applied: adsk.drawing has no {family} enum "
-                         f"on this Fusion version (the namespace carries {present} classes instead), so "
-                         f"the setting has no API to reach and no drawing was created. Leave "
-                         f"{input_name} at 'default'.")
-
     cfg = {
         "creation_mode": mode_v,
         "standard": std, "units": units_v, "content": content_v, "isometric": bool(isometric),
         "sheet_size": size_v, "orientation": orient_v, "sheet_scope": scope_v,
+        "flat_isometric": flat_isometric, "bend_table": bend_table, "bend_table_location": bend_loc,
         "sheet_types": types_v, "auto_dimension": dim_v, "omit_fasteners": bool(omit_fasteners),
         "fastener_keywords": (fastener_keywords or "").strip(), "view_style": style_v,
         "parts_list": (bool(parts_list) if parts_list is not None else None),
@@ -491,15 +503,15 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
         "base_document": "template" if template_df is not None else None,
         "custom_width_mm": custom_width_mm, "custom_height_mm": custom_height_mm,
         "custom_size": custom_size,
-        "hole_annotations": hole_v, "center_line": cl_v, "center_mark": cmk_v, "tangent_edges": te_v,
+        "hole_annotations": hole_v, "tangent_edges": te_v,
         "show_interference_edges": (bool(show_interference_edges) if show_interference_edges is not None
                                      else None),
         "show_thread_edges": (bool(show_thread_edges) if show_thread_edges is not None else None),
     }
 
-    design = _common.design()
-    if not design:
-        return error("No active design to draw. Open or create a design first (see doc_new), then retry.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     src, serr = _source_datafile(design)
     if serr:
@@ -527,6 +539,9 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
     if aerr:
         return error(aerr)
 
+    flat_applied, flat_error = _apply_flat_settings(di, cfg, members)
+    if flat_error:
+        return error(flat_error)
     try:
         df = dm.createDrawing(di)
     except Exception as ex:
@@ -539,11 +554,11 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
         return error("createDrawing returned a drawing DataFile but no file_id could be read from it, "
                      "so the created drawing cannot be located for export. Treating this as a failure.")
 
-    note = ("Created as a CLOUD file (NOT opened). Reach it: doc_open(file_id, "
-            "force_api_open=true), then drawing_export for the PDF - a drawing never reviewed in "
-            "the Fusion UI opens and drives that way, so no manual step is needed up front. If "
-            "that open instead fails or hangs, opening the document once in the Fusion UI is the "
-            "known workaround. settings_requested were applied best-effort, never read back.")
+    note = ("Created as a CLOUD file (NOT opened). Use doc_open(file_id, force_api_open=true), "
+            "then drawing_export; no manual step is needed up front. If open fails or hangs, opening once "
+            "in the Fusion UI is a workaround. flat_settings_applied were read back on the input; "
+            "other settings_requested were applied best-effort. Inspect PDF; blank flat views may need "
+            "drawing_edit_sheet(action='tidy_up', sheet=...).")
     if mode_v == "automatic":
         note += (" Manual dimensions/annotations and custom title blocks beyond the automatic "
                  "layout are not placed by this tool.")
@@ -551,12 +566,10 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
         note += f" creation_mode was 'manual', which Fusion gates on the template: {_MANUAL_GATE}"
     if custom_size is not None:
         note += (f" Custom sheet size: {custom_size['width_applied']} x "
-                 f"{custom_size['height_applied']} {custom_size['unit']} (the document unit), "
+                 f"{custom_size['height_applied']} {custom_size['unit']} (display unit), "
                  f"{custom_size['horizontal_zones_applied']} x "
-                 f"{custom_size['vertical_zones_applied']} zones - all four read back off the input "
-                 "before the create. The created SHEET's own width/height are not readable from "
-                 "here, so open it and read them with drawing_edit_sheet to confirm the sheet "
-                 "Fusion built.")
+                 f"{custom_size['vertical_zones_applied']} zones requested. The created sheet's "
+                 "own size is not read here: doc_open it, then drawing_get gives it in mm.")
     note += " " + _TIMEOUT_IS_NOT_A_VERDICT
     return ok({
         "created": True,
@@ -565,20 +578,24 @@ def handler(standard: str = "iso", units: str = "mm", content: str = "full", iso
         "version_id": safe(lambda: df.versionId),
         "file_extension": safe(lambda: df.fileExtension),
         "settings_requested": cfg,
+        "flat_settings_applied": flat_applied,
         "note": note,
     })
 
 
 TOOL_DESCRIPTION = (
-    "Create a 2D drawing from the active design. The result is a CLOUD file, NOT opened - doc_open "
-    "the file_id, then drawing_export for the PDF, no UI step. A client TIMEOUT is not a verdict: "
-    "re-check with data_get before retrying, or a retry mints a second drawing."
+    "Create cloud drawing. Generation may take minutes: use deferred=true, request_key and "
+    "expect_document=doc_get.active.document_handle; poll drawing_get_status. Completed -> doc_open "
+    "file_id, no UI step by default. TIMEOUT is not a verdict; for direct calls check data_get before retry."
 )
 
 FULL_DESCRIPTION = TOOL_DESCRIPTION + "\n" + _outputs.produces_block(RETURNS)
 
 tool = (
     Tool.create_simple(name="drawing_create", description=FULL_DESCRIPTION)
+    .add_input_property("flat_isometric", {"type": "boolean", "description": "Folded view on flat sheets."})
+    .add_input_property("bend_table", {"type": "boolean"})
+    .add_input_property(*_BEND_TABLE_LOCATION.as_property())
     .add_input_property(*_STANDARD.as_property())
     .add_input_property(*_UNITS.as_property())
     .add_input_property(*_CONTENT.as_property())
@@ -588,22 +605,19 @@ tool = (
     .add_input_property(*_SHEET_SCOPE.as_property())
     .add_input_property("sheet_types", {"type": "array",
             "items": {"type": "string", "enum": list(_SHEET_TYPE_ATTR)},
-            "description": "Kinds to enable; others off."})
+            "description": "Others off."})
     .add_input_property(*_AUTO_DIMENSION.as_property())
     .add_input_property("omit_fasteners", {"type": "boolean"})
     .add_input_property("fastener_keywords", {"type": "string"})
     .add_input_property(*_VIEW_STYLE.as_property())
-    .add_input_property("parts_list", {"type": "boolean",
-            "description": "On assembly sheets."})
+    .add_input_property("parts_list", {"type": "boolean"})
     .add_input_property(*_PARTS_LIST_LOCATION.as_property())
     .add_input_property(*_CREATION_MODE.as_property())
     .add_input_property("template_file", {"type": "string",
-            "description": "DataFile id/URL; empty = scratch."})
-    .add_input_property("custom_width_mm", {"type": "number", "description": "In mm."})
-    .add_input_property("custom_height_mm", {"type": "number", "description": "In mm."})
+            "description": "DataFile id/URL."})
+    .add_input_property("custom_width_mm", {"type": "number"})
+    .add_input_property("custom_height_mm", {"type": "number"})
     .add_input_property(*_HOLE_ANNOTATIONS.as_property())
-    .add_input_property(*_CENTER_LINE.as_property())
-    .add_input_property(*_CENTER_MARK.as_property())
     .add_input_property(*_TANGENT_EDGES.as_property())
     .add_input_property("show_interference_edges", {"type": "boolean"})
     .add_input_property("show_thread_edges", {"type": "boolean"})
@@ -627,7 +641,7 @@ item = Item.create_tool_item(
 # URN, which the shared expect_document description would suggest, is refused.
 tool.add_input_property("expect_document", {
     "type": "string",
-    "description": "Active doc. deferred needs doc_get session: handle, not name/URN."})
+    "description": "doc_get session: handle."})
 
 
 def register_tool():

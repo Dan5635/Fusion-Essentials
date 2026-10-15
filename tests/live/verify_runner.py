@@ -28,18 +28,23 @@ import re
 import sys
 import tempfile
 import time
-import urllib.error
 
 # Fusion payloads carry non-ASCII (PMI symbols); the Windows console default cannot encode them.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from verify_core import (
-    NOTE_MAX, PROCESS_STARTED, REFUSAL_NOTE_MAX, REPO_ROOT, SRC_ROOT, STEP_SLEEP_S, VERIFIED,
-    _HERE, _RECALL, reap_harness_assets,
+    NOTE_MAX, REFUSAL_NOTE_MAX, REPO_ROOT, SRC_ROOT, STEP_SLEEP_S, VERIFIED, _HERE, _RECALL,
     _Refusal, _leaves_no_row, _unparked, capability_met,
-    capability_skip_reason, facade, gate_allows, gate_skip_reason, parked_reason, predicate_kind,
-    probe_capabilities, step_capability)
+    facade, gate_allows, gate_skip_reason, parked_reason, predicate_kind,
+    probe_capabilities, step_capability, step_runs_unentitled, independent_targets, independent_witness,
+    step_conditions, gate_decision, Needs, require_machine, step_script_declaration)
+from verify_families import family_names, fixture_steps, ordered_acts
+from verify_acts_cam import CAM_SETUP, MACHINING_EXTENSION, _MX_SETUP, _SW_SETUP, _SW_SETUP2
+import verify_receipts
+import cloud_config
+import machine_config
+import preflight
 
 
 # tests/live also holds harnesses the sweep never imports - they measure API facts and drive the
@@ -47,24 +52,42 @@ from verify_core import (
 # to one invalidate a receipt its content takes no part in.
 _NOT_THE_SWEEP = ("measure_api.py", "drawing_verify.py")
 _ATTESTATION_TCB = ("Fusion-Essentials.py", "lib/loaded_attestation.py")
-_BUSY_HEALTH_WINDOW_S = 120
+_SERVED_ASSETS = ("guidance/parametric_cad_design.json",)
+_MACHINE = machine_config.current()[0]
+_RECORD_ROOT = machine_config.record_root(_MACHINE) if _MACHINE else _HERE
+FAMILY_RECEIPT = os.path.join(_RECORD_ROOT, "VERIFIED_FAMILIES.json")
+
+
+def receipt_closures():
+    """Return current family closures with explicit facade hook providers."""
+    return verify_receipts.family_closures(
+        REPO_ROOT, facade("ACTS"), facade("FAMILY_PROGRAM"), fixture_steps,
+        providers=(facade("reload_smoke"), facade("family_switch_smoke"),
+                   facade("poll_generation"),
+                   facade("poll_render_job"), probe_capabilities,
+                   run_steps, _document_now, _shoot, _precondition_holds))
+
+
+def _family_health():
+    """Retain wire health and the independently disclosed running Fusion build."""
+    health = facade("health_gate")()
+    failed, orientation = facade("call")("workspace_orient", {})
+    build = orientation.get("fusion_version") if isinstance(orientation, dict) else None
+    if failed or not isinstance(build, str) or build in ("", "?"):
+        raise ValueError("workspace_orient did not disclose the running Fusion build")
+    return health, verify_receipts.normalized_health(health, build)
 
 
 def source_hash(root=None):
-    """SHA-256 over every .py under commands/mcpServer/ PLUS the SWEEP harness under tests/live/
-    (its standalone siblings excepted - see _NOT_THE_SWEEP) - the receipt key binding a green run
-    to the exact tool source AND the exact predicates/exclusions it was judged by (a weakened
-    predicate or a tool quietly moved into EXCLUDED must invalidate the receipt, not ride under
-    it). Relative paths are normalized to '/' and CRLF to LF so the digest is identical across OS
-    and git line-ending config; __pycache__ is skipped."""
+    """Hash tool source, served guidance and judged harness files with portable paths and newlines."""
     root = root or SRC_ROOT
     entries = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d != "__pycache__"]
         for fn in filenames:
-            if fn.endswith(".py"):
-                full = os.path.join(dirpath, fn)
-                rel = os.path.relpath(full, root).replace(os.sep, "/")
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            if fn.endswith(".py") or rel in _SERVED_ASSETS:
                 entries.append((rel, full))
     if root == SRC_ROOT:      # a custom root (the offline tests') hashes only itself
         for rel in _ATTESTATION_TCB:
@@ -88,12 +111,9 @@ _LOADED_RE = re.compile(
 
 
 def write_verified(ledger, fusion_version, stamp_date, src_hash, path=None, notes=None,
-                   act_modes=None, attestation=None):
-    """Write the tracked receipt. Called only on a run with zero FAIL/blocked/pass* steps. 'notes'
-    maps a driven tool to its shot-list step text (the ledger doubles as the demo's shot list) - a
-    third column, empty when absent so the two-column stamp/count contract is unchanged.
-    'act_modes' lists (act, narrative|fallback) - a machine-readable column, so a fallback-heavy
-    run is visible without reading prose."""
+                   act_modes=None, attestation=None, family_runs=None, aggregate_current=None):
+    """Write the tool table with candidate identity, accounting and family run provenance."""
+    scope = machine_config.record_scope(require_machine())
     if not isinstance(attestation, dict) or not all(
             isinstance(attestation.get(key), str) and attestation[key]
             for key in ("implementation_fingerprint", "schema_fingerprint", "load_id",
@@ -101,22 +121,24 @@ def write_verified(ledger, fusion_version, stamp_date, src_hash, path=None, note
         raise ValueError("receipt needs the complete loaded implementation/schema/session identity")
     notes = notes or {}
     n_cov = sum(1 for _, s in ledger if s == "covered")
+    n_self = sum(1 for _, s in ledger if s == "self-reported")
     # 'called' and 'called (<parked reason>)' are the SAME bucket - the reason is rendering, not a
     # third state, so the count line cannot drift from the table when a step is parked.
     n_called = sum(1 for _, s in ledger if s == "called" or s.startswith("called ("))
     n_pend = sum(1 for _, s in ledger if s.startswith("PENDING"))
     n_ref = sum(1 for _, s in ledger if s.startswith("refusals-only"))
-    n_skip = len(ledger) - n_cov - n_called - n_pend - n_ref
+    n_skip = len(ledger) - n_cov - n_self - n_called - n_pend - n_ref
     lines = [
         "# Live tool verification (generated by tool_verify.py - do not edit)",
         "",
-        "This is a FIVE-BUCKET ledger, not a clean bill of health. It does NOT claim every tool",
+        "This ledger separates independent witnesses from self-reported values. It does NOT claim every tool",
         "is verified - the count line below is authoritative, and the per-tool table says which",
         "bucket each tool is in:",
         "",
-        "- covered: a live step drove the tool this run and its expectation was a VALUE PREDICATE -",
-        "  the step read keys off the ok payload (a delta, a count read back off the feature, a",
-        "  verified flag) and those values held. This is the bucket that carries evidence.",
+        "- covered: an explicitly annotated cross-tool, file or geometry witness passed after",
+        "  its target tool executed in the same family. See VERIFIED_FAMILIES.json for provenance.",
+        "- self-reported: a passing predicate read values from the tool's own reply; this alone",
+        "  does not independently verify the tool's effect.",
         "- called: every passing step for this tool was a bare 'ok' expectation - the call came back",
         "  without an error and NOTHING in the payload was read. What that proves is whatever the",
         "  tool's own post-write verification refuses on, and no more. Read a called row as",
@@ -130,26 +152,43 @@ def write_verified(ledger, fusion_version, stamp_date, src_hash, path=None, note
         "  tier), or held back by the CAPABILITY tier - a step or act declaring an entitlement this",
         "  installation's capability probe did not read as granted. Each row names why. Not",
         "  verified - excused.",
-        "- pending: no step drives it yet. UNVERIFIED, not known-good - it has never run in this",
-        "  sweep. Shrinking this bucket means scripting a real step, not relabelling it.",
+        "- pending: current call or independent evidence is missing or stale. Earlier runs",
+        "  may exist; this table does not count them as current verification.",
         "",
-        "The stamp's source hash binds this run to the exact `commands/mcpServer/` tree AND the",
-        "tests/live/ harness (steps, predicates, exclusions) it was judged by: `--check`",
-        "recomputes the hash and fails on any difference, so a green suite cannot ride on a live",
-        "run that never saw the current code or a weakened predicate. Only a run with zero",
-        "FAIL/blocked/pass* steps rewrites this file.",
+        *( ["Family stamps bind tools, transitive imports, predicates, runner and producer source.",
+            "`--check` requires executed closures current on one Fusion build and recorded omissions",
+            "to match current acts. It also requires a current reload record bound to the same source.",
+            "Family refreshes",
+            "may retain matching earlier executions; the table's run provenance identifies them."]
+           if family_runs is not None else [
+            "The source hash binds this run to the tool tree and judged harness; an offline check",
+            "rejects source changes. Only a run with zero FAIL/blocked/pass* steps rewrites this file."]),
         "",
         "Stamp: source {0} | Fusion {1} | verified {2}".format(src_hash, fusion_version, stamp_date),
+        "Machine: {machine} | OS: {os} | checkout: {checkout}".format(**scope),
+        "Configuration: " + scope["config_hash"] + " | choices: " + json.dumps(scope["asked"], sort_keys=True),
         "Loaded: implementation {0} | schema {1} | load {2} | session {3}".format(
             attestation["implementation_fingerprint"], attestation["schema_fingerprint"],
             attestation["load_id"], attestation["session_id"]),
         "",
         "{0} covered / {1} called / {2} refusals-only / {3} skipped(reason) / {4} pending".format(
-            n_cov, n_called, n_ref, n_skip, n_pend),
+            n_cov, n_called, n_ref, n_skip, n_pend) + " / {0} self-reported".format(n_self),
     ]
     if act_modes:
         lines += ["", "| act | mode |", "|---|---|"]
         lines += ["| {0} | {1} |".format(a, m) for a, m in act_modes]
+    if family_runs is not None:
+        lines[0] += " - recorded scope: " + verify_receipts.scope_description(family_runs)
+        lines += ["", "This table composes current family stamps, including matching earlier runs.",
+                  "Aggregate: " + ("current for recorded scope" if aggregate_current else "pending; run --check for source/scope/build gaps"),
+                  "The source/loaded stamp describes this invocation's candidate; it does not claim",
+                  "every listed tool ran in this invocation. VERIFIED_FAMILIES.json binds executed",
+                  "families to their closure and loaded identity; omissions have no evidence stamp.", "",
+                  "| family | native run | family execution | scope |", "|---|---|---|---|"]
+        lines += ["| {0} | {1} | {2} | {3} |".format(name, stamp.get("run_id", "not run"),
+                  stamp.get("family_run_id", "no execution"),
+                  verify_receipts.scope_description({name: stamp}))
+                  for name, stamp in sorted(family_runs.items())]
     lines += [
         "",
         "| tool | status | step (the demo's shot list) |",
@@ -158,14 +197,42 @@ def write_verified(ledger, fusion_version, stamp_date, src_hash, path=None, note
     for tool, status in ledger:
         lines.append("| {0} | {1} | {2} |".format(
             tool, status.replace("|", "/"), notes.get(tool, "").replace("|", "/")))
-    with open(path or VERIFIED, "w", encoding="utf-8", newline="\n") as fh:
+    destination = path or VERIFIED
+    os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+    with open(destination, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
     return path or VERIFIED
 
 
-def check(root=None, verified_path=None, attestation=None):
+def receipt_notes(ledger, story):
+    """Build shot-list notes from current evidenced rows and the current program text."""
+    statuses = {"covered", "self-reported", "called", "refusals-only"}
+    return {tool: story.get(tool, "") for tool, status in ledger
+            if status in statuses or status.startswith("called (")}
+
+
+def check(root=None, verified_path=None, attestation=None, full_scope=False):
     """The receipt gate: drives nothing, needs no Fusion. Exit 0 = the last green live run saw
     exactly this tool source; 1 = no receipt, or the source changed since that run."""
+    if root is None and verified_path is None and facade("FAMILY_RECEIPTS"):
+        try:
+            with open(FAMILY_RECEIPT, encoding="utf-8") as fh:
+                receipt = json.load(fh)
+            closures = receipt_closures()
+            census = verify_receipts.tool_census(REPO_ROOT)
+            verify_receipts.validate_aggregate(receipt, closures, census, attestation,
+                                               require_exercised=False,
+                                               source_hash=facade("source_hash")())
+            print("family source current on one Fusion build; recorded scope: "
+                  + verify_receipts.scope_description(verify_receipts.aggregate_records(receipt)))
+            verify_receipts.validate_aggregate(receipt, closures, census, attestation,
+                                               full_scope=full_scope,
+                                               source_hash=facade("source_hash")())
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print("family receipt not accepted: {0}; run a full bootstrap or --families".format(exc))
+            return 1
+        print("family receipt accepted for " + ("full admitted" if full_scope else "recorded") + " scope")
+        return 0
     source_hash = facade("source_hash")
     path = verified_path or VERIFIED
     if not os.path.exists(path):
@@ -197,7 +264,7 @@ def check(root=None, verified_path=None, attestation=None):
     return 0
 
 
-RESULTS_DIR = os.path.join(_HERE, "results")
+RESULTS_DIR = os.path.join(_RECORD_ROOT, "results")
 
 
 def run_state_path(run_id):
@@ -279,6 +346,141 @@ def _document_now():
             "document_handle": handle, "feature_count": features, "state": state}
 
 
+_HOME_CONTENT_SCRIPT = """import adsk.core, adsk.fusion, json
+
+def run(context):
+    def count(collection):
+        value = collection.count
+        if type(value) is not int or value < 0:
+            raise ValueError("unreadable home collection count")
+        return value
+    app = adsk.core.Application.get()
+    doc = __HOME_TARGET__
+    if doc is None or not doc.isValid:
+        raise ValueError("home document unavailable")
+    data_file = doc.dataFile
+    identity = (doc.name, None if data_file is None else data_file.id)
+    if identity != __HOME_IDENTITY__:
+        raise ValueError("home document identity changed")
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType("DesignProductType"))
+    if design is None:
+        raise ValueError("home Design product unavailable")
+    components = design.allComponents
+    total = count(components)
+    if not 1 <= total <= 1000:
+        raise ValueError("home component census outside observer bound")
+    sketches = bodies = 0
+    for index in range(total):
+        component = components.item(index)
+        if component is None or not component.isValid:
+            raise ValueError("home component slot unreadable")
+        sketches += count(component.sketches)
+        bodies += count(component.bRepBodies)
+    print(json.dumps({"document_handle": __HOME_HANDLE__, "name": identity[0],
+        "document_id": identity[1], "feature_count": count(design.timeline),
+        "sketch_count": sketches, "body_count": bodies, "is_modified": doc.isModified}))
+"""
+
+
+def _home_now(home, allow_inactive=False):
+    """Bracket the home product read with exact document identities and indices."""
+    def current_known(record, row):
+        return (isinstance(record, dict) and isinstance(record.get("name"), str)
+                and bool(record["name"].strip()) and "document_id" in record
+                and type(record.get("is_modified")) is bool
+                and type(record.get("has_data_file")) is bool
+                and (isinstance(record["document_id"], str) and bool(record["document_id"].strip())
+                     if record["has_data_file"] else record["document_id"] is None)
+                and row.get("name") == record["name"]
+                and type(row.get("is_modified", False)) is bool
+                and row.get("is_modified", False) == record["is_modified"])
+
+    call = facade("call")
+    handle = home.get("document_handle")
+    if not _valid_session_handle(handle):
+        return None, "home has no exact session handle"
+    try:
+        bad, payload = call("doc_get", {"max_results": 1000})
+        if bad or not isinstance(payload, dict):
+            return None, "home document census unavailable"
+        census, active_handle, problem = _complete_open_documents(payload)
+        if problem:
+            return None, "home opening census: " + problem
+        indexed = {row["document_handle"]: row["open_index"] for row in census}
+        if (len(indexed) != len(census) or set(indexed.values()) != set(range(len(census)))
+                or handle not in indexed or (not allow_inactive and active_handle != handle)):
+            return None, "home handle/index census unreadable or mismatched"
+        active = payload.get("active")
+        current_row = next(row for row in census if row["document_handle"] == active_handle)
+        if not current_known(active, current_row):
+            return None, "current active identity/flag facts unavailable or inconsistent"
+        home_row = next(row for row in census if row["document_handle"] == handle)
+        inactive = active_handle != handle
+        if not inactive and home_row.get("is_modified", False) != active.get("is_modified"):
+            return None, "home census and active modified flags disagree"
+        if inactive and ("document_id" not in home or home.get("name") != home_row.get("name")):
+            return None, "inactive home baseline identity unavailable or mismatched"
+        source = dict(home_row, document_id=home["document_id"],
+                      is_modified=home_row.get("is_modified", False)) if inactive else active
+        identity = {key: (source or {}).get(key) for key in (
+            "document_handle", "name", "document_id", "is_modified")}
+        if (not isinstance(active, dict) or identity["document_handle"] != handle
+                or not isinstance(identity["name"], str) or not identity["name"]
+                or type(identity["is_modified"]) is not bool
+                or "document_id" not in source
+                or (not inactive and (type(active.get("has_data_file")) is not bool
+                    or (active["has_data_file"] and (not isinstance(identity["document_id"], str)
+                                                   or not identity["document_id"]))
+                    or (not active["has_data_file"] and identity["document_id"] is not None)))):
+            return None, "home opening identity or modified flag unreadable/mismatched"
+        script = _HOME_CONTENT_SCRIPT.replace("__HOME_IDENTITY__", repr((
+            identity["name"], identity["document_id"]))).replace("__HOME_HANDLE__", repr(handle)).replace(
+                "__HOME_TARGET__", "app.documents.item(%d)" % indexed[handle] if inactive
+                else "app.activeDocument")
+        bad, native = call("sys_execute_script", {
+            "script": script, "read_only": True, "expect_document": active_handle},
+            script_declaration=machine_config.effect_declaration(script, []))
+        if bad or not isinstance(native, dict):
+            return None, "strict home observer unavailable or refused: " + str(native)[:180]
+        bad, payload = call("doc_get", {"max_results": 1000})
+        if bad or not isinstance(payload, dict):
+            return None, "home closing census unavailable"
+        closing_census, closing_active, problem = _complete_open_documents(payload)
+        if (problem or closing_active != active_handle
+                or {row["document_handle"]: row["open_index"] for row in closing_census or []} != indexed
+                or len(closing_census or []) != len(census)):
+            return None, "home observer handle/index bookends disagree"
+        closing_active_record = payload.get("active")
+        closing_current_row = next(row for row in closing_census
+                                   if row["document_handle"] == closing_active)
+        if not current_known(closing_active_record, closing_current_row):
+            return None, "current closing identity/flag facts unavailable or inconsistent"
+        closing_home = next(row for row in closing_census if row["document_handle"] == handle)
+        closing = (dict(closing_home, document_id=home.get("document_id")) if inactive
+                   else closing_active_record)
+        if "is_modified" not in closing and inactive:
+            closing = dict(closing, is_modified=False)
+        if (not isinstance(closing, dict)
+                or type(closing.get("is_modified")) is not bool
+                or not isinstance(closing_active_record, dict)
+                or any(closing_active_record.get(key) != active.get(key) for key in (
+                    "document_handle", "name", "document_id", "is_modified", "has_data_file"))
+                or any(key not in closing or closing[key] != value
+                       for key, value in identity.items())
+                or any(key not in native or native[key] != value
+                       for key, value in identity.items())
+                or type(native.get("is_modified")) is not bool):
+            return None, "home observer identities or modified flags disagree"
+        for key in ("feature_count", "sketch_count", "body_count"):
+            value = native.get(key)
+            if type(value) is not int or value < 0:
+                return None, "home observer count unreadable: " + key
+        return dict(identity, **{key: native[key] for key in (
+            "feature_count", "sketch_count", "body_count")}), None
+    except Exception as exc:
+        return None, "home observer transport raised: " + str(exc)
+
+
 def _identity_refusal(previous, current, allow_new_session=False):
     """Why a loaded identity no longer matches the run boundary, or None."""
     if current is None:
@@ -296,6 +498,8 @@ def resume_refusal(state, run_id, current_hash, document, current_identity=None)
     already walked the program (a resume would stamp from its saved ledger without driving a step),
     a SOURCE that moved (the receipt binds one hash), or a DOCUMENT that is not the one the last
     chunk left open (the remaining acts would run against a world that was never built)."""
+    if state is not None and state.get("failed_families"):
+        return "run has failed families; its failure cannot be resumed into a receipt. Start a new run id."
     if state is None:
         return ("no run state for {0!r} - {1} does not exist, so there is nothing to resume; start "
                 "the run with --run {0}".format(run_id, run_state_path(run_id)))
@@ -415,9 +619,14 @@ def _refresh_pin(document_pin):
     return None
 
 
-def _complete_open_documents():
+def _complete_open_documents(payload=None):
     """Return a complete doc_get census and active handle, or a refusal."""
-    is_error, payload = facade("call")("doc_get", {})
+    is_error = False
+    if payload is None:
+        try:
+            is_error, payload = facade("call")("doc_get", {"max_results": 1000})
+        except Exception as exc:
+            return None, None, "document census transport raised: " + str(exc)
     if is_error or not isinstance(payload, dict):
         return None, None, "doc_get did not return a document census"
     rows = payload.get("open_documents")
@@ -431,12 +640,41 @@ def _complete_open_documents():
         return None, None, "doc_get did not return a complete exact-handle census"
     active = payload.get("active")
     active_handle = active.get("document_handle") if isinstance(active, dict) else None
+    if not rows and active_handle is None:
+        return rows, None, None
     active_rows = [row for row in rows if row.get("is_active") is True]
     if (not _valid_session_handle(active_handle)
             or len(active_rows) != 1
             or active_rows[0]["document_handle"] != active_handle):
         return None, None, "doc_get did not identify the active document exactly"
     return rows, active_handle, None
+
+
+def _continuation_census(documents, active, health):
+    """Validate exact identities and the sparse flags doc_get reports."""
+    census = {"complete": True, "documents": documents, "active": active,
+              "open_count": len(documents)}
+    verify_receipts.exact_start(verify_receipts.normalized_health(health), census,
+                               require_build=False)
+    defaults = {"is_active": False, "is_visible": True, "is_saved": True, "is_modified": False}
+    if any(not isinstance(row.get("name"), str) or not row["name"]
+           or any(type(row.get(key, value)) is not bool for key, value in defaults.items())
+           for row in documents):
+        raise ValueError("document census has unreadable names or state flags")
+    return census
+
+
+def _cloud_recovery_checks():
+    """Return the authored cloud seam, generation and local-template restore gates."""
+    import verify_acts_cloud as cloud
+    probes = ((cloud._capped_name_move_probe, cloud._capped_name_move_result),
+              (cloud._duplicate_project_probe, cloud._duplicate_project_result),
+              (cloud._duplicate_hub_probe, cloud._duplicate_hub_result),
+              (cloud._hub_edit_preflight_probe, cloud._hub_edit_preflight_result))
+    return [("sys_execute_script", args, expect, None) for args, expect in probes] + [
+        step for step in cloud._CLOUD_CAM_PERSISTENCE + cloud._CLOUD_DRAWING
+        if step[0] in {"cam_delete_template", "drawing_get_status"}
+        or (step[0] == "cam_get_status" and not isinstance(step[2], _Refusal))]
 
 
 def _resolve_document_target(document_pin, target):
@@ -474,6 +712,40 @@ def _confirm_transition(document_pin, expected, *aliases, polls=12):
             time.sleep(0.25)
     _invalidate_pin(document_pin, "the intended document did not become active")
     return document_pin["blocked_transition"]
+
+
+def _observe_owned_lineage(document_pin, payload):
+    """Admit a new open dependency only after its checked lineage matches an owned source."""
+    if not document_pin.get("track_owned_open"):
+        return
+    active = payload.get("active") or {}
+    rows = payload.get("open_documents")
+    count = payload.get("open_count")
+    if (not isinstance(rows, list) or payload.get("truncated") is not False
+            or type(count) is not int or count != len(rows)
+            or active.get("is_saved") is not True or type(active.get("is_modified")) is not bool
+            or any(not isinstance(row, dict)
+                   or not _valid_session_handle(row.get("document_handle"))
+                   or any(type(row.get(flag, default)) is not bool for flag, default in
+                          (("is_saved", True), ("is_modified", False), ("is_active", False)))
+                   for row in rows)):
+        return
+    handle, lineage = active.get("document_handle"), active.get("document_id")
+    handles = [row["document_handle"] for row in rows]
+    if (len(set(handles)) != len(rows)
+            or [row["document_handle"] for row in rows if row.get("is_active") is True] != [handle]):
+        return
+    if not _valid_session_handle(handle) or not isinstance(lineage, str) or not lineage.startswith("urn:"):
+        return
+    owned = document_pin.setdefault("owned_documents", [])
+    lineages = document_pin.setdefault("owned_lineages", [])
+    candidates = document_pin.setdefault("dependency_candidates", [])
+    if handle in owned:
+        if lineage not in lineages:
+            lineages.append(lineage)
+    elif handle in candidates and lineage in lineages:
+        owned.append(handle)
+        candidates.remove(handle)
 
 
 def _observe_doc_get(document_pin, payload):
@@ -583,6 +855,7 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
             time.sleep(step[1]["seconds"])
             continue
         tool, args, expect, save = step
+        script_declaration = step_script_declaration(expect)
         expect = _unparked(expect)
         deliberate_refusal = isinstance(expect, _Refusal) or expect == "refused"
         try:
@@ -687,19 +960,55 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
         elif tool in guarded_tools and tool == "doc_open":
             transition_aliases = (arguments.get("file_id"),)
 
+        if (tool == "doc_close" and document_pin.get("track_owned_open")
+                and not deliberate_refusal):
+            close_handle = intended_handle or pre_call_handle
+            owned = set(document_pin.get("owned_documents") or []) | set(
+                document_pin.get("lifecycle_owned_documents") or [])
+            if arguments.get("close_all") or close_handle not in owned:
+                if block(tool, "family cannot close a document it did not open"):
+                    return rows
+                continue
+
+        pre_open_handles = None
+        if tool == "doc_open" and document_pin.get("track_owned_open"):
+            open_before, _active_before, census_problem = _complete_open_documents()
+            if census_problem:
+                if block(tool, "doc_open ownership cannot be established: " + census_problem):
+                    return rows
+                continue
+            pre_open_handles = {row["document_handle"] for row in open_before}
+
         print(f"    -> {tool} {act}".rstrip()
               + (f" {json.dumps(arguments)[:120]}" if trace else ""), flush=True)
         t0 = time.time()
-        if tool == "data_get_upload_status":
-            is_error, payload, calls = _settle_upload_status(call, arguments)
-        else:
-            is_error, payload = call(tool, arguments)
-            calls = 1
+        try:
+            if tool == "data_get_upload_status":
+                is_error, payload, calls = _settle_upload_status(call, arguments)
+            else:
+                if script_declaration is not None:
+                    machine_config.declared_effects(tool, arguments, script_declaration)
+                    is_error, payload = call(tool, arguments, script_declaration=script_declaration)
+                else:
+                    is_error, payload = call(tool, arguments)
+                calls = 1
+        except Exception as exc:
+            if not stop_on_failure or not document_pin.get("track_continuation"):
+                raise
+            document_pin["continuation_refusal"] = "tool transport raised: " + str(exc)
+            document_pin["transport_uncertain"] = True
+            block(tool, document_pin["continuation_refusal"])
+            return rows
         if timings is not None:
             spent, count = timings.get(tool, (0.0, 0))
             timings[tool] = (spent + time.time() - t0, count + calls)
 
         identity_problem = None
+        if (document_pin.get("track_continuation") and is_error and isinstance(payload, str)
+                and payload.startswith("Handler is still running after ")):
+            document_pin["continuation_refusal"] = payload
+            document_pin["transport_uncertain"] = True
+            identity_problem = payload
         if tool == "doc_get" and not deliberate_refusal:
             if is_error:
                 _invalidate_pin(document_pin, "doc_get could not read the active document identity")
@@ -726,7 +1035,12 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
                     good = bool(expect(payload))
                 except Exception as e:
                     good, payload = False, f"predicate raised: {e}"
-                status, note = ("pass", "") if good else ("FAIL", str(payload)[:NOTE_MAX])
+                    if document_pin.get("track_continuation") and isinstance(e, OSError):
+                        document_pin["continuation_refusal"] = "predicate transport raised: " + str(e)
+                        document_pin["transport_uncertain"] = True
+                status, note = (("pass", "") if good else (
+                    "blocked" if document_pin.get("continuation_refusal", "").startswith(
+                        "predicate transport raised:") else "FAIL", str(payload)[:NOTE_MAX]))
         elif expect == "ok" and not is_error:
             status, note = "pass", ""
         elif expect == "refused" and is_error:
@@ -750,8 +1064,20 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
                     if not document_pin.get("blocked_transition"):
                         _invalidate_pin(document_pin, problem)
                     status, note = "blocked", problem
-                elif tool == "doc_new":
+                elif tool == "doc_new" or (tool == "doc_open" and pre_open_handles is not None
+                                           and expected not in pre_open_handles):
                     document_pin.setdefault("owned_documents", []).append(expected)
+                    if tool == "doc_open":
+                        after, _active, problem = _complete_open_documents()
+                        if problem:
+                            _invalidate_pin(document_pin, problem)
+                            status, note = "blocked", problem
+                        else:
+                            candidates = document_pin.setdefault("dependency_candidates", [])
+                            extra = {row["document_handle"] for row in after} - pre_open_handles - {expected}
+                            for handle in sorted(extra):
+                                if handle not in candidates:
+                                    candidates.append(handle)
             elif tool == "doc_activate":
                 problem = (_confirm_transition(document_pin, intended_handle)
                            if _valid_session_handle(intended_handle)
@@ -771,6 +1097,9 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
                 if closes_active or recovery:
                     _invalidate_pin(document_pin, "the active document was closed")
 
+        if status == "pass" and tool == "doc_get" and not is_error:
+            _observe_owned_lineage(document_pin, payload)
+
         if status == "pass" and save is not None and not is_error:
             key, extract = save
             try:
@@ -779,6 +1108,42 @@ def run_steps(steps, ctx, trace=False, sleep_s=STEP_SLEEP_S, on_result=None, tim
                 status, note = "pass*", f"saved-value extraction failed: {e}"
 
         rows.append((tool, status, note))
+        if document_pin.get("track_continuation"):
+            if (tool in {"sys_set_preferences", "data_switch_hub", "cam_create_machine",
+                         "cam_delete_machine", "render_create", "render_edit"}
+                    or (tool == "cam_edit_tools" and arguments.get("scope", "document") != "document")
+                    or (tool == "view_set" and arguments.get("action") == "orient"
+                        and arguments.get("projection"))
+                    or (tool == "sys_execute_script" and not any(
+                        args is authored[1] and expect is authored[2]
+                        for authored in document_pin.get("cloud_audited_probes", [])))):
+                document_pin.setdefault("continuation_global_refusal",
+                                        "shared state restoration is uncertified: " + tool)
+            if (tool in {"sys_execute_script", "sys_set_preferences", "data_switch_hub",
+                         "cam_save_template", "cam_delete_template", "cam_create_machine",
+                         "cam_delete_machine", "cam_generate", "render_create", "render_edit"}
+                    or (tool == "cam_edit_tools" and arguments.get("scope", "document") != "document")
+                    or (tool.startswith("cam_") and arguments.get("generate") not in (None, False, "skip"))
+                    or arguments.get("deferred") is True):
+                document_pin.setdefault("continuation_refusal",
+                                        "shared state or asynchronous dispatch is uncertified: " + tool)
+            if isinstance(payload, dict) and payload.get("upload_handle"):
+                document_pin.setdefault("continuation_uploads", set()).add(payload["upload_handle"])
+            elif tool == "data_upload_file" or (tool == "doc_copy" and arguments.get("occurrence")):
+                document_pin.setdefault("continuation_async_refusal",
+                                        "publication dispatch returned no poll handle: " + tool)
+            if tool == "data_get_upload_status" and isinstance(payload, dict):
+                if payload.get("state") in {"complete", "failed"}:
+                    document_pin.setdefault("continuation_uploads", set()).discard(payload.get("handle"))
+            if (isinstance(payload, dict) and payload.get("pending") is True
+                    and not (tool in {"doc_save", "doc_save_as"}
+                             and payload.get("cloud_processing_complete") is True)):
+                document_pin.setdefault("continuation_async_refusal",
+                                        "asynchronous reply is uncertified: " + tool)
+            if tool in {"doc_save", "doc_save_as"} and (not isinstance(payload, dict)
+                    or payload.get("cloud_processing_complete") is not True):
+                document_pin.setdefault("continuation_publication_refusal",
+                                        "held document publication is uncertified: " + tool)
         if on_result:
             try:
                 on_result(*rows[-1])
@@ -851,48 +1216,105 @@ def select_acts(acts, spec):
 
 
 def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None,
-        run_id=None, resume=False):
-    """Walk the act program and stamp the receipt when the whole of it has run.
-
-    'run_id' makes the walk RESUMABLE: the ctx, the ledger so far and the acts already done are
-    saved after every act, and a later invocation with resume=True carries on from there against the
-    document this chunk leaves open. The receipt is written from the UNION of a run id's chunks, and
-    only when every act of the program has run under it."""
+        run_id=None, resume=False, families_spec=None, continue_families=False,
+        accept_open_work=False, batch_records=None):
+    """Run owned document families and stamp only an unselected complete candidate."""
+    config = require_machine()
+    chosen_batches = [] if batch_records is None else batch_records
     # The wire reads, the act program and the ledger tables as the FACADE holds them at the moment
     # the run starts - see verify_core.facade for why they are not this module's own globals.
     health_gate, registered_tools = facade("health_gate"), facade("registered_tools")
     attestation_identity = facade("attestation_identity")
     source_hash, write_verified = facade("source_hash"), facade("write_verified")
     poll_generation, reload_smoke = facade("poll_generation"), facade("reload_smoke")
+    family_switch_smoke = facade("family_switch_smoke")
+    poll_render_job = facade("poll_render_job")
     ACTS, POLL_AFTER, STORY, EXCLUDED = (facade("ACTS"), facade("POLL_AFTER"), facade("STORY"),
                                          facade("EXCLUDED"))
     ACT_NEEDS = facade("ACT_NEEDS")
 
-    # --acts: a SLICE of the story, walked against the document a prior --keep-open run left open.
-    # Selected before the first wire call, so an unknown selector costs nothing.
+    declared_families = facade("FAMILY_PROGRAM")
+    family_mode = declared_families is not None
+    if continue_families and (not family_mode or keep_open or resume or families_spec):
+        print("run refused: --continue-families needs fresh owned families and cleanup")
+        return 1
+    families = family_names(ACTS) if family_mode else {}
+    if family_mode and families != declared_families:
+        print("run refused: act program differs from its declared family ownership")
+        return 1
+    original_acts = ACTS
+    if family_mode:
+        ACTS = ordered_acts(ACTS)
+    receipt_mode = bool(family_mode and facade("FAMILY_RECEIPTS") and acts_spec is None)
+    recorded_scope = verify_receipts.declared_scope() if receipt_mode else None
+    receipt_selection = None
+    if families_spec is not None:
+        requested_families = [name.strip() for name in families_spec.split(",")]
+        if (not receipt_mode or resume or keep_open or acts_spec is not None
+                or not requested_families or any(name not in set(families.values())
+                                                for name in requested_families)):
+            print("run refused: --families needs whole known families, cleanup and a fresh run")
+            return 1
+        receipt_selection = set(requested_families)
+        if not os.path.isfile(FAMILY_RECEIPT):
+            print("run refused: --families needs a new full-run bootstrap first")
+            return 1
+    if receipt_mode and keep_open:
+        print("run refused: receipt runs require cleanup; use --acts with --keep-open")
+        return 1
+    try:
+        closures = receipt_closures() if receipt_mode else {}
+    except (ValueError, OSError) as exc:
+        print("run refused: cannot bound family dependencies: " + str(exc))
+        return 1
+    # Select before the first wire call, so an unknown selector costs nothing.
     selected = None
     if acts_spec is not None:
         try:
-            selected = select_acts(ACTS, acts_spec)
+            requested = select_acts(original_acts, acts_spec)
         except ValueError as e:
             print(str(e))
             return 1
+        selected = ([name for name, _pre, _narr, _fb in ACTS
+                     if families[name] in {families[n] for n in requested}]
+                    if family_mode else requested)
         skipped = [act[0] for act in ACTS if act[0] not in set(selected)]
-        print("partial run (--acts {0}): {1} act(s) not run - {2}.{3}".format(
+        print("development run (--acts {0}): {1} act(s) not run - {2}.{3}".format(
             acts_spec, len(skipped), ", ".join(skipped) or "(none)",
-            "" if run_id else " The ctx values they save are absent, so a step whose arguments "
-            "need one lands blocked."))
+            " Each selected family builds its own inputs and writes no receipt."
+            if family_mode else " The ctx values unrun acts save are absent."))
+    if receipt_selection is not None:
+        selected = [name for name, _pre, _narr, _fb in ACTS
+                    if families[name] in receipt_selection]
+    cloud_selected = any(ACT_NEEDS.get(name) == "cloud_tier"
+                         for name, _pre, _narr, _fallback in ACTS
+                         if selected is None or name in selected)
+    cloud_bound = cloud_config.start_invocation(run_id, resume) if cloud_selected else False
     # THE RESUME: the state a prior chunk of this run id saved. Both refusals are settled before the
     # first act runs - a chunk that cannot be joined to the ones before it must change nothing.
     # With --acts it is a DEVELOPMENT walk instead: the named acts run again against the saved
     # world with its ctx, nothing is stamped and the state is not advanced.
-    develop = bool(run_id and resume and acts_spec is not None)
+    if family_mode and acts_spec is not None and resume:
+        print("run refused: --acts starts independent family documents; --resume continues only "
+              "an unselected full run")
+        return 1
+    develop = (acts_spec is not None if family_mode
+               else bool(run_id and resume and acts_spec is not None))
     state = load_run_state(run_id) if (run_id and resume) else None
+    if receipt_mode and state is not None and state.get("recorded_scope") != recorded_scope:
+        print("resume refused: declared scope differs from this run's recorded scope")
+        return 1
+    if family_mode and resume and state is not None and state.get("family_state_version") != 1:
+        print("resume refused: this checkpoint predates owned-document family state")
+        return 1
     # This run is bound to one working-tree snapshot; this does not identify loaded Fusion code.
     pinned_source_hash = source_hash()
+    if state is not None and state.get("machine_scope") != machine_config.record_scope(config):
+        print("resume refused: machine, endpoint, destination, tiers or permissions changed")
+        return 1
     # A run id that already holds state is CONTINUED, never restarted over: starting it again
     # would run the acts with an empty ctx (every saved value gone) and rewrite its progress.
-    if run_id and not resume and load_run_state(run_id) is not None:
+    if run_id and not resume and not develop and load_run_state(run_id) is not None:
         print("run refused: {0!r} already holds state at {1} - pass --resume to continue it "
               "(--resume --acts for a development walk), or start a new run id".format(
                   run_id, run_state_path(run_id)))
@@ -903,20 +1325,15 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         print("run refused: health did not provide a complete loaded attestation")
         return 1
     print(f"server ok: {health.get('server')} v{health.get('version', '?')}")
-    if not (run_id and resume) and selected is None:
-        reap_harness_assets("before the run")
 
     def current_attestation():
-        # Fusion's main thread can stay busy past an act's generation launch, so a mid-run /health
-        # that times out is retried for a bounded window before it fails the run.
-        deadline = time.time() + _BUSY_HEALTH_WINDOW_S
-        while True:
-            try:
-                return attestation_identity(health_gate())
-            except (TimeoutError, urllib.error.URLError):
-                if time.time() >= deadline:
-                    raise
-                time.sleep(10)
+        try:
+            return attestation_identity(health_gate())
+        except (Exception, SystemExit):
+            if not continue_families:
+                raise
+            document_pin["transport_uncertain"] = True
+            return None
 
     current_document = _document_now() if run_id and resume else None
     if run_id and resume:
@@ -935,31 +1352,198 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             print("resuming run {0}: {1} act(s) already done".format(
                 run_id, len(state.get("acts_done") or [])))
     all_tools, registry_rows = registered_tools(health, include_rows=True)
+    from verify_program import cache_baseline_plan
+    potential_names = []
+    for name, _pre, _narrative, _fallback in ACTS:
+        if selected is not None and name not in selected:
+            continue
+        cap = ACT_NEEDS.get(name)
+        caps = cap if isinstance(cap, tuple) else (cap,) if cap is not None else ()
+        if not any(machine_config.asked(config).get(value) is False
+                   or value == "cloud_link_crash_review_authorization" for value in caps):
+            potential_names.append(name)
+    # Potential support of these selected modes; injected hooks declare their own routes.
+    selected_tools = preflight.required_tools(
+        config, (step for name, _pre, narrative, fallback in ACTS if name in potential_names
+                 for step in list(narrative) + list(fallback or ())), step_conditions)
+    registered_guards = {row["name"] for row in registry_rows
+                         if (row.get("annotations") or {}).get("readOnlyHint") is not True
+                       and "expect_document" in ((row.get("inputSchema") or {}).get("properties") or {})}
+    support_routes = []
+    if family_mode or registered_guards or (run_id and resume):
+        support_routes.append(("document-pin/census", ("doc_get", "design_get"), "ok"))
+    cleanup_families = {families[name] for name in potential_names if name in families}
+    if ((family_mode and (not keep_open or len(cleanup_families) > 1))
+            or (not family_mode and not keep_open and selected_tools & {
+                "doc_new", "doc_open", "doc_activate", "doc_close", "sys_execute_script"})):
+        support_routes.append(("cleanup/home-restore", ("doc_get", "doc_close", "doc_activate"), "ok"))
+    if family_mode:
+        support_routes.append(("strict-home-observer", ("sys_execute_script",),
+                               Needs("native_script")))
+    capabilities = {cap for name, _pre, narrative, fallback in ACTS if name in potential_names
+                    for step in list(narrative) + list(fallback or ())
+                    for cap, _polarity in step_conditions(step[2])}
+    for name in potential_names:
+        cap = ACT_NEEDS.get(name)
+        capabilities.update(cap if isinstance(cap, tuple) else (cap,) if cap is not None else ())
+    if receipt_mode or MACHINING_EXTENSION in capabilities or any(
+            families.get(name) == "part_cam" and name.startswith("ACT 10e")
+            for name in potential_names):
+        support_routes.append(("build/entitlement-observer", ("workspace_orient",), "ok"))
+    generation_requested = (any(name in POLL_AFTER for name in potential_names) or
+                            any(name.startswith(("ACT 10e", "ACT 10c15"))
+                                for name in potential_names))
+    if generation_requested:
+        from verify_acts_cam import poll_generation as baseline_poll_generation
+        if poll_generation is baseline_poll_generation:
+            support_routes.append(("generation-polls", ("cam_get_status",), "ok"))
+            poll_targets = set()
+            for poll_name in potential_names:
+                for lane in ("narrative", "fallback"):
+                    targets = POLL_AFTER.get(poll_name, {}).get(lane, ())
+                    poll_targets.update((targets,) if isinstance(targets, str) else targets)
+            if CAM_SETUP in poll_targets:
+                support_routes.append(("post-generation-folder-workflow",
+                                       ("cam_get", "cam_edit_operation", "cam_edit_folders", "cam_delete",
+                                        "cam_get_status"), "ok"))
+            if poll_targets & {CAM_SETUP, "Setup1"}:
+                support_routes.append(("post-generation-identity",
+                                       ("cam_get", "cam_edit_operation", "cam_generate", "cam_get_status",
+                                        "cam_inspect_toolpaths"), "ok"))
+        else:
+            declared = getattr(poll_generation, "support_routes", None)
+            if declared is None:
+                print("run refused: injected generation hook has no support declaration")
+                return 1
+            support_routes.extend(declared)
+    if any(name.startswith("ACT 15 - RENDER: LOCAL ") for name in potential_names):
+        from verify_acts_render import poll_render_job as baseline_poll_render_job
+        if poll_render_job is baseline_poll_render_job:
+            support_routes.append(("render-polls", ("render_get",), "ok"))
+        else:
+            declared = getattr(poll_render_job, "support_routes", None)
+            if declared is None:
+                print("run refused: injected render hook has no support declaration")
+                return 1
+            support_routes.extend(declared)
+    if cloud_selected:
+        support_routes.append(("cloud-destination/upload", ("data_get", "data_create_folder",
+                                                           "data_get_upload_status"), Needs("cloud_tier")))
+    if shots_dir:
+        support_routes.append(("requested-current-view-shots", ("view_screenshot",), "ok"))
+    if not develop and (selected is None or receipt_selection is not None):
+        from verify_acts_doc import reload_smoke as baseline_reload_smoke
+        from verify_family_switch import family_switch_smoke as baseline_family_switch
+        if reload_smoke is baseline_reload_smoke:
+            support_routes.append((
+                "reload-smoke", ("sys_reload_addin", "doc_get", "doc_new", "doc_close", "doc_activate",
+                                 "param_add", "param_get", "param_delete", "view_switch_workspace",
+                                 "workspace_orient", "sys_find_tool", "sys_capability_map"),
+                Needs("addin_reload")))
+        else:
+            declared = getattr(reload_smoke, "support_routes", None)
+            if declared is None:
+                print("run refused: injected reload hook has no support declaration")
+                return 1
+            support_routes.extend(declared)
+        if family_switch_smoke is baseline_family_switch:
+            support_routes.append(("family-switch", ("sys_reload_addin", "sys_set_preferences",
+                                                       "sys_capability_map"),
+                                   Needs(("addin_reload", "preference_writes"))))
+        else:
+            declared = getattr(family_switch_smoke, "support_routes", None)
+            if declared is None:
+                print("run refused: injected family-switch hook has no support declaration")
+                return 1
+            support_routes.extend(declared)
+    conditional_plan = cache_baseline_plan(
+        ACTS, families, fixture_steps, selected, potential_names, support_routes)
+    ACTS = conditional_plan["acts"]
+    needed = preflight.required_tools(
+        config, conditional_plan["potential_rows"], step_conditions,
+        support_routes=conditional_plan["support_routes"])
+    failed_docs, admission_docs = facade("call")("doc_get", {"max_results": 1000})
+    failed_prefs, admission_prefs = facade("call")("sys_get_preferences", {"include": preflight.PREFERENCE_GROUPS})
+    try:
+        owned_handles = preflight.owned_handles(state)
+    except ValueError as exc:
+        print("resume admission refused: " + str(exc))
+        return 1
+    admission_problems = preflight.problems(
+        config, health, all_tools, needed, None if failed_docs else admission_docs,
+        None if failed_prefs else admission_prefs, accept_open_work, owned_handles,
+        home_observer_required=family_mode)
+    if admission_problems:
+        print("sweep admission refused before its first write: " + "; ".join(admission_problems))
+        return 1
+    extension_observed = None
+    if config["tiers"]["machining_extension"]:
+        extension_observed = probe_capabilities([MACHINING_EXTENSION]).get(MACHINING_EXTENSION)
+        if extension_observed is not True:
+            print("requested machining_extension is unavailable or unreadable before the first write; "
+                  "the existing probe needs an unmodified active document and every sentinel flag true")
+            return 1
+    if config["tiers"]["cloud"]:
+        try:
+            cloud_config.read_destination_project(facade("call"), config["cloud"])
+        except cloud_config.DestinationError as exc:
+            print("requested cloud tier refused before the first write: " + str(exc))
+            return 1
+    for note in preflight.permission_notes(config):
+        print(note)
+    read_tools = {row["name"] for row in registry_rows
+                  if (row.get("annotations") or {}).get("readOnlyHint") is True}
     guarded_tools = frozenset(
         row["name"] for row in registry_rows
         if isinstance(row.get("annotations"), dict)
         and row["annotations"].get("readOnlyHint") is not True
         and "expect_document" in ((row.get("inputSchema") or {}).get("properties") or {}))
 
+    if family_mode and "sys_execute_script" not in all_tools:
+        print("run refused: strict home preservation requires the read-only native observer")
+        return 1
+
     # THE CAPABILITY TIER: every capability an act or a step declares, answered True/False/None by
     # its own probe. An unmet capability routes its acts and steps to the receipt's
     # skipped(<capability> not entitled) bucket rather than running them into the refusal an
     # unentitled installation would answer with.
-    entitlements = {}
+    entitlements = {"native_script": "sys_execute_script" in all_tools}
+    if extension_observed is not None:
+        entitlements[MACHINING_EXTENSION] = extension_observed
 
     def met(capability):
         """capability_met, taking the capability's own probe the first time it is asked for - workspace_orient errors with no document open."""
+        if isinstance(capability, tuple):
+            return all([met(name) for name in capability])
         if capability is not None and capability not in entitlements:
             entitlements.update(probe_capabilities([capability]))
             state = entitlements[capability]
             print("capability {0}: {1}".format(
                 capability, "entitled" if state is True
-                else ("NOT entitled" if state is False else "unreadable (routed as not entitled)")))
-        return capability_met(entitlements, capability)
+                else ("NOT entitled" if state is False else "unreadable")))
+        return gate_allows(entitlements, Needs(capability)) if capability is not None else True
 
     # Everything a later chunk needs is seeded from the saved state, so the acts below cannot tell
     # whether the ones before them ran in this process or the last one.
     prior = state or {}
+    receipt_run_id = prior.get("receipt_run_id") or run_id or verify_receipts.execution_id()
+    executions = dict(prior.get("family_executions") or {})
+    initial_census = prior.get("initial_census")
+    if (receipt_mode or continue_families) and initial_census is None:
+        census, active, problem = _complete_open_documents()
+        if problem:
+            print("run refused: receipt opening census: " + problem)
+            return 1
+        initial_census = {"complete": True, "documents": census, "active": active,
+                          "open_count": len(census)}
+        try:
+            if continue_families:
+                initial_census = _continuation_census(census, active, health)
+            verify_receipts.exact_start(verify_receipts.normalized_health(health), initial_census,
+                                       require_build=False)
+        except ValueError as exc:
+            print("run refused: " + str(exc))
+            return 1
     ctx = dict(prior.get("ctx") or {})
     rows = [tuple(r) for r in (prior.get("rows") or [])]
     notes = dict(prior.get("notes") or {})
@@ -977,6 +1561,7 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     # tool -> the reason a Parked step held it at a bare "ok", for the ledger's status column.
     parked = dict(prior.get("parked") or {})
     # the values predicates recall by name across acts, which live in verify_core rather than in ctx.
+    _RECALL.clear()
     _RECALL.update(prior.get("recall") or {})
     entitlements.update(prior.get("entitlements") or {})
     # the document this chunk works in, and how many acts it drove itself - a chunk that drove none
@@ -990,7 +1575,14 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         "snapshot": document if prior.get("document") or current_document else None,
         "blocked_transition": False,
         "known_documents": dict(prior.get("document_handles") or {}),
-        "owned_documents": []}
+        "owned_documents": list(prior.get("owned_documents") or []),
+        "owned_lineages": list(prior.get("owned_lineages") or []),
+        "dependency_candidates": list(prior.get("dependency_candidates") or [])}
+    if family_mode:
+        document_pin["track_owned_open"] = True
+        document_pin["track_continuation"] = continue_families
+        document_pin["lifecycle_owned_documents"] = list(
+            prior.get("lifecycle_owned_documents") or [])
     _remember_document(document_pin, document)
     if (guarded_tools and document_pin.get("snapshot") is None
             and not document_pin.get("blocked_transition")):
@@ -1006,8 +1598,46 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         print("run refused: the original active document has no exact session handle")
         return 1
     story_document = prior.get("story_document")
+    current_family = prior.get("family") if family_mode else None
+    family_events = list(prior.get("family_events") or []) if family_mode else []
+    family_open_handles = set(prior.get("family_open_handles") or []) if family_mode else set()
+    family_start_census = None
+    family_home_before = prior.get("family_home_before")
+    if resume and family_mode and current_family is not None and (
+            not isinstance(family_home_before, dict)
+            or family_home_before.get("document_handle") != home_document.get("document_handle")
+            or type(family_home_before.get("is_modified")) is not bool
+            or not isinstance(family_home_before.get("name"), str) or not family_home_before["name"]
+            or "document_id" not in family_home_before
+            or any(type(family_home_before.get(key)) is not int or family_home_before[key] < 0
+                   for key in ("feature_count", "sketch_count", "body_count"))):
+        print("resume refused: original before-family home snapshot is absent")
+        return 1
+    family_outcomes = {}
+    blocked_acts = []
+    blocked_steps = []
+    recovered_families = set()
+    cleanup_attempted = set()
+    last_fixture_rows = []
+    cloud_checks = _cloud_recovery_checks() if continue_families else []
+    cloud_checks_passed = set()
+    document_pin["cloud_audited_probes"] = cloud_checks[:4]
+    fusion_version = prior.get("fusion_version") or health.get("version", "?")
+    anchor_document = prior.get("anchor_document")
+    if cloud_bound:
+        cloud_config.ensure_run_destination(facade("call"))
+        entitlements["cloud_tier"] = True
+        bound = cloud_config.destination_snapshot()
+        print("cloud destination: " + bound["folder"] + " (id " + bound["folder_id"] + ")")
     walked = 0
     program = [act[0] for act in ACTS]
+    last_requested_act = (selected[-1] if selected is not None else program[-1])
+
+    def family_ends_at(name):
+        """Whether this is the last requested act in its owned document."""
+        return name == next(a[0] for a in reversed(ACTS)
+                            if families[a[0]] == current_family
+                            and (selected is None or a[0] in selected))
 
     def checkpoint(allow_terminal_close=False):
         nonlocal document
@@ -1037,21 +1667,445 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             "elapsed_s": chunk_started + (time.time() - run_started),
             "document": document, "home_document": home_document,
             "story_document": story_document,
+            "family_state_version": 1 if family_mode else None,
+            "receipt_run_id": receipt_run_id, "family_executions": executions,
+            "cloud_destination": cloud_config.destination_snapshot(),
+            "recorded_scope": recorded_scope, "machine_scope": machine_config.record_scope(config),
+            "initial_census": initial_census,
+            "family": current_family, "family_events": family_events,
+            "failed_families": [family for family, outcome in family_outcomes.items()
+                                if outcome == "failed"],
+            "family_home_before": family_home_before,
+            "family_open_handles": sorted(family_open_handles),
+            "owned_documents": list(document_pin.get("owned_documents") or []),
+            "owned_lineages": list(document_pin.get("owned_lineages") or []),
+            "dependency_candidates": list(document_pin.get("dependency_candidates") or []),
+            "lifecycle_owned_documents": list(
+                document_pin.get("lifecycle_owned_documents") or []),
+            "fusion_version": fusion_version, "anchor_document": anchor_document,
             "document_handles": dict(document_pin.get("known_documents") or {})})
         return True
 
+    def omit_work(family, act, kind, capability, reason, tools, expect=None, observed_verdict=None):
+        """Retain every declared/observed gate while assigning no execution credit to omitted work."""
+        decision = gate_decision(entitlements, expect if expect is not None else Needs(capability))
+        executions[family]["omitted"].append(machine_config.omission(
+            act, kind, tools, decision["conditions"]))
+
+    def observe_conditions(expect):
+        """Probe every gate without borrowing another gate's polarity or permission."""
+        for capability, _polarity in step_conditions(expect):
+            if capability not in entitlements:
+                entitlements.update(probe_capabilities([capability]))
+
+    def poll_evidence(family, made, poll_values):
+        """Credit only predicate values emitted by this family's successful poll rows."""
+        passed = {tool for tool, status, _note in made if status == "pass"}
+        executions[family]["self_reported"] += sorted(passed & poll_values)
+        executions[family]["rows"] += [list(row) for row in made]
+        valued.update(poll_values)
+
+    potential_row_ids = {id(step) for step in conditional_plan["potential_rows"]}
+
+    def admit_batch(batch, phase, original, planned=False):
+        """Check the concrete chosen row objects before argument resolution, and retain their indices."""
+        batch = tuple(batch)
+        indices, cursor = [], 0
+        for step in batch:
+            while cursor < len(original) and original[cursor] is not step:
+                cursor += 1
+            indices.append(cursor if cursor < len(original) else None)
+            cursor += 1
+        record = {"phase": phase, "tools": [step[0] for step in batch],
+                  "source_indices": indices,
+                  "status": "blocked"}
+        chosen_batches.append(record)
+        if (any(index is None for index in record["source_indices"])
+                or (planned and any(id(step) not in potential_row_ids for step in batch))):
+            record["problem"] = "chosen batch substituted a row outside its cached source"
+            raise ValueError(record["problem"])
+        missing = preflight.required_tools(config, batch, step_conditions) - set(all_tools)
+        if missing:
+            record["problem"] = "chosen batch tools not registered: " + ", ".join(sorted(missing))
+            raise ValueError(record["problem"])
+        record["status"] = "admitted"
+        return batch
+
+    def fixture(rows_to_run, family, phase):
+        """Run a local producer separately from the original judged-row ledger."""
+        nonlocal last_fixture_rows
+        phase_started = time.perf_counter()
+        for step in judged_steps(rows_to_run):
+            observe_conditions(step[2])
+            if receipt_mode and family in executions and not gate_allows(entitlements, step[2]):
+                omit_work(family, name, "fixture", step_capability(step[2]),
+                          gate_skip_reason(entitlements, step[2]), [step[0]], step[2],
+                          entitlements.get(step_capability(step[2])))
+        cached = (conditional_plan["initial"][family] if phase == "setup" else
+                  conditional_plan["opening"][family] if phase == "open" else
+                  conditional_plan["workspace"][family] if phase == "workspace" else
+                  conditional_plan["before"][name][fixture_entitled]
+                  if phase == "before " + name else None)
+        try:
+            if cached is not None and rows_to_run is not cached:
+                chosen_batches.append({"phase": family + " " + phase, "status": "blocked",
+                                       "problem": "producer batch differs from its admitted cache"})
+                raise ValueError("producer batch differs from its admitted cache")
+            allowed = admit_batch(
+                [step for step in rows_to_run if gate_allows(entitlements, step[2])],
+                family + " " + phase, rows_to_run, planned=cached is not None)
+        except ValueError as exc:
+            last_fixture_rows = [("admission", "blocked", str(exc))]
+            family_events.append({"family": family, "phase": phase,
+                                  "steps": [list(row) for row in last_fixture_rows]})
+            return False
+        made = run_steps(allowed, ctx, trace=trace, timings=timings, shots_dir=shots_dir,
+                         act=family + " " + phase, document_pin=document_pin,
+                         guarded_tools=guarded_tools | {"doc_new", "doc_open", "doc_close",
+                                                        "doc_activate"},
+                         stop_on_failure=True)
+        last_fixture_rows = made
+        family_events.append({"family": family, "phase": phase,
+                              "steps": [list(row) for row in made],
+                              "elapsed_s": max(0.0, time.perf_counter() - phase_started)})
+        if receipt_mode and family in executions and rows_to_run:
+            execution = executions[family]
+            if not execution["exercise_started"] and phase in {"cleanup", "restore", "restore-read"}:
+                execution["maintenance_rows"] += [list(row) for row in made]
+                return not any(row[1] in verify_receipts.BAD for row in made)
+            earlier = {tool for tool, status, _note in execution["rows"] if status == "pass"}
+            for step, row in zip(judged_steps(allowed), made):
+                if row[1] == "pass":
+                    if predicate_kind(step[2]) == "value":
+                        execution["self_reported"].append(row[0])
+                    targets = sorted(independent_targets(step[2], row[0], earlier,
+                                                         row[0] in read_tools))
+                    execution["independent"] += targets
+                    if targets:
+                        execution["witnesses"].append({
+                            "row_index": len(execution["rows"]), "targets": targets,
+                            "witness": independent_witness(step[2]), "tool": row[0],
+                            "reader_is_read": row[0] in read_tools})
+                    earlier.add(row[0])
+                execution["rows"].append(list(row))
+            if made and (phase == "setup" or phase.startswith("before ")):
+                execution["producers"].append({
+                    "run_id": verify_receipts.execution_id(), "phase": phase,
+                    "family_run_id": execution["family_run_id"],
+                    "fusion_version": execution["start_health"]["fusion_version"],
+                    "closure_hash": closures[family]["hash"],
+                    "rows": [list(row) for row in made],
+                    "success": not any(row[1] in verify_receipts.BAD for row in made)})
+        return not any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in made)
+
+    def fixture_poll(family, entitled=True):
+        """Certify local CAM producers before dependent narrative reads."""
+        phase_started = time.perf_counter()
+        made, fixture_notes = [], {}
+        poll_values = set()
+        targets = ((_SW_SETUP2,) + ((_SW_SETUP, _MX_SETUP) if entitled else ())
+                   if family == "part_cam" else (_SW_SETUP, _MX_SETUP))
+        for target in targets:
+            poll_generation(made, fixture_notes, target,
+                            **({"valued": poll_values} if receipt_mode else {}),
+                            document_pin=(document_pin.get("handle")
+                                          if document_pin.get("state") == "known" else None))
+            if any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in made):
+                break
+        family_events.append({"family": family, "phase": "fixture-generation",
+                              "steps": [list(row) for row in made],
+                              "elapsed_s": max(0.0, time.perf_counter() - phase_started)})
+        if receipt_mode:
+            poll_evidence(family, made, poll_values)
+        return not any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in made)
+
+    def finish_family(family):
+        """Discard all documents this family opened and restore the exact original handle."""
+        cleanup_attempted.add(family)
+        cleanup_started = time.perf_counter()
+        census, _active, problem = _complete_open_documents()
+        if problem:
+            if problem.startswith("document census transport raised:"):
+                document_pin["transport_uncertain"] = True
+            family_events.append({"family": family, "phase": "cleanup",
+                                  "steps": [["doc_get", "blocked", problem]],
+                                  "elapsed_s": max(0.0, time.perf_counter() - cleanup_started)})
+            return False
+        open_handles = {row["document_handle"] for row in census}
+        created = open_handles - family_open_handles
+        for handle in reversed(list(dict.fromkeys(document_pin.get("owned_documents") or []))):
+            if handle in created and handle != home_document.get("document_handle"):
+                if not fixture([("doc_close", {"name": handle, "save_changes": False},
+                                 "ok", None)], family, "cleanup"):
+                    return False
+                open_handles.remove(handle)
+        home = home_document.get("document_handle")
+        if home_document.get("state") == "known" and home not in open_handles:
+            family_events.append({"family": family, "phase": "restore",
+                                  "steps": [["doc_activate", "blocked",
+                                             "original home handle is not open"]]})
+            return False
+        if home_document.get("state") == "known":
+            if document_pin.get("handle") != home:
+                if not fixture([("doc_activate", {"name": home}, "ok", None)],
+                               family, "restore"):
+                    return False
+            if not fixture([("doc_get", {}, lambda p: (p.get("active") or {}).get(
+                "document_handle") == home, None)], family, "restore-read"):
+                return False
+        final_census, final_active, final_problem = _complete_open_documents()
+        final_handles = {row["document_handle"] for row in (final_census or [])}
+        owned = set(document_pin.get("owned_documents") or [])
+        if (final_problem or not family_open_handles <= final_handles
+                or owned & final_handles or final_active != home):
+            family_events.append({"family": family, "phase": "cleanup-verification",
+                                  "steps": [["doc_get", "blocked", final_problem or
+                                             "owned document or home census did not restore"]]})
+            return False
+        home_after, home_problem = _home_now(home_document)
+        family_events.append({"family": family, "phase": "home-preservation",
+                              "before": family_home_before, "after": home_after,
+                              "problem": home_problem})
+        if home_problem or family_home_before is None or home_after != family_home_before:
+            family_outcomes[family] = "failed"
+            if home_problem and home_problem.startswith("home observer transport raised:"):
+                document_pin["transport_uncertain"] = True
+            family_events.append({"family": family, "phase": "cleanup-verification",
+                                  "steps": [["home-preservation", "FAIL", home_problem or
+                                             "home content or modified flag changed"]]})
+            return False
+        if receipt_mode or continue_families:
+            end_census = {
+                "complete": True, "documents": final_census, "active": final_active,
+                "open_count": len(final_census)}
+            if continue_families:
+                try:
+                    end_census = _continuation_census(final_census, final_active, health)
+                    verify_receipts.preserved_census(family_start_census, end_census)
+                    if _refresh_pin(document_pin):
+                        raise ValueError("restored document pin is unresolved")
+                except ValueError as exc:
+                    family_events.append({"family": family, "phase": "cleanup-verification",
+                                          "steps": [["doc_get", "blocked", str(exc)]]})
+                    return False
+                except Exception as exc:
+                    document_pin["transport_uncertain"] = True
+                    family_events.append({"family": family, "phase": "cleanup-verification",
+                                          "steps": [["doc_get", "blocked", str(exc)]]})
+                    return False
+            if receipt_mode:
+                executions[family]["end_census"] = end_census
+        document_pin["owned_documents"] = []
+        document_pin["owned_lineages"] = []
+        document_pin["dependency_candidates"] = []
+        family_events.append({"family": family, "phase": "after-census",
+                              "documents": sorted(final_handles), "active": final_active})
+        family_events.append({"family": family, "phase": "cleanup-total",
+                              "elapsed_s": max(0.0, time.perf_counter() - cleanup_started)})
+        if receipt_mode:
+            executions[family]["cleanup"] = True
+        family_outcomes.setdefault(family, "passed")
+        return True
+
+    def continue_after_failure(name, made):
+        """Retain this failure and resume only after a certified family teardown."""
+        family_outcomes[current_family] = "failed"
+        for act, _pre, _narrative, _fallback in ACTS:
+            if (families[act] == current_family and act not in acts_done and act != name
+                    and (selected is None or act in selected)):
+                blocked_acts.append({"family": current_family, "act": act,
+                                     "reason": "failed family: " + name})
+        if not continue_families:
+            return False
+        problem = document_pin.get("continuation_refusal")
+        problem = problem or document_pin.get("continuation_async_refusal")
+        problem = problem or document_pin.get("continuation_global_refusal")
+        problem = problem or document_pin.get("continuation_publication_refusal")
+        if document_pin.get("continuation_uploads"):
+            problem = problem or "an upload or component publication remains unresolved"
+        cleaned = False
+        if not document_pin.get("transport_uncertain"):
+            try:
+                problem = problem or _refresh_pin(document_pin)
+            except Exception as exc:
+                document_pin["transport_uncertain"] = True
+                problem = "document pin could not be certified: " + str(exc)
+            if not document_pin.get("transport_uncertain"):
+                cleaned = finish_family(current_family)
+        cleanup_attempted.add(current_family)
+        if any(row[1] != "FAIL" for row in made if row[1] in verify_receipts.BAD):
+            problem = problem or "failure was not a completed-call logical failure"
+        if not cleaned:
+            problem = problem or "family cleanup did not restore opening documents and home"
+        if problem is None:
+            try:
+                if source_hash() != pinned_source_hash:
+                    problem = "source changed during this run"
+                else:
+                    problem = _identity_refusal(pinned_attestation, current_attestation())
+            except (Exception, SystemExit) as exc:
+                problem = "loaded identity could not be certified: " + str(exc)
+        family_events.append({"family": current_family, "phase": "continuation",
+                              "allowed": problem is None, "reason": problem,
+                              "blocked_acts": [row["act"] for row in blocked_acts
+                                               if row["family"] == current_family],
+                              "owned_scratch": list(document_pin.get("owned_documents") or [])})
+        if problem:
+            print("family continuation refused: " + problem)
+            return False
+        recovered_families.add(current_family)
+        if run_id and not checkpoint():
+            return False
+        return True
+
     stopped = False
+    if family_mode and home_document.get("state") == "none" and anchor_document is None:
+        if not fixture([("doc_new", {}, "ok", None)], "lifecycle", "anchor-open"):
+            stopped = True
+        else:
+            anchor_document = dict(document_pin.get("snapshot") or {})
+            home_document = anchor_document
+            document_pin["lifecycle_owned_documents"] = [anchor_document["document_handle"]]
+            document_pin["owned_documents"] = []
+            if continue_families:
+                census, active, problem = _complete_open_documents()
+                try:
+                    if problem:
+                        raise ValueError(problem)
+                    original = [row for row in census
+                                if row["document_handle"] != anchor_document["document_handle"]]
+                    verify_receipts.preserved_census(initial_census, dict(
+                        initial_census, documents=original, open_count=len(original)))
+                    initial_census = _continuation_census(census, active, health)
+                except ValueError as exc:
+                    print("run refused: anchor opening census: " + str(exc))
+                    stopped = True
+
     for name, pre, narrative, fallback in ACTS:
+        if stopped:
+            break
         if name in acts_done and not develop:
             continue
         if selected is not None and name not in selected:
             continue
+        if family_mode and families[name] in recovered_families:
+            continue
+        if family_mode:
+            family = families[name]
+            if current_family != family:
+                census, _active, problem = _complete_open_documents()
+                if problem:
+                    if problem.startswith("document census transport raised:"):
+                        document_pin["transport_uncertain"] = True
+                    family_events.append({"family": family, "phase": "before-census",
+                                          "steps": [["doc_get", "blocked", problem]]})
+                    stopped = True
+                    break
+                family_open_handles = {row["document_handle"] for row in census}
+                family_home_before, home_problem = _home_now(home_document)
+                family_events.append({"family": family, "phase": "home-before",
+                                      "snapshot": family_home_before, "problem": home_problem})
+                if home_problem:
+                    family_outcomes[family] = "failed"
+                    if home_problem.startswith("home observer transport raised:"):
+                        document_pin["transport_uncertain"] = True
+                    stopped = True
+                    break
+                if continue_families:
+                    try:
+                        if source_hash() != pinned_source_hash:
+                            raise ValueError("source changed before family " + family)
+                        identity_problem = _identity_refusal(pinned_attestation, current_attestation())
+                        if identity_problem:
+                            raise ValueError(identity_problem)
+                        family_start_census = _continuation_census(census, _active, health)
+                        expected = dict(initial_census, active=home_document.get("document_handle"))
+                        verify_receipts.preserved_census(expected, family_start_census)
+                    except ValueError as exc:
+                        family_events.append({"family": family, "phase": "before-census",
+                                              "steps": [["doc_get", "blocked", str(exc)]]})
+                        stopped = True
+                        break
+                    document_pin.pop("continuation_refusal", None)
+                    document_pin.pop("continuation_async_refusal", None)
+                    document_pin.pop("continuation_global_refusal", None)
+                    document_pin.pop("continuation_publication_refusal", None)
+                    document_pin.pop("continuation_uploads", None)
+                family_events.append({"family": family, "phase": "before-census",
+                                      "documents": sorted(family_open_handles),
+                                      "active": _active})
+                if receipt_mode:
+                    start_census = {"complete": True, "documents": census,
+                                    "active": _active, "open_count": len(census)}
+                    try:
+                        wire_health, family_health = _family_health()
+                        verify_receipts.exact_start(family_health, start_census)
+                        if _identity_refusal(pinned_attestation, attestation_identity(family_health)):
+                            raise ValueError("loaded identity changed before family " + family)
+                    except ValueError as exc:
+                        print("run refused: " + str(exc))
+                        stopped = True
+                        break
+                    executions[family] = {
+                        "run_id": receipt_run_id, "family_run_id": verify_receipts.execution_id(),
+                        "start_health": family_health, "start_census": start_census,
+                        "wire_health": wire_health,
+                        "initial_census": initial_census, "acts": [], "rows": [],
+                        "producers": [], "self_reported": [], "independent": [], "act_modes": [],
+                        "witnesses": [], "omitted": [], "scope": recorded_scope,
+                        "maintenance_rows": [], "exercise_started": False,
+                        "whole_family": False, "cleanup": False,
+                        "source_unchanged": False, "stopped": False}
+                    fusion_version = family_health["fusion_version"]
+                ctx.clear()
+                _RECALL.clear()
+                current_family = family
+                members = [a[0] for a in ACTS if families[a[0]] == family
+                           and (selected is None or a[0] in selected)]
+                exercise_started = any(met(ACT_NEEDS.get(member)) for member in members)
+                if receipt_mode:
+                    executions[family]["exercise_started"] = exercise_started
+                if exercise_started:
+                    if family not in ("sketch", "sheet_coupon",
+                                      "sheet_positions", "sheet_flange") and not fixture(
+                            conditional_plan["opening"][family], family, "open"):
+                        if continue_families and continue_after_failure(name, last_fixture_rows):
+                            continue
+                        stopped = True
+                        break
+                    if family not in ("sketch", "sheet_coupon",
+                                      "sheet_positions", "sheet_flange"):
+                        if not fixture(conditional_plan["workspace"][family], family, "workspace"):
+                            if continue_families and continue_after_failure(name, last_fixture_rows):
+                                continue
+                            stopped = True
+                            break
+                    if not fixture(conditional_plan["initial"][family], family, "setup"):
+                        if continue_families and continue_after_failure(name, last_fixture_rows):
+                            continue
+                        stopped = True
+                        break
+            fixture_entitled = (met(MACHINING_EXTENSION)
+                                if family == "part_cam" and name.startswith("ACT 10e")
+                                else met(ACT_NEEDS.get(name)))
+            before = conditional_plan["before"][name][fixture_entitled]
+            if before and met(ACT_NEEDS.get(name)) and not fixture(before, family, "before " + name):
+                if continue_families and continue_after_failure(name, last_fixture_rows):
+                    continue
+                stopped = True
+                break
+            if before and met(ACT_NEEDS.get(name)) and name.startswith(("ACT 10e", "ACT 10c15")):
+                if not fixture_poll(family, fixture_entitled):
+                    stopped = True
+                    break
         # An act the tier holds back runs NOTHING - not even its precondition read, which would
         # cost a wire call to decide between two lanes neither of which may run.
         act_cap = ACT_NEEDS.get(name)
         if not met(act_cap):
-            reason = capability_skip_reason(act_cap, entitlements)
+            reason = gate_skip_reason(entitlements, Needs(act_cap))
             act_modes.append((name, "skipped(" + reason + ")"))
+            if receipt_mode:
+                executions[current_family]["act_modes"].append([name, "skipped(" + reason + ")"])
             print(f"\n-- {name} [skipped: {reason}] --")
             # BOTH lanes: neither ran, and a tool driven only by the fallback belongs in the
             # capability bucket too - left out, it reads as PENDING, which is a different claim.
@@ -1060,43 +2114,92 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             # a held-back act is DONE - it has its outcome, and a resume must not run it again
             if name not in acts_done:
                 acts_done.append(name)
+            if receipt_mode:
+                executions[current_family]["acts"].append(name)
+                omit_work(current_family, name, "act", act_cap, reason,
+                          [step[0] for step in judged_steps(list(narrative) + list(fallback or []))])
             walked += 1
+            if family_mode and family_ends_at(name) and not (keep_open and name == last_requested_act):
+                if not finish_family(current_family):
+                    stopped = True
+                    break
+                story_document = None
             if not develop:
                 if source_hash() != pinned_source_hash:
                     print("run refused: source changed during this run; no state or receipt written")
-                    return 1
+                    stopped = True
+                    break
                 identity_problem = _identity_refusal(pinned_attestation, current_attestation())
                 if identity_problem:
                     print("run refused: " + identity_problem + "; no state or receipt written")
-                    return 1
+                    stopped = True
+                    break
                 if run_id and not checkpoint(
                         allow_terminal_close=set(program) <= set(acts_done)):
-                    return 1
+                    stopped = True
+                    break
             continue
         mode, steps = "narrative", narrative
         if pre is not None and fallback is not None and not _precondition_holds(pre):
             mode, steps = "fallback", fallback
         act_modes.append((name, mode))
+        if receipt_mode:
+            executions[current_family]["act_modes"].append([name, mode])
         print(f"\n-- {name} [{mode}] --")
         act_started = time.time()
+        selected_lane = steps
         if keep_open and name == "FINALE":
             steps = [s for s in steps if s[0] != "doc_close"]
         # ...then the per-STEP half of the same tier: the unmet rows are dropped BEFORE the step
         # engine, so the by-position pairing between judged_steps and its rows is untouched.
         for step in judged_steps(steps):
-            met(step_capability(step[2]))          # the probe, taken once per capability
+            observe_conditions(step[2])
             if not gate_allows(entitlements, step[2]):
                 gated.setdefault(step[0], gate_skip_reason(entitlements, step[2]))
+                if receipt_mode:
+                    omit_work(current_family, name, "step", step_capability(step[2]),
+                              gate_skip_reason(entitlements, step[2]), [step[0]], step[2],
+                              entitlements.get(step_capability(step[2])))
         steps = [s for s in steps if gate_allows(entitlements, s[2])]
         # judged_steps, not the act's raw list, is what pairs with the rows below - see its
         # docstring for what a dwell does to the pairing.
+        try:
+            steps = admit_batch(steps, name + " " + mode, selected_lane, planned=True)
+        except ValueError as exc:
+            rows.append(("admission", "blocked", str(exc)))
+            stopped = True
+            break
+        narrative_started = time.perf_counter()
         act_rows = run_steps(
             steps, ctx, trace=trace, timings=timings, shots_dir=shots_dir, act=name,
             document_pin=document_pin, guarded_tools=guarded_tools, stop_on_failure=True)
+        if family_mode:
+            family_events.append({"family": current_family, "phase": "narrative " + name,
+                                  "steps": [list(row) for row in act_rows],
+                                  "elapsed_s": max(0.0, time.perf_counter() - narrative_started)})
         for step, (tool, status, note) in zip(judged_steps(steps), act_rows):
             rows.append((tool, status, note))
+            if continue_families and current_family == "cloud" and status == "pass":
+                for index, authored in enumerate(cloud_checks):
+                    if (tool == authored[0] and step[2] is authored[2]
+                            and (step[1] is authored[1] or step[1] == authored[1])):
+                        cloud_checks_passed.add(index)
             if status in ("pass", "pass*") and predicate_kind(step[2]) == "value":
                 valued.add(tool)
+            if receipt_mode:
+                execution = executions[current_family]
+                earlier = {t for t, s, _n in execution["rows"] if s == "pass"}
+                if status == "pass":
+                    if predicate_kind(step[2]) == "value":
+                        execution["self_reported"].append(tool)
+                    targets = sorted(independent_targets(step[2], tool, earlier, tool in read_tools))
+                    execution["independent"] += targets
+                    if targets:
+                        execution["witnesses"].append({
+                            "row_index": len(execution["rows"]), "targets": targets,
+                            "witness": independent_witness(step[2]), "tool": tool,
+                            "reader_is_read": tool in read_tools})
+                execution["rows"].append([tool, status, note])
             if status in ("pass", "pass*") and parked_reason(step[2]) is not None:
                 parked[tool] = parked_reason(step[2])
             if status in ("pass", "pass*", "expected-refusal"):
@@ -1108,8 +2211,30 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                 and document_pin.get("handle") == owned_handles[0]):
             story_document = dict(document_pin.get("snapshot") or {})
         if any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in act_rows):
+            if continue_families:
+                blocked_steps.extend({"family": current_family, "act": name, "tool": step[0],
+                                      "step_index": index}
+                                     for index, step in enumerate(judged_steps(steps))
+                                     if index >= len(act_rows))
+            if continue_families and continue_after_failure(name, act_rows):
+                story_document = None
+                continue
             stopped = True
             break
+        if name.startswith("ACT 15 - RENDER: LOCAL "):
+            render_started = time.perf_counter()
+            poll_start = len(rows)
+            poll_values = set() if receipt_mode else valued
+            poll_render_job(rows, notes, ctx.get("render_job"), valued=poll_values)
+            if receipt_mode:
+                poll_evidence(current_family, rows[poll_start:], poll_values)
+            if family_mode:
+                family_events.append({"family": current_family, "phase": "render-job " + name,
+                                      "steps": [list(row) for row in rows[poll_start:]],
+                                      "elapsed_s": max(0.0, time.perf_counter() - render_started)})
+            if any(status in ("FAIL", "blocked", "pass*") for _tool, status, _note in rows[poll_start:]):
+                stopped = True
+                break
         if name in POLL_AFTER:
             # one act can leave SEVERAL setups generating, so the boundary poll takes a list as
             # readily as a name and certifies each in turn. 'max_polls' sizes that act's own budget
@@ -1117,9 +2242,11 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
             targets = POLL_AFTER[name][mode]
             budget = {k: v for k, v in POLL_AFTER[name].items() if k == "max_polls"}
             poll_start = len(rows)
+            generation_started = time.perf_counter()
+            poll_values = set() if receipt_mode else valued
             for setup in ([targets] if isinstance(targets, str) else targets):
                 poll_generation(
-                    rows, notes, setup, valued=valued,
+                    rows, notes, setup, valued=poll_values,
                     document_pin=(document_pin.get("handle")
                                   if document_pin.get("state") == "known" else None),
                     **budget)
@@ -1127,6 +2254,13 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                        for _tool, status, _note in rows[poll_start:]):
                     stopped = True
                     break
+            if family_mode:
+                family_events.append({"family": current_family, "phase": "generation " + name,
+                                      "steps": [list(row) for row in rows[poll_start:]],
+                                      "elapsed_s": max(0.0, time.perf_counter()
+                                                       - generation_started)})
+            if receipt_mode:
+                poll_evidence(current_family, rows[poll_start:], poll_values)
         if stopped:
             break
         if document_pin.get("snapshot") is not None:
@@ -1136,26 +2270,67 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         act_seconds.append((name, time.time() - act_started))
         if name not in acts_done:
             acts_done.append(name)
+        if receipt_mode:
+            executions[current_family]["acts"].append(name)
         walked += 1
+        if (continue_families and current_family == "cloud"
+                and name == "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE"
+                and cloud_checks and cloud_checks_passed == set(range(len(cloud_checks)))
+                and all(act in acts_done for act in (
+                    "ACT 11a - CLOUD: THE DATA MODEL", "ACT 11b - CLOUD: THE SAVED DOCUMENT",
+                    "ACT 11c - CLOUD: THE DRAWING"))):
+            document_pin.pop("continuation_refusal", None)
+            document_pin.pop("continuation_async_refusal", None)
+            family_events.append({"family": "cloud", "phase": "shared-state-restoration",
+                                  "passed_checks": sorted(cloud_checks_passed)})
+        if name == "ACT 0 - OVERTURE" and ctx.get("fusion_version"):
+            fusion_version = ctx["fusion_version"]
+        if family_mode and family_ends_at(name) and not (keep_open and name == last_requested_act):
+            if not finish_family(current_family):
+                stopped = True
+                break
+            story_document = None
         # THE CHUNK BOUNDARY: an act is the unit a resume restarts from, so the state is saved here
         # - after the act's own boundary poll, with everything a later act reads.
-        if not develop and source_hash() != pinned_source_hash:
+        if (not develop or continue_families) and source_hash() != pinned_source_hash:
             print("run refused: source changed during this run; no state or receipt written")
-            return 1
+            stopped = True
+            break
         identity_problem = _identity_refusal(pinned_attestation, current_attestation())
-        if not develop and identity_problem:
+        if (not develop or continue_families) and identity_problem:
             print("run refused: " + identity_problem + "; no state or receipt written")
-            return 1
+            stopped = True
+            break
         if run_id and not develop and not checkpoint(
                 allow_terminal_close=set(program) <= set(acts_done)):
-            return 1
+            stopped = True
+            break
+
+    if (family_mode and stopped and current_family is not None
+            and current_family not in cleanup_attempted and not document_pin.get("transport_uncertain")):
+        finish_family(current_family)
+    if family_mode and keep_open and current_family is not None:
+        home_after, home_problem = _home_now(family_home_before or home_document, allow_inactive=True)
+        family_events.append({"family": current_family, "phase": "home-preservation-kept",
+                              "before": family_home_before, "after": home_after,
+                              "problem": home_problem, "cleanup": False})
+        if home_problem or family_home_before is None or home_after != family_home_before:
+            stopped = True
+            family_outcomes[current_family] = "failed"
+            print("home preservation UNVERIFIED: " + (home_problem or "home census changed"))
+    if family_mode and anchor_document is not None and not document_pin.get("transport_uncertain"):
+        if not fixture([("doc_close", {"name": anchor_document["document_handle"],
+                         "save_changes": False}, "ok", None)], "lifecycle", "anchor-close"):
+            stopped = True
 
     # A run is COMPLETE when every act of the program has run under this id - in this chunk or an
     # earlier one. Only a complete run stamps, and only a complete run fires the reload beat.
-    complete = not develop and set(program) <= set(acts_done)
+    complete = (not develop and not stopped
+                and (selected is None or receipt_selection is not None)
+                and set(selected if receipt_selection is not None else program) <= set(acts_done))
 
-    needs_home_restore = (story_document is not None
-                          or document_pin.get("handle") != home_document.get("document_handle"))
+    needs_home_restore = (not family_mode and (story_document is not None
+                          or document_pin.get("handle") != home_document.get("document_handle")))
     if (complete or stopped) and not keep_open and needs_home_restore:
         home_handle = home_document.get("document_handle")
         known_home = home_document.get("state") == "known"
@@ -1223,21 +2398,42 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     # step engine, because what it has to judge is a reconnect, not one wire call (reload_smoke).
     if complete and not develop and source_hash() != pinned_source_hash:
         print("run refused: source changed during this run; no receipt written")
-        return 1
+        stopped, complete = True, False
     pre_reload_failures = [row for row in rows
                            if row[1] in ("FAIL", "blocked", "pass*")]
     final_attestation = pinned_attestation
-    if complete and not pre_reload_failures:
+    # THE FAMILY SWITCH BEAT first: it reloads twice and ends on a new load of the same build,
+    # so the identity it returns is the one the reload beat starts from (family_switch_smoke).
+    switched_attestation = None
+    lifecycle_evidence = None
+    reload_allowed = config["allow"]["addin_reload"]
+    switch_allowed = reload_allowed and config["allow"]["preference_writes"]
+    if complete and not pre_reload_failures and switch_allowed:
+        switched_attestation = family_switch_smoke(
+            rows, pinned_attestation, all_tools, valued=valued)
+        if switched_attestation is None:
+            print("run refused: the family switch beat did not end on the starting tools")
+            stopped, complete = True, False
+    if complete and not pre_reload_failures and not switch_allowed:
+        switched_attestation = pinned_attestation
+        print("family switch beat not-in-scope: explicit preference/reload permission is off")
+    if switched_attestation is not None and reload_allowed:
+        lifecycle_evidence = {} if receipt_mode else None
         reloaded = reload_smoke(rows, notes, valued=valued,
-                                expected_attestation=pinned_attestation)
+                                expected_attestation=switched_attestation,
+                                expected_fusion_version=fusion_version if receipt_mode else None,
+                                evidence=lifecycle_evidence,
+                                before_tool_census=all_tools)
         if reloaded is None:
             print("run refused: reload did not prove the expected loaded identity")
-            return 1
+            stopped, complete = True, False
         if reloaded is not None:
             final_attestation = reloaded
         if not develop and source_hash() != pinned_source_hash:
             print("run refused: source changed during reload; no receipt written")
-            return 1
+            stopped, complete = True, False
+    if complete and not pre_reload_failures and not reload_allowed:
+        gated["sys_reload_addin"] = "not-in-scope: allow.addin_reload is false; no reload attempted"
     if keep_open:
         print("\n--keep-open: the story document is left open for inspection.")
 
@@ -1249,9 +2445,13 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     passed = {t for t, s, _ in rows if s in ("pass", "pass*")}
     refused_only = {t for t, s, _ in rows if s == "expected-refusal"} - passed
     ledger = []
+    independently_covered = {tool for execution in executions.values()
+                             for tool in execution.get("independent", [])} if receipt_mode else valued
     for tool in all_tools:
-        if tool in valued:
+        if tool in independently_covered:
             ledger.append((tool, "covered"))
+        elif tool in valued:
+            ledger.append((tool, "self-reported"))
         elif tool in passed:
             # a parked tool stays in the CALLED bucket and carries why it was held there, so the
             # reason is on the receipt instead of in a source comment only.
@@ -1259,12 +2459,10 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
         elif tool in refused_only:
             ledger.append((tool, "refusals-only: every step is a guard refusal - no effect was "
                                  "produced or read back this run"))
+        elif tool in gated:
+            ledger.append((tool, f"skipped: {gated[tool]}"))
         elif tool in EXCLUDED:
             ledger.append((tool, f"skipped: {EXCLUDED[tool]}"))
-        elif tool in gated:
-            # the CAPABILITY tier's own bucket: every step driving this tool declared an
-            # entitlement the capability probe did not read as granted, so none of them ran.
-            ledger.append((tool, f"skipped: {gated[tool]}"))
         else:
             ledger.append((tool, "PENDING (no step yet)"))
 
@@ -1272,12 +2470,13 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     for tool, status, note in rows:
         print(f"  {status:18} {tool:28} {note}")
     n_cov = sum(1 for _, s in ledger if s == "covered")
+    n_self = sum(1 for _, s in ledger if s == "self-reported")
     n_called = sum(1 for _, s in ledger if s == "called" or s.startswith("called ("))
     n_pend = sum(1 for _, s in ledger if s.startswith("PENDING"))
     n_ref = sum(1 for _, s in ledger if s.startswith("refusals-only"))
-    n_skip = len(ledger) - n_cov - n_called - n_pend - n_ref
+    n_skip = len(ledger) - n_cov - n_self - n_called - n_pend - n_ref
     print(f"\n== ledger: {n_cov}/{len(ledger)} covered, {n_called} called (bare ok), "
-          f"{n_ref} refusals-only, {n_skip} skipped(reason), {n_pend} pending")
+          f"{n_ref} refusals-only, {n_skip} skipped(reason), {n_pend} pending, {n_self} self-reported")
     for tool, s in ledger:
         if s != "covered":
             print(f"  {tool:32} {s}")
@@ -1307,16 +2506,65 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
     # pass* blocks the receipt: the payload did not carry a key the step contract expected - a
     # payload-shape mismatch is a real signal, not a pass.
     fails = [r for r in rows if r[1] in ("FAIL", "blocked", "pass*")]
+    if continue_families:
+        fails += [tuple(row) for event in family_events for row in event.get("steps", [])
+                  if row[1] in verify_receipts.BAD and tuple(row) not in fails]
+    if continue_families:
+        for family in dict.fromkeys(families[n] for n in (selected or program)):
+            family_outcomes.setdefault(family, "not-run")
+        print("\nfamily continuation" + (" discovery (no receipt)" if develop else "") + ": " + ", ".join(
+            family + "=" + outcome for family, outcome in family_outcomes.items()))
+        for blocked in blocked_acts:
+            print("  blocked " + blocked["act"] + ": " + blocked["reason"])
     # A run that walked only PART of the program judges the slice it walked: its ledger reads PENDING
     # for every tool the unrun acts drive, and the receipt would publish that as the tool surface's
     # coverage. The union of a run id's chunks is what makes the program whole again.
+    receipt_written = False
     if complete:
         if fails:
             print("\nVERIFIED_TOOLS.md NOT rewritten - resolve the FAIL/blocked/pass* steps first.")
         else:
+            if receipt_mode:
+                try:
+                    if verify_receipts.declared_scope() != recorded_scope:
+                        raise ValueError("declared scope changed during this run")
+                    current_closures = verify_receipts.rehash_closures(REPO_ROOT, closures)
+                    source_unchanged = source_hash() == pinned_source_hash
+                    stamps = {}
+                    for family, execution in executions.items():
+                        execution["whole_family"] = execution["acts"] == closures[family]["acts"]
+                        execution["source_unchanged"] = source_unchanged
+                        stamps[family] = verify_receipts.make_stamp(
+                            family, closures[family], execution, current_closures[family])
+                    lifecycle = None
+                    if receipt_mode:
+                        lifecycle = verify_receipts.make_lifecycle(
+                            lifecycle_evidence, receipt_run_id, pinned_source_hash,
+                            fusion_version, evidence_dir=None)
+                    aggregate = verify_receipts.write_aggregate(
+                        FAMILY_RECEIPT, stamps, current_closures,
+                        verify_receipts.tool_census(REPO_ROOT), receipt_run_id,
+                        full=receipt_selection is None, lifecycle=lifecycle)
+                    ledger = verify_receipts.aggregate_ledger(
+                        aggregate, current_closures, all_tools,
+                        {tool: status for tool, status in ledger if status.startswith("skipped:")},
+                        source_hash=pinned_source_hash)
+                    aggregate_current = True
+                    try:
+                        verify_receipts.validate_aggregate(
+                            aggregate, current_closures, verify_receipts.tool_census(REPO_ROOT),
+                            source_hash=pinned_source_hash)
+                    except ValueError as exc:
+                        aggregate_current = False
+                        print("family stamps saved; aggregate remains pending: " + str(exc))
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    print("family receipt NOT written: " + str(exc))
+                    stopped, complete = True, False
+            if not complete:
+                return 1
             src_hash = pinned_source_hash
             stamp_date = time.strftime("%Y-%m-%d")
-            fusion_version = ctx.get("fusion_version", "?")
+            fusion_version = fusion_version if family_mode else ctx.get("fusion_version", "?")
             # WHAT THIS INVOCATION CONTRIBUTED, beside the stamp: a chunk can complete a run without
             # driving an act of its own (the last chunk died after its final boundary save), and a
             # receipt written from a saved ledger has to say that on the line that announces it.
@@ -1324,24 +2572,40 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                      if chunk_started else "")
             if run_id and walked == 0:
                 drove += " - 0 acts driven this chunk - the reload beat only"
+            if receipt_mode:
+                act_modes = verify_receipts.aggregate_modes(aggregate, current_closures)
+                notes = receipt_notes(ledger, STORY)
+            receipt_path = write_verified(ledger, fusion_version, stamp_date, src_hash,
+                                          notes=notes, act_modes=act_modes,
+                                          attestation=final_attestation,
+                                          **({"family_runs": verify_receipts.aggregate_records(aggregate),
+                                              "aggregate_current": aggregate_current} if receipt_mode else {}))
+            receipt_written = True
             print("\nwrote {0} (stamp: source {1}..., Fusion {2}, {3}){4}".format(
-                write_verified(ledger, fusion_version, stamp_date, src_hash,
-                               notes=notes, act_modes=act_modes, attestation=final_attestation),
-                src_hash[:12], fusion_version, stamp_date, drove))
+                receipt_path, src_hash[:12], fusion_version, stamp_date, drove))
     if write_json:
         os.makedirs(RESULTS_DIR, exist_ok=True)
         path = os.path.join(RESULTS_DIR, f"verify-{time.strftime('%Y%m%d-%H%M%S')}.json")
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"steps": rows, "ledger": ledger, "acts": act_modes, "server": health}, fh, indent=2)
+            json.dump({"steps": rows, "ledger": ledger, "acts": act_modes, "server": health,
+                       "admitted_batches": chosen_batches}, fh, indent=2)
         print(f"\nwrote {path}")
     if complete and run_id and not fails:
         # the id is spent: its acts have all run, so a later --resume of it would stamp from the
         # saved ledger without driving a step.
         save_run_state(run_id, dict(load_run_state(run_id) or {}, complete=True))
+    if continue_families and run_id and (fails or stopped):
+        save_run_state(run_id, dict(load_run_state(run_id) or {},
+                                   failed_families=[family for family, outcome in family_outcomes.items()
+                                                    if outcome == "failed"] or [current_family]))
     if stopped:
         print("\nVERIFIED_TOOLS.md NOT rewritten - resolve the FAIL/blocked/pass* steps first.")
     if not complete:
-        if develop:
+        if family_mode and selected is not None:
+            print("\ndevelopment families: {0} act(s) run, receipt not written; {1}".format(
+                walked, "last family document left open" if keep_open
+                else "owned documents closed and home restored"))
+        elif develop:
             print("\ndevelopment walk of run {0}: {1} act(s) re-run against its world, receipt not "
                   "written, state not advanced; the document stays open".format(run_id, walked))
         elif stopped:
@@ -1361,7 +2625,24 @@ def run(write_json, keep_open=False, trace=False, shots_dir=None, acts_spec=None
                 else "; the story document is left open"))
         else:
             print("\nreceipt not written: {0} of {1} acts ran".format(len(acts_done), len(program)))
-    # A chunk the next --resume carries on from keeps its assets; any other ending takes them.
-    if not develop and selected is None and (complete or stopped or not run_id):
-        reap_harness_assets("after the run", own_since=PROCESS_STARTED - 60)
-    return 1 if fails else 0
+    if family_mode:
+        evidence_dir = os.path.join(REPO_ROOT, "outputs", "tool-sweep")
+        os.makedirs(evidence_dir, exist_ok=True)
+        evidence_path = os.path.join(
+            evidence_dir, "families-{0}-{1}.json".format(
+                time.strftime("%Y%m%d-%H%M%S"), int(time.time() * 1000000)))
+        with open(evidence_path, "w", encoding="utf-8") as fh:
+            json.dump({"source_hash": pinned_source_hash, "attestation": pinned_attestation,
+                       "selected": selected, "acts": act_modes, "narrative_steps": rows,
+                       "family_events": family_events, "home_document": home_document,
+                       "continue_families": continue_families,
+                       "family_outcomes": family_outcomes, "blocked_acts": blocked_acts,
+                       "blocked_steps": blocked_steps, "admitted_batches": chosen_batches,
+                       "failures": fails,
+                       "transport_uncertain": bool(document_pin.get("transport_uncertain")),
+                       "owned_scratch": list(document_pin.get("owned_documents") or []),
+                       "fusion_version": fusion_version, "elapsed_s": elapsed,
+                       "complete": complete, "stopped": stopped,
+                       "receipt_written": receipt_written}, fh, indent=2)
+        print("\nwrote family evidence " + evidence_path)
+    return 1 if fails or stopped or "failed" in family_outcomes.values() else 0

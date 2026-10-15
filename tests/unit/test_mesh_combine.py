@@ -17,6 +17,7 @@ Pinned (the DoD):
   • the target/tool NAMES are captured before the combine consumes the tool bodies, and the reported
     mode is the DESIGN's own mode - not an inference from a feature object the scope suppresses.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -318,6 +319,14 @@ class TestAlgorithm:
         des, feats, *_ = _build()
         out = payload(mc.handler(target="T", tools=["A"], algorithm="enhanced"))
         assert out["algorithm"] == "enhanced" and "algorithm_unverified" not in out
+
+    def test_the_algorithm_is_labelled_an_input_readback_never_what_ran(self):
+        des, feats, *_ = _build()
+        out = payload(mc.handler(target="T", tools=["A"], algorithm="enhanced"))
+        assert out["algorithm_source"] == "input_readback"
+        assert ("'algorithm' is what the input read back before the add; the algorithm that ran "
+                "is not confirmed.") in out["note"]
+        assert "fewer triangles" not in out["note"]
 
 
 # ── the no-op gate: unchanged body count + unchanged target triangles = error ────────────────────
@@ -693,8 +702,7 @@ class TestResult:
         assert out["target"] == "Target"
 
     def test_no_design_errors(self, monkeypatch):
-        monkeypatch.setattr(mc._common, "design", lambda: None)
-        monkeypatch.setattr(mc._inputs._common, "design", lambda: None)
+        _install_design(mc, None)
         res = mc.handler(target="T", tools=["A"])
         assert res["isError"] is True and "No active design" in res["message"]
 

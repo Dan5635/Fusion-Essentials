@@ -1,6 +1,6 @@
 """Tests for `design_get` - the first RICH READ (one tool, default slice + include= deeper slices).
 
-The rich-read shape tests/CLAUDE.md names as the canonical one to copy.
+The rich-read shape tests/AGENTS.md names as the canonical one to copy.
 
 Pinned: the DEFAULT call returns only the orientation slice (mode summary + health + tree_summary) and
 NONE of the heavy slices; an include= returns exactly its slice, the orientation omitted unless
@@ -8,23 +8,66 @@ NONE of the heavy slices; an include= returns exactly its slice, the orientation
 errors; no-active-design guards. What each slice reads out of Fusion
 is proven by live validation, not re-mocked here.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+from conftest import install as _install_design
 
 import json
 import os
 import sys
 from types import SimpleNamespace
 
+import adsk.fusion
 import pytest
 
-from conftest import (FakeApplication, FakeOccurrence, FakeTimeline, FakeUserInterface,
-                      FakeUserParameters, MakeComp, MakeDesign, _NamedCollection, error_message,
-                      load_tool, make_design)
+from tests.fakes.datum_scenarios import datum_scene
+from conftest import (FakeOccurrence, FakeTimeline, FakeTimelineObject, FakeFeature,
+                      FakeUserParameters, FakeModelParameter, Profile, Sketch, MakeComp, MakeDesign,
+                      _NamedCollection, error_message, load_tool, make_design, make_sketch_curve, install)
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "live"))
 import verify_core  # noqa: E402  the live sweep's predicate over the metadata slice
 
 dg = load_tool("design_get")
+
+
+@pytest.fixture
+def unread_hem(monkeypatch):
+    feature = SimpleNamespace(objectType="adsk::fusion::HemFeature", timelineObject=object())
+    monkeypatch.setattr(dg._inputs, "candidate_address", lambda obj: "Hem1")
+    monkeypatch.setattr(dg._edit_feature_common, "feature_edit_rows", lambda *args: [])
+    return feature
+
+
+def test_unread_hem_operand_points_to_explicit_rollback_read_and_restore(unread_hem):
+    row = dg._edit_feature_common.feature_definition_view(unread_hem, {}, {"hem_edge": None},
+        {"hem_edge": "3 : Didn't roll editing feature back."})
+    assert row["hem_edge"] is None
+    assert "design_edit_timeline" in row["note"] and "to='before'" in row["note"]
+    assert "design_get(include=['definition']" in row["note"] and "Restore" in row["note"]
+    complete = dg._edit_feature_common.feature_definition_view(unread_hem, {}, {"hem_edge": "edge"}, {})
+    assert "note" not in complete
+
+
+@pytest.mark.parametrize("kind", ["HemFeature", "RibFeature", "RectangularPatternFeature"])
+def test_definition_composer_retains_explicit_operand_recovery(unread_hem, monkeypatch, kind):
+    unread_hem.objectType = "adsk::fusion::" + kind
+    monkeypatch.setattr(dg._FEATURE, "resolve", lambda raw: ((unread_hem, "Feature1"), None))
+    if kind == "HemFeature":
+        monkeypatch.setattr(dg._edit_feature_common, "feature_definition", lambda feature, factor:
+            dg._edit_feature_common.feature_definition_view(feature, {}, {"hem_edge": None},
+                {"hem_edge": "3 : Didn't roll editing feature back."}))
+    if kind == "RectangularPatternFeature":
+        monkeypatch.setattr(dg._edit_feature_common, "feature_definition", lambda feature, factor:
+            dg._edit_feature_common.feature_definition_view(feature, {},
+                {"input_entities": None},
+                {"input_entities": "3 : Didn't roll editing feature back."}))
+    row, refusal = dg._slice_definition("Feature1", "mm")
+    assert refusal is None and "design_edit_timeline" in row["note"]
+    assert "to='before'" in row["note"] and "restore" in row["note"].casefold()
+    assert "tapped=false" not in row["note"]
 
 # The occurrence walk that will not enumerate at all - the measured unresolved-external-reference
 # state, which reaches the wire as UNKNOWN rather than as zero.
@@ -34,9 +77,251 @@ _UNREADABLE_WALK = "2 : InternalValidationError : occ"
 _DIRECT_DESIGN_TIMELINE = "3 : this is not a parametric design"
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
+
+
+@pytest.mark.parametrize("units,factor", [("mm", 10), ("in", 1 / 2.54)])
+def test_plastic_rules_preserve_scope_and_label_angles_and_lengths(units, factor):
+    import math
+    rule = SimpleNamespace(name="Local", isUsed=False, minimumThickness=.1,
+        maximumThickness=.5, minimumDraftAngle=math.pi / 180,
+        thickness=SimpleNamespace(expression="2 mm", value=.2),
+        nominalRadius=SimpleNamespace(expression="1 mm", value=.1),
+        draftAngle=SimpleNamespace(expression="2 deg", value=math.pi / 90))
+    design = SimpleNamespace(designPlasticRules=_NamedCollection([rule]),
+                             libraryPlasticRules=_NamedCollection([]))
+    out, refusal = dg._slice_plastic_rules(design, "design", "", 0, units)
+    assert refusal is None and out["walk_complete"] is True and out["returned"] == 1
+    row = out["rules"][0]
+    assert row["ref"] == {"scope": "design", "index": 0, "name": "Local"}
+    assert row["thickness"]["expression"] == "2 mm"
+    assert row["thickness"]["value"] == pytest.approx(.2 * factor, abs=5e-7)
+    assert row["minimum_draft_angle_deg"] == pytest.approx(1)
+    assert row["draft_angle"]["value_deg"] == pytest.approx(2)
+    library, refusal = dg._slice_plastic_rules(design, "library", "", 0, units)
+    assert refusal is None and library["total"] == 0 and library["rules"] == []
+
+
+def test_plastic_rule_cap_and_unread_entry_do_not_fabricate_a_complete_match_count():
+    rule = SimpleNamespace(name="Local")
+    design = SimpleNamespace(designPlasticRules=_NamedCollection([rule, None, rule]))
+    out, refusal = dg._slice_plastic_rules(design, "design", "loc", 1, "mm")
+    assert refusal is None and out["truncated"] is True and out["returned"] == 1
+    assert out["walk_complete"] is False and out["matching_count"] is None
+    assert out["unread_indices"] == [1] and out["rules"][0]["thickness"]["value"] is None
+    out, refusal = dg._slice_plastic_rules(SimpleNamespace(), "library", "", 0, "mm")
+    assert refusal is None and out["available"] is False and out["rules"] is None
+
+
+def test_plastic_rule_shared_page_size_clamps_like_other_slices():
+    rules = [SimpleNamespace(name=f"Rule {index}") for index in range(205)]
+    design = SimpleNamespace(designPlasticRules=_NamedCollection(rules))
+    out, refusal = dg._slice_plastic_rules(design, "design", "", 500, "mm")
+    assert refusal is None and out["returned"] == 200 and out["matching_count"] == 205
+    assert out["truncated"] is True and out["walk_complete"] is True
+
+
+@pytest.fixture
+def definition_scene():
+    component = MakeComp(name="Cradle", entity_token="cradle")
+    info = SimpleNamespace(threadType="ANSI Unified Screw Threads", threadDesignation="3/8-16 UNC",
+                           threadClass="1B", isInternal=True)
+    child = FakeFeature(name="ThreadChild", parent_component=component)
+    child.objectType = "adsk::fusion::ThreadFeature"
+    child.threadInfo = info
+    child.isFullLength, child.isModeled, child.isRightHanded = False, False, True
+    child.threadLength, child.threadOffset = SimpleNamespace(value=1.0), SimpleNamespace(value=0.0)
+    hole = FakeFeature(name="Hole4", parent_component=component)
+    hole.objectType = "adsk::fusion::HoleFeature"
+    hole.extentDefinition = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
+                                            distance=SimpleNamespace(value=0.875 * 2.54))
+    hole.holeDiameter = SimpleNamespace(value=0.8)
+    hole.tappedHoleInfo, hole.thread = info, child
+    row = FakeTimelineObject(name=hole.name, index=0, entity=hole)
+    hole.timelineObject = row
+    timeline = FakeTimeline([row], marker=0)
+    design = make_design(comp=component)
+    design.timeline = timeline
+    install(dg, design)
+    return SimpleNamespace(hole=hole, child=child, component=component, row=row,
+                           timeline=timeline, design=design)
+
+
+@pytest.mark.parametrize("units, factor", [("mm", 10), ("in", 1 / 2.54)])
+def test_definition_separates_hole_depth_from_hidden_partial_thread(definition_scene, units, factor):
+    s = definition_scene
+    out = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4", units=units))
+    assert set(out) == {"definition"}
+    hole = out["definition"]
+    assert (hole["type"], hole["component"], hole["extent"]) == ("HoleFeature", "Cradle", "blind")
+    assert hole["depth"] == round(0.875 * 2.54 * factor, 6)
+    assert hole["diameter_parameter"] is None
+    assert hole["diameter_parameter_applicable"] is False
+    assert hole["depth_applicable"] is True and hole["thread_present"] is True
+    assert hole["tapped_hole_info"]["thread_class"] == "1B"
+    assert hole["thread"]["full_length"] is False
+    assert hole["thread"]["length"] == round(factor, 6)
+    assert hole["thread"]["offset"] == 0
+    assert hole["thread"]["modeled"] is False
+    assert s.timeline.markerPosition == 0 and s.timeline._moves == [] and s.row._rolls == []
+    assert s.design.activeComponent is s.component
+
+
+def test_full_thread_omits_inapplicable_stale_numeric_parameters(definition_scene):
+    s = definition_scene
+    s.child.isFullLength = True
+    s.child.threadLength = SimpleNamespace(value=999)
+    s.row.entity, s.row.name = s.child, s.child.name
+    s.child.timelineObject = s.row
+    thread = _payload(dg.handler(include=["definition"], feature="0"))["definition"]
+    assert thread["full_length"] is True
+    assert thread["length"] is thread["offset"] is None
+    assert thread["length_applicable"] is thread["offset_applicable"] is False
+    assert s.timeline._moves == []
+
+
+def test_through_hole_has_no_depth_or_child(definition_scene):
+    s = definition_scene
+    s.hole.extentDefinition = SimpleNamespace(objectType="adsk::fusion::AllExtentDefinition")
+    s.hole.tappedHoleInfo = s.hole.thread = None
+    hole = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert hole["extent"] == "through" and hole["depth"] is None
+    assert hole["depth_applicable"] is False
+    assert hole["diameter_parameter_applicable"] is True
+    assert hole["diameter_parameter"] == 8
+    assert hole["tapped"] is hole["thread_present"] is False
+    assert hole["thread"] is hole["tapped_hole_info"] is None
+
+
+def test_unreadable_tap_child_and_length_do_not_claim_absence(definition_scene):
+    s = definition_scene
+    del s.hole.tappedHoleInfo
+    del s.child.threadLength
+    hole = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert hole["tapped"] is None and hole["diameter_parameter_applicable"] is None
+    assert hole["diameter_parameter"] is None
+    assert hole["thread_present"] is True
+    assert hole["thread"]["length"] is None and hole["thread"]["length_applicable"] is True
+    assert hole["thread"]["offset"] == 0 and hole["depth"] == 22.225
+    del s.hole.thread
+    hole = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert hole["thread_present"] is None and hole["thread"] is None
+    assert s.timeline._moves == [] and s.row._rolls == []
+
+
+def test_definition_requires_explicit_supported_feature_and_units(definition_scene):
+    assert "requires 'feature'" in error_message(dg.handler(include=["definition"]))
+    assert "Unknown units" in error_message(dg.handler(include=["definition"], feature="Hole4", units="ft"))
+    assert "include" in error_message(dg.handler(feature="Hole4"))
+    definition_scene.hole.objectType = "adsk::fusion::UnsupportedFeature"
+    assert "unsupported definition type" in error_message(dg.handler(include=["definition"], feature="Hole4"))
+
+
+def test_measured_feature_definition_reader_emits_edits_without_rolling(definition_scene):
+    s = definition_scene
+    thread = s.hole
+    thread.objectType = "adsk::fusion::ThreadFeature"
+    thread.isFullLength, thread.isModeled, thread.isRightHanded = False, False, True
+    thread.threadInfo = SimpleNamespace(threadType="ISO", threadDesignation="M10x1.5",
+                                        threadClass="6H", isInternal=True)
+    thread.threadLength = SimpleNamespace(value=1.5, expression="1.5 mm")
+    thread.threadOffset = SimpleNamespace(value=0.25, expression="0.25 mm")
+    result = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]
+    mode = next(row for row in result["supported_edits"] if row["action"] == "mode")
+    assert mode["call"] == "model_edit_feature(feature='Cradle/Hole4@0', action='mode', mode='cosmetic')"
+    assert result["thread_info"]["designation"] == "M10x1.5"
+    assert result["unavailable"] == {}
+    assert s.timeline.markerPosition == 0 and s.timeline._moves == [] and s.row._rolls == []
+
+
+@pytest.mark.parametrize("kind, feature, action, shape", [
+    ("plane", "Part/Plane1@1", "plane", "references=['xy-token|@construction_plane:"),
+    ("axis", "Part/Axis1@1", "axis", "references=[{'first_plane': 'xy-token|@construction_plane:"),
+    ("point", "Part/Point1@1", "point", "references=['vertex-a|@vertex:"),
+    ("origin", "Part/Origin1@1", "geometry", "references=['face-top|@face:"),
+])
+def test_definition_lists_datum_and_joint_origin_edits_without_rolling(
+        monkeypatch, kind, feature, action, shape):
+    s = datum_scene(dg, monkeypatch, kind)
+    result = _payload(dg.handler(include=["definition"], feature=feature))["definition"]
+    assert [row["action"] for row in result["supported_edits"]] == [action]
+    assert result["supported_edits"][0]["call"].startswith(
+        f"model_edit_feature(feature='{feature}', action='{action}', {shape}")
+    assert result["unavailable"] == {} and result["timeline_index"] == 1
+    assert result["component"] == "Part"
+    assert s.timeline._moves == [] and s.row._rolls == []
+
+
+def test_definition_keeps_feature_ref_ambiguity_refusal(definition_scene):
+    s = definition_scene
+    twin = FakeFeature(name="Hole4", parent_component=MakeComp(name="Other", entity_token="other"))
+    s.timeline._items.append(FakeTimelineObject(name="Hole4", index=1, entity=twin))
+    refused = dg.handler(include=["definition"], feature="Hole4")
+    assert refused["isError"] is True and "matches 2" in error_message(refused)
+    assert _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]["component"] == "Cradle"
+
+
+def test_loft_definition_discloses_ordered_sections_without_rolling(definition_scene):
+    s = definition_scene
+    loft = s.hole
+    loft.objectType = "adsk::fusion::LoftFeature"
+    members = adsk.fusion.LoftEdgeAlignments
+    loft.startLoftEdgeAlignment = members.AlignEdgesLoftEdgeAlignment
+    loft.endLoftEdgeAlignment = members.AlignToSurfaceLoftEdgeAlignment
+    sketches = [SimpleNamespace(name=name, parentComponent=s.component)
+                for name in ("Start", "Middle", "End")]
+    profiles = [SimpleNamespace(objectType="adsk::fusion::Profile", entityToken=f"profile-{i}",
+                                parentSketch=sketch)
+                for i, sketch in enumerate(sketches)]
+    sections = [SimpleNamespace(entity=profile,
+                                endCondition=SimpleNamespace(objectType="FreeEnd"))
+                for profile in profiles]
+    loft.loftSections = SimpleNamespace(count=3, item=lambda i: sections[i])
+    loft.centerLineOrRails = SimpleNamespace(count=0)
+    loft.operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+    loft.isSolid, loft.isClosed = True, False
+    out = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]
+    assert out["section_count"] == 3 and out["truncated"] is False
+    assert [(row["index"], row["profile_handle"], row["source_sketch"],
+             row["source_component"]) for row in out["sections"]] == [
+                 (0, "profile-0", "Start", "Cradle"),
+                 (1, "profile-1", "Middle", "Cradle"),
+                 (2, "profile-2", "End", "Cradle")]
+    assert out["is_solid"] is True and out["is_closed"] is False
+    assert out["start_alignment"] == "align_edges"
+    assert out["end_alignment"] == "align_surface"
+    assert s.timeline.markerPosition == 0 and s.timeline._moves == [] and s.row._rolls == []
+    del profiles[1].parentSketch
+    unknown = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]
+    assert unknown["sections"][1]["source_sketch"] is None
+    assert unknown["sections"][1]["source_component"] is None
+
+
+def test_loft_definition_caps_section_list(definition_scene):
+    s = definition_scene
+    s.hole.objectType = "adsk::fusion::LoftFeature"
+    s.hole.loftSections = SimpleNamespace(
+        count=70, item=lambda i: SimpleNamespace(
+            entity=SimpleNamespace(objectType="adsk::fusion::Profile", entityToken=f"p{i}"),
+            endCondition=SimpleNamespace(objectType="FreeEnd")))
+    s.hole.centerLineOrRails = SimpleNamespace(count=0)
+    out = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]
+    assert out["section_count"] == 70 and out["truncated"] is True
+    assert len(out["sections"]) == 64 and out["sections"][-1]["index"] == 63
+
+
+def test_loft_note_points_model_inspect_at_the_properties_it_returns(definition_scene):
+    s = definition_scene
+    s.hole.objectType = "adsk::fusion::LoftFeature"
+    s.hole.loftSections = SimpleNamespace(count=0, item=lambda i: None)
+    s.hole.centerLineOrRails = SimpleNamespace(count=0)
+    note = _payload(dg.handler(include=["definition"], feature="Cradle/Hole4"))["definition"]["note"]
+    assert "model_inspect include=['mass'] reads mass, volume and density, not" in note
+    assert "reads material" not in note
+    mi = load_tool("model_inspect")
+    props = mi._full_props(SimpleNamespace(mass=1.0, volume=1.0, area=1.0, density=1.0), 1.0)
+    assert "mass" in mi._SLICES and {"mass_kg", "volume", "density_kg_per_cm3"} <= set(props)
+    assert not [k for k in props if "material" in k]
 
 
 # ── ROUTER composition: stub the slice SEAMS (not the source-tool internals) ────────────────────────
@@ -48,11 +333,225 @@ def _payload(result):
 # handlers' internals (which would recreate the bespoke-fake problem this convention exists to avoid).
 
 @pytest.fixture
+def extrude_definition_scene(definition_scene, monkeypatch):
+    s = definition_scene
+    feature = s.hole
+    feature.objectType = "adsk::fusion::ExtrudeFeature"
+    sketch = Sketch("Section", parent_component=s.component)
+    profile = Profile(parent_sketch=sketch, entity_token="section-profile")
+    profile.objectType = "adsk::fusion::Profile"
+    sketch.profiles = _NamedCollection([profile])
+    feature.profile = profile
+    feature.operation = adsk.fusion.FeatureOperations.NewBodyFeatureOperation
+    feature.hasTwoExtents = False
+    feature.extentOne = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
+        distance=FakeModelParameter(name="d1", expression="-15 mm", value=-1.5))
+    feature.extentTwo = None
+    feature.taperAngleOne = FakeModelParameter(name="d5", expression="0 deg", value=0.0, unit="deg")
+    feature.read_participants = False
+    feature.participants = []
+
+    def participants(feature):
+        if not feature.read_participants:
+            raise RuntimeError("3 : Didn't roll editing feature back")
+        return feature.participants
+
+    monkeypatch.setattr(FakeFeature, "participantBodies", property(participants), raising=False)
+    return s
+
+
+@pytest.mark.parametrize("units, expected", [("mm", -15), ("cm", -1.5), ("in", -0.590551)])
+def test_extrude_definition_preserves_sign_units_and_unknown_participants(extrude_definition_scene, units, expected):
+    s = extrude_definition_scene
+    result = _payload(dg.handler(include=["definition"], feature="Hole4", units=units))["definition"]
+    assert result["distance"] == expected and result["distance_applicable"] is True
+    assert result["extent_side_count"] is None and result["direction"] is None
+    assert result["distance2"] is None and result["distance2_applicable"] is False
+    assert result["distance_parameter"] == "d1" and result["distance_expression"] == "-15 mm"
+    assert (result["participants"] is None and result["participants_truncated"] is None
+            and "participants" in result["unavailable"])
+    assert result["profile"] == {"type": "Profile", "profile_handle": "section-profile",
+        "source_sketch": "Section", "source_component": "Cradle", "profile_index": 0, "curve_ref": None}
+    assert s.timeline._moves == [] and s.row._rolls == [] and s.timeline.markerPosition == 0
+
+
+def test_two_side_definition_reads_second_parameter_independently(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.hasTwoExtents = True
+    s.hole.extentOne.distance.value = 1.0
+    s.hole.extentOne.distance._expression = "10 mm"
+    s.hole.extentTwo = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
+        distance=FakeModelParameter(name="d2", expression="4 mm", value=0.4))
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert (result["extent"] == "two_side" and result["extent_side_count"] is None
+            and result["distance"] == 10)
+    assert result["distance2"] == 4 and result["distance2_applicable"] is True
+    assert result["distance2_parameter"] == "d2" and result["distance2_expression"] == "4 mm"
+
+
+@pytest.mark.parametrize("extent,target", [("DistanceExtentDefinition", False),
+                                           ("ToEntityExtentDefinition", True)])
+def test_the_controls_an_extrude_read_omits_are_listed_as_not_read(extrude_definition_scene,
+                                                                   extent, target):
+    s = extrude_definition_scene
+    s.hole.extentOne.objectType = "adsk::fusion::" + extent
+    out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert out["not_read"] == (["thin", "start_extent", "is_solid"]
+                               + (["extent_target"] if target else []))
+    assert "extent" not in out["unavailable"]
+    assert out["note"].endswith(" This Extrude definition is partial: not_read lists fields it "
+                                "omits.")
+
+
+def test_a_one_sided_extrude_reads_no_taper_as_zero_degrees_not_unknown(extrude_definition_scene):
+    out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert out["taper_deg"] == 0 and out["taper_deg"] is not None
+    assert out["taper_parameter"] == "d5" and out["taper_expression"] == "0 deg"
+    assert out["taper_two_applicable"] is False
+    assert (out["taper_two_deg"], out["taper_two_parameter"], out["taper_two_expression"]) == (
+        None, None, None)
+    assert "taper" not in out["unavailable"] and "taper_two" not in out["unavailable"]
+
+
+def test_each_side_of_a_two_sided_extrude_reads_its_own_taper_in_degrees(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.hasTwoExtents = True
+    s.hole.extentTwo = SimpleNamespace(objectType="adsk::fusion::DistanceExtentDefinition",
+        distance=FakeModelParameter(name="d2", expression="4 mm", value=0.4))
+    s.hole.taperAngleOne = FakeModelParameter(name="d5", expression="3 deg",
+                                              value=0.05235987755982989, unit="deg")
+    s.hole.taperAngleTwo = FakeModelParameter(name="d6", expression="-4 deg",
+                                              value=-0.06981317007977318, unit="deg")
+    out = _payload(dg.handler(include=["definition"], feature="Hole4", units="in"))["definition"]
+    assert (out["taper_deg"], out["taper_parameter"], out["taper_expression"]) == (3.0, "d5", "3 deg")
+    assert out["taper_two_applicable"] is True
+    assert (out["taper_two_deg"], out["taper_two_parameter"], out["taper_two_expression"]) == (
+        -4.0, "d6", "-4 deg")
+
+
+def test_an_unread_taper_is_unknown_with_its_getter_error_not_zero(extrude_definition_scene,
+                                                                   monkeypatch):
+    def unread(_feature):
+        raise RuntimeError("taper unread")
+    monkeypatch.setattr(FakeFeature, "taperAngleOne", property(unread), raising=False)
+    out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert (out["taper_deg"], out["taper_parameter"], out["taper_expression"]) == (None, None, None)
+    assert out["unavailable"]["taper"] == "taper unread"
+    assert out["distance"] == -15
+
+
+def test_an_unread_side_count_leaves_the_second_taper_unknown_not_inapplicable(
+        extrude_definition_scene, monkeypatch):
+    def unread(_feature):
+        raise RuntimeError("side count unread")
+    monkeypatch.setattr(FakeFeature, "hasTwoExtents", property(unread), raising=False)
+    out =_payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert out["taper_two_applicable"] is None and out["taper_two_deg"] is None
+    assert out["taper_deg"] == 0
+
+
+@pytest.mark.parametrize("two", ["ToEntityExtentDefinition", "DistanceExtentDefinition"])
+def test_an_unsupported_two_sided_pair_names_its_classes_as_unavailable(extrude_definition_scene, two):
+    s = extrude_definition_scene
+    s.hole.hasTwoExtents = True
+    s.hole.extentTwo = SimpleNamespace(objectType="adsk::fusion::" + two)
+    out = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    if two == "DistanceExtentDefinition":
+        assert out["extent"] == "two_side" and "extent" not in out["unavailable"]
+        return
+    assert out["extent"] is None and out["distance_applicable"] is None
+    assert out["unavailable"]["extent"] == ("two-sided DistanceExtentDefinition + "
+                                            "ToEntityExtentDefinition is not a supported extent")
+
+
+def test_symmetric_definition_keeps_native_full_length_semantics(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.extentOne.objectType = "adsk::fusion::SymmetricExtentDefinition"
+    s.hole.extentOne.distance.value = 1.2
+    for full in (False, True):
+        s.hole.extentOne.isFullLength = full
+        result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+        assert result["extent"] == "symmetric" and result["distance"] == 12
+        assert result["symmetric_full_length"] is full and result["distance2"] is None
+
+
+def test_through_definition_has_no_distance_or_inferred_world_side(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.extentOne.objectType = "adsk::fusion::ThroughAllExtentDefinition"
+    s.hole.extentOne.isPositiveDirection = True
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert (result["extent"] == "through_all" and result["distance_applicable"] is False
+            and result["extent_side_count"] == 1 and result["direction"] is None)
+    assert result["distance"] is None and result["distance_expression"] is None
+
+
+def test_unread_extent_side_count_is_unknown_with_its_getter_error(extrude_definition_scene, monkeypatch):
+    s = extrude_definition_scene
+    s.hole.extentOne.objectType = "adsk::fusion::ThroughAllExtentDefinition"
+    def unread(_feature):
+        raise RuntimeError("side count unread")
+    monkeypatch.setattr(FakeFeature, "hasTwoExtents", property(unread), raising=False)
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["extent"] is None
+    assert result["extent_side_count"] is None
+    assert result["direction"] is None
+    assert result["unavailable"]["extent_side_count"] == "side count unread"
+
+
+def test_sweep_definition_preserves_partial_reads_and_edit_context_values(extrude_definition_scene, monkeypatch):
+    s = extrude_definition_scene
+    feature = s.hole
+    feature.objectType = "adsk::fusion::SweepFeature"
+    feature.orientation = adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType
+    feature.isSolid = True
+    feature.read_path = False
+    curve = make_sketch_curve("path-curve")
+    curve.objectType = "adsk::fusion::SketchLine"
+    curve.parentSketch = Sketch("Path", parent_component=s.component)
+    curve.parentSketch.sketchCurves.sketchLines = _NamedCollection([curve])
+    feature.actual_path = _NamedCollection([SimpleNamespace(entity=curve)])
+
+    def path(feature):
+        if not feature.read_path:
+            raise RuntimeError("3 : Didn't roll editing feature back")
+        return feature.actual_path
+
+    monkeypatch.setattr(FakeFeature, "path", property(path), raising=False)
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["operation"] == "new" and result["is_solid"] is True
+    assert result["orientation_name"] == "perpendicular"
+    assert result["profile"]["source_sketch"] == "Section"
+    assert result["path"] is None and result["path_count"] is None
+    assert result["path_truncated"] is None
+    assert set(result["unavailable"]) == {"path", "participants"}
+    feature.read_path = feature.read_participants = True
+    feature.participants = [SimpleNamespace(name="Body1")]
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["path_count"] == 1 and len(result["path"]) == 1
+    assert result["path"][0]["curve_ref"] == "Path/line:0"
+    assert result["participants"] == ["Body1"] and result["unavailable"] == {}
+    feature.orientation = adsk.fusion.SweepOrientationTypes.ParallelOrientationType
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["orientation_name"] == "parallel"
+    assert s.timeline._moves == [] and s.row._rolls == []
+
+
+def test_definition_caps_participants_and_preserves_unread_profile(extrude_definition_scene):
+    s = extrude_definition_scene
+    s.hole.read_participants = True
+    s.hole.participants = [SimpleNamespace(name=f"Body{i}") for i in range(70)]
+    s.hole.profile = None
+    result = _payload(dg.handler(include=["definition"], feature="Hole4"))["definition"]
+    assert result["profile"] is None and result["distance"] == -15
+    assert len(result["participants"]) == 64 and result["participants_truncated"] is True
+
+
+@pytest.fixture
 def stub_slices(monkeypatch):
-    monkeypatch.setattr(dg._common, "design", lambda: object())   # a non-None design
+    _install_design(dg, object())
     monkeypatch.setattr(dg, "_slice_mode", lambda d: (
         {"design_type": "parametric", "has_timeline": True, "timeline_feature_count": 4,
-         "in_base_feature_edit": False, "can": {"timeline_ops": True}}, None))
+         "can": {"timeline_ops": True}}, None))
     monkeypatch.setattr(dg, "_slice_health", lambda d: (
         {"healthy": True, "error_count": 0, "warning_count": 0, "errors": [], "warnings": []}, None))
     monkeypatch.setattr(dg, "_fingerprint", lambda d: {"bodies": 2, "sketches": 3})
@@ -62,24 +561,37 @@ def stub_slices(monkeypatch):
          "with_handles": with_handles, "max_children": max_children,
          "name_filter": name_filter}, None))
     monkeypatch.setattr(dg, "_slice_timeline", lambda d, include_suppressed, group,
-                        with_params=False, max_rows=0, form_edit=None: (
+                        with_params=False, max_rows=0: (
         {"count": 4, "timeline": [], "with_params": with_params, "max_rows": max_rows}, None))
-    monkeypatch.setattr(dg, "_slice_configurations", lambda d: ({"table_name": "Configs"}, None))
+    monkeypatch.setattr(dg, "_slice_configurations",
+                        lambda d, cap=0: ({"table_name": "Configs", "cap": cap}, None))
     monkeypatch.setattr(dg, "_slice_attributes", lambda d, group, key: (
         {"group": group, "key": key, "attributes": []}, None))
     monkeypatch.setattr(dg, "_slice_metadata", lambda d, name_filter, max_results, component="": (
         {"component_count": 1, "returned": 1, "components": [], "name_filter": name_filter,
          "max_results": max_results}, None))
+    monkeypatch.setattr(dg, "_slice_datums", lambda d, component, name_filter, max_results: (
+        {"counts": {}, "returned": 0, "datums": []}, None))
     monkeypatch.setattr(dg, "_slice_materials", lambda d, library, name_filter, max_results: (
         {"kind": "materials", "library": library, "name_filter": name_filter,
          "max_results": max_results, "document": {"count": 1}, "libraries": []}, None))
     monkeypatch.setattr(dg, "_slice_appearances", lambda d, library, name_filter, max_results: (
         {"kind": "appearances", "library": library, "document": {"count": 1}, "libraries": []}, None))
+    monkeypatch.setattr(dg, "_slice_definition", lambda feature, units: ({"feature": feature}, None))
+    monkeypatch.setattr(dg, "_slice_plastic_rules", lambda d, scope, name_filter, max_results, units: (
+        {"scope": scope, "rules": [], "returned": 0}, None))
 
 
 # ── default orientation slice is DENSE + bounded (the core rich-read contract) ──────────────────────
 
 class TestDefaultSlice:
+    def test_default_does_not_resolve_or_read_a_feature(self, stub_slices, monkeypatch):
+        def forbidden(*args):
+            raise AssertionError("default orientation read touched a feature definition")
+        monkeypatch.setattr(dg._FEATURE, "resolve", forbidden)
+        monkeypatch.setattr(dg, "_slice_definition", forbidden)
+        assert "definition" not in _payload(dg.handler())
+
     def test_default_is_the_dense_orientation(self, stub_slices):
         out = _payload(dg.handler())                   # no include=
         # the headline: design_type + feature_count + TIMELINE_healthy + a CONTENT fingerprint.
@@ -94,10 +606,9 @@ class TestDefaultSlice:
         assert "materials" not in out and "appearances" not in out   # the catalog is opt-in too
 
     def test_default_omits_noise_when_healthy(self, stub_slices):
-        # a healthy design carries no health DETAIL block + no in_base_feature_edit:false
+        # a healthy design carries no health DETAIL block
         out = _payload(dg.handler())
         assert "health" not in out                     # 'timeline_healthy: True' says it all
-        assert "in_base_feature_edit" not in out       # only present when True
 
     def test_default_emits_pointers_for_hidden_content(self, monkeypatch, stub_slices):
         # a design WITH parameters gets a pointers block naming param_get/param_set - the inbound
@@ -147,6 +658,25 @@ class TestDefaultSlice:
         assert "include=" in out["note"]               # un-named flags are invisible — must advertise
 
 
+# ── an open Form/base-feature edit reads direct too, and design.timeline raises there ────────────────
+
+class TestOpenEditCaveat:
+    def test_direct_reading_design_nulls_timeline_healthy_and_carries_the_caveat(self, monkeypatch,
+                                                                                 stub_slices):
+        # has_timeline False means the timeline never read - 'healthy' from 0 findings would be a
+        # fabricated verdict, not an observation.
+        monkeypatch.setattr(dg, "_slice_mode", lambda d: (
+            {"design_type": "direct", "has_timeline": False, "timeline_feature_count": None,
+             "can": {"timeline_ops": False}}, None))
+        out = _payload(dg.handler())
+        assert out["timeline_healthy"] is None
+        assert "Finish Form" in out["note"]
+
+    def test_parametric_reading_design_carries_no_caveat(self, stub_slices):
+        out = _payload(dg.handler())
+        assert "Finish Form" not in out["note"]
+
+
 # ── each include= adds exactly its slice ────────────────────────────────────────────────────────────
 
 class TestIncludeSlices:
@@ -159,6 +689,7 @@ class TestIncludeSlices:
         ("appearances", "appearances"),
         ("attributes", "attributes"),
         ("metadata", "metadata"),
+        ("datums", "datums"),
     ])
     def test_include_adds_the_slice(self, stub_slices, slice_name, key):
         out = _payload(dg.handler(include=[slice_name]))
@@ -448,11 +979,27 @@ class TestHasCam:
         assert dg._has_cam(None) is False
 
 
+@pytest.fixture
+def plane_owner_timeline():
+    scene = TestTimelineSlice()
+    rows = [scene._owned_row(0, "Witness", "Root"), scene._owned_row(1, "Pick", "DatumA")]
+    for index, owner in ((2, "DatumA"), (3, "DatumB")):
+        row = scene._tlobj(index, "PlaneTwin", entity_name="ConstructionPlane")
+        row.entity.objectType = "adsk::fusion::ConstructionPlane"
+        row.entity.component = SimpleNamespace(name=owner)
+        rows.append(row)
+    occurrence = scene._tlobj(4, " DatumB:1", entity_name="Occurrence")
+    occurrence.entity.objectType = "adsk::fusion::Occurrence"
+    occurrence.entity.component = SimpleNamespace(name="DatumB")
+    rows.append(occurrence)
+    return scene._design_with(rows)
+
+
 class TestTimelineSlice:
     """Timeline slice logic moved into design_get (_entity_type / _object_summary / _slice_timeline)."""
 
     def _tlobj(self, index=0, name="Extrude1", is_group=False, suppressed=False, rolled_back=False,
-               parent_group=None, health=0, message=None, entity_name="ExtrudeFeature",
+               parent_group=None, health=_HEALTHY, message=None, entity_name="ExtrudeFeature",
                members=None, collapsed=False):
         from types import SimpleNamespace
         _Ent = type(entity_name, (), {})
@@ -476,7 +1023,7 @@ class TestTimelineSlice:
         assert dg._entity_type(self._tlobj()) == "ExtrudeFeature"
 
     def test_object_summary_maps_health_label(self):
-        assert dg._object_summary(self._tlobj(health=2))["health"] == "error"
+        assert dg._object_summary(self._tlobj(health=_ERROR))["health"] == "error"
 
     def test_object_summary_message_only_when_present(self):
         assert dg._object_summary(self._tlobj(message="x"))["message"] == "x"
@@ -493,7 +1040,7 @@ class TestTimelineSlice:
                              count=len(items), item=lambda i, _it=list(items): _it[i])
         return SimpleNamespace(timeline=tl, rootComponent=SimpleNamespace(name=root_name))
 
-    def _owned_row(self, index, name, component, health=0):
+    def _owned_row(self, index, name, component, health=_HEALTHY):
         """A timeline row whose entity names the COMPONENT that owns it - what tells the Slider's
         Sketch1 from the Ball's."""
         row = self._tlobj(index, name, health=health)
@@ -508,6 +1055,25 @@ class TestTimelineSlice:
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
         assert [(r["name"], r["component"]) for r in out["timeline"]] == [
             ("Sketch1", "Slider"), ("Sketch1", "Ball")]
+
+    def test_construction_planes_use_measured_owner_without_occurrence_fallback(self, plane_owner_timeline):
+        out, err = dg._slice_timeline(plane_owner_timeline, include_suppressed=True, group="")
+        assert err is None
+        rows = out["timeline"]
+        assert [(r["name"], r.get("component")) for r in rows] == [
+            ("Witness", None), ("Pick", "DatumA"), ("PlaneTwin", "DatumA"),
+            ("PlaneTwin", "DatumB"), (" DatumB:1", None)]
+
+    def test_sub_component_axes_and_points_publish_their_component(self):
+        rows = []
+        for index, kind in enumerate(("ConstructionAxis", "ConstructionPoint")):
+            row = self._tlobj(index, kind + "1", entity_name=kind)
+            row.entity.objectType = "adsk::fusion::" + kind
+            row.entity.component = SimpleNamespace(name="DatumB")
+            rows.append(row)
+        out, err = dg._slice_timeline(self._design_with(rows), include_suppressed=True, group="")
+        assert err is None and [(r["name"], r.get("component")) for r in out["timeline"]] == [
+            ("ConstructionAxis1", "DatumB"), ("ConstructionPoint1", "DatumB")]
 
     def test_the_root_owner_is_dropped_as_noise(self):
         # in a single-component design EVERY row would name the root: a column that never varies
@@ -608,7 +1174,7 @@ class TestTimelineSlice:
         del member.index
         d = self._design_with([self._tlobj(0, "Group1", is_group=True, health=5, collapsed=True,
                                            members=[member]),
-                               self._tlobj(2, "Extrude1", health=0)])
+                               self._tlobj(2, "Extrude1", health=_HEALTHY)])
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
         assert out["summary"]["states"] == {"healthy": 2}     # Fixture + Extrude1, not the group
         assert out["summary"]["exceptions"] == []
@@ -623,7 +1189,7 @@ class TestTimelineSlice:
         del fixture.index
         d = self._design_with([self._tlobj(0, "Group1", is_group=True, health=5, collapsed=True,
                                            members=[hidden, fixture]),
-                               self._tlobj(3, "Extrude1", health=0)])
+                               self._tlobj(3, "Extrude1", health=_HEALTHY)])
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
         assert out["summary"]["states"] == {"suppressed": 1, "healthy": 2}
         assert [r["name"] for r in out["timeline"]] == ["Group1", "Extrude1"]   # rows unchanged
@@ -633,7 +1199,7 @@ class TestTimelineSlice:
     def test_a_COLLAPSED_groups_ERRORED_member_becomes_an_exception_addressed_by_name(self):
         # index RAISES on a collapsed member (measured), so the exception it raises carries a null
         # index - the name is the address, and the note is what says so.
-        broken = self._tlobj(name="Loft2", health=2)
+        broken = self._tlobj(name="Loft2", health=_ERROR)
         del broken.index
         d = self._design_with([self._tlobj(0, "Group1", is_group=True, health=5, collapsed=True,
                                            members=[broken])])
@@ -646,7 +1212,7 @@ class TestTimelineSlice:
         # OBSERVED live after deleting and re-adding an overlapping group: a group read collapsed
         # while its members stayed enumerated beside its row. Tallying both doors without deduping
         # doubles every state count in that state.
-        member = self._tlobj(1, "Fixture", parent_group="Group1", health=0)
+        member = self._tlobj(1, "Fixture", parent_group="Group1", health=_HEALTHY)
         d = self._design_with([self._tlobj(0, "Group1", is_group=True, collapsed=True,
                                            members=[member]), member])
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
@@ -680,7 +1246,7 @@ class TestTimelineSlice:
         """A COLLAPSED outer group holding a COLLAPSED inner group holding one healthy and one
         errored feature. Only the outer's row is enumerated, so the inner is reached by recursion
         and its members answer no index."""
-        good, bad = self._tlobj(3, "Fixture", health=0), self._tlobj(4, "Loft2", health=2)
+        good, bad = self._tlobj(3, "Fixture", health=_HEALTHY), self._tlobj(4, "Loft2", health=_ERROR)
         inner = self._tlobj(1, "Inner", is_group=True, health=5, collapsed=True,
                             members=[good, bad])
         for obj in (good, bad, inner):
@@ -699,7 +1265,7 @@ class TestTimelineSlice:
         # OBSERVED live after deleting and re-adding an overlapping group: the group read
         # isCollapsed true while its members stayed enumerated beside its row. The index guard is
         # what stops that state from doubling every count it touches.
-        member = self._tlobj(7, "Fixture", health=0)
+        member = self._tlobj(7, "Fixture", health=_HEALTHY)
         group = self._tlobj(6, "G1", is_group=True, health=5, collapsed=True, members=[member])
         states, exceptions, tallied = {}, [], set()
         summ = dg._object_summary(group)
@@ -805,8 +1371,8 @@ class TestTimelineSlice:
     def test_slice_summary_states_and_exceptions(self):
         # the timeline slice leads with a states tally + exceptions = the FAILED features
         # (error/warning health). A suppressed (intentional) feature is NOT an exception.
-        d = self._design_with([self._tlobj(0, "Good", health=0),
-                               self._tlobj(1, "Bad", health=2),                    # error
+        d = self._design_with([self._tlobj(0, "Good", health=_HEALTHY),
+                               self._tlobj(1, "Bad", health=_ERROR),                    # error
                                self._tlobj(2, "Warned", health=1),                 # warning
                                self._tlobj(3, "Off", suppressed=True, health=3)])  # suppressed
         out, _ = dg._slice_timeline(d, include_suppressed=True, group="")
@@ -959,19 +1525,31 @@ class TestTimelineParams:
                            type_name="FilletFeature", token=None, tl_index=None):
         """A ModelParameter whose createdBy mints a NEW proxy object per read - the measured
         live behavior (proxy identity is never stable) - around a shared owner identity."""
-        class _P:
+        class _P(FakeModelParameter):
+            """A shared ModelParameter whose maker read returns a fresh proxy."""
+
             def __init__(self):
                 self.name, self.role = name, role
-                self.expression, self.value = expression, value
+                self._tracks = False
+                self._expression, self.value = expression, value
+                self._type_name = type_name
+                self._owner_name = owner_name
+                self._token = token
+                self._timeline_index = tl_index
+
             @property
             def createdBy(self):
-                ent = type(type_name, (), {})()
-                ent.name = owner_name
-                if token is not None:
-                    ent.entityToken = token
-                if tl_index is not None:
-                    ent.timelineObject = SimpleNamespace(index=tl_index)
+                ent = type(self._type_name, (), {})()
+                ent.name = self._owner_name
+                if self._token is not None:
+                    ent.entityToken = self._token
+                if self._timeline_index is not None:
+                    ent.timelineObject = SimpleNamespace(index=self._timeline_index)
                 return ent
+
+            @createdBy.setter
+            def createdBy(self, value):
+                self._created_by = value
         return _P()
 
     def test_tokenless_owners_are_matched_by_timeline_index_only(self):
@@ -1051,17 +1629,21 @@ class TestTimelineRazor:
 
     def test_configurations_degrades_for_non_configured_design(self, monkeypatch, stub_slices):
         # a non-configured design errors in the source -> design_get degrades to a marker, not a failure
-        monkeypatch.setattr(dg, "_slice_configurations",
-                            lambda d: (None, {"isError": True, "message": "not a configured design"}))
+        monkeypatch.setattr(dg, "_slice_configurations", lambda d, cap=0: (
+            None, {"isError": True, "message": "not a configured design"}))
         out = _payload(dg.handler(include=["configurations"]))
         assert out["configurations"]["configured"] is False
+
+    def test_configurations_cell_cap_is_the_callers_max_results(self, stub_slices):
+        out = _payload(dg.handler(include=["configurations"], max_results=7))
+        assert out["configurations"]["cap"] == 7
 
 
 # ── guards ──────────────────────────────────────────────────────────────────────────────────────
 
 class TestGuards:
     def test_unknown_include_errors(self, monkeypatch):
-        monkeypatch.setattr(dg._common, "design", lambda: object())   # a design, so we reach the check
+        _install_design(dg, object())
         res = dg.handler(include=["bogus"])
         msg = error_message(res)
         assert "bogus" in msg.lower() or "unknown" in msg.lower()
@@ -1069,7 +1651,7 @@ class TestGuards:
     def test_the_refusal_lists_default_beside_the_slices(self, monkeypatch):
         # the refusal IS the vocabulary a caller that mistyped reads next; naming only the deep
         # slices hides the token that keeps the orientation block beside them.
-        monkeypatch.setattr(dg._common, "design", lambda: object())
+        _install_design(dg, object())
         msg = error_message(dg.handler(include=["bogus"]))
         assert "tree" in msg and "default" in msg
 
@@ -1089,7 +1671,7 @@ class TestGuards:
             assert keys.get(name, name) in out, name
 
     def test_no_active_design_guard(self, monkeypatch):
-        monkeypatch.setattr(dg._common, "design", lambda: None)
+        _install_design(dg, None)
         res = dg.handler()
         assert error_message(res)
 
@@ -1122,7 +1704,7 @@ def _occ(name, comp_name, full=None):
 def _wire_tree(monkeypatch, occs):
     root = MakeComp("RootComp", occurrences=occs)
     design = SimpleNamespace(rootComponent=root)
-    monkeypatch.setattr(dg._common, "design", lambda: design)
+    _install_design(dg, design)
     return root
 
 
@@ -1495,7 +2077,7 @@ class TestTreeNameFilter:
 
     def test_tree_bodies_reaches_a_component_scoped_walk(self, monkeypatch):
         design = _tree_design([_tocc("Bracket:1", comp="Bracket", bodies=1)])
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_tree(design, 3, "Bracket", with_bodies=True)
         assert err is None and out["tree"]["bodies"][0]["handle"] == "btok-B1"
 
@@ -1534,7 +2116,7 @@ class TestTreeNameFilter:
 
     def test_scoped_tree_body_truncation_gets_the_same_note(self, monkeypatch):
         design = _tree_design([_tocc("Gear:1", comp="Gear", bodies=30)])
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_tree(design, 3, "Gear", with_bodies=True)
         assert err is None
         assert out["note"].startswith("'Gear' bodies: 25 of 30 shown (cap 25).")
@@ -1588,7 +2170,7 @@ class TestTreeNameFilter:
         monkeypatch.setattr(dg, "_TREE_MAX_NODES", 2)
         kids = [_tocc(f"Pin:{i}") for i in range(1, 5)]
         design = _tree_design([_tocc("Bracket:1", comp="Bracket", kids=kids)])
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_tree(design, 3, "Bracket")
         assert err is None and out["truncated"] is True
 
@@ -1706,8 +2288,21 @@ class TestSliceConfigurations:
 
     def _design(self, rows, active=None, cols=()):
         table = SimpleNamespace(name="Table1", id="t1", activeRow=active,
-                                rows=list(rows), columns=list(cols))
+                                rows=_NamedCollection(rows), columns=_NamedCollection(cols))
         return SimpleNamespace(configurationTopTable=table)
+
+    def _delivered(self, monkeypatch, rows, cols):
+        """The slice as the handler delivers it, over the given row and column collections."""
+        table = SimpleNamespace(name="Table1", id="t1", activeRow=None, rows=rows, columns=cols)
+        _install_design(dg, SimpleNamespace(configurationTopTable=table))
+        return _payload(dg.handler(include=["configurations"]))["configurations"]
+
+    def _rows(self, n, **faults):
+        return _NamedCollection([self._row(f"R{i}", f"r{i}", i) for i in range(n)], **faults)
+
+    def _cols(self, n, **faults):
+        return _NamedCollection([SimpleNamespace(title=f"C{i}", id=f"c{i}", index=i)
+                                 for i in range(n)], **faults)
 
     def test_not_configured_design_errors(self):
         out, err = dg._slice_configurations(SimpleNamespace(configurationTopTable=None))
@@ -1723,11 +2318,152 @@ class TestSliceConfigurations:
         assert out["configuration_count"] == 2 and "truncated" not in out
         assert out["columns"][0]["title"] == "Length"   # ConfigurationColumn exposes .title, not .name
 
-    def test_row_cap_truncates(self, monkeypatch):
-        monkeypatch.setattr(dg, "_CONFIG_MAX_ROWS", 1)
-        out, _ = dg._slice_configurations(self._design([self._row("A", "r1", 0),
-                                                        self._row("B", "r2", 1)]))
-        assert out["truncated"] is True and out["configuration_count"] == 1
+    @pytest.mark.parametrize("cap, listed, truncated", [(2, 2, False), (1, 1, True)])
+    def test_a_capped_read_reports_the_tables_count(self, monkeypatch, cap, listed, truncated):
+        monkeypatch.setattr(dg, "_CONFIG_MAX_ROWS", cap)
+        out = self._delivered(monkeypatch, self._rows(2), self._cols(1))
+        assert out["configuration_count"] == 2 and len(out["configurations"]) == listed
+        assert ("truncated" in out) is truncated and "configurations_unread" not in out
+
+    def test_a_row_that_raises_mid_walk_is_not_listed_as_the_whole_table(self, monkeypatch):
+        # The mid-walk raise is injected on the fake collection.
+        rows = self._rows(3, injected_item_faults={1: "3 : row gone"})
+        out = self._delivered(monkeypatch, rows, self._cols(1))
+        assert [r["name"] for r in out["configurations"]] == ["R0"]
+        assert out["configuration_count"] == 3 and "truncated" not in out
+        assert "3 : row gone" in out["configurations_unread"]
+        assert len(out["columns"]) == 1 and "columns_unread" not in out
+
+    def test_a_row_count_that_does_not_read_is_not_invented(self, monkeypatch):
+        out = self._delivered(monkeypatch, self._rows(2, raises="3 : rows unavailable"),
+                              self._cols(1))
+        assert out["configuration_count"] is None and out["configurations"] is None
+        assert out["configurations_unread"] and "truncated" not in out
+
+    @pytest.mark.parametrize("faults, listed, named", [
+        ({"injected_item_faults": {1: "3 : column gone"}}, ["C0"], "3 : column gone"),
+        ({"raises": "3 : columns unavailable"}, None, "column")])
+    def test_a_column_walk_that_fails_is_disclosed(self, monkeypatch, faults, listed, named):
+        out = self._delivered(monkeypatch, self._rows(2), self._cols(2, **faults))
+        columns = out["columns"]
+        assert (columns if columns is None else [c["title"] for c in columns]) == listed
+        assert named in out["columns_unread"]
+        assert out["configuration_count"] == 2 and "configurations_unread" not in out
+
+
+def _cfg_cell(kind, **fields):
+    """A configuration cell reading `kind` as its objectType suffix, plus the given fields."""
+    return SimpleNamespace(objectType="adsk::fusion::" + kind, **fields)
+
+
+class _RaisingExpression:
+    objectType = "adsk::fusion::ConfigurationParameterCell"
+
+    @property
+    def expression(self):
+        raise RuntimeError("3 : expression unavailable")
+
+
+def _cfg_table(rows, columns, active="r1"):
+    """A top table of `rows` {id: {column index: cell}} and `columns` [(id, index as read)]."""
+    def row(position, rid, cells):
+        def cell(index):
+            got = cells[index]          # an index no column reads raises, as a positional guess would
+            if isinstance(got, Exception):
+                raise got
+            return got
+        # The first row reads index 1.
+        return SimpleNamespace(name="Row " + rid, id=rid, index=position + 1,
+                               getCellByColumnIndex=cell)
+    made = [row(i, rid, cells) for i, (rid, cells) in enumerate(rows.items())]
+    cols = [SimpleNamespace(title="Col " + cid, id=cid, index=index) for cid, index in columns]
+    table = SimpleNamespace(name="Table1", id="t1", rows=_NamedCollection(made),
+                            columns=_NamedCollection(cols),
+                            activeRow=next(r for r in made if r.id == active))
+    return SimpleNamespace(configurationTopTable=table)
+
+
+_PROPERTY = _cfg_cell("ConfigurationPropertyCell")
+
+
+def _expression(text):
+    return _cfg_cell("ConfigurationParameterCell", expression=text)
+
+
+class TestConfigurationCells:
+    def _cells(self, design, cap=0):
+        out, err = dg._slice_configurations(design, cap)
+        assert err is None
+        return out
+
+    def test_an_inactive_rows_parameter_cell_reads_its_expression(self):
+        design = _cfg_table({"r1": {0: _PROPERTY, 1: _expression("10 mm")},
+                             "r2": {0: _PROPERTY, 1: _expression("20 mm")}},
+                            [("c0", 0), ("c1", 1)])
+        out = self._cells(design)
+        assert [r["is_active"] for r in out["configurations"]] == [True, False]
+        assert out["cells"][3] == {"row_id": "r2", "column_id": "c1",
+                                   "kind": "ConfigurationParameterCell", "expression": "20 mm"}
+        assert out["cell_count"] == 4 and "cells_truncated" not in out
+
+    def test_a_property_cell_is_unread_and_a_null_cell_is_absent(self):
+        answering = _cfg_cell("ConfigurationPropertyCell", isVisible=True)
+        out = self._cells(_cfg_table({"r1": {0: answering, 1: None}}, [("c0", 0), ("c1", 1)]))
+        unread, absent = out["cells"]
+        assert unread["kind"] == "ConfigurationPropertyCell"
+        assert set(unread) == {"row_id", "column_id", "kind", "value_unread"}
+        assert absent == {"row_id": "r1", "column_id": "c1", "absent": True}
+
+    def test_a_read_that_raises_is_null_with_the_raised_text(self):
+        out = self._cells(_cfg_table(
+            {"r1": {0: _RaisingExpression(), 1: RuntimeError("3 : no such cell")}},
+            [("c0", 0), ("c1", 1)]))
+        assert out["cells"][0] == {"row_id": "r1", "column_id": "c0", "expression": None,
+                                   "kind": "ConfigurationParameterCell",
+                                   "raised": "3 : expression unavailable"}
+        assert out["cells"][1] == {"row_id": "r1", "column_id": "c1", "kind": None,
+                                   "raised": "3 : no such cell"}
+
+    def test_a_cell_is_fetched_by_the_index_its_column_reads(self):
+        out = self._cells(_cfg_table({"r1": {5: _expression("30 mm"), 2: _PROPERTY}},
+                                     [("c5", 5), ("c2", 2)]))
+        assert [(c["column_id"], c["kind"]) for c in out["cells"]] == [
+            ("c5", "ConfigurationParameterCell"), ("c2", "ConfigurationPropertyCell")]
+        assert out["configurations"][0]["index"] == 1
+        assert [c["index"] for c in out["columns"]] == [5, 2]
+
+    def test_a_false_flag_on_another_cell_kind_is_published(self):
+        cell = _cfg_cell("ConfigurationSuppressCell", isSuppressed=False)
+        out = self._cells(_cfg_table({"r1": {0: cell, 1: _cfg_cell("ConfigurationThemeCell")}},
+                                     [("c0", 0), ("c1", 1)]))
+        assert out["cells"][0] == {"row_id": "r1", "column_id": "c0", "is_suppressed": False,
+                                   "kind": "ConfigurationSuppressCell"}
+        assert "none of the fields" in out["cells"][1]["value_unread"]
+
+    @pytest.mark.parametrize("cap, listed, truncated", [(4, 4, False), (3, 3, True)])
+    def test_cells_past_the_cap_are_cut_and_flagged(self, cap, listed, truncated):
+        cells = {0: _PROPERTY, 1: _expression("10 mm")}
+        out = self._cells(_cfg_table({"r1": cells, "r2": cells}, [("c0", 0), ("c1", 1)]), cap)
+        assert len(out["cells"]) == listed and out["cell_count"] == 4
+        assert out.get("cells_truncated", False) is truncated
+        assert ("cells_truncated_note" in out) is truncated
+
+    def test_rows_that_do_not_count_leave_the_cells_unread(self):
+        table = SimpleNamespace(name="T", id="t1", activeRow=None, rows=[], columns=[])
+        out = self._cells(SimpleNamespace(configurationTopTable=table))
+        assert out["cells"] is None and "did not count" in out["cells_unread"]
+
+    def test_the_slices_other_keys_read_as_before(self):
+        design = _cfg_table({"r1": {0: _PROPERTY}}, [("c0", 0)])
+        out = self._cells(design)
+        for key in ("cell_count", "cells"):
+            out.pop(key)
+        assert out == {"table_name": "Table1", "table_id": "t1", "active_configuration": "Row r1",
+                       "configuration_count": 1,
+                       "configurations": [{"name": "Row r1", "id": "r1", "index": 1,
+                                           "is_active": True}],
+                       "columns": [{"title": "Col c0", "id": "c0", "index": 0,
+                                    "type": "SimpleNamespace"}]}
 
 
 # ── the attributes slice (_slice_attributes) ───────────────────────────────────────────────────────
@@ -1831,6 +2567,43 @@ def _metadata_design(root, *subs):
     return MakeDesign(comp=root, all_components=[root, *subs])
 
 
+def test_datum_inventory_counts_definitions_and_bounds_repeated_placements():
+    root = MakeComp(name="Assembly", entity_token="T:root")
+    owner = MakeComp(name="Fixture", entity_token="T:fixture")
+    for comp in (root, owner):
+        comp.constructionAxes = _NamedCollection([])
+        comp.constructionPlanes = _NamedCollection([])
+        comp.constructionPoints = _NamedCollection([])
+    def datum(name):
+        return SimpleNamespace(name=name, isLightBulbOn=True, isDeletable=True,
+                               isParametric=True, timelineObject=SimpleNamespace(index=3))
+    owner.constructionAxes = _NamedCollection([datum("DatumAxis")])
+    owner.constructionPlanes = _NamedCollection([datum("DatumPlane")])
+    owner.constructionPoints = _NamedCollection([datum("DatumPoint")])
+    placements = [FakeOccurrence(path=f"Fixture:{i}", component=owner) for i in (1, 2)]
+    root.allOccurrences = placements
+    design = _metadata_design(root, owner)
+    install(dg, design)
+    out, err = dg._slice_datums(design, "", "Datum", 2)
+    assert err is None and out["counts"] == {"construction_axis": 1,
+                                            "construction_plane": 1,
+                                            "construction_point": 1}
+    assert out["match_count"] == 3 and out["returned"] == 2 and out["truncated"] is True
+    assert out["datums"][0]["placement_count"] == 2
+    assert out["datums"][0]["occurrences"] == ["Fixture:1", "Fixture:2"]
+    assert "handle" not in out["datums"][0] and "position" not in out["datums"][0]
+    owner.constructionPlanes = None
+    unread, unread_err = dg._slice_datums(design, "", "Datum", 2)
+    assert unread_err is None and unread["counts"]["construction_plane"] is None
+    assert unread["match_count"] is None and unread["incomplete"] is True
+    owner.constructionPlanes = _NamedCollection([SimpleNamespace(isLightBulbOn=True)])
+    unnamed, unnamed_err = dg._slice_datums(design, "", "Datum", 2)
+    assert unnamed_err is None and unnamed["counts"]["construction_plane"] is None
+    assert unnamed["match_count"] is None and unnamed["incomplete"] is True
+    missing, miss_error = dg._slice_datums(design, "Ghost", "", 2)
+    assert missing is None and "Ghost" in error_message(miss_error)
+
+
 class TestSliceMetadata:
     def test_the_root_leads_and_every_component_carries_its_identity(self):
         root = MakeComp(name="Assembly", entity_token="T:root", part_number="ASM-1",
@@ -1891,7 +2664,7 @@ class TestSliceMetadata:
             FakeOccurrence(path="Bike:1", component=bike),
             FakeOccurrence(path="Other:1", component=other)])
         design = _metadata_design(root, bike, wheel, other)
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_metadata(design, "", 0, "Bike")
         assert err is None and out["component"] == "Bike"
         assert [r["name"] for r in out["components"]] == ["Bike", "Wheel"]
@@ -1912,7 +2685,7 @@ class TestSliceMetadata:
         root = MakeComp(name="Assembly", entity_token="T:root",
                         occurrences=[FakeOccurrence(path="Bike:1", component=bike)])
         design = _metadata_design(root, bike, wheel)
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_metadata(design, "", 0, "Bike")
         assert err is None and [r["name"] for r in out["components"]] == ["Bike", "Wheel"]
         assert out["incomplete"] is True and "Hub:1" in out["note"]
@@ -1920,7 +2693,7 @@ class TestSliceMetadata:
     def test_a_scope_that_names_nothing_is_an_error(self, monkeypatch):
         root = MakeComp(name="Assembly", entity_token="T:root")
         design = _metadata_design(root)
-        monkeypatch.setattr(dg._common, "design", lambda: design)
+        _install_design(dg, design)
         out, err = dg._slice_metadata(design, "", 0, "Ghost")
         assert out is None and "'Ghost'" in error_message(err)
 
@@ -1952,7 +2725,7 @@ class TestSliceMetadata:
         root = MakeComp(name="Assembly", entity_token="T:root")
         bracket = MakeComp(name="Bracket", entity_token="T:b", part_number="FE-BRACKET-001",
                            description="Sweep bracket", component_id="id-b", revision_id="r2")
-        monkeypatch.setattr(dg._common, "design", lambda: _metadata_design(root, bracket))
+        _install_design(dg, _metadata_design(root, bracket))
         out = _payload(dg.handler(include=["metadata"]))
         assert verify_core._component_metadata(
             "Bracket", part_number="FE-BRACKET-001", description="Sweep bracket")(out) is True
@@ -1970,7 +2743,7 @@ class TestRouterErrorPropagation:
 
     def test_timeline_slice_error_fails_the_read(self, monkeypatch, stub_slices):
         monkeypatch.setattr(dg, "_slice_timeline",
-                            lambda d, s, g, p=False, mr=0, fe=None: (
+                            lambda d, s, g, p=False, mr=0: (
                                 None, dg.error("direct-modeling design")))
         res = dg.handler(include=["timeline"])
         assert res["isError"] and "direct-modeling" in error_message(res)
@@ -1980,45 +2753,14 @@ class TestRouterErrorPropagation:
         res = dg.handler()
         assert res["isError"] and "mode read failed" in error_message(res)
 
-    def test_in_base_feature_edit_surfaces_only_when_true(self, monkeypatch, stub_slices):
-        monkeypatch.setattr(dg, "_slice_mode", lambda d: (
-            {"design_type": "parametric", "timeline_feature_count": 1,
-             "in_base_feature_edit": True}, None))
-        out = _payload(dg.handler())
-        assert out["in_base_feature_edit"] is True
-
-    def test_an_open_form_edit_is_named_and_its_timeline_health_is_null(self, monkeypatch,
-                                                                      stub_slices):
-        # the open edit hides the timeline, so the empty rollup it leaves is not a healthy one
-        monkeypatch.setattr(dg, "_slice_mode", lambda d: (
-            {"design_type": "direct", "timeline_feature_count": None, "in_form_edit": True}, None))
-        out = _payload(dg.handler())
-        assert out["in_form_edit"] is True and out["timeline_healthy"] is None
-
-    def test_the_timeline_slice_in_an_open_form_edit_names_the_edit(self, monkeypatch):
+    def test_the_timeline_slice_when_the_design_reads_direct_has_no_timeline(self):
         class _EditOpen(MakeDesign):
-            """Inside an open Form edit: designType reads direct and the timeline read RAISES."""
+            """A direct-reading design (e.g. inside an open Form edit) whose timeline read raises."""
             @property
             def timeline(self):
                 raise RuntimeError("3 : this is not a parametric design")
-        monkeypatch.setattr(dg._common, "app", FakeApplication(user_interface=FakeUserInterface(
-            active_workspace=SimpleNamespace(id="TSplineEnvironment"))))
         _slice, err = dg._slice_timeline(_EditOpen(design_type=0), True, "")
-        assert "A Form edit is open" in error_message(err)
-
-    def test_the_timeline_refusal_reuses_the_mode_slices_form_edit_read(self, monkeypatch):
-        monkeypatch.setattr(dg, "_slice_mode", lambda d: ({"in_form_edit": True}, None))
-        monkeypatch.setattr(dg._inputs, "in_form_edit",
-                            lambda d: pytest.fail("in_form_edit read twice"))
-
-        class _NoTimeline(MakeDesign):
-            """A design whose timeline read raises."""
-            @property
-            def timeline(self):
-                raise RuntimeError("3 : this is not a parametric design")
-        monkeypatch.setattr(dg._common, "design", lambda: _NoTimeline(design_type=0))
-        res = dg.handler(include=["mode", "timeline"])
-        assert "A Form edit is open" in error_message(res)
+        assert "This design has no timeline" in error_message(err)
 
 
 class TestUnwrap:

@@ -117,6 +117,16 @@ class TestMeshReduce:
         assert isinstance(vi, _FakeValueInput)
         assert abs(vi.realValue - 30.0) < 1e-9
 
+    def test_missing_mesh_names_its_handle_producer_without_dispatch(self):
+        src, feats = self._setup(before_tri=76, after_tri=38)
+        result = mo.handler(mesh="MissingMesh", target="proportion", value=50)
+        assert result["isError"] is True
+        assert "MissingMesh" in result["message"] and "mesh_get" in result["message"]
+        assert "find_geometry" not in result["message"]
+        assert feats.last_input is None and src.displayMesh.triangleCount == 76
+        out = payload(mo.handler(mesh="H", target="proportion", value=50))
+        assert out["reduced"] is True and out["after"]["triangle_count"] == 38
+
     def test_proportion_out_of_range_rejected(self):
         self._setup()
         res = mo.handler(mesh="H", target="proportion", value=150)

@@ -7,6 +7,8 @@ what failed, what was not attempted). No live Fusion — the fakes mimic Sketch.
 each add* carrying the argument order and operand types its binding declares, so a mis-ordered or
 wrong-kind call fails here the way it would live.
 """
+import live_api_facts as _api_facts
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import ast
 import json
@@ -17,8 +19,10 @@ from types import SimpleNamespace
 import adsk.core
 import adsk.fusion
 import pytest
-from conftest import (BRepFace, Cylinder, FakeSketchPoint as _SharedSketchPoint, MakeComp, Sketch,
-                      SketchCurves, _NamedCollection, install, load_tool, make_design)
+from conftest import (BRepFace, Cylinder, FakeFeature, FakeModelParameter,
+                      FakeSketchPoint as _SharedSketchPoint, FakeTimeline, FakeTimelineObject,
+                      FakeUserParameter, FakeUserParameters, MakeComp, Sketch, SketchCurves,
+                      _NamedCollection, install, load_tool, make_design)
 
 sd = load_tool("sketch_dimension")
 
@@ -220,8 +224,11 @@ def _install(monkeypatch, sketches=None):
 
 
 def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+    data = json.loads(res["content"][0]["text"])
+    assert res["isError"] is ("failed" in data), res
+    if "failed" in data:
+        assert res["message"] == data["note"]
+    return data
 
 
 def _raiser(message):
@@ -467,6 +474,16 @@ class TestPointOf:
 # which dim_types accept an anchor, and which point reaches the API.
 
 class TestAnchorHandler:
+    def test_invalid_second_anchor_refuses_before_creating_first_midpoint(self, monkeypatch):
+        s = _install(monkeypatch)
+        built = []
+        monkeypatch.setattr(sd._common, "_midpoint_sketch_point",
+                            lambda *_: (built.append("midpoint") or FakeSketchPoint(), None))
+        result = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                         "entity_two": "circle:0:mid"}])
+        assert result["isError"] is True and "entity_two" in result["message"] and "LINE" in result["message"]
+        assert built == [] and s.sketchDimensions.calls == []
+
     def test_end_anchor_uses_end_point(self, monkeypatch):
         s = _install(monkeypatch)
         _payload(sd.handler(dimensions=[{"dim_type": "horizontal_distance",
@@ -516,6 +533,49 @@ class _RichLine:
     def translate(self, dx, dy):
         for p in (self.startSketchPoint, self.endSketchPoint):
             p.geometry = _Geo(p.geometry.x + dx, p.geometry.y + dy)
+
+
+class _Counted(_NamedCollection):
+    """The shared counted collection, reading a list the test keeps appending to."""
+    def __init__(self, items):
+        super().__init__()
+        self._items = items
+
+
+class _MintedPoint(_SharedSketchPoint):
+    """A point a midpoint anchor added; deleteMe drops it, and with `cascade` its constraints."""
+    def __init__(self, sketch, created):
+        super().__init__(geometry=_Geo(created[1], created[2]))
+        self._sketch = sketch
+
+    def deleteMe(self):
+        if not self._sketch.deletes:
+            return False
+        self._sketch.points.remove(self)
+        if self._sketch.cascade:
+            self._sketch.constraints[:] = [c for c in self._sketch.constraints if c[0] is not self]
+        return True
+
+
+class _CountedDims(FakeDims):
+    @property
+    def count(self):
+        return len(self.calls)
+
+
+class _AnchorSketch(FakeSketch):
+    """A sketch whose four counts a midpoint anchor grows by its point and MidPoint constraint."""
+    def __init__(self, deletes=True, cascade=True):
+        super().__init__()
+        self.deletes, self.cascade, self.points, self.constraints = deletes, cascade, [], []
+        self.sketchCurves = SketchCurves(lines=[_RichLine(0, 0, 2, 0)], circles=[FakeCircle()])
+        self.sketchDimensions = _CountedDims()
+        self.sketchPoints = _Counted(self.points)
+        self.sketchPoints.add = lambda created: self.points.append(
+            _MintedPoint(self, created)) or self.points[-1]
+        self.geometricConstraints = _Counted(self.constraints)
+        self.geometricConstraints.addMidPoint = lambda pt, line: self.constraints.append(
+            (pt, line)) or self.constraints[-1]
 
 
 class _RichCircle:
@@ -601,6 +661,28 @@ class TestSolvedReadBack:
 
     def _rows(self, out):
         return {row["ref"]: row for row in out["results"][0]["solved"]}
+
+    def test_batch_explains_solved_once_and_keeps_each_readback_and_partial_remedy(
+            self, monkeypatch):
+        self._rich(monkeypatch, moves=((0, 0, 0.1),))
+        entry = {"dim_type": "distance", "entity_one": "line:0", "entity_two": "line:1"}
+        complete = _payload(sd.handler(dimensions=[entry, entry]))
+        assert complete["dimensioned"] == 2
+        assert "'solved' is each REFERENCED" in complete["result_note"]
+        assert "'solved' is each REFERENCED" not in str(complete["results"])
+        assert complete["results"][0]["solved"][0]["start_mm"] == [0.0, 1.0, 0.0]
+        assert complete["results"][1]["solved"][0]["start_mm"] == [0.0, 2.0, 0.0]
+
+        partial = _payload(sd.handler(dimensions=[
+            entry, {"dim_type": "distance", "entity_one": "line:99", "entity_two": "line:1"},
+            entry]))
+        assert partial["dimensioned"] == 1 and partial["failed"]["index"] == 1
+        assert partial["not_attempted"] == 1
+        assert "Stopped at dimensions[1]" in partial["note"]
+        assert "line:99" in partial["failed"]["error"]
+        assert "'solved' is each REFERENCED" in partial["result_note"]
+        assert "'solved' is each REFERENCED" not in str(partial["results"])
+        assert partial["results"][0]["solved"][0]["start_mm"] == [0.0, 3.0, 0.0]
 
     def test_a_line_reports_its_span_midpoint_and_length(self, monkeypatch):
         self._rich(monkeypatch)
@@ -721,6 +803,16 @@ class TestSolvedReadBack:
                                                "entity_one": "circle:0:center",
                                                "entity_two": "line:0"}]))
         assert set(self._rows(out)) == {"circle:0", "line:0"}
+
+    @pytest.mark.parametrize("dy_cm, named", [(1e-4, False), (2e-4, True)])
+    def test_a_fixed_line_the_solve_moved_is_named_past_the_move_tolerance(
+            self, monkeypatch, dy_cm, named):
+        # line:1 moves too but is not fixed, so it is never named
+        s = self._rich(monkeypatch, moves=[(0, 0.0, dy_cm), (1, 0.0, 1.0)])
+        s.sketchCurves.sketchLines.item(0).isFixed = True
+        out = _payload(sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0",
+                                               "entity_two": "line:1"}]))
+        assert out["results"][0].get("fixed_entity_moved") == (["line:0"] if named else None)
 
     def test_geometry_that_does_not_read_publishes_no_solved_block(self, monkeypatch):
         # the honest empty: nothing measured twice means nothing claimed about a move
@@ -1100,6 +1192,56 @@ class TestBatch:
         assert [r["dim_type"] for r in out["results"]] == ["radius", "diameter"]
         assert [c[0] for c in s.sketchDimensions.calls] == ["radius", "diameter"]
 
+    @pytest.mark.parametrize("ellipse_type", ["ellipse_major_radius", "ellipse_minor_radius"])
+    def test_line_refs_after_ellipse_radius_are_refused_with_partial_prefix(
+            self, monkeypatch, ellipse_type):
+        s = _install(monkeypatch)
+        method_name = ("addEllipseMajorRadiusDimension" if ellipse_type == "ellipse_major_radius"
+                       else "addEllipseMinorRadiusDimension")
+        add = getattr(s.sketchDimensions, method_name)
+
+        def add_with_axis(ellipse, text_point, isDriving=True):
+            dim = add(ellipse, text_point, isDriving)
+            s.sketchCurves.sketchLines._items.insert(2, FakeLine())
+            return dim
+
+        monkeypatch.setattr(s.sketchDimensions, method_name, add_with_axis)
+        out = _payload(sd.handler(dimensions=[
+            {"dim_type": ellipse_type, "entity_one": "ellipse:0"},
+            {"dim_type": "linear_diameter", "entity_one": "line:2", "entity_two": "line:0"},
+            {"dim_type": "radius", "entity_one": "circle:0"}]))
+        assert out["dimensioned"] == 1 and out["requested"] == 3
+        assert out["results"][0]["dim_type"] == ellipse_type
+        assert out["failed"]["index"] == 1 and out["not_attempted"] == 1
+        assert "'line:2'" in out["failed"]["error"]
+        assert "line:N or point:N" in out["failed"]["error"]
+        assert "line and point indices" in out["failed"]["error"]
+        assert "sketch_get(include_entities=true)" in out["failed"]["error"]
+        assert [call[0] for call in s.sketchDimensions.calls] == [ellipse_type]
+
+    def test_point_refs_after_ellipse_radius_block_later_point_and_line_entries(
+            self, monkeypatch):
+        s = _install(monkeypatch)
+        add = s.sketchDimensions.addEllipseMajorRadiusDimension
+
+        def add_with_axis_endpoints(ellipse, text_point, isDriving=True):
+            dim = add(ellipse, text_point, isDriving)
+            s.sketchPoints._items[0:0] = [FakeSketchPoint(), FakeSketchPoint()]
+            return dim
+
+        monkeypatch.setattr(s.sketchDimensions, "addEllipseMajorRadiusDimension",
+                            add_with_axis_endpoints)
+        out = _payload(sd.handler(dimensions=[
+            {"dim_type": "ellipse_major_radius", "entity_one": "ellipse:0"},
+            {"dim_type": "distance", "entity_one": "point:0", "entity_two": "point:1"},
+            {"dim_type": "distance", "entity_one": "line:0:start", "entity_two": "line:1:end"}]))
+        assert out["dimensioned"] == 1 and out["requested"] == 3
+        assert [row["dim_type"] for row in out["results"]] == ["ellipse_major_radius"]
+        assert out["failed"]["index"] == 1 and out["not_attempted"] == 1
+        assert "'point:0'" in out["failed"]["error"]
+        assert "'point:1'" in out["failed"]["error"]
+        assert [call[0] for call in s.sketchDimensions.calls] == ["ellipse_major_radius"]
+
     def test_a_later_failure_leaves_the_earlier_entry_landed(self, monkeypatch):
         s = _install(monkeypatch)
         out = _payload(sd.handler(dimensions=[
@@ -1112,6 +1254,19 @@ class TestBatch:
         assert out["not_attempted"] == 1
         assert "Stopped at dimensions[1]" in out["note"]
         assert [c[0] for c in s.sketchDimensions.calls] == ["radius"]
+        # Refused before any add: the counts stand, with no read-back guidance.
+        assert "Failed-entry count changes:" in out["note"]
+        assert "Counts do not establish" not in out["note"]
+
+    def test_an_add_the_api_refused_keeps_the_read_back_guidance(self, monkeypatch):
+        _install(monkeypatch)
+        out = _payload(sd.handler(dimensions=[
+            {"dim_type": "radius", "entity_one": "circle:0"},
+            {"dim_type": "radius", "entity_one": "line:0"},
+            {"dim_type": "diameter", "entity_one": "circle:1"}]))
+        assert out["failed"]["index"] == 1 and "Could not add the radius" in out["failed"]["error"]
+        assert "Failed-entry count changes:" in out["note"]
+        assert "Counts do not establish unchanged geometry" in out["note"]
 
     def test_a_first_entry_failure_is_an_error_and_nothing_landed(self, monkeypatch):
         s = _install(monkeypatch)
@@ -1120,7 +1275,7 @@ class TestBatch:
         assert res["isError"] is True
         assert "dimensions[0]" in res["message"]
         assert "entity_one 'circle:9' did not resolve" in res["message"]
-        assert "Nothing landed." in res["message"]
+        assert "Nothing completed." in res["message"]
         assert "1 later entry was not attempted" in res["message"]
         assert s.sketchDimensions.calls == []
 
@@ -1162,6 +1317,78 @@ class TestBatch:
         assert out["retained"][0]["is_driving"] is True
         assert "1 of 3 dimensions completed" in out["note"]
         assert [c[0] for c in s.sketchDimensions.calls] == ["radius", "radius"]
+
+    def test_a_retained_dimension_without_an_anchor_keeps_the_one_effect_sentence(self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        _reject_radial_expression_at(s, 0)
+        out = _payload(sd.handler(dimensions=[
+            {"dim_type": "radius", "entity_one": "circle:0", "value": "oops"}]))
+        assert ("The failed entry left 1 retained effect in the sketch, identified in "
+                "'retained'; 0 after it were not attempted.") in out["note"]
+
+    def test_a_retained_dimension_on_a_midpoint_anchor_names_the_point_and_constraint(
+            self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        add = s.sketchDimensions.addDistanceDimension
+
+        def rejecting(*args):
+            dim = add(*args)
+            dim.parameter = _RejectingParam(dim.parameter.name)
+            return dim
+        s.sketchDimensions.addDistanceDimension = rejecting
+        out = _payload(sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                               "entity_two": "circle:0:center", "value": "1 mm +"}]))
+        assert ("The failed entry left points=+1, constraints=+1, dimensions=+1 in the sketch; "
+                "'retained' identifies 1 of those effects") in out["note"]
+        assert out["failed_entry_counts"]["change"] == {
+            "curves": 0, "points": 1, "constraints": 1, "dimensions": 1}
+        assert len(s.points) == 1 and len(s.constraints) == 1 and len(out["retained"]) == 1
+
+    @pytest.mark.parametrize("deletes,cascade,clause", [
+        (True, True, "The midpoint anchor(s) it made were deleted: the point and constraint "
+                     "counts read back as before the entry."),
+        (True, False, "Deleting the midpoint anchor(s) it made left constraints=+1 against"),
+        (False, True, "Deleting the midpoint anchor(s) it made left points=+1, constraints=+1 "
+                      "against")])
+    def test_a_failed_add_retires_its_midpoint_anchor_as_the_counts_read_back(
+            self, monkeypatch, deletes, cascade, clause):
+        s = _install(monkeypatch, sketches=[_AnchorSketch(deletes=deletes, cascade=cascade)])
+        s.sketchDimensions.addDistanceDimension = _raiser("points coincide")
+        msg = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                      "entity_two": "circle:0:center"}])["message"]
+        assert "Could not add the distance dimension: points coincide." in msg and clause in msg
+        assert (len(s.points), len(s.constraints)) == (int(not deletes), int(not (deletes and cascade)))
+        assert f"points=+{len(s.points)}, constraints=+{len(s.constraints)}" in msg
+
+    def test_an_add_that_returns_nothing_retires_its_midpoint_anchor(self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        s.sketchDimensions.addDistanceDimension = lambda *args: None
+        msg = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                      "entity_two": "circle:0:center"}])["message"]
+        assert "Adding the distance dimension returned nothing." in msg
+        assert ("The midpoint anchor(s) it made were deleted: the point and constraint counts "
+                "read back as before the entry.") in msg
+        assert (len(s.points), len(s.constraints)) == (0, 0)
+
+    def test_a_failed_add_retires_both_midpoint_anchors_it_made(self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        s.sketchDimensions.addDistanceDimension = _raiser("points coincide")
+        msg = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                      "entity_two": "line:0:mid"}])["message"]
+        assert len(s.points) == 0 and len(s.constraints) == 0
+        assert "The midpoint anchor(s) it made were deleted" in msg
+
+    def test_a_failed_second_midpoint_weld_retires_the_first_anchor(self, monkeypatch):
+        s = _install(monkeypatch, sketches=[_AnchorSketch()])
+        weld, welds = s.geometricConstraints.addMidPoint, []
+        s.geometricConstraints.addMidPoint = lambda pt, line: (
+            welds.append(pt) or (weld(pt, line) if len(welds) == 1 else None))
+        msg = sd.handler(dimensions=[{"dim_type": "distance", "entity_one": "line:0:mid",
+                                      "entity_two": "line:0:mid"}])["message"]
+        assert (len(s.points), len(s.constraints)) == (0, 0)
+        assert "entity_two: the midpoint weld (addMidPoint) failed" in msg
+        assert "The midpoint anchor(s) it made were deleted" in msg
+        assert s.sketchDimensions.calls == []
 
     def test_an_unknown_field_is_refused_naming_it_and_the_legal_fields(self, monkeypatch):
         s = _install(monkeypatch)
@@ -1335,3 +1562,269 @@ class TestEntrySchemaDefaults:
         for field, prop in sd._ENTRY_SCHEMA["properties"].items():
             if "default" in prop:
                 assert prop["default"] in (applied.get(field), kinds.get(field)), field
+
+
+# -- an existing dimension's driving flag, addressed by its parameter name --------------------
+
+class _StateDim:
+    """A dimension whose isDriving assignments are recorded; `takes` False leaves the flag as it was,
+    `raises` makes the assignment throw, `renames` is the parameter name it holds afterwards."""
+    def __init__(self, name, driving=True, takes=True, raises=None, renames=None):
+        self.parameter = SimpleNamespace(name=name, expression="10 mm")
+        self._driving, self._takes, self._raises, self._renames = driving, takes, raises, renames
+        self.writes = []
+        self.on_write = lambda: None
+
+    @property
+    def isDriving(self):
+        return self._driving
+
+    @isDriving.setter
+    def isDriving(self, value):
+        self.writes.append(value)
+        if self._raises:
+            raise RuntimeError(self._raises)
+        if self._takes:
+            self._driving = value
+            self.on_write()
+        if self._renames:
+            self.parameter.name = self._renames
+
+
+def _state_sketch(name, dims, fully=True):
+    sketch = Sketch(name=name)
+    sketch.sketchDimensions = _NamedCollection(dims)
+    sketch.isFullyConstrained = fully
+    return sketch
+
+
+def _install_state(sketches, user=(), model=(), timeline=None):
+    """Install `sketches` (the LAST is the most recent) with the design's two parameter lists."""
+    comp = MakeComp(name="Root", sketches=list(sketches), origin_planes=_origin_planes())
+    for s in sketches:
+        s.parentComponent = comp
+    listed = [d.parameter for s in sketches for d in s.sketchDimensions._items] + list(model)
+    return install(sd, make_design(comp=comp, timeline=timeline,
+                                   user_parameters=FakeUserParameters(list(user)),
+                                   all_parameters=_NamedCollection(listed + list(user))))
+
+
+def _error_payload(res):
+    assert res["isError"] is True, res
+    data = json.loads(res["content"][0]["text"])
+    assert data["note"] == res["message"]
+    return data
+
+
+class TestExistingDimensionState:
+    def test_label_edit_uses_dimension_name_and_checks_position_and_value(self, monkeypatch):
+        class Positioned(_StateDim):
+            def __init__(self, name, takes=True):
+                super().__init__(name)
+                self.parameter.value = 2.0
+                self._position = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+                self.takes = takes
+                self.position_writes = []
+
+            @property
+            def textPosition(self):
+                return self._position
+
+            @textPosition.setter
+            def textPosition(self, point):
+                self.position_writes.append(point)
+                if self.takes == "nan":
+                    self._position = SimpleNamespace(x=float("nan"), y=point.y, z=point.z)
+                elif self.takes:
+                    self._position = point
+
+        monkeypatch.setattr(sd.adsk.core.Point3D, "create",
+                            lambda x, y, z: SimpleNamespace(x=x, y=y, z=z))
+        other, target = Positioned("d14"), Positioned("d15")
+        _install_state([_state_sketch("S", [other, target])])
+        out = _payload(sd.handler(sketch_name="S", dimension="d15",
+                                  text_position=[10, 20], units="mm"))
+        assert out["text_position"] == {"x": 10.0, "y": 20.0, "z": 0.0}
+        assert out["dimension_value_unchanged"] is True
+        assert out["driving_unchanged"] is True
+        assert len(target.position_writes) == 1 and not other.position_writes
+
+        target.takes = False
+        refused = _error_payload(sd.handler(sketch_name="S", dimension="d15",
+                                             text_position=[30, 40], units="mm"))
+        assert refused["changed"] is False
+        assert refused["text_position"] == {"x": 10.0, "y": 20.0, "z": 0.0}
+        assert "did not verify" in refused["note"]
+
+        target.takes = "nan"
+        unread = _error_payload(sd.handler(sketch_name="S", dimension="d15",
+                                            text_position=[30, 40]))
+        assert unread["changed"] is None and unread["text_position"] is None
+        assert "did not verify" in unread["note"]
+
+        target._position = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+        refused = sd.handler(sketch_name="S", dimension="d15",
+                             text_position=[1e308, 2], units="in")
+        assert refused["isError"] is True and "finite coordinate range" in refused["message"]
+        assert len(target.position_writes) == 3
+
+    def test_create_rejects_units_that_only_label_edit_uses(self):
+        refused = sd.handler(dimensions=[{"dim_type": "distance"}], units="in")
+        assert refused["isError"] is True and "omit it when adding dimensions" in refused["message"]
+
+    def test_nonboolean_after_read_is_unknown_even_when_equal_to_false(self):
+        class NumericFlag(_StateDim):
+            @property
+            def isDriving(self):
+                return 0 if self.writes else True
+
+            @isDriving.setter
+            def isDriving(self, value):
+                self.writes.append(value)
+
+        dim = NumericFlag("d15")
+        _install_state([_state_sketch("S", [dim])])
+        out = _error_payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert out["is_driving"] is None and out["changed"] is None
+        assert "boolean" in out["unread"]["is_driving"]
+
+    def test_the_dimension_is_resolved_by_parameter_name_and_its_flag_re_read(self):
+        other, target = _StateDim("d14"), _StateDim("d15")
+        sketch = _state_sketch("S", [other, target])
+        target.on_write = lambda: setattr(sketch, "isFullyConstrained", False)
+        _install_state([sketch])
+        out = _payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert (target.writes, other.writes) == ([False], [])
+        assert (out["is_driving_before"], out["is_driving"], out["changed"]) == (True, False, True)
+        assert (out["parameter_before"], out["parameter"]) == ("d15", "d15")
+        assert (out["fully_constrained_before"], out["fully_constrained"]) == (True, False)
+        assert out["new_timeline_errors"] == [] and "unread" not in out
+        assert out["note"] == "Dimension 'd15' is_driving True -> False."
+
+    def test_a_dimension_of_another_sketch_is_refused_naming_that_sketch(self):
+        elsewhere = _StateDim("d20")
+        other = _state_sketch("Other", [elsewhere])
+        elsewhere.parameter.createdBy = other
+        _install_state([other, _state_sketch("S", [_StateDim("d15")])])
+        res = sd.handler(sketch_name="S", dimension="d20", is_driving=False)
+        assert res["isError"] is True and elsewhere.writes == []
+        assert "'dimension' = 'd20' names no dimension of sketch 'S'" in res["message"]
+        assert "created by sketch 'Other'" in res["message"]
+        assert "sketch_name='Other'" in res["message"]
+
+    @pytest.mark.parametrize("name,says", [
+        ("Width", "it is a user parameter, not a sketch dimension"),
+        ("d31", "created by FakeFeature 'Extrude1', not by a sketch"),
+        ("Ghost", "the design lists no parameter of that name")])
+    def test_a_name_that_is_no_dimension_is_refused_with_what_it_is(self, name, says):
+        dim = _StateDim("d15")
+        _install_state([_state_sketch("S", [dim])], user=[FakeUserParameter(name="Width")],
+                       model=[FakeModelParameter(name="d31", owner=FakeFeature("Extrude1"))])
+        res = sd.handler(sketch_name="S", dimension=name, is_driving=False)
+        assert res["isError"] is True and says in res["message"] and dim.writes == []
+        assert "sketch_get(sketch_name='S', include_entities=true)" in res["message"]
+
+    def test_unreadable_design_parameters_are_not_called_absent(self):
+        design = _install_state([_state_sketch("S", [_StateDim("d15")])])
+        design.allParameters = _NamedCollection([], raises="3 : parameters unavailable")
+        res = sd.handler(sketch_name="S", dimension="Ghost", is_driving=False)
+        assert "did not read, so where that name lives is unknown" in res["message"]
+
+    def test_two_dimensions_answering_to_one_name_are_refused(self):
+        dims = [_StateDim("d15"), _StateDim("d15")]
+        _install_state([_state_sketch("S", dims)])
+        res = sd.handler(sketch_name="S", dimension="d15", is_driving=False)
+        assert res["isError"] is True and "ambiguous: 2 dimensions" in res["message"]
+        assert [d.writes for d in dims] == [[], []]
+
+    def test_a_dimension_whose_parameter_does_not_read_is_counted_in_the_refusal(self):
+        blind = _StateDim("d15")
+        blind.parameter = None
+        _install_state([_state_sketch("S", [blind])])
+        res = sd.handler(sketch_name="S", dimension="d15", is_driving=False)
+        assert res["isError"] is True and blind.writes == []
+        assert "1 dimension(s) of this sketch have a parameter that did not read" in res["message"]
+
+    @pytest.mark.parametrize("kwargs,says", [
+        ({"dimensions": [{"dim_type": "radius", "entity_one": "circle:0"}], "dimension": "d1",
+          "is_driving": False}, "takes no 'dimensions' batch"),
+        ({"dimensions": [{"dim_type": "radius", "entity_one": "circle:0"}], "is_driving": False},
+         "takes no 'dimensions' batch"),
+        ({"is_driving": False}, "is_driving=False needs 'dimension'"),
+        ({"dimension": "d1"}, "needs 'is_driving' true or false; got None"),
+        ({"dimension": "d1", "is_driving": "no"}, "got 'no'")])
+    def test_a_mixed_or_half_given_edit_is_refused_before_any_write(self, monkeypatch, kwargs,
+                                                                   says):
+        s = _install(monkeypatch)
+        res = sd.handler(**kwargs)
+        assert res["isError"] is True and says in res["message"]
+        assert s.sketchDimensions.calls == []
+
+    def test_an_empty_batch_beside_the_edit_is_no_mix(self):
+        dim = _StateDim("d15")
+        _install_state([_state_sketch("S", [dim])])
+        out = _payload(sd.handler(dimensions=[], sketch_name="S", dimension="d15",
+                                  is_driving=False))
+        assert out["changed"] is True
+
+    def test_a_flag_that_does_not_take_is_an_error_with_the_state_as_read(self):
+        dim = _StateDim("d15", takes=False)
+        _install_state([_state_sketch("S", [dim])])
+        out = _error_payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert "is_driving did not take" in out["note"] and dim.writes == [False]
+        assert (out["is_driving"], out["changed"]) == (True, False)
+
+    def test_a_raising_assignment_passes_the_text_and_the_flag_as_re_read(self):
+        dim = _StateDim("d15", raises="3 : OVER_CONSTRAINT")
+        _install_state([_state_sketch("S", [dim], fully=False)])
+        out = _error_payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert "3 : OVER_CONSTRAINT. It reads is_driving=True now." in out["note"]
+        assert (out["is_driving"], out["fully_constrained"]) == (True, False)
+
+    def test_a_flag_already_as_requested_writes_nothing(self):
+        dim = _StateDim("d15", driving=False)
+        _install_state([_state_sketch("S", [dim])])
+        out = _payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert (out["changed"], out["is_driving"], dim.writes) == (False, False, [])
+        assert "nothing was written" in out["note"]
+
+    def test_a_parameter_name_that_changes_across_the_write_is_reported(self):
+        dim = _StateDim("d15", renames="d40")
+        _install_state([_state_sketch("S", [dim])])
+        out = _payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert (out["parameter_before"], out["parameter"]) == ("d15", "d40")
+        assert "now named 'd40' (was 'd15')" in out["note"]
+
+    def test_a_flag_that_does_not_read_back_is_unverified(self):
+        class _Blind(_StateDim):
+            @property
+            def isDriving(self):
+                if self.writes:
+                    raise RuntimeError("3 : flag unavailable")
+                return self._driving
+
+            @isDriving.setter
+            def isDriving(self, value):
+                self.writes.append(value)
+
+        _install_state([_state_sketch("S", [_Blind("d15")])])
+        out = _error_payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert "did not read back, so the change is unverified" in out["note"]
+        assert (out["is_driving"], out["changed"]) == (None, None)
+        assert out["unread"] == {"is_driving": "3 : flag unavailable"}
+
+    def test_only_a_problem_the_write_raised_is_called_new(self):
+        old = FakeTimelineObject(name="Old1", index=0, health=_ERROR)
+        fresh = FakeTimelineObject(name="Extrude1", index=1)
+        dim = _StateDim("d15")
+        dim.on_write = lambda: setattr(fresh, "healthState", 1)
+        _install_state([_state_sketch("S", [dim])], timeline=FakeTimeline([old, fresh]))
+        out = _payload(sd.handler(sketch_name="S", dimension="d15", is_driving=False))
+        assert (out["new_timeline_errors"], out["new_timeline_warnings"]) == ([], ["Extrude1"])
+        assert "Extrude1" in out["note"] and "Old1" not in out["note"]
+
+    def test_the_resolver_lifts_as_a_typed_kind(self):
+        assert isinstance(sd._DIMENSION, sd._inputs.InputKind)
+        assert sd._DIMENSION.as_property() == (
+            "dimension", {"type": "string",
+                          "description": "Existing dimension parameter from sketch_get."})

@@ -4,6 +4,7 @@ The image capture itself needs a live viewport (integration-tested), but the fit
 visibility bookkeeping: find the named occurrence, hide the others, return a restore() that turns
 them back on. That's exactly the bug-prone part (matching + restore), so it gets unit coverage.
 """
+from conftest import install as _install_design
 
 import base64
 import math
@@ -12,11 +13,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import (BRepBody, Camera, FakeApplication, FakeOccurrence, FakePoint, MakeComp,
-                      MakeDesign, Viewport, _NamedCollection, body_proxy, camera_state, install,
-                      load_tool, make_design, make_occurrence)
+from conftest import (BRepBody, Camera, FakeApplication, FakeFusionDocument, FakeOccurrence,
+                      FakePoint, MakeComp, MakeDesign, Viewport, _NamedCollection, body_proxy,
+                      camera_state, install, load_tool, make_design, make_occurrence)
 
 gs = load_tool("view_screenshot")
+
+
+def _install_none(monkeypatch):
+    app = gs.app
+    _install_design(gs, None)
+    monkeypatch.setattr(gs, "app", app)
 
 
 def FakeOcc(path, on=True):
@@ -347,7 +354,7 @@ class TestFitToOnABody:
         object.__setattr__(native, "_armed", True)     # armed AFTER the hide is allowed to land
         restore, _target, err = gs._isolate_for_fit("HANDLE")
         assert restore is None and native.isLightBulbOn is False   # the relight really did fail
-        assert "1 bulb(s) did NOT come back on: skin" in err
+        assert "could NOT turn 1 of them back on: skin" in err
         assert "view_set(action='show'" in err
 
     def _install_bodies(self, bodies):
@@ -458,7 +465,7 @@ class TestCaptureSwitchPassThrough:
     @pytest.fixture
     def rig(self, monkeypatch):
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=SimpleNamespace()))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         calls = []
 
         def fake_capture(viewport, width, height, prefix="fe_mcp_shot",
@@ -516,7 +523,7 @@ class TestFitParam:
         monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
         vp = Viewport(camera=Camera(eye=(0.0, -20.0, 0.0), target=(0.0, 0.0, 0.0)))
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "capture_png_b64", lambda *a, **k: ("B64DATA", None))
         return vp
 
@@ -534,6 +541,18 @@ class TestFitParam:
         assert rig._fit_calls == 0
         after = rig._assigned[-1]
         assert math.isclose(after.eye.distanceTo(after.target), before, rel_tol=1e-9)
+
+    def test_a_zoom_on_a_perspective_view_moves_the_eye(self, rig, monkeypatch):
+        # a perspective camera has no extents: showing half as much means half the eye distance
+        import adsk.core
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
+        rig.camera = Camera(eye=(0, -20, 0), target=(0, 0, 0), perspective_angle=0.4,
+                            camera_type=adsk.core.CameraTypes.PerspectiveCameraType)
+        result = gs.handler(view="current", zoom=0.5)
+        assert result["isError"] is False
+        assert not any("could NOT be applied" in (block.get("text") or "")
+                       for block in result["content"])
+        assert any(math.isclose(cam.eye.distanceTo(cam.target), 10.0) for cam in rig._assigned)
 
     def test_fit_true_frames_the_current_view(self, rig):
         result = gs.handler(view="current", fit=True)
@@ -556,7 +575,7 @@ class TestFitToRestoreDisclosure:
     def rig(self, monkeypatch):
         vp = Viewport(camera=Camera())
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "capture_png_b64",
                             lambda *a, **k: ("B64DATA", None))
         monkeypatch.setattr(gs._view_common, "apply_named_view", lambda v, name, fit=False, smooth=False: (None, None))
@@ -629,6 +648,97 @@ class TestFitToRestoreDisclosure:
         assert "restores the view" in desc
 
 
+class TestFitToModifiedFlag:
+    """A fit_to shot that turned a clean document modified says so; an already-modified one not."""
+
+    @pytest.fixture
+    def shoot(self, monkeypatch):
+        def _shoot(is_modified):
+            doc = FakeFusionDocument(is_modified=is_modified)
+            occs = [make_occurrence(path=p, component=MakeComp(name=p[0]), document=doc)
+                    for p in ("A:1", "B:1")]
+            design = install(gs, MakeDesign(comp=MakeComp(name="Root", all_occurrences=occs)))
+            app = FakeApplication(active_product=design, active_document=doc,
+                                  active_viewport=Viewport(camera=Camera()))
+            monkeypatch.setattr(gs, "app", app)
+            monkeypatch.setattr(gs._common, "app", app)
+            monkeypatch.setattr(gs._view_common, "capture_png_b64",
+                                lambda *a, **k: ("B64DATA", None))
+            return gs.handler(fit_to="B:1"), doc
+        return _shoot
+
+    def test_a_clean_document_the_shot_modified_is_disclosed(self, shoot):
+        result, doc = shoot(is_modified=False)
+        assert result["isError"] is False and doc.isModified is True
+        assert "records as a document modification" in result["content"][0]["text"]
+
+    def test_an_already_modified_document_gets_no_such_sentence(self, shoot):
+        result, _doc = shoot(is_modified=True)
+        assert [c["type"] for c in result["content"]] == ["image"]
+
+    @pytest.fixture
+    def shared_body(self, monkeypatch):
+        import adsk.fusion
+        monkeypatch.setattr(adsk.fusion, "BRepBody", BRepBody)
+        doc = FakeFusionDocument(is_modified=False)
+        native = BRepBody(name="skin", entity_token="SKIN")
+        part = MakeComp(name="Wing", bodies=[native])
+        occs = [make_occurrence(path=path, component=part) for path in ("Wing:1", "Wing:2")]
+        proxies = [body_proxy(native, occ) for occ in occs]
+        for occ, proxy in zip(occs, proxies):
+            occ.bRepBodies = _NamedCollection([proxy])
+        design = install(gs, make_design(comp=MakeComp(name="Root", all_occurrences=occs),
+                                         tokens={"HANDLE": proxies[0]}))
+        def set_bulb(body, value):
+            body.__dict__["isLightBulbOn"] = value
+            doc.isModified = True
+        monkeypatch.setattr(BRepBody, "isLightBulbOn", property(
+            lambda body: body.__dict__["isLightBulbOn"], set_bulb), raising=False)
+        viewport = Viewport(camera=Camera())
+        app = FakeApplication(active_product=design, active_document=doc, active_viewport=viewport)
+        monkeypatch.setattr(gs, "app", app)
+        monkeypatch.setattr(gs._common, "app", app)
+        captured = []
+        monkeypatch.setattr(gs._view_common, "capture_png_b64", lambda *a, **k:
+                            (captured.append(True) or "B64DATA", None))
+        return doc, native, viewport, captured
+
+    @pytest.mark.parametrize("modified", [False, True])
+    def test_shared_body_refusal_discloses_new_dirty_flag_after_relighting(self, shared_body, modified):
+        doc, native, viewport, captured = shared_body
+        doc.isModified = modified
+        before = camera_state(viewport.camera)
+        result = gs.handler(view="top", fit_to="HANDLE")
+        assert result["isError"] is True
+        assert "another placement of the same body was hidden" in result["message"]
+        assert "Nothing was captured" in result["message"] and "fullPathName" in result["message"]
+        assert ("records as a document modification" in result["message"]) is (not modified)
+        assert native.isLightBulbOn is True and doc.isModified is True
+        assert captured == [] and camera_state(viewport.camera) == before
+
+    def test_the_flag_is_read_after_the_restore_runs(self, monkeypatch):
+        doc = FakeFusionDocument(is_modified=False)
+        monkeypatch.setattr(gs._common, "app", FakeApplication(active_document=doc))
+
+        def restore():
+            doc.isModified = True             # the restore's own write sets the flag
+            return []
+        restore.modified_before = False
+        assert "records as a document modification" in gs._restore_message(restore)
+
+    def test_a_body_subject_names_the_bodies_it_hid_not_an_isolation(self, monkeypatch):
+        doc = FakeFusionDocument(is_modified=False)
+        monkeypatch.setattr(gs._common, "app", FakeApplication(active_document=doc))
+
+        def restore():
+            doc.isModified = True
+            return []
+        restore.modified_before, restore.isolated, restore.hidden = False, False, "bodies"
+        msg = gs._restore_message(restore)
+        assert "hid the other bodies for this shot, which Fusion records as a document" in msg
+        assert "isolated" not in msg
+
+
 class TestCameraRestore:
     """The camera this tool moves to take its picture is the USER's. Every exit puts it back, and a
     restore (or a zoom) the viewport refuses is NAMED, never swallowed."""
@@ -638,13 +748,11 @@ class TestCameraRestore:
         platform that refuses the snapshot, or refuses the restore after accepting the move."""
 
         class _StuckExtents:
-            """A camera whose viewExtents will not be written - the zoom the platform drops."""
-            @property
-            def viewExtents(self):
-                return 1.0
+            """A camera whose extents read but will not be written - the zoom the platform drops."""
+            def getExtents(self):
+                return [True, 1.0, 1.0]
 
-            @viewExtents.setter
-            def viewExtents(self, value):
+            def setExtents(self, width, height):
                 raise RuntimeError("extents locked")
 
         def __init__(self, refuse_assign=False, zoom_raises=False, camera_unreadable=False,
@@ -674,10 +782,58 @@ class TestCameraRestore:
 
     @pytest.fixture
     def rig(self, monkeypatch):
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "capture_png_b64",
                             lambda *a, **k: ("B64DATA", None))
         return monkeypatch
+
+    def test_a_dropped_non_square_restore_is_named_while_retaining_the_image(self, rig):
+        vp = Viewport(camera=Camera())
+        vp._cam.setExtents(3.8, 3.2)
+        rig.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
+        normal_set = Viewport.camera.fset
+
+        def drop_restore(self, value):
+            normal_set(self, value)
+            if value.getExtents() == [True, 3.8, 3.2]:
+                self._cam._sides = (100, 100)  # Injected extent loss on restore only.
+
+        def orient(viewport, *args, **kwargs):
+            viewport.camera = Camera(view_extents=100)
+            return None, None
+
+        rig.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_restore))
+        rig.setattr(gs._view_common, "apply_named_view", orient)
+        result = gs.handler(view="top")
+        assert result["isError"] is False
+        assert [c["type"] for c in result["content"]] == ["text", "image"]
+        assert "camera framing does not match" in result["content"][0]["text"]
+        assert vp.camera.getExtents() == [True, 100, 100]
+
+    @pytest.mark.parametrize("projection", ["orthographic", "perspective"])
+    def test_a_dropped_zoom_is_named_in_the_public_image_reply(self, rig, projection):
+        import adsk.core
+        rig.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
+        kind = (adsk.core.CameraTypes.OrthographicCameraType if projection == "orthographic"
+                else adsk.core.CameraTypes.PerspectiveCameraType)
+        vp = Viewport(camera=Camera(eye=(0, -20, 0), camera_type=kind, perspective_angle=.4))
+        vp._cam.setExtents(3.8, 3.2) if projection == "orthographic" else None
+        before = camera_state(vp.camera)
+        rig.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
+        normal_set = Viewport.camera.fset
+
+        def drop_zoom(self, value):
+            eye, sides = self._cam.eye, self._cam._sides
+            normal_set(self, value)
+            self._cam.eye, self._cam._sides = eye, sides  # Injected framing drop.
+
+        rig.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_zoom))
+        result = gs.handler(view="current", zoom=.5)
+        assert result["isError"] is False
+        assert [c["type"] for c in result["content"]] == ["text", "image"]
+        assert "zoom=0.5 could NOT be applied" in result["content"][0]["text"]
+        assert "read-back camera framing" in result["content"][0]["text"]
+        assert camera_state(vp.camera) == before
 
     def test_a_failed_orient_puts_the_camera_back(self, rig):
         # apply_named_view moves the camera and THEN fails; returning without restoring leaves the
@@ -713,7 +869,7 @@ class TestCameraRestore:
         result = gs.handler(view="top")
         assert result["isError"] is False                         # the picture WAS taken
         text = result["content"][0]["text"]
-        assert "could NOT be put back" in text and "do not match" in text
+        assert "could NOT be put back" in text and "does not match" in text
 
     def test_a_clean_restore_says_nothing_extra(self, rig):
         vp = self._Viewport()
@@ -759,7 +915,7 @@ class TestStandoffFallbackDisclosure:
     def rig(self, monkeypatch):
         vp = Viewport(camera=Camera())
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "capture_png_b64", lambda *a, **k: ("B64DATA", None))
         return monkeypatch
 
@@ -806,7 +962,7 @@ class TestFilePathWrite:
     def rig(self, monkeypatch):
         vp = Viewport(camera=Camera())
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         oriented = []
         monkeypatch.setattr(gs._view_common, "apply_named_view",
                             lambda v, name, fit=False, smooth=False: (oriented.append(name), None))
@@ -946,7 +1102,7 @@ class TestHandlerInputGuards:
     def rig(self, monkeypatch):
         vp = Viewport(camera=Camera())
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=vp))
-        monkeypatch.setattr(gs._common, "design", lambda: None)
+        _install_none(monkeypatch)
         monkeypatch.setattr(gs._view_common, "apply_named_view", lambda v, name, fit=False, smooth=False: (None, None))
         return monkeypatch
 
@@ -969,5 +1125,18 @@ class TestHandlerInputGuards:
 
     def test_no_active_viewport_is_an_error(self, monkeypatch):
         monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=None))
+        monkeypatch.setattr(gs._drawing_common, "active_drawing", lambda: None)
         result = gs.handler()
-        assert result["isError"] is True and "viewport" in result["message"]
+        assert result["isError"] is True
+        assert result["message"] == "No active viewport (is a document open?)."
+        assert "drawing_export" not in result["message"]
+
+    def test_a_drawing_without_a_viewport_points_to_pdf_export(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gs, "app", SimpleNamespace(activeViewport=None))
+        monkeypatch.setattr(gs._drawing_common, "active_drawing", lambda: object())
+        path = tmp_path / "drawing.png"
+        result = gs.handler(file_path=str(path))
+        assert result["isError"] is True
+        assert "No viewport is available for this drawing" in result["message"]
+        assert "drawing_export(format='pdf', file_path=...)" in result["message"]
+        assert not path.exists()

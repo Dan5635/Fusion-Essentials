@@ -9,7 +9,6 @@ Two readings of ONE joint or JO are modelled the way the API hands them over: ea
 OWN wrapper object and the two share an entityToken. One object placed in both scopes is collapsed
 by any key at all, so it pins no de-dup.
 """
-
 import pytest
 
 import adsk.fusion
@@ -77,6 +76,56 @@ class TestFindJoint:
         j = _joint("Revolute1", "t1", "Arm")
         des = _design(_comp([j]), [_comp([_joint("Revolute2", "t2", "Gripper")])])
         assert jt.find_joint(des, "Revolute1") == (j, None)
+
+    def test_a_long_exact_joint_name_resolves_before_handle_lookup(self):
+        name = "A" * 48
+        joint = _joint(name, "joint-token", "Arm")
+        assert jt.find_joint(_design(_comp([joint])), name) == (joint, None)
+
+    def test_component_scope_selects_the_matching_duplicate_name(self):
+        arm, grip = MakeComp(name="Arm", entity_token="arm"), MakeComp(
+            name="Gripper", entity_token="grip")
+        a = FakeJoint("Mate", entity_token="joint-arm", parent_component=arm)
+        b = FakeJoint("Mate", entity_token="joint-grip", parent_component=grip)
+        assert jt.find_joint(_design(_comp([a]), [_comp([b])]), "Mate", component=grip) == (b, None)
+
+    def test_component_scope_refuses_when_a_matching_owner_is_unreadable(self):
+        class BlindJoint(FakeJoint):
+            @property
+            def parentComponent(self):
+                raise RuntimeError("owner unavailable")
+
+            @parentComponent.setter
+            def parentComponent(self, value):
+                self._parent_component = value
+
+        grip = MakeComp(name="Gripper", entity_token="grip")
+        readable = FakeJoint("Mate", entity_token="joint-readable", parent_component=grip)
+        blind = BlindJoint("Mate", entity_token="joint-blind")
+        err_joint, err = jt.find_joint(_design(_comp([readable, blind])), "Mate", component=grip)
+        assert err_joint is None and "owning component" in err
+
+    def test_a_joint_handle_is_type_checked_and_scoped(self):
+        arm, grip = MakeComp(name="Arm", entity_token="arm"), MakeComp(
+            name="Gripper", entity_token="grip")
+        joint = FakeJoint("Mate", entity_token="J" * 48, parent_component=grip)
+        face = object()
+        des = make_design(comp=_comp([joint]), all_components=[_comp([joint])],
+                          tokens={"J" * 48: joint, "F" * 48: face})
+        assert jt.find_joint(des, "J" * 48, component=grip) == (joint, None)
+        found, err = jt.find_joint(des, "F" * 48, component=grip)
+        assert found is None and ("F" * 48) in err and "not a joint" in err
+
+    def test_a_long_unknown_name_is_an_ordinary_miss(self):
+        # 41+ characters only LOOKS like a token; nothing resolved, so each caller words its miss.
+        des = make_design(comp=_comp([_joint("Revolute1", "t1", "Arm")]), tokens={})
+        assert jt.find_joint(des, "LongDescriptiveJointNameThatDoesNotExistAnywhere") == (None, None)
+
+    def test_a_typed_handle_that_no_longer_resolves_names_the_remedy(self):
+        des = make_design(comp=_comp([_joint("Revolute1", "t1", "Arm")]), tokens={})
+        stale = "S" * 48 + "|@joint:Revolute9"
+        found, err = jt.find_joint(des, stale)
+        assert found is None and stale in err and "assembly_get" in err
 
     def test_no_hit_is_none_with_no_error(self):
         # A miss carries no error text: each caller words its own not-found message.

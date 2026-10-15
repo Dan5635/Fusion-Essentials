@@ -48,10 +48,8 @@ _MEASURED_FACTORY_RETURNS = {
     # measurement behind it - never a correction that merely looks right - and _apply_measured_returns
     # raises on a row the bindings have since fixed or dropped, so the table cannot outlive its defect.
     #
-    # Both rows below: classType() read off the returned object on Fusion 2705.0.108. The bindings
-    # annotate each as adsk.core.Point2D, which is the CENTER ARGUMENT's class, not the return.
-    "core.Arc2D.createByCenter": ("core.Arc2D", "Fusion 2705.0.108"),
-    "core.Circle2D.createByCenter": ("core.Circle2D", "Fusion 2705.0.108"),
+    # Empty since Fusion 2706.0.97 annotated Arc2D/Circle2D.createByCenter's returns correctly;
+    # the generator refuses a row the bindings have caught up with.
 }
 
 _EXTRA_CLASSES = (
@@ -284,6 +282,37 @@ def _render(root, properties, factories, bools):
 def _fail(msg):
     print(msg, file=sys.stderr)
     raise SystemExit(1)
+
+
+def snapshot_check_state():
+    """Return installed bindings and why the recorded build cannot be checked here."""
+    try:
+        _, tree = read_declarations(OUT_PATH)
+    except (OSError, SyntaxError, UnicodeError) as exc:
+        _fail(f"Cannot read the committed API surface: {exc}")
+    builds = [node.value for node in tree.body if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "BINDINGS_BUILD"
+                      for target in node.targets)]
+    if (len(builds) != 1 or not isinstance(builds[0], ast.Constant)
+            or not isinstance(builds[0].value, str) or not builds[0].value):
+        _fail("The committed API surface needs one nonempty BINDINGS_BUILD; regenerate on its Fusion build.")
+    recorded = builds[0].value
+    root = find_bindings()
+    if root is None:
+        return None, f"Fusion bindings absent; recorded API build {recorded} was not verified."
+    installed = _build_id(root)
+    if installed != recorded:
+        return root, f"Installed API build {installed} differs from recorded {recorded}; API surface not verified."
+    return root, None
+
+
+def check_recorded_build():
+    """Check snapshot freshness only on its recorded build, disclosing other environments."""
+    root, reason = snapshot_check_state()
+    if reason:
+        print("API surface check SKIPPED: " + reason)
+        return 0
+    return main(["--check", "--bindings-dir", root])
 
 
 def main(argv=None):

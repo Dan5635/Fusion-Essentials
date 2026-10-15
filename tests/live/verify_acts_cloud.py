@@ -5,26 +5,34 @@
 
 The acts that touch an operator's own Autodesk hub, and so run only where cloud_config names
 one (verify_core._cloud_tier_probe). Each act creates run-stamped artifacts under the configured
-folder. The CAM persistence coupon is retained; other artifacts are removed with read-back.
+folder. CAM persistence, configuration coupons and the favourite-parameter derive source are retained;
+other artifacts are removed with read-back.
 Each act ends by activating the document the session was on when the tier started, so a chunk
 boundary can fall between them and a partial run leaves the session where it found it.
 """
 
 import hashlib
 import json
+import math
 import os
 import time
+import copy
 
-from cloud_config import FOLDER, HUB, PROJECT
+from cloud_config import ARTIFACT_STAMP, FOLDER, HUB, PROJECT
 from verify_acts_cam import (
     _launched_on, _op_created, _preset_applied, _template_applied, _template_path_state)
+from verify_acts_model_precision import _section_camera
+from verify_acts_model_solids import _edge_extent_geometry, _symmetric_target_body_state
+from verify_acts_model_sweep import _retire_compare, _retire_design_state, _retire_material_state
+from verify_acts_sketch import _script_reply
 from verify_core import (
-    EXPORT_DIR, MARKER_PNG, NOTE_MAX, _RECALL, _activated, _ctx_get, _document_closed,
+    EXPORT_DIR, MARKER_PNG, NOTE_MAX, Independent, _RECALL, _Refusal, _activated, _ctx_get,
+    _document_closed,
     _driven_slide, _dwell, _extruded, _face_up_at, _fg, _home_address, _home_document, _jointed,
     _made_component, _measured, _motion_linked, _new_document, _near, _num, _recall, _refused,
     _watch, facade)
 
-_STAMP = time.strftime("%Y%m%d-%H%M%S")
+_STAMP = ARTIFACT_STAMP or time.strftime("%Y%m%d-%H%M%S")
 
 # THE ARTIFACTS, all run-stamped so two overlapping runs never collide on one name and a run that
 # died leaves artifacts a later one can tell from its own.
@@ -76,9 +84,19 @@ _DRAWING_UPDATE_BEFORE_PDF = DOWNLOAD_DIR + f"/drawing_update_before_{_STAMP}.pd
 _DRAWING_UPDATE_AFTER_PDF = DOWNLOAD_DIR + f"/drawing_update_after_{_STAMP}.pdf"
 _DRAWING_RESTORED_PDF = DOWNLOAD_DIR + f"/drawing_restored_{_STAMP}.pdf"
 _DRAWING_SKETCH_DXF = DOWNLOAD_DIR + f"/drawing_sketch_readback_{_STAMP}.dxf"
+_DRAWING_WORKLOAD_DXF = DOWNLOAD_DIR + f"/drawing_workload_readback_{_STAMP}.dxf"
 _DRAWING_BLANK_DXF = DOWNLOAD_DIR + f"/drawing_blank_sheet_{_STAMP}.dxf"
 _DRAWING_SKETCH_NAME = "SweepCloudSketch"
+_DRAWING_WORKLOAD_NAME = "SweepCloudWorkload16"
 _DRAWING_BLANK_SKETCH_NAME = "SweepCloudBlankSketch"
+_DRAWING_WORKLOAD_GEOMETRY = [
+    {"kind": "line", "points": [[20 + 2 * i, 20], [21 + 2 * i, 22]]}
+    for i in range(16)]
+_DRAWING_WORKLOAD_17_ENTITIES = [
+    {"kind": "line", "points": [[20 + 2 * i, 30], [21 + 2 * i, 32]]}
+    for i in range(17)]
+_DRAWING_WORKLOAD_17_SEGMENT_CHAIN = {
+    "kind": "line", "points": [[20 + i, 40 + i % 2] for i in range(18)]}
 _DRAWING_TWO_BEFORE_KEY = "drawing-two-before-" + _STAMP
 _DRAWING_TWO_AFTER_KEY = "drawing-two-after-" + _STAMP
 _DRAWING_POPULATED_KEY = "drawing-populated-" + _STAMP
@@ -93,12 +111,7 @@ _DOWNLOAD_STAGE_PREFIX = ".fusion-download-"
 
 
 def _lit(args):
-    """`args` as a CALLABLE ignoring ctx - a literal dict the layout pass cannot read.
-
-    The packer deals a cell to every chunk whose steps pin a world coordinate, reading a step's dict
-    arguments to find them. These acts build in a document of their own, where an authored x is not
-    a place in the story field, so their coordinates are handed over as callables and no cell is
-    dealt for a component that never appears in that field."""
+    """Return authored document-local arguments without chunk translation."""
     return lambda _ctx, _a=args: dict(_a)
 
 
@@ -168,6 +181,24 @@ def _download_overwrite_args(ctx):
         raise AssertionError("the no-overwrite refusal did not preserve the exact owned preimage")
     return {"file": source_id, "destination_folder": DOWNLOAD_RUN_DIR,
             "file_name": DOWNLOAD_FILE, "overwrite": True}
+
+
+def _download_boolean_args(ctx):
+    """Prepare the existing owned preimage for a malformed Boolean refusal."""
+    args = _download_refusal_args(ctx)
+    args.update(overwrite="false", expect_document="session:BOOLEAN-GUARD-MISMATCH")
+    return args
+
+
+def _cloud_boolean_unchanged(p, download=False):
+    """Check the complete census and optional exact local preimage after a Boolean refusal."""
+    if p != _RECALL.get("cloud_boolean_census"):
+        return False
+    if not download:
+        return True
+    proof = _RECALL.get("download_probe") or {}
+    return (_disk_facts(os.path.join(DOWNLOAD_RUN_DIR, DOWNLOAD_FILE)) == proof.get("preimage")
+            and os.listdir(DOWNLOAD_RUN_DIR) == [DOWNLOAD_FILE])
 
 
 # --- predicates: each reads keys the tool PUBLISHES, and reports what it read ------------------
@@ -249,6 +280,316 @@ def _file_record(folder_path, complete=True):
     return check
 
 
+def _capped_name_move_probe(ctx):
+    """Build a native probe for capped name lookup and exact-URN control."""
+    file_name = _ctx_get(ctx, "cloud_file_name", "the uploaded file")
+    file_id = _ctx_get(ctx, "cloud_file", "the uploaded file")
+    project_id = _ctx_get(ctx, "data_root_summary", "the configured project")["project_id"]
+    script = f'''import json, sys
+
+def run(context):
+    import adsk.core
+    def module(suffix):
+        found = [m for m in sys.modules.values()
+                 if str(getattr(m, '__name__', '')).endswith(suffix)]
+        assert len(found) == 1, (suffix, len(found))
+        return found[0]
+    dc = module('.mcpServer.tools._data_common')
+    dr = module('._data_read')
+    move = module('.data_move_file')
+    app = adsk.core.Application.get()
+    projects = [p for p in app.data.dataProjects.asArray() if p.id == {json.dumps(project_id)}]
+    assert len(projects) == 1
+    project = projects[0]
+    folder, missing = dc._resolve_folder_path(project.rootFolder,
+                                               dc._split_path({json.dumps(RUN_PATH)}))
+    assert folder is not None and missing is None
+    files = folder.dataFiles.asArray()
+    children = folder.dataFolders.asArray()
+    assert files and children
+    chosen = files[0]
+    assert chosen.name == {json.dumps(file_name)} and chosen.id == {json.dumps(file_id)}
+    before_parent = chosen.parentFolder.id
+    assert before_parent == folder.id
+    old_cap = dr._MAX_FILES
+    try:
+        dr._MAX_FILES = 1
+        refused = move.handler(file=chosen.name, project={json.dumps(PROJECT)},
+                               folder={json.dumps(RUN_PATH)},
+                               target_folder={json.dumps(RUN_PATH)})
+    finally:
+        dr._MAX_FILES = old_cap
+    cap_restored = dr._MAX_FILES == old_cap
+    after_refusal = chosen.parentFolder.id
+    original_find_project = dc._find_project
+    def injected_project_error(*args, **kwargs):
+        raise RuntimeError('synthetic project lookup failure')
+    try:
+        dc._find_project = injected_project_error
+        project_error = move.handler(file=chosen.name, project={json.dumps(PROJECT)},
+                                      folder={json.dumps(RUN_PATH)},
+                                      target_folder={json.dumps(RUN_PATH)})
+    finally:
+        dc._find_project = original_find_project
+    project_finder_restored = dc._find_project is original_find_project
+    after_project_error = chosen.parentFolder.id
+    exact = move.handler(file=chosen.id, project={json.dumps(PROJECT)},
+                         target_folder={json.dumps(RUN_PATH)})
+    after_exact = chosen.parentFolder.id
+    def outcome(result):
+        text = (result.get('content') or [{{}}])[0].get('text', '')
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = text
+        return {{'is_error': result.get('isError'), 'payload': payload}}
+    print(json.dumps({{'file_name': chosen.name, 'file_id': chosen.id,
+        'folder_id': folder.id, 'file_count': len(files), 'child_folder_count': len(children),
+        'before_parent_id': before_parent, 'after_refusal_parent_id': after_refusal,
+        'after_project_error_parent_id': after_project_error,
+        'after_exact_parent_id': after_exact, 'cap_restored': cap_restored,
+        'project_finder_restored': project_finder_restored,
+        'project_lookup_error_injected': True,
+        'capped_by_name': outcome(refused), 'injected_project_error': outcome(project_error),
+        'exact_urn': outcome(exact)}}))
+'''
+    return {"script": script, "read_only": False}
+
+
+def _duplicate_project_probe(_ctx):
+    """Exercise loaded public handlers with an injected duplicate census and no cloud writes."""
+    return {"read_only": False, "script": '''import json, sys
+from types import SimpleNamespace
+
+def run(context):
+    def module(suffix):
+        hits = [m for n, m in sys.modules.items() if n.endswith(suffix)]
+        assert len(hits) == 1
+        return hits[0]
+    create = module('.tools.data_create_project')
+    read = module('.tools._data_read')
+    get = module('.tools.data_get')
+    adds = []
+    def refuse_add(*args):
+        adds.append(args)
+        raise RuntimeError('diagnostic forbids cloud creation')
+    entries = [SimpleNamespace(name=n, id=i) for n, i in
+               [('SweepDuplicate', 'diagnostic-a'), ('SweepDuplicate', 'diagnostic-b'),
+                ('UnrelatedProject', 'diagnostic-other')]]
+    data = SimpleNamespace(dataProjects=SimpleNamespace(asArray=lambda: entries, add=refuse_add))
+    old_create, old_read = create._data, read.app
+    try:
+        create._data = lambda: data
+        read.app = SimpleNamespace(data=data)
+        refused_create = create.handler(name='SweepDuplicate')
+        refused_read = get.handler(project='SweepDuplicate', recursive=False)
+    finally:
+        create._data, read.app = old_create, old_read
+    def result(value):
+        return {'is_error': value.get('isError') is True,
+                'text': (value.get('content') or [{}])[0].get('text', '')}
+    print(json.dumps({'injected_census': True, 'add_calls': len(adds),
+        'restored': create._data is old_create and read.app is old_read,
+        'create': result(refused_create), 'read': result(refused_read)}))
+'''}
+
+
+def _duplicate_project_result(value):
+    """Check both matching IDs, omitted unrelated candidates, valid remedies and restored seams."""
+    p = value if isinstance(value, dict) else json.loads(value)
+    create, read = p.get('create') or {}, p.get('read') or {}
+    return _measured('injected project-name ambiguity through loaded handlers', p,
+        p.get('injected_census') is True and p.get('add_calls') == 0 and p.get('restored') is True
+        and all(row.get('is_error') is True
+                and all(x in row.get('text', '') for x in ('diagnostic-a', 'diagnostic-b', 'matches 2'))
+                and 'diagnostic-other' not in row.get('text', '')
+                and 'UnrelatedProject' not in row.get('text', '') for row in (create, read))
+        and 'project_id' not in create.get('text', '')
+        and 'use a different name' in create.get('text', '')
+        and 'pass an exact project_id' in read.get('text', ''))
+
+
+def _duplicate_hub_probe(_ctx):
+    """Drive the loaded hub switch over injected same-name and unread-name hub censuses."""
+    return {"read_only": False, "script": '''import json, sys
+from types import SimpleNamespace
+
+def run(context):
+    def module(suffix):
+        hits = [m for n, m in sys.modules.items() if n.endswith(suffix)]
+        assert len(hits) == 1
+        return hits[0]
+    switch = module('.tools.data_switch_hub')
+    sets = []
+    class Hub:
+        def __init__(self, name, hub_id):
+            self._name, self.id = name, hub_id
+        @property
+        def name(self):
+            if self._name is None:
+                raise RuntimeError('diagnostic unreadable hub name')
+            return self._name
+    class Hubs:
+        def __init__(self, rows):
+            self.rows = rows
+            self.count = len(rows)
+        def item(self, i):
+            return self.rows[i]
+    class Data:
+        def __init__(self, rows):
+            self.dataHubs, self._active = Hubs(rows), rows[-1]
+        @property
+        def activeHub(self):
+            return self._active
+        @activeHub.setter
+        def activeHub(self, hub):
+            sets.append(hub.id)
+    other = ('UnrelatedHub', 'diagnostic-hub-other')
+    twins = Data([Hub('SweepHub', 'diagnostic-hub-a'), Hub('SweepHub', 'diagnostic-hub-b'),
+                  Hub(*other)])
+    blind = Data([Hub('SweepHub', 'diagnostic-hub-a'), Hub(None, 'diagnostic-hub-blind'),
+                  Hub(*other)])
+    old_app = switch.app
+    try:
+        switch.app = SimpleNamespace(data=twins)
+        ambiguous = switch.handler(action='switch', hub='SweepHub')
+        switch.app = SimpleNamespace(data=blind)
+        unread = switch.handler(action='switch', hub='SweepHub')
+    finally:
+        switch.app = old_app
+    def result(value):
+        return {'is_error': value.get('isError') is True,
+                'text': (value.get('content') or [{}])[0].get('text', '')}
+    print(json.dumps({'injected_census': True, 'set_calls': len(sets),
+        'restored': switch.app is old_app,
+        'ambiguous': result(ambiguous), 'unread': result(unread)}))
+'''}
+
+
+def _duplicate_hub_result(value):
+    """Check both refusals name their candidates by id, no hub was assigned and the seam restored."""
+    p = value if isinstance(value, dict) else json.loads(value)
+    twins, blind = p.get("ambiguous") or {}, p.get("unread") or {}
+    return _measured("injected hub-name ambiguity through the loaded switch", p,
+        p.get("injected_census") is True and p.get("set_calls") == 0 and p.get("restored") is True
+        and twins.get("is_error") is True and blind.get("is_error") is True
+        and all(x in twins.get("text", "") for x in ("matches 2 hubs", "diagnostic-hub-a",
+                                                    "diagnostic-hub-b", "hub=<id>"))
+        and all(x in blind.get("text", "") for x in ("diagnostic-hub-blind", "did not read",
+                                                    "hub=<id>"))
+        and all("diagnostic-hub-other" not in row.get("text", "") for row in (twins, blind)))
+
+
+def _hubs_untouched(p):
+    """data_get(include=['hubs']): the configured hub is still the one active hub, no injected row."""
+    rows = p.get("hubs") or []
+    return _measured(f"'{HUB}' still the only active hub", p,
+                     (p.get("active_hub") or {}).get("name") == HUB
+                     and p.get("hub_count") == len(rows) >= 1
+                     and [r.get("name") for r in rows if r.get("is_active")] == [HUB]
+                     and not any(str(r.get("id", "")).startswith("diagnostic-") for r in rows))
+
+
+def _hub_edit_preflight_probe(ctx):
+    """Check the loaded guard on real dirty cloud documents with a trapped hub assignment."""
+    lineage = _ctx_get(ctx, "source_urn", "the saved source")
+    return {"read_only": False, "script": f'''import adsk.core, json, sys
+from types import SimpleNamespace
+
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile.id == {lineage!r}
+    assert app.activeDocument.isModified is True
+    modules = [m for n, m in sys.modules.items() if n.endswith('.tools.data_switch_hub')]
+    assert len(modules) == 1
+    switch = modules[0]
+    active = app.data.activeHub
+    target = SimpleNamespace(name='Diagnostic target', id='diagnostic-preflight-hub')
+    class Hubs:
+        count = 2
+        def item(self, index):
+            return (active, target)[index]
+    class Data:
+        dataHubs = Hubs()
+        sets = 0
+        @property
+        def activeHub(self):
+            return active
+        @activeHub.setter
+        def activeHub(self, hub):
+            self.sets += 1
+            raise RuntimeError('diagnostic assignment trap; no native hub switched')
+    data = Data()
+    original = switch.app
+    try:
+        switch.app = SimpleNamespace(data=data, documents=app.documents)
+        result = switch.handler(action='switch', hub=target.id)
+    finally:
+        switch.app = original
+    print(json.dumps({{'is_error': result.get('isError') is True,
+        'result': json.loads(result['content'][0]['text']),
+        'set_calls': data.sets, 'restored': switch.app is original,
+        'native_documents': True, 'injected_target': True}}))
+'''}
+
+
+def _hub_edit_preflight_result(value):
+    """Require the exact saved source's refusal and actionable remedies before any assignment."""
+    p = value if isinstance(value, dict) else json.loads(value)
+    result = p.get("result") or {}
+    rows = result.get("modified_cloud_documents") or []
+    expected = _RECALL.get("hub_edit_census") or {}
+    active = expected.get("active") or {}
+    source = [row for row in rows if row.get("document_handle") == active.get("document_handle")]
+    handle = active.get("document_handle")
+    remedies = (f"doc_activate(name='{handle}')", f"doc_save(expect_document='{handle}')",
+                f"doc_close(name='{handle}', save_changes=false)")
+    return _measured("real modified cloud source refused before trapped hub assignment", p,
+        p.get("is_error") is True and p.get("set_calls") == 0 and p.get("restored") is True
+        and p.get("native_documents") is True and p.get("injected_target") is True
+        and next(iter(result), None) == "error" and str(result.get("error", "")).startswith("Refusing hub switch")
+        and result.get("blocked_by") == "modified_cloud_documents"
+        and result.get("modified_cloud_document_count") == len(rows) >= 1
+        and result.get("modified_cloud_documents_truncated") is False
+        and len(source) == 1 and source[0].get("is_modified") is True
+        and source[0].get("document_id") == _RECALL.get("source_urn")
+        and all(text in source[0].get("remedy", "") for text in remedies))
+
+
+def _capped_name_move_result(stdout):
+    """Check the cap refusal, unchanged parent and exact-URN idempotence from the native probe."""
+    if isinstance(stdout, dict):
+        result = stdout
+    else:
+        try:
+            result = json.loads(stdout)
+        except Exception as exc:
+            raise AssertionError(f"native cloud lookup probe did not return JSON: {stdout!r}") from exc
+    limited = result.get("capped_by_name") or {}
+    injected = result.get("injected_project_error") or {}
+    exact = result.get("exact_urn") or {}
+    refusal = limited.get("payload") or ""
+    project_error = injected.get("payload") or ""
+    moved = exact.get("payload") or {}
+    return _measured(
+        "capped name move refused before mutation and exact URN stayed idempotent",
+        result,
+        result.get("file_count", 0) >= 1 and result.get("child_folder_count", 0) >= 1
+        and bool(result.get("file_name")) and str(result.get("file_id") or "").startswith("urn:")
+        and result.get("cap_restored") is True
+        and limited.get("is_error") is True and "name census is incomplete" in refusal
+        and result.get("before_parent_id") == result.get("after_refusal_parent_id")
+        and result.get("project_lookup_error_injected") is True
+        and result.get("project_finder_restored") is True
+        and injected.get("is_error") is True
+        and "synthetic project lookup failure" in project_error
+        and "data_get(project_id=<id>)" in project_error
+        and "as 'file'" in project_error
+        and result.get("before_parent_id") == result.get("after_project_error_parent_id")
+        and exact.get("is_error") is False and moved.get("already_in_target") is True
+        and result.get("before_parent_id") == result.get("after_exact_parent_id"))
+
+
 # The cloud finishes with a saved file on its own clock (its record reads is_complete False for
 # tens of seconds after the save answers, and past a full minute on a slow day - an uploaded
 # marker measured so), and both the drawing generator and a delete need it finished. Bounded:
@@ -257,14 +598,20 @@ _SETTLE_POLLS = 96
 _SETTLE_GAP_S = 5.0
 
 
-def _file_settled(folder_path, polls=_SETTLE_POLLS):
+def _file_settled(folder_path, polls=_SETTLE_POLLS, *, file_key=None, file_name=None):
     """data_get(file=<urn>) re-read until the record reads is_complete True, then judged by
     _file_record; the LAST read is what a failure prints."""
     record = _file_record(folder_path)
 
     def check(p):
         call = facade("call")        # resolved when the row runs, after tool_verify has loaded
+        expected = _RECALL.get(file_key) if file_key else None
         for i in range(polls):
+            if file_key:
+                current = p.get("file") or {}
+                _measured("publication reads the exact saved source", current,
+                          bool(expected) and current.get("id") == expected
+                          and current.get("name") == file_name)
             if (p.get("state") or {}).get("is_complete") is True or i == polls - 1:
                 break
             time.sleep(_SETTLE_GAP_S)
@@ -323,15 +670,16 @@ def _downloaded(p):
 
 def _file_deleted(p):
     """data_delete_file: deleteMe() returned true (the tool errors on false), the file's own name and
-    URN come back, and 'forced' false says no reference check was bypassed to do it."""
+    URN come back, 'forced' false says no reference check was bypassed, and the re-resolve after
+    the delete observed the lineage absent."""
     return _measured("the cloud file was deleted",
                      {"deleted": p.get("deleted"), "name": p.get("name"),
                       "document_id": p.get("document_id"),
                       "was_referenced_by": p.get("was_referenced_by"),
-                      "forced": p.get("forced")},
+                      "forced": p.get("forced"), "absence_observed": p.get("absence_observed")},
                      p.get("deleted") is True and bool(p.get("name"))
                      and str(p.get("document_id") or "").startswith("urn:")
-                     and p.get("forced") is False)
+                     and p.get("forced") is False and p.get("absence_observed") is True)
 
 
 def _folder_deleted(name):
@@ -342,9 +690,10 @@ def _folder_deleted(name):
                          {"deleted": p.get("deleted"), "name": p.get("name"),
                           "contained_files": p.get("contained_files"),
                           "contained_subfolders": p.get("contained_subfolders"),
-                          "recursive": p.get("recursive")},
+                          "recursive": p.get("recursive"),
+                          "absence_observed": p.get("absence_observed")},
                          p.get("deleted") is True and p.get("name") == name
-                         and p.get("recursive") is False
+                         and p.get("recursive") is False and p.get("absence_observed") is True
                          and p.get("contained_files") == 0
                          and p.get("contained_subfolders") == 0)
     return check
@@ -477,7 +826,7 @@ def _known_file_listing(path, file_path, recursive):
     return check
 
 
-def _known_child_excluded(p, polls=12):
+def _known_child_excluded(p, polls=_SETTLE_POLLS):
     """The parent folder's immediate listing, re-read until the moved file has left it (the cloud
     listing lags the move by seconds, measured), is empty while its known child holds the upload."""
     call = facade("call")
@@ -501,28 +850,6 @@ def _known_child_excluded(p, polls=12):
         and p.get("file_count") == 0 and rows == []
         and not p.get("truncated") and not p.get("time_truncated")
         and not p.get("folders_unreadable"))
-
-
-def _files_gone(*names):
-    """data_get(project, folder): none of the run's documents is left in the configured folder - the
-    read-back standing apart from what the delete calls reported about themselves.
-
-    This listing has THREE ways of not looking, not two: the size and time caps set 'truncated', and
-    a folder whose enumeration RAISED is counted in 'folders_unreadable' (named in
-    folders_unreadable_at) while 'truncated' stays false. A file of these names could be sitting in
-    exactly that folder, so an unreadable one is a hole in the search space and not an absence."""
-    def check(p):
-        seen = [str(r.get("name")) for r in (p.get("files") or [])]
-        left = [n for n in names if n in seen]
-        return _measured(f"the configured folder no longer holds {list(names)}, and was fully read",
-                         {"file_count": p.get("file_count"), "still_there": left,
-                          "truncated": p.get("truncated"),
-                          "time_truncated": p.get("time_truncated"),
-                          "folders_unreadable": p.get("folders_unreadable"),
-                          "folders_unreadable_at": p.get("folders_unreadable_at")},
-                         not left and not p.get("truncated") and not p.get("time_truncated")
-                         and not p.get("folders_unreadable"))
-    return check
 
 
 def _cloud_processing_read(p):
@@ -786,7 +1113,11 @@ def _milestone_restore_args(ctx, polls=_SETTLE_POLLS):
                      and matches[0].get("milestone_name") == target["milestone"])
         if confirmed:
             ctx["milestone_settled"] = dict(target)
-            return {"version_number": RESTORE_VERSION}
+            selected = [r for r in rows if r.get("version_number") == RESTORE_VERSION]
+            if len(selected) != 1 or not selected[0].get("version_id"):
+                raise AssertionError("The restore version's exact id did not read")
+            return {"version_number": RESTORE_VERSION, "version_id": selected[0]["version_id"],
+                    "expect_document": active["document_handle"]}
         if payload is not None and not identity_ok:
             break
         if i < polls - 1:
@@ -955,6 +1286,25 @@ def _opened(name, lineage):
     return check
 
 
+def _open_kept_cloud_home(p):
+    """Read back both the reopened source and the prior cloud-family home."""
+    active = p.get("active") or {}
+    rows = p.get("open_documents")
+    home = _RECALL.get("home_doc")
+    opened = _RECALL.get("source_reopened_handle")
+    complete = (isinstance(rows, list) and p.get("truncated") is False
+                and p.get("open_count") == len(rows))
+    return _measured("reopening the source preserved the prior home", p,
+                     complete and isinstance(home, str) and isinstance(opened, str)
+                     and active.get("document_id") == _RECALL.get("source_urn")
+                     and active.get("document_handle") == opened
+                     and opened != home
+                     and any(r.get("document_handle") == home and r.get("is_active") is not True
+                             for r in rows)
+                     and any(r.get("document_handle") == opened and r.get("is_active") is True
+                             for r in rows))
+
+
 def _drawing_created(p):
     """drawing_create: the CLOUD drawing file the generator wrote - its own name off the DataFile and
     a lineage URN, which is the identity it is addressed by (Fusion auto-names every drawing from its
@@ -1053,15 +1403,30 @@ def _drawing_current(p):
                      p.get("updated") is False and p.get("is_up_to_date") is True)
 
 
+def _auto_note_states_counts(p):
+    """drawing_dimension auto: the note carries the two counts read and names no owning view."""
+    before, after = p.get("dimension_count_before"), p.get("dimension_count_after")
+    note = p.get("note") or ""
+    return _measured("the auto note states the counts and claims no placement", note,
+                     type(before) is int and type(after) is int
+                     and note.startswith(f"The sheet's dimension count went from {before} to {after} "
+                                         f"({after - before} added); they may sit on views projected "
+                                         f"from view {p.get('view_index')}.")
+                     and "may stop being drawn after an auto run" in note
+                     and "Auto-dimensioned" not in note)
+
+
 def _dimensioned(p):
-    """drawing_dimension: the request result and modified flags, with no placement readback."""
-    return _measured("the auto-dimension request returned true; placement is unverified",
+    """drawing_dimension auto: the request returned true and the sheet's dimension count grew."""
+    before, after = p.get("dimension_count_before"), p.get("dimension_count_after")
+    return _measured("the auto-dimension request raised the sheet's dimension count",
                      {"dimensioned": p.get("dimensioned"),
                       "document_modified_before": p.get("document_modified_before"),
                       "document_modified": p.get("document_modified"),
                       "strategy": p.get("strategy"),
-                      "placement_verified": False},
-                     p.get("dimensioned") is True and p.get("document_modified") is True)
+                      "dimension_count_before": before, "dimension_count_after": after},
+                     p.get("dimensioned") is True and p.get("document_modified") is True
+                     and type(before) is int and type(after) is int and after > before)
 
 
 def _drawing_persistence_start(ctx):
@@ -1111,12 +1476,14 @@ def _drawing_sheet_structure(sheet):
 
 
 def _drawing_persistence_structure(p):
-    """Return retained drawing facts with only native view collection order normalized."""
+    """Return retained drawing facts, view order normalized, the placed-item counts left out."""
     values = _drawing_persistence_sheet_values(p)
     sheets = values.get("sheets")
     if not isinstance(sheets, list) or not all(isinstance(sheet, dict) for sheet in sheets):
         raise AssertionError("the retained drawing sheet collection is incomplete")
-    normalized = [{**sheet, "view_rows": _drawing_sheet_structure(sheet)["view_rows"]}
+    normalized = [{**{k: v for k, v in sheet.items()
+                      if k not in ("dimension_count", "symbol_count")},
+                   "view_rows": _drawing_sheet_structure(sheet)["view_rows"]}
                   for sheet in sheets]
     return {**values, "sheets": normalized}
 
@@ -1180,11 +1547,14 @@ def _drawing_invalid_export_failed(p, polls=_SETTLE_POLLS):
                      {"job_id": p.get("job_id") if isinstance(p, dict) else None,
                       "request_key": p.get("request_key") if isinstance(p, dict) else None,
                       "status": p.get("status") if isinstance(p, dict) else None,
+                      "note": p.get("note") if isinstance(p, dict) else None,
                       "arguments": arguments, "terminal_result": terminal,
                       "file_exists": os.path.exists(_DRAWING_INVALID_PDF)},
                      isinstance(p, dict) and p.get("job_id") == job
                      and p.get("request_key") == _DRAWING_INVALID_KEY
                      and p.get("tool") == "drawing_export" and p.get("status") == "failed"
+                     and "terminal_result" in (p.get("note") or "")
+                     and "before retrying" in (p.get("note") or "")
                      and arguments == expected and terminal.get("isError") is True
                      and "Invalid range" in str(terminal.get("message") or "")
                      and not os.path.exists(_DRAWING_INVALID_PDF))
@@ -1310,13 +1680,28 @@ def _drawing_original_settled(p, polls=_SETTLE_POLLS):
     raise AssertionError(f"Copied sheet still present after {polls} reads: {names!r}")
 
 
+def _drawing_persisted_counts(sheet):
+    """(read, expected) dimension/symbol counts: the last recalled add's, else the baseline's."""
+    base = ((_RECALL.get("drawing_persist_sheets") or {}).get("sheets") or [{}])[0]
+    want = {"dimension_count": _RECALL.get("drawing_persist_dims", base.get("dimension_count")),
+            "symbol_count": _RECALL.get("drawing_persist_symbols", base.get("symbol_count"))}
+    return {key: sheet.get(key) for key in want}, want
+
+
 def _drawing_persistence_sheets(p, compare=False):
-    """Verify the clean plate's sheet/view identities without claiming dimension placement."""
+    """The plate's sheet/view identities; compare=True checks retained readable counts."""
     _sheets_answer(p)
     rows = p.get("sheets") or []
     sheet = rows[0]
     drawing = _RECALL.get("drawing") or [None, None]
-    values = _drawing_persistence_sheet_values(p)
+    counts, want = _drawing_persisted_counts(sheet)
+    values = {**_drawing_persistence_sheet_values(p), "expected_counts": want}
+    clean = p.get("is_modified") is False
+    counts_match = (type(want["dimension_count"]) is int
+                    and counts["dimension_count"] == want["dimension_count"]
+                    and (counts["symbol_count"] is None and p.get("modified_by_read") is None
+                         if clean else type(want["symbol_count"]) is int
+                         and counts["symbol_count"] == want["symbol_count"]))
     return _measured("the plate drawing's readable sheet and view identities", values,
                      bool(drawing[0]) and p.get("drawing") == drawing[1]
                      and (p.get("active_document") or {}).get("document_id") == drawing[0]
@@ -1331,9 +1716,10 @@ def _drawing_persistence_sheets(p, compare=False):
                      and _drawing_sheet_structure(sheet)["view_rows"]
                      == {"indices": [0, 1, 2, 3],
                          "types": ["base", "projected", "projected", "projected"]}
-                     and (not compare or _drawing_persistence_structure(p)
-                          == _drawing_persistence_structure(
-                              _RECALL.get("drawing_persist_sheets") or {})))
+                     and (not compare or (_drawing_persistence_structure(p)
+                                          == _drawing_persistence_structure(
+                                              _RECALL.get("drawing_persist_sheets") or {})
+                                          and counts_match)))
 
 
 def _drawing_overall_requested(view):
@@ -1349,6 +1735,307 @@ def _drawing_overall_requested(view):
                          and p.get("view_index") == view and p.get("view_count") == 4
                          and p.get("strategy") == "overall" and p.get("datum") == "bottom_left")
     return check
+
+
+def _drawing_base_view(ctx=None):
+    """Return the original sheet's one base-view index from its captured view rows."""
+    rows = _drawing_original_sheet(ctx).get("view_rows") or []
+    bases = [row.get("index") for row in rows
+             if isinstance(row, dict) and row.get("type") == "base"]
+    if len(bases) != 1 or type(bases[0]) is not int:
+        raise AssertionError(f"the original sheet carries no single base view: {bases!r}")
+    return bases[0]
+
+
+def _xy(point):
+    """True for an [x, y] pair of real numbers."""
+    return isinstance(point, list) and len(point) == 2 and all(_num(v) for v in point)
+
+
+def _drawing_lines(curves):
+    """The line rows of a curves slice whose two ends read."""
+    return [c for c in curves or [] if isinstance(c, dict) and c.get("type") == "line"
+            and _xy(c.get("start")) and _xy(c.get("end"))]
+
+
+def _drawing_curves_args(ctx):
+    """Read the original sheet's base view with its curve points."""
+    return {"include": ["curves"], "sheet": _drawing_original_sheet(ctx)["name"],
+            "view": _drawing_base_view(ctx)}
+
+
+def _drawing_curves_listed(p):
+    """drawing_get(include=['curves'], view=N): the base view lists lines with numeric ends."""
+    rows = p.get("sheets") or []
+    sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    views = sheet.get("view_rows") or []
+    curves = (views[0].get("curves") if len(views) == 1 and isinstance(views[0], dict)
+              else None)
+    return _measured("the base view lists line curves with numeric ends in the sheet's unit",
+                     {"sheet": sheet.get("name"), "curve_unit": sheet.get("curve_unit"),
+                      "views": [(v.get("index"), v.get("type")) for v in views
+                                if isinstance(v, dict)],
+                      "curves": len(curves) if isinstance(curves, list) else curves,
+                      "lines": len(_drawing_lines(curves)),
+                      "dimension_count": sheet.get("dimension_count")},
+                     sheet.get("name") == _drawing_original_sheet()["name"]
+                     and sheet.get("curve_unit") == "mm"
+                     and len(views) == 1 and views[0].get("index") == _drawing_base_view()
+                     and views[0].get("type") == "base" and len(_drawing_lines(curves)) >= 1
+                     and type(sheet.get("dimension_count")) is int)
+
+
+def _drawing_curves_record(p):
+    """Park the base view's curves, and the sheet's count the first manual add starts from."""
+    sheet = p["sheets"][0]
+    _RECALL["drawing_persist_dims"] = sheet["dimension_count"]
+    _RECALL["drawing_persist_curves"] = sheet["view_rows"][0]["curves"]
+    return _RECALL["drawing_persist_curves"]
+
+
+def _drawing_linear_args(ctx):
+    """A linear dimension across the base view's first horizontal line, 15 below its lowest point."""
+    curves = _ctx_get(ctx, "drawing_persist_curves", "the base view's curves")
+    flat = [c for c in _drawing_lines(curves)
+            if abs(c["end"][0] - c["start"][0]) > abs(c["end"][1] - c["start"][1])]
+    if not flat:
+        raise AssertionError("the base view lists no horizontal line to dimension")
+    line = flat[0]
+    lowest = min(pt[1] for c in curves if isinstance(c, dict)
+                 for pt in (c.get("start"), c.get("end"), c.get("mid"), c.get("center"))
+                 if _xy(pt))
+    return {"action": "linear", "sheet": _drawing_original_sheet(ctx)["name"],
+            "view": _drawing_base_view(ctx), "from_point": f"{line['index']}:start",
+            "to_point": f"{line['index']}:end",
+            "placement": [(line["start"][0] + line["end"][0]) / 2, lowest - 15]}
+
+
+def _drawing_corner(ctx):
+    """(line a, line b, their shared corner, a's far-end key, b's far-end key, a's leg, b's leg)."""
+    lines = _drawing_lines(_ctx_get(ctx, "drawing_persist_curves", "the base view's curves"))
+    for a in lines:
+        for b in lines:
+            ends = [(ka, kb) for ka in ("start", "end") for kb in ("start", "end")
+                    if abs(a[ka][0] - b[kb][0]) < 1e-3 and abs(a[ka][1] - b[kb][1]) < 1e-3]
+            if a is b or len(ends) != 1:
+                continue
+            corner = a[ends[0][0]]
+            far_a = "end" if ends[0][0] == "start" else "start"
+            far_b = "end" if ends[0][1] == "start" else "start"
+            u = (a[far_a][0] - corner[0], a[far_a][1] - corner[1])
+            v = (b[far_b][0] - corner[0], b[far_b][1] - corner[1])
+            if abs(u[0] * v[1] - u[1] * v[0]) > 1e-6:
+                return a, b, corner, far_a, far_b, u, v
+    raise AssertionError("no two base-view lines meet at a corner")
+
+
+def _drawing_angular_args(ctx):
+    """An angular dimension between two base-view lines meeting at a corner, placed inside it."""
+    a, b, corner, _fa, _fb, u, v = _drawing_corner(ctx)
+    return {"action": "angular", "sheet": _drawing_original_sheet(ctx)["name"],
+            "view": _drawing_base_view(ctx), "curves": [a["index"], b["index"]],
+            "placement": [corner[0] + 0.3 * (u[0] + v[0]), corner[1] + 0.3 * (u[1] + v[1])]}
+
+
+def _drawing_aligned_args(ctx):
+    """An aligned dimension across that corner's diagonal, between the two lines' far ends."""
+    a, b, corner, far_a, far_b, u, v = _drawing_corner(ctx)
+    return {"action": "aligned", "sheet": _drawing_original_sheet(ctx)["name"],
+            "view": _drawing_base_view(ctx), "from_point": f"{a['index']}:{far_a}",
+            "to_point": f"{b['index']}:{far_b}",
+            "placement": [corner[0] + 0.75 * (u[0] + v[0]), corner[1] + 0.75 * (u[1] + v[1])]}
+
+
+def _drawing_dimension_added(action):
+    """drawing_dimension manual action: one more dimension, read as `action`, on the original."""
+    def check(p):
+        before, after = p.get("dimension_count_before"), p.get("dimension_count_after")
+        return _measured(f"one {action} dimension raised the original sheet's count by one",
+                         {key: p.get(key) for key in (
+                             "dimensioned", "action", "sheet", "view_index",
+                             "dimension_count_before", "dimension_count_after", "type_read",
+                             "placement", "placement_unit")},
+                         p.get("dimensioned") is True and p.get("action") == action
+                         and p.get("type_read") == action
+                         and p.get("sheet") == _drawing_original_sheet()["name"]
+                         and p.get("view_index") == _drawing_base_view()
+                         and type(before) is int and before == _RECALL.get("drawing_persist_dims")
+                         and after == before + 1 and p.get("placement_unit") == "mm")
+    return check
+
+
+def _drawing_dimension_count_read(p):
+    """drawing_get: the original sheet's own count equals the last manual add's after-count."""
+    rows = p.get("sheets") or []
+    sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    want = _RECALL.get("drawing_persist_dims")
+    return _measured("drawing_get reads the count the last manual add reported",
+                     {"sheet": sheet.get("name"), "dimension_count": sheet.get("dimension_count"),
+                      "expected": want},
+                     sheet.get("name") == _drawing_original_sheet()["name"]
+                     and type(want) is int and sheet.get("dimension_count") == want)
+
+
+def _toward(point, direction, distance):
+    """`point` moved `distance` sheet units along `direction`, which need not be unit length."""
+    length = (direction[0] ** 2 + direction[1] ** 2) ** 0.5
+    return [point[0] + distance * direction[0] / length, point[1] + distance * direction[1] / length]
+
+
+def _drawing_symbol_args(action):
+    """drawing_add_symbol args at the base view's corner, each leadered to a clear spot outside."""
+    def build(ctx):
+        a, b, corner, far_a, far_b, u, v = _drawing_corner(ctx)
+        mid_a = [corner[0] + u[0] / 2, corner[1] + u[1] / 2]
+        mid_b = [corner[0] + v[0] / 2, corner[1] + v[1] / 2]
+        args = {"action": action, "sheet": _drawing_original_sheet(ctx)["name"],
+                "view": _drawing_base_view(ctx)}
+        if action == "datum_identifier":
+            return {**args, "attach": f"{a['index']}:mid", "placement": _toward(mid_a, v, -35),
+                    "identifier": "A"}
+        if action == "feature_control_frame":
+            bend = _toward(mid_b, u, -20)
+            return {**args, "attach": f"{b['index']}:mid", "bends": [bend],
+                    "placement": _toward(bend, v, 10), "frames": ["parallelism|0.1|A"]}
+        if action == "edge":
+            near_a = "start" if far_a == "end" else "end"
+            return {**args, "attach": f"{a['index']}:{near_a}",
+                    "placement": _toward(_toward(corner, u, -10), v, -10),
+                    "upper_limit": "+0.5", "lower_limit": "-0.3"}
+        return {**args, "attach": f"{b['index']}:{far_b}", "second_curve": a["index"],
+                "placement": _toward(_toward(b[far_b], u, -15), v, 6), "dimension": "1:1"}
+    return build
+
+
+def _drawing_symbol_added(action):
+    """drawing_add_symbol: one more symbol on the original, its returned object read as `action`."""
+    def check(p):
+        before, after = p.get("symbol_count_before"), p.get("symbol_count_after")
+        return _measured(f"one {action} symbol raised the original sheet's symbol count by one",
+                         {key: p.get(key) for key in (
+                             "added", "action", "sheet", "view_index", "symbol_count_before",
+                             "symbol_count_after", "type_read", "attach", "placement",
+                             "placement_unit")},
+                         p.get("added") is True and p.get("action") == action
+                         and p.get("type_read") == action
+                         and p.get("sheet") == _drawing_original_sheet()["name"]
+                         and p.get("view_index") == _drawing_base_view()
+                         and type(before) is int
+                         and before == _RECALL.get("drawing_persist_symbols")
+                         and after == before + 1 and p.get("placement_unit") == "mm")
+    return check
+
+
+def _drawing_symbol_count_read(p):
+    """drawing_get: the original sheet's symbol_count equals the last symbol add's after-count."""
+    rows = p.get("sheets") or []
+    sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    want = _RECALL.get("drawing_persist_symbols")
+    return _measured("drawing_get reads the symbol count the last add reported",
+                     {"sheet": sheet.get("name"), "symbol_count": sheet.get("symbol_count"),
+                      "expected": want},
+                     sheet.get("name") == _drawing_original_sheet()["name"]
+                     and type(want) is int and sheet.get("symbol_count") == want)
+
+
+def _drawing_revision_args(action, **extra):
+    """drawing_edit_revisions args on the original sheet, action plus its own extra fields."""
+    def build(ctx):
+        return {"action": action, "sheet": _drawing_original_sheet(ctx)["name"], **extra}
+    return build
+
+
+_REVISION_UPDATE_TEXT = "SLOT WIDENED - CONFIRMED"
+
+
+def _drawing_revisions_added(p):
+    """drawing_edit_revisions(add): a fresh table with title/header, row 2 reading A, row 3 B."""
+    rows = p.get("rows") or []
+    row2 = rows[2] if len(rows) > 2 else {}
+    row3 = rows[3] if len(rows) > 3 else {}
+    return _measured("a fresh table with title/header, row 2 reading A and row 3 reading B",
+                     {"table_created": p.get("table_created"),
+                      "revision_count_after": p.get("revision_count_after"),
+                      "row2": row2, "row3": row3},
+                     p.get("table_created") is True and p.get("revision_count_after") == 4
+                     and row2.get("rev") == "A" and row3.get("rev") == "B")
+
+
+def _drawing_revision_updated(p):
+    """drawing_edit_revisions(update): row 3's description updates, its date stays unsent-unchanged."""
+    rows = p.get("rows") or []
+    row3 = rows[3] if len(rows) > 3 else {}
+    return _measured("row 3's description updated with its original date left alone",
+                     {"description": row3.get("description"), "date": row3.get("date")},
+                     row3.get("description") == _REVISION_UPDATE_TEXT
+                     and row3.get("date") == "27 Sep 2026"
+                     and row3.get("approved") == "PM" and row3.get("zone") == "C3")
+
+
+def _drawing_revision_census(p):
+    """Read complete original-sheet revision and view rows for an independent update check."""
+    sheets = p.get("sheets") or []
+    sheet = sheets[0] if len(sheets) == 1 else {}
+    rows, views = sheet.get("revisions"), sheet.get("view_rows")
+    if (sheet.get("name") != _drawing_original_sheet()["name"]
+            or not isinstance(rows, list) or len(rows) != 4 or sheet.get("revision_count") != 4
+            or any(not isinstance(row.get(field), str) for row in rows
+                   for field in ("rev", "description", "date", "approved", "zone", "sht"))
+            or any(not isinstance(row.get("visible"), bool) for row in rows)
+            or not isinstance(views, list) or len(views) != sheet.get("views")
+            or any(type(row.get("index")) is not int or not isinstance(row.get("type"), str) for row in views)
+            or sheet.get("view_rows_truncated")):
+        raise AssertionError("revision/view census was unreadable or incomplete")
+    return {"revisions": rows, "views": views}
+
+
+def _drawing_revision_read(updated=False):
+    """Compare independent rows with the unchanged census or the one requested description edit."""
+    def check(p):
+        before = _RECALL["drawing_revision_before"]
+        expected = {**before, "revisions": [dict(row) for row in before["revisions"]]}
+        if updated:
+            expected["revisions"][3]["description"] = _REVISION_UPDATE_TEXT
+        return _measured("revision update preserves sibling cells, rows and views", p.get("sheets"),
+                         _drawing_revision_census(p) == expected)
+    return check
+
+
+def _drawing_revision_hidden(p):
+    """drawing_edit_revisions(hide): the visible count drops by one and row 2 reads hidden."""
+    rows = p.get("rows") or []
+    row2 = rows[2] if len(rows) > 2 else {}
+    return _measured("row 2 hidden and the visible count dropped to 3",
+                     {"visible_count": p.get("visible_count"), "row2_visible": row2.get("visible")},
+                     p.get("visible_count") == 3 and row2.get("visible") is False)
+
+
+def _drawing_revision_shown(p):
+    """drawing_edit_revisions(show): row 2 is visible again and the visible count is restored."""
+    rows = p.get("rows") or []
+    row2 = rows[2] if len(rows) > 2 else {}
+    return _measured("row 2 shown again and the visible count restored to 4",
+                     {"visible_count": p.get("visible_count"), "row2_visible": row2.get("visible")},
+                     p.get("visible_count") == 4 and row2.get("visible") is True)
+
+
+def _drawing_revision_deleted(p):
+    """drawing_edit_revisions(delete): the census shrank to 3 rows and row 2 now reads B."""
+    rows = p.get("rows") or []
+    row2 = rows[2] if len(rows) > 2 else {}
+    return _measured("the census shrank to 3 rows and row 2 now reads B",
+                     {"revision_count_after": p.get("revision_count_after"), "row2": row2},
+                     p.get("revision_count_after") == 3 and row2.get("rev") == "B")
+
+
+def _drawing_revision_count_read(p):
+    """drawing_get(include=['revisions']): the original sheet's revision_count reads 3."""
+    rows = p.get("sheets") or []
+    sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+    return _measured("drawing_get reads the revision count the last edit left",
+                     {"sheet": sheet.get("name"), "revision_count": sheet.get("revision_count")},
+                     sheet.get("name") == _drawing_original_sheet()["name"]
+                     and sheet.get("revision_count") == 3)
 
 
 def _drawing_persistence_version_current(snap):
@@ -1413,6 +2100,18 @@ def _drawing_persistence_version(p, unchanged=False,
                      and (not unchanged or snap == _RECALL.get(saved_key)))
 
 
+def _drawing_stays_clean_after_read(p):
+    """A drawing_get on the clean reopened drawing leaves its saved state intact."""
+    sheets = p.get("sheets")
+    return _measured("the read leaves the reopened drawing unmodified",
+                     {k: p.get(k) for k in ("is_modified", "modified_by_read", "sheet_count")},
+                     p.get("is_modified") is False and p.get("modified_by_read") is None
+                     and p.get("sheet_count") == 2
+                     and isinstance(sheets, list) and len(sheets) == 2
+                     and all(isinstance(row, dict) and row.get("symbol_count") is None
+                             for row in sheets))
+
+
 def _drawing_persistence_absent(p, handle_key="drawing_persist_opened",
                                 active_key="drawing_persist_source", active_name=SOURCE_DOC):
     """Require one closed drawing handle absent from a complete document census."""
@@ -1473,6 +2172,121 @@ def _drawing_pdf_record(p):
     return {**facts, "sheet_range": p.get("sheet_range"),
             "native_identity": {"name": acted.get("name"),
                                 "document_id": acted.get("document_id")}}
+
+
+def _drawing_text_args(path):
+    """Read the original sheet's dimension text off one PDF this run exported."""
+    def args(ctx):
+        return {"include": ["text"], "pdf": path, "layer": "FD_Dimensions",
+                "sheet": _drawing_original_sheet(ctx)["name"]}
+    return args
+
+
+def _pdf_layer_strings(path, sheet_name, layer):
+    """pypdf's own read: the 1-based pages labelled with the sheet, the page's text without
+    whitespace, the strings shown inside `layer`, and the file's page count."""
+    import re
+    from pypdf import PdfReader
+    from pypdf.generic import ContentStream
+    reader = PdfReader(path)
+    pages = [i for i, label in enumerate(reader.page_labels)
+             if label == f"[{i + 1}] {sheet_name}"]
+    if len(pages) != 1:
+        return [i + 1 for i in pages], "", None, len(reader.pages)
+    page = reader.pages[pages[0]]
+    properties = page["/Resources"].get("/Properties", {})
+    open_layers, shown = [], 0
+    for args, op in ContentStream(page.get_contents(), reader).operations:
+        if op == b"BDC":
+            open_layers.append(properties[args[1]].get_object().get("/Name", "")
+                               if args[0] == "/OC" else "")
+        elif op == b"EMC" and open_layers:
+            open_layers.pop()
+        elif op == b"Tj":
+            shown += int(layer in open_layers)
+    return ([pages[0] + 1], re.sub(r"\s+", "", page.extract_text()), shown, len(reader.pages))
+
+
+def _drawing_linear_edge(ctx):
+    """The plate edge (mm) the linear dimension spans: the dimensioned line's sheet length against
+    each upright line's, matched to the 80 x 50 x 10 plate's edge ratios."""
+    curves = _ctx_get(ctx, "drawing_persist_curves", "the base view's curves")
+    lines = _drawing_lines(curves)
+    flat = [c for c in lines
+            if abs(c["end"][0] - c["start"][0]) > abs(c["end"][1] - c["start"][1])]
+    upright = [abs(c["end"][1] - c["start"][1]) for c in lines if c not in flat]
+    across = abs(flat[0]["end"][0] - flat[0]["start"][0]) if flat else None
+    edges = (80.0, 50.0, 10.0)
+    found = {a for a in edges for b in edges for tall in upright
+             if a != b and across and tall and abs(across / tall - a / b) < 0.01}
+    if len(found) != 1:
+        raise AssertionError(f"the dimensioned line matches no single plate edge: {found!r}")
+    return found.pop()
+
+
+def _drawing_text_read(path, clean=False):
+    """drawing_get(include=['text']): the original sheet's dimension text, judged against pypdf's
+    read of the same file and against the plate edge the linear dimension spans."""
+    def check(p):
+        rows = p.get("sheets") or []
+        sheet = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else {}
+        text = sheet.get("text") if isinstance(sheet.get("text"), list) else []
+        name = _drawing_original_sheet()["name"]
+        pages, page_text, shown, page_count = _pdf_layer_strings(path, name, "FD_Dimensions")
+        placement = _drawing_linear_args(_RECALL)["placement"]
+        edge = _drawing_linear_edge(_RECALL)
+        ranked = sorted((r for r in text if _xy(r.get("at"))),
+                        key=lambda r: (r["at"][0] - placement[0]) ** 2
+                        + (r["at"][1] - placement[1]) ** 2)
+        nearest = ranked[0] if ranked else {}
+        pdf = p.get("pdf") if isinstance(p.get("pdf"), dict) else {}
+        written = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(os.stat(path).st_mtime)))
+        return _measured(
+            "the PDF's dimension text reads back, the linear value being the plate edge it spans",
+            {"sheet": sheet.get("name"), "pdf_page": sheet.get("pdf_page"), "pypdf_pages": pages,
+             "pdf": pdf, "file_written": written, "pypdf_page_count": page_count,
+             "sheet_count": p.get("sheet_count"), "pdf_page_reason": sheet.get("pdf_page_reason"),
+             "rows": len(text), "pypdf_layer_strings": shown, "text_unit": sheet.get("text_unit"),
+             "linear_placement": placement, "plate_edge": edge, "nearest": nearest,
+             "is_modified": p.get("is_modified"), "modified_by_read": p.get("modified_by_read")},
+            sheet.get("name") == name and pages == [sheet.get("pdf_page")]
+            and pdf.get("file") == path and pdf.get("modified_utc") == written
+            and pdf.get("page_count") == page_count == p.get("sheet_count")
+            and "pdf_page_reason" not in sheet and sheet.get("text_unit") == "mm"
+            and "text_truncated" not in sheet and len(text) == shown and shown >= 1
+            and all(r.get("layer") == "FD_Dimensions"
+                    and "".join(str(r.get("text")).split()) in page_text for r in text)
+            and _near(_as_number(nearest.get("text")), edge, 1e-6)
+            and abs(nearest["at"][0] - placement[0]) < 25
+            and abs(nearest["at"][1] - placement[1]) < 25
+            and (not clean or (p.get("is_modified") is False
+                               and p.get("modified_by_read") is None)))
+    return check
+
+
+def _drawing_named_text_read(path):
+    """Judge named-page attribution against the independent exported PDF labels."""
+    def check(p):
+        name = _drawing_original_sheet()["name"]
+        pages, _text, _shown, count = _pdf_layer_strings(path, name, "FD_Dimensions")
+        if len(pages) == 1:
+            return _drawing_text_read(path)(p)
+        rows = p.get("sheets") or []
+        sheet = rows[0] if len(rows) == 1 else {}
+        return _measured("ambiguous PDF labels withhold page attribution and text", {"pages": pages, "reply": p},
+            pages == [1, 2] and count == p.get("sheet_count") == (p.get("pdf") or {}).get("page_count") == 2
+            and sheet.get("name") == name and sheet.get("pdf_page") is None and sheet.get("text") is None
+            and sheet.get("pdf_page_reason") == "2 pages are labelled with this sheet's name"
+            and (p.get("pdf") or {}).get("file") == path)
+    return check
+
+
+def _as_number(text):
+    """The number a dimension's text spells, or None."""
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _drawing_persistence_pdf(path):
@@ -1896,6 +2710,34 @@ def _drawing_sketch_deleted(sketch_name, sheet_name):
     return check
 
 
+def _drawing_sketch_count_values(p):
+    rows = p.get("sheets")
+    if not isinstance(rows, list):
+        return {}
+    return {row.get("name"): row.get("sketches") for row in rows if isinstance(row, dict)}
+
+
+def _drawing_sketch_census(p):
+    counts = _drawing_sketch_count_values(p)
+    rows = p.get("sheets")
+    valid = (_sheets_answer(p) and isinstance(rows, list)
+             and len(counts) == len(rows)
+             and all(isinstance(name, str) and type(value) is int and value >= 0
+                     for name, value in counts.items()))
+    return _measured("every drawing sheet reports its sketch count", {"counts": counts}, valid)
+
+
+def _drawing_sketch_census_unchanged(key):
+    def check(p):
+        counts = _drawing_sketch_count_values(p)
+        valid = (_drawing_sketch_census(p)
+                 and _RECALL.get(key) is not None
+                 and counts == _RECALL.get(key))
+        return _measured("the refused sketch request left all sheet sketch counts unchanged",
+                         {"counts": counts, "before": _RECALL.get(key)}, valid)
+    return check
+
+
 def _dxf_layer_entities(path, layer):
     """Every entity one DXF carries on `layer`, as (type, [(x, y), ...]) - None when the file will
     not read. A drawing-sketch curve exposes no geometry to the API, so this export is the only
@@ -1954,11 +2796,10 @@ def _sketch_readback(sketch_name, curves):
 
 
 def _blank_sheet_readback(p):
-    """drawing_export(dxf): the blank sheet's DXF carries neither the other sheet's sketch layer
-    nor the deleted sketch's OWN layer - the second is what proves the delete reached this export,
-    not merely the tool's own count read-back."""
+    """drawing_export(dxf): the blank sheet carries none of the three named sketch layers."""
     return (_sketch_readback(_DRAWING_SKETCH_NAME, 0)(p)
-            and _sketch_readback(_DRAWING_BLANK_SKETCH_NAME, 0)(p))
+            and _sketch_readback(_DRAWING_BLANK_SKETCH_NAME, 0)(p)
+            and _sketch_readback(_DRAWING_WORKLOAD_NAME, 0)(p))
 
 
 def _derived(source):
@@ -1975,6 +2816,292 @@ def _derived(source):
                          p.get("derived") is True and p.get("document_name") == source
                          and bool(p.get("feature_name")) and _num(p.get("source_version")))
     return check
+
+
+def _selector_design(p):
+    """Read the complete empty or single-component cloud fixture tree and healthy history."""
+    tree, tl = p.get("tree") or {}, p.get("timeline") or {}
+    nodes, rows = tree.get("children"), tl.get("timeline")
+    valid = (isinstance(nodes, list) and tree.get("child_count") == len(nodes) <= 1
+             and tree.get("truncated") is False and tree.get("children_truncated") is False
+             and not tree.get("root_bodies") and not tree.get("root_bodies_truncated")
+             and isinstance(rows, list) and tl.get("count") == tl.get("returned")
+             == tl.get("marker_position") == len(rows) and not tl.get("truncated")
+             and (tl.get("summary") or {}).get("exceptions") == []
+             and (tl.get("summary") or {}).get("states") == ({"healthy": len(rows)} if rows else {})
+             and isinstance(tl.get("groups"), dict)
+             and all(r.get("index") == i and r.get("name") and r.get("type")
+                     for i, r in enumerate(rows)))
+    for node in nodes or []:
+        valid = (valid and node.get("full_path") and node.get("handle")
+                 and node.get("child_count") == 0 and not node.get("children_truncated")
+                 and node.get("body_count") == len(node.get("bodies") or []) == 1
+                 and not node.get("bodies_truncated")
+                 and all(b.get("name") and b.get("handle") and b.get("is_solid") is True
+                         and type(b.get("visible")) is bool for b in node.get("bodies") or []))
+    if not valid:
+        raise AssertionError("Selector fixture tree/history did not read completely")
+    return {"tree": tree, "timeline": tl}
+
+
+def _selector_session(p):
+    """Read actual active identity/save flags and the complete session handle/name census."""
+    active, docs = p.get("active") or {}, p.get("open_documents")
+    fields = ("document_handle", "name", "document_id", "version_id", "version_number",
+              "is_saved", "is_modified", "has_data_file")
+    if (not isinstance(docs, list) or p.get("open_count") != len(docs)
+            or any(not d.get("document_handle") or not d.get("name") for d in docs)
+            or len({d["document_handle"] for d in docs}) != len(docs)
+            or not active.get("document_handle") or not active.get("name")
+            or any(type(active.get(k)) is not bool for k in fields[-3:])):
+        raise AssertionError("Selector fixture session did not read completely")
+    out = {"active": {k: active.get(k) for k in fields},
+           "documents": sorted((d["document_handle"], d["name"]) for d in docs)}
+    if "versions" in p:
+        v = p["versions"]
+        rows = v.get("versions")
+        if (v.get("history_readable") is not True or v.get("history_complete") is not True
+                or not isinstance(rows, list) or v.get("version_count") != len(rows)
+                or any(type(r.get("version_number")) is not int or not r.get("version_id") for r in rows)):
+            raise AssertionError("Selector fixture version history did not read completely")
+        out["versions"] = {"latest": v.get("latest_version_number"),
+                           "rows": [(r["version_number"], r["version_id"]) for r in rows]}
+    return out
+
+
+def _selector_source_sketch(p):
+    """Read the source plate's complete disclosed X-ray around a refused restore."""
+    if (p.get("sketch") != SRC_SKETCH or p.get("component") != SRC_COMP
+            or p.get("units") != "mm" or p.get("truncated") is not False
+            or not isinstance(p.get("frame"), dict) or not p.get("entities")
+            or p.get("constraint_count") != len(p.get("constraints") or [])
+            or p.get("dimension_count") != len(p.get("dimensions") or [])
+            or p.get("profile_count") != len(p.get("profiles") or [])):
+        raise AssertionError("Source plate X-ray did not read completely")
+    return {k: v for k, v in p.items() if k != "note"}
+
+
+def _selector_reads(reads, after=False):
+    """Build this cloud selector witness's capture or equality rows."""
+    return [(tool, args,
+             lambda p, key=key, read=read: _measured("selector preserves " + key, read(p),
+                 not after or read(p) == _RECALL.get(key)),
+             None if after else (key, _recall(key, read))) for tool, args, key, read in reads]
+
+
+_SELECTOR_DESIGN_ARGS = {"include": ["tree", "timeline"], "tree_bodies": True,
+                         "tree_handles": True, "max_depth": 3, "max_results": 30}
+
+
+def _restore_selector_baseline(ctx):
+    """Settle the exact milestone before capturing an unchanged-version refusal baseline."""
+    _milestone_restore_args(ctx)
+    return {"include": ["default", "versions"], "versions_max": 10}
+
+
+def _restore_conflict(ctx):
+    """Pair distinct version numbers and milestone ids for a conflicting-selector request."""
+    before = _ctx_get(ctx, "selector_restore_session", "complete restore baseline")
+    target = ctx["milestone_settled"]
+    if target["version"] == RESTORE_VERSION:
+        raise AssertionError("Conflict requires two distinct versions")
+    return {"version_number": RESTORE_VERSION, "version_id": target["version_id"],
+            "expect_document": before["active"]["document_handle"]}
+
+
+_RESTORE_SELECTOR_READS = [
+    ("doc_get", {"include": ["default", "versions"], "versions_max": 10},
+     "selector_restore_session", _selector_session),
+    ("design_get", _SELECTOR_DESIGN_ARGS, "selector_restore_design", _selector_design),
+    ("sketch_get", {"sketch_name": SRC_SKETCH, "component": SRC_COMP + ":1",
+                    "include_entities": True, "units": "mm", "max_results": 100},
+     "selector_restore_sketch", _selector_source_sketch),
+]
+
+
+def _derive_selector_rows():
+    """Refuse blank include/exclude entries, then consume a valid subset on one owned host."""
+    reads = [("doc_get", {}, "selector_derive_session", _selector_session),
+             ("design_get", _SELECTOR_DESIGN_ARGS, "selector_derive_design", _selector_design)]
+    def home(p):
+        facts = _selector_session(p)
+        _RECALL["selector_derive_home_state"] = facts
+        return _home_document(p) and facts["active"]["document_id"] == _RECALL.get("source_urn")
+
+    rows = [("doc_get", {}, home,
+             ("selector_derive_home", _recall("selector_derive_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "selector_derive_home", "source")},
+             _new_document, ("selector_derive_doc", _recall("selector_derive_doc", lambda p: p["document_handle"])))]
+    rows += _selector_reads(reads)
+    for field, value in (("source_components", [""]), ("source_bodies", [SRC_COMP + "/Body1", " "]),
+                         ("exclude_components", [SRC_COMP, ""]), ("exclude_bodies", [" "])):
+        rows.append(("doc_insert_derive", lambda c, field=field, value=value: {
+            "document_id": _ctx_get(c, "source_urn", "source"), field: value,
+            "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")},
+            _refused(field, "nonblank", "Remove that entry"), None))
+        rows += _selector_reads(reads, True)
+    # a sub-component body is refused before createInput; the component row below is its remedy
+    rows.append(("doc_insert_derive", lambda c: {
+        "document_id": _ctx_get(c, "source_urn", "source"), "source_bodies": [SRC_COMP + "/Body1"],
+        "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")},
+        _refused(f"sub-component '{SRC_COMP}'", "3 : invalid argument entities",
+                 "Nothing was derived", f"source_components=['{SRC_COMP}']"), None))
+    rows += _selector_reads(reads, True)
+
+    rows += [
+        ("doc_insert_derive", lambda c: {"document_id": _ctx_get(c, "source_urn", "source"),
+             "source_components": [SRC_COMP], "exclude_bodies": [],
+             "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")},
+         lambda p: _derived(SOURCE_DOC)(p) and p.get("scope") == SRC_COMP, None),
+        ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
+         _plate_geometry("the explicitly selected derived source", 16.0), None),
+        ("doc_activate", lambda c: {"name": _ctx_get(c, "selector_derive_home", "source"),
+             "expect_document": _ctx_get(c, "selector_derive_doc", "derive host")}, _activated(SOURCE_DOC), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "selector_derive_doc", "derive host"),
+             "save_changes": False, "expect_document": _ctx_get(c, "selector_derive_home", "source")},
+         _document_closed, None),
+        ("doc_get", {}, lambda p: _document_is(SOURCE_DOC)(p)
+         and _selector_session(p) == _RECALL.get("selector_derive_home_state"), None),
+    ]
+    return rows
+
+
+def _named_derive_tree(p, count, history):
+    """Read this root-body coupon's complete membership and healthy timeline."""
+    tree, tl = p.get("tree") or {}, p.get("timeline") or {}
+    bodies, rows = tree.get("root_bodies") or [], tl.get("timeline")
+    if (tree.get("child_count") != 0 or tree.get("children") != []
+            or tree.get("truncated") is not False or tree.get("children_truncated") is not False
+            or tree.get("root_bodies_truncated") or len(bodies) != count
+            or any(not b.get("name") or not b.get("handle") or b.get("is_solid") is not True
+                   or type(b.get("visible")) is not bool for b in bodies)
+            or not isinstance(rows, list) or len(rows) != history
+            or tl.get("count") != history or tl.get("returned") != history
+            or tl.get("marker_position") != history or tl.get("truncated")
+            or any(r.get("index") != i or not r.get("name") or not r.get("type")
+                   for i, r in enumerate(rows))
+            or (tl.get("summary") or {}).get("exceptions") != []
+            or (tl.get("summary") or {}).get("states") != ({"healthy": history} if history else {})):
+        raise AssertionError("Named derive body membership/history did not read completely")
+    return {"tree": tree, "timeline": tl}
+
+
+def _named_derive_mass(p, size, x=0):
+    """Read the selected cube or the separate source control's material and bounds."""
+    if (p.get("units") != "mm" or p.get("kind") != "body"
+            or p.get("frame") != "world axes (axis-aligned)"
+            or any(not _near(p.get(axis), size, .0001) for axis in "xyz")
+            or any(not _near((p.get("min_point") or {}).get(axis), value, .0001)
+                   for axis, value in zip("xyz", (x, 0, 0)))
+            or any(not _near((p.get("max_point") or {}).get(axis), value, .0001)
+                   for axis, value in zip("xyz", (x + size, size, size)))
+            or not _near((p.get("mass") or {}).get("volume"), size ** 3, .001)):
+        raise AssertionError("Named derive body size/material did not match its source")
+    return p
+
+
+def _named_derive_rows():
+    """Derive one named body from a separate two-body source, preserving its sibling and home."""
+    name = "SweepNamedDerive." + _STAMP
+    def home(p):
+        _RECALL["named_home_state"] = _selector_session(p)
+        return _home_document(p)
+    rows = [("doc_get", {}, home, ("named_home", _recall("named_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": c["named_home"]}, _new_document,
+             ("named_source", _recall("named_source", lambda p: p["document_handle"])))]
+    def write(tool, args, check="ok", save=None, owner="named_source"):
+        rows.append((tool, lambda c, args=args, owner=owner: {
+            **(args(c) if callable(args) else args), "expect_document": c[owner]}, check, save))
+    for key, x, size in (("selected", 0, 10), ("sibling", 30, 20)):
+        sketch = "NamedDerive_" + key
+        write("sketch_create", {"plane": "xy", "name": sketch})
+        write("sketch_add_geometry", {"sketch_name": sketch, "geometry": [
+            {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + size, "y2": size}]})
+        write("model_extrude", {"sketch_name": sketch, "distance": size, "operation": "new"},
+              lambda p: _extruded(p) and len(p.get("result_bodies") or []) == 1,
+              ("named_" + key, _recall("named_" + key, lambda p: p["result_bodies"][0])))
+    write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
+          _saved_as(name, FOLDER))
+    rows += _settled(name, "named_urn")
+    rows.append(("data_get", lambda c: {"file": c["named_urn"]},
+                 _file_settled(FOLDER, file_key="named_urn", file_name=name), None))
+    controls = [("design_get", _SELECTOR_DESIGN_ARGS, "named_tree",
+                 lambda p: _named_derive_tree(p, 2, 4)),
+                ("doc_get", {}, "named_session", _selector_session)]
+    for key, size, x in (("selected", 10, 0), ("sibling", 20, 30)):
+        controls.append(("model_inspect", lambda c, key=key: {"target": c["named_" + key],
+                         "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                         "named_mass_" + key, lambda p, size=size, x=x: _named_derive_mass(p, size, x)))
+    rows += _selector_reads(controls)
+    write("doc_new", {}, _new_document,
+          ("named_host", _recall("named_host", lambda p: p["document_handle"])))
+    rows.append(("design_get", _SELECTOR_DESIGN_ARGS, "ok",
+                 ("named_empty", _recall("named_empty", lambda p: _named_derive_tree(p, 0, 0)))))
+    write("doc_insert_derive", lambda c: {"document_id": c["named_urn"],
+          "source_bodies": [c["named_selected"], c["named_sibling"]],
+          "exclude_bodies": [c["named_sibling"]]},
+          _refused("remains", "excluded source body", "exclusion did not take",
+                   "remains in the timeline; remove it with design_delete_feature(feature='",
+                   "@0')."),
+          owner="named_host")
+    rows.append(("design_get", _SELECTOR_DESIGN_ARGS,
+                 lambda p: _named_derive_tree(p, 2, 1) and {b["name"] for b in p["tree"]["root_bodies"]}
+                 == {_RECALL["named_selected"], _RECALL["named_sibling"]},
+                 ("named_failed_feature", lambda p: p["timeline"]["timeline"][0]["name"] + "@0")))
+    for key, size, x in (("selected", 10, 0), ("sibling", 20, 30)):
+        rows.append(("model_inspect", lambda c, key=key: {"target": c["named_" + key],
+                     "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                     lambda p, size=size, x=x: p.get("kind") == "body"
+                     and _named_derive_mass(p, size, x), None))
+    write("design_delete_feature", lambda c: {"feature": c["named_failed_feature"]}, owner="named_host")
+    rows.append(("design_get", _SELECTOR_DESIGN_ARGS,
+                 lambda p: _named_derive_tree(p, 0, 0) == _RECALL["named_empty"], None))
+    write("doc_insert_derive", lambda c: {"document_id": c["named_urn"],
+          "source_bodies": [c["named_selected"]]},
+          lambda p: _derived(name)(p) and p.get("bodies_landed") == 1
+          and p.get("derived_components") == []
+          and p.get("derived_bodies") == [{"name": _RECALL["named_selected"], "is_derived": True}],
+          owner="named_host")
+    rows += [
+        ("design_get", _SELECTOR_DESIGN_ARGS,
+         lambda p: _named_derive_tree(p, 1, 1)["tree"]["root_bodies"][0]["name"]
+         == _RECALL["named_selected"], None),
+        ("model_inspect", lambda c: {"target": c["named_selected"], "include": ["default", "mass"],
+                                    "units": "mm", "accuracy": "very_high"},
+         lambda p: _named_derive_mass(p, 10) and all(p.get(k) == _RECALL["named_mass_selected"].get(k)
+             for k in ("x", "y", "z", "min_point", "max_point")), None),
+        ("doc_get", {"include": ["default", "xref_tree"]}, lambda p: (
+             p["xref_tree"].get("walk_complete") is True and p["xref_tree"].get("all_current") is True
+             and p["xref_tree"].get("reference_link_count") == 1
+             and len(p["xref_tree"].get("references") or []) == 1
+             and p["xref_tree"]["references"][0].get("kind") == "derive"
+             and p["xref_tree"]["references"][0].get("source_document") == name
+             and p["xref_tree"]["references"][0].get("out_of_date") is False), None)]
+    # whole design minus the sibling: 'excluded' must come from the landing, judged by its volume
+    write("doc_insert_derive", lambda c: {"document_id": c["named_urn"],
+          "exclude_bodies": [c["named_sibling"]]},
+          lambda p: _derived(name)(p) and _measured(
+              "the excluded root body read back from the landing",
+              {k: p.get(k) for k in ("excluded", "exclusion_unverified", "derived_components")},
+              p.get("excluded") == _RECALL["named_sibling"] and "exclusion_unverified" not in p
+              and [r.get("body_count") for r in p.get("derived_components") or []] == [1]),
+          ("named_excluding", _recall("named_excluding", lambda p: p["derived_occurrence"])),
+          owner="named_host")
+    rows.append(("model_inspect", lambda c: {"target": c["named_excluding"],
+                 "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                 lambda p: _measured("the excluding derive holds only the 10 mm cube", p,
+                     p.get("kind") == "occurrence" and all(_near(p.get(a), 10, .0001) for a in "xyz")
+                     and _near((p.get("mass") or {}).get("volume"), 1000, .001)), None))
+    write("doc_activate", lambda c: {"name": c["named_source"]}, _activated(name), owner="named_host")
+    write("doc_close", lambda c: {"name": c["named_host"], "save_changes": False}, _document_closed)
+    rows += _selector_reads(controls, True)
+    write("doc_activate", lambda c: {"name": c["named_home"]}, _activated())
+    write("doc_close", lambda c: {"name": c["named_source"], "save_changes": False},
+          _document_closed, owner="named_home")
+    write("data_delete_file", lambda c: {"document_id": c["named_urn"], "confirm_name": name},
+          _file_deleted, owner="named_home")
+    rows.append(("doc_get", {}, lambda p: _selector_session(p) == _RECALL["named_home_state"], None))
+    return rows
 
 
 # How long the source's new version is given to become visible to the CLOUD before the tip read
@@ -2030,6 +3157,268 @@ def _settled(name, key=None):
              (key, _recall(key, lambda p: p["active"]["document_id"])) if key else None)]
 
 
+def _modified_reads(name, expected):
+    """doc_get: the active document is `name` and its is_modified flag reads `expected`."""
+    def check(p):
+        active = p.get("active") or {}
+        return _measured(f"'{name}' reads is_modified {expected}",
+                         {"name": active.get("name"), "is_modified": active.get("is_modified")},
+                         active.get("name") == name and active.get("is_modified") is expected)
+    return check
+
+
+def _fit_to_modified_disclosed(p):
+    """view_screenshot fit_to on a clean document: its text block names the flag the shot set."""
+    text = str(p)
+    return _measured("the fit_to shot says it left the document modified", {"text": text[:400]},
+                     "records as a document modification" in text)
+
+
+def _fit_refusal_visibility(p):
+    """Read both placed bodies' complete visibility records without transient handles."""
+    tree = p["tree"]
+    nodes = tree.get("children") or []
+    if (tree.get("truncated") is not False or tree.get("children_truncated") is not False
+            or tree.get("child_count") != 2 or len(nodes) != 2
+            or {n.get("name") for n in nodes} != {_RECALL["fit_first"], _RECALL["fit_second"]}
+            or any(n.get("body_count") != 1 or n.get("child_count") != 0
+                   or len(n.get("bodies") or []) != 1
+                   or n["bodies"][0].get("visible") is not True
+                   or n["bodies"][0].get("is_solid") is not True for n in nodes)):
+        raise AssertionError("the two visible cube placements did not read completely")
+    return [(n["name"], n["component"], n["bodies"][0]["name"],
+             n["bodies"][0]["visible"]) for n in nodes]
+
+
+def _fit_refusal_mass(p):
+    """Require one 10 mm cube's independent material and box measurement."""
+    if (p.get("kind") != "occurrence" or p.get("units") != "mm"
+            or any(not _near(p.get(axis), 10, .0001) for axis in "xyz")
+            or not _near((p.get("mass") or {}).get("volume"), 1000, .001)):
+        raise AssertionError("the placed cube's material or box did not read")
+    return p
+
+
+def _fit_refusal_poses(p):
+    """Require both complete placed frames and healthy history before comparing them."""
+    rows = p.get("occurrences") or []
+    if (p.get("is_healthy") is not True or p.get("occurrence_count") != 2
+            or p.get("occurrences_truncated") is not False or len(rows) != 2
+            or {r.get("name") for r in rows} != {_RECALL["fit_first"], _RECALL["fit_second"]}
+            or any(not isinstance(r.get(key), list) or len(r[key]) != 3
+                   or not all(_num(v) for v in r[key]) for r in rows
+                   for key in ("origin", "x_axis", "y_axis", "z_axis", "bbox_center", "bbox_size"))
+            or {r["name"]: r["origin"] for r in rows} != {
+                _RECALL["fit_first"]: [0, 0, 0], _RECALL["fit_second"]: [30, 0, 0]}):
+        raise AssertionError("the cube placement frames did not read completely")
+    return rows
+
+
+def _fit_refusal_history(p):
+    """Read the complete four-row coupon timeline and its end marker."""
+    history = p["timeline"]
+    if (history.get("count") != 4 or history.get("returned") != 4
+            or history.get("marker_position") != 4 or history.get("truncated")
+            or len(history.get("timeline") or []) != 4):
+        raise AssertionError("the cube history did not read completely")
+    return history
+
+
+def _fit_refusal_sketches(p):
+    """Read the complete one-sketch list for the shared cube component."""
+    if p.get("sketch_count") != 1 or len(p.get("sketches") or []) != 1 or p.get("truncated"):
+        raise AssertionError("the cube sketch census did not read completely")
+    return p
+
+
+def _released_then_deleted(name, key):
+    """Delete an owned closed coupon or independently witness Fusion's retained in-use refusal."""
+    def urn(c):
+        return _ctx_get(c, key + "_urn", "the saved file")
+
+    def home(c):
+        return _ctx_get(c, key + "_home", "home")
+
+    admitted = {}
+
+    def cleanup_args(c):
+        admitted.update(urn=urn(c), home=home(c))
+        return {"file": admitted["urn"]}
+
+    def released(p):
+        call, reads = facade("call"), 1
+        for _ in range(12):
+            if (p.get("state") or {}).get("is_in_use") is False:
+                break
+            time.sleep(_SETTLE_GAP_S)
+            is_error, again = call("data_get", {"file": (p.get("file") or {}).get("id") or ""})
+            reads += 1
+            if not is_error and isinstance(again, dict):
+                p = again
+        return _measured("the closed coupon's state is readable", {"state": p.get("state"), "reads": reads},
+                         type((p.get("state") or {}).get("is_in_use")) is bool
+                         and (p.get("state") or {}).get("is_complete") is True
+                         and (p.get("file") or {}).get("name") == name
+                         and (p.get("file") or {}).get("id") == _RECALL.get(key + "_urn"))
+
+    def cleanup(p):
+        file = p.get("file") or {}
+        own_urn = admitted.get("urn")
+        _measured("cleanup targets only this run's closed coupon", file,
+                  key in ("fit", "roll") and name == {
+                      "fit": "SweepFitRefusal.", "roll": "SweepSketchRoll."}[key] + _STAMP
+                  and bool(own_urn) and bool(admitted.get("home"))
+                  and file.get("id") == own_urn and file.get("name") == name
+                  and (p.get("state") or {}).get("is_complete") is True
+                  and type((p.get("state") or {}).get("is_in_use")) is bool)
+        call = facade("call")
+        is_error, deleted = call("data_delete_file", {
+            "document_id": own_urn, "confirm_name": name,
+            "expect_document": admitted["home"]})
+        if not is_error:
+            return _measured("delete answers this exact coupon", deleted,
+                             deleted.get("document_id") == own_urn and deleted.get("name") == name
+                             and _file_deleted(deleted))
+        _measured("only the measured in-use delete refusal is admitted", deleted,
+                  (p.get("state") or {}).get("is_in_use") is True
+                  and str(deleted) == f"Delete failed for '{name}': 2 : InternalValidationError : res")
+        read_error, after = call("data_get", {"file": own_urn})
+        _measured("refused delete leaves the exact complete coupon in use", after,
+                  not read_error and isinstance(after, dict)
+                  and (after.get("file") or {}).get("id") == own_urn
+                  and (after.get("file") or {}).get("name") == name
+                  and (after.get("state") or {}).get("is_in_use") is True
+                  and (after.get("state") or {}).get("is_complete") is True)
+        qualification = (f"Delete refused by Fusion, file left in place: {name} ({own_urn}). "
+                         "Successful-delete path on this coupon was not demonstrated in this run.")
+        _RECALL.setdefault("closed_cloud_delete_limits", []).append(qualification)
+        facade("STORY")["data_delete_file"] += " " + qualification
+        facade("STORY")["data_get"] += " " + qualification
+        print(qualification, flush=True)
+        return True
+    return [
+        ("doc_open", lambda c: {"file_id": urn(c), "force_api_open": True, "expect_document": home(c)},
+         _opened(name, lambda: _RECALL.get(key + "_urn")),
+         (key + "_reopened", _recall(key + "_reopened", lambda p: p["document_handle"]))),
+        ("doc_get", {}, _modified_reads(name, False), None),
+        ("doc_activate", lambda c: {"name": home(c)}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, key + "_reopened", "the reopened file"),
+                                 "save_changes": False, "expect_document": home(c)},
+         _document_closed, None),
+        ("data_get", lambda c: {"file": urn(c)}, released, None),
+        ("data_get", cleanup_args, cleanup, None)]
+
+
+def _fit_refusal_rows():
+    """Demonstrate dirty-state disclosure on the saved shared-body refusal in the cloud act."""
+    name = "SweepFitRefusal." + _STAMP
+    path = os.path.join(EXPORT_DIR, "fit-refused-" + _STAMP + ".png")
+    rows = [("doc_get", {}, _home_document, ("fit_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "fit_home", "home")},
+             _new_document, ("fit_doc", _recall("fit_doc", lambda p: p["document_handle"])))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "fit_doc", "fit coupon")}, check, save))
+    write("model_create_component", {"name": "FitBulb", "activate": True}, _made_component,
+          ("fit_first", _recall("fit_first", lambda p: p["full_path"])))
+    write("sketch_create", {"plane": "xy", "name": "FitBulbS"})
+    write("sketch_add_geometry", {"sketch_name": "FitBulbS", "geometry": [
+          {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]})
+    write("model_extrude", {"sketch_name": "FitBulbS", "distance": 10}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("design_add_instance", lambda c: {"component": _ctx_get(c, "fit_first", "first placement"), "x": 30},
+          lambda p: bool(p.get("full_path")), ("fit_second", _recall("fit_second", lambda p: p["full_path"])))
+    write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
+          _saved_as(name, FOLDER))
+    rows += _settled(name, "fit_urn")
+    rows.append(("data_get", lambda c: {"file": c["fit_urn"]},
+                 _file_settled(FOLDER, file_key="fit_urn", file_name=name), None))
+    controls = [
+        ("workspace_orient", {}, "fit_camera", _section_camera),
+        ("design_get", {"include": ["tree"], "tree_bodies": True}, "fit_visibility", _fit_refusal_visibility),
+        ("assembly_get", {"include": ["poses"]}, "fit_poses", _fit_refusal_poses),
+        ("design_get", {"include": ["timeline"], "max_results": 1000}, "fit_history", _fit_refusal_history),
+        ("sketch_get", {"component": "FitBulb", "max_results": 1000}, "fit_sketches", _fit_refusal_sketches)]
+    for key in ("fit_first", "fit_second"):
+        controls.append(("model_inspect", lambda c, key=key: {"target": _ctx_get(c, key, "cube"),
+                         "include": ["default", "mass"], "units": "mm"}, "fit_mass_" + key, _fit_refusal_mass))
+    for tool, args, key, extract in controls:
+        rows.append((tool, args, "ok", (key, _recall(key, extract))))
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, "fit_first", "cube"),
+                 "kind": "planar_face", "nearest_to": [5, 5, 10], "max_results": 1},
+                 _face_up_at(5, 5, 10), _fg("fit_face")))
+    rows.append(("doc_get", {}, lambda p: _modified_reads(name, False)(p)
+                 and (p.get("active") or {}).get("is_saved") is True
+                 and (p.get("active") or {}).get("document_handle") == _RECALL["fit_doc"]
+                 and not os.path.exists(path), None))
+    write("view_screenshot", lambda c: {"fit_to": _ctx_get(c, "fit_face", "cube face"),
+          "view": "iso-top-right", "width": 300, "height": 240, "file_path": path},
+          _refused("another placement of the same body was hidden", "fullPathName", "Nothing was captured",
+                   "records as a document modification", "doc_get", "doc_save"))
+    rows.append(("doc_get", {}, lambda p: _modified_reads(name, True)(p)
+                 and (p.get("active") or {}).get("is_saved") is False
+                 and (p.get("active") or {}).get("document_handle") == _RECALL["fit_doc"]
+                 and not os.path.exists(path), None))
+    for tool, args, key, extract in controls:
+        rows.append((tool, args, lambda p, key=key, extract=extract: _measured(
+            "refused fit preserves " + key, extract(p), bool(_RECALL.get(key))
+            and extract(p) == _RECALL[key]), None))
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "fit_home", "home")})
+    rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "fit_doc", "fit coupon"),
+                 "save_changes": False, "expect_document": _ctx_get(c, "fit_home", "home")}, _document_closed, None))
+    rows += _released_then_deleted(name, "fit")
+    return rows
+
+
+def _sketch_roll_dirty_rows():
+    """sketch_get on a face-supported sketch of a saved, clean design discloses the dirty flag."""
+    name = "SweepSketchRoll." + _STAMP
+    rows = [("doc_get", {}, _home_document, ("roll_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "roll_home", "home")},
+             _new_document, ("roll_doc", _recall("roll_doc", lambda p: p["document_handle"])))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "roll_doc", "roll scratch")}, check, save))
+    write("sketch_create", {"plane": "xy", "name": "RollBaseS"})
+    write("sketch_add_geometry", {"sketch_name": "RollBaseS", "geometry": [
+          {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 40, "y2": 30}]})
+    write("model_extrude", {"sketch_name": "RollBaseS", "distance": 20}, _extruded)
+    rows.append(("find_geometry", {"kind": "planar_face", "nearest_to": [20, 15, 20], "max_results": 1},
+                 _face_up_at(20, 15, 20), _fg("roll_face")))
+    write("sketch_create", lambda c: {"on_face": _ctx_get(c, "roll_face", "box top face"), "name": "RollFaceS"})
+    write("sketch_add_geometry", {"sketch_name": "RollFaceS", "geometry": [
+          {"kind": "circle", "cx": 20, "cy": 15, "radius": 5}]})
+    write("sketch_create", {"plane": "xz", "name": "RollPlaneS"})
+    write("sketch_add_geometry", {"sketch_name": "RollPlaneS", "geometry": [
+          {"kind": "line", "x1": 0, "y1": -30, "x2": 40, "y2": -30}]})
+    write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
+          _saved_as(name, FOLDER))
+    rows += _settled(name, "roll_urn")
+    rows.append(("data_get", lambda c: {"file": c["roll_urn"]},
+                 _file_settled(FOLDER, file_key="roll_urn", file_name=name), None))
+    rows.append(("doc_get", {}, _modified_reads(name, False), None))
+    rows.append(("sketch_get", {"sketch_name": "RollPlaneS"},
+                 lambda p: _measured("plane read publishes no dirty flag", p.get("plane"),
+                                     p.get("plane") == "XZ" and "document_modified" not in p), None))
+    rows.append(("doc_get", {}, _modified_reads(name, False), None))
+    rows.append(("sketch_get", {"sketch_name": "RollFaceS"},
+                 lambda p: _measured("face read discloses the clean-to-modified flip",
+                                     {k: p.get(k) for k in ("plane", "on_face", "document_modified")},
+                                     p.get("plane") is None and bool((p.get("on_face") or {}).get("body"))
+                                     and p.get("document_modified") is True
+                                     and "reads modified after it" in (p.get("note") or "")
+                                     and "timeline_marker_unrestored" not in p), None))
+    rows.append(("doc_get", {}, _modified_reads(name, True), None))
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 1000},
+                 lambda p: _measured("history back at its end", p.get("timeline"),
+                                     (p.get("timeline") or {}).get("count") == 4
+                                     and (p.get("timeline") or {}).get("marker_position") == 4), None))
+    write("doc_activate", lambda c: {"name": _ctx_get(c, "roll_home", "home")})
+    rows.append(("doc_close", lambda c: {"name": _ctx_get(c, "roll_doc", "roll scratch"),
+                 "save_changes": False, "expect_document": _ctx_get(c, "roll_home", "home")}, _document_closed, None))
+    rows += _released_then_deleted(name, "roll")
+    return rows
+
 # --- ACT 11a: THE DATA MODEL -------------------------------------------------------------------
 # A folder tree of this run's own, one file uploaded into it, moved, read, downloaded - and then
 # every one of them taken back out, each delete proven by its own read-back and by the project tree
@@ -2075,6 +3464,15 @@ _CLOUD_DATA = [
      _same_root_files, None),
     ("data_get", {"project": PROJECT, "folder": RUN_PATH, "include": ["summary"]},
      _folder_summary(RUN_PATH, "run_folder_id", 1, 1), None),
+    ("sys_execute_script", _capped_name_move_probe, _capped_name_move_result, None),
+    ("sys_execute_script", _duplicate_project_probe, _duplicate_project_result, None),
+    ("doc_get", {}, _home_document, ("hub_probe_census", _recall("hub_probe_census", lambda p: p))),
+    ("sys_execute_script", _duplicate_hub_probe, _duplicate_hub_result, None),
+    ("doc_get", {}, lambda p: _measured("the open documents are unchanged by the hub probe",
+                                        p.get("active"), p == _RECALL.get("hub_probe_census")), None),
+    ("data_get", {"include": ["hubs"]}, _hubs_untouched, None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file")},
+     _file_record(RUN_PATH, complete=None), None),
     ("data_get", {"project": PROJECT, "folder": MOVED_PATH, "include": ["summary"]},
      _folder_summary(MOVED_PATH, "moved_folder_id", 0, 0), None),
     ("data_move_file", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file"),
@@ -2084,6 +3482,11 @@ _CLOUD_DATA = [
      _known_child_excluded, None),
     ("data_get", {"project": PROJECT, "folder": RUN_PATH, "recursive": True},
      _known_file_listing(RUN_PATH, MOVED_PATH, True), None),
+    ("doc_get", {}, _home_document,
+     ("cloud_boolean_census", _recall("cloud_boolean_census", lambda p: p))),
+    ("data_download_file", _download_boolean_args,
+     _refused("Invalid Boolean for 'overwrite'", "'false'", "Use true or false."), None),
+    ("doc_get", {}, lambda p: _cloud_boolean_unchanged(p, download=True), None),
     ("data_download_file", _download_refusal_args,
      _refused(DOWNLOAD_FILE, "overwrite=true"), None),
     ("data_download_file", _download_overwrite_args, _downloaded, None),
@@ -2095,9 +3498,18 @@ _CLOUD_DATA = [
     ("data_delete_folder", lambda c: _dependent_folder_args(c, "run_folder_id", RUN_FOLDER),
      _refused("is not empty", "immediate files: 0, subfolders: 1",
               "1 file(s) and 1 subfolder(s) total", "recursive_confirm"), None),
+    ("data_delete_file", {"document_id": "urn:adsk.wipprod:dm.lineage:BOOLEAN-GUARD-NONEXISTENT",
+                          "force": "false", "expect_document": "session:BOOLEAN-GUARD-MISMATCH"},
+     _refused("Invalid Boolean for 'force'", "'false'", "Use true or false."), None),
+    ("doc_get", {}, _cloud_boolean_unchanged, None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file")},
+     _file_record(MOVED_PATH, complete=None), None),
     ("data_delete_file", lambda c: {"document_id": _ctx_get(c, "cloud_file", "the uploaded file"),
                                     "confirm_name": _ctx_get(c, "cloud_file_name", "its name")},
      _file_deleted, None),
+    # the typed re-resolve, apart from the delete's own absence read
+    ("data_get", lambda c: {"file": _ctx_get(c, "cloud_file", "the uploaded file")},
+     _refused("No cloud file resolves from"), None),
     ("data_delete_folder", lambda c: _dependent_folder_args(c, "moved_folder_id", MOVED_FOLDER),
      _folder_deleted(MOVED_FOLDER), None),
     ("data_delete_folder", lambda c: _dependent_folder_args(c, "run_folder_id", RUN_FOLDER),
@@ -2118,7 +3530,7 @@ _CLOUD_DATA = [
 # true, so doc_update_xref refuses and names delete-and-re-derive as the remedy. This leg is that
 # measurement on a run - the rig wants a cloud save, a close and a reopen, none of which a
 # measure_api row can build on the main thread.
-_CLOUD_DERIVE = [
+_CLOUD_DERIVE = _derive_selector_rows() + [
     ("doc_new", {}, _new_document, None),
     ("doc_insert_derive", lambda c: {"document_id": _ctx_get(c, "source_urn", "the source")},
      _derived(SOURCE_DOC), None),
@@ -2128,7 +3540,9 @@ _CLOUD_DERIVE = [
     # the source moves past the version the derive holds. The edit ADDS a parameter rather than
     # re-valuing one: MEASURED on this rig, a source whose existing parameter changed value saves a
     # new version and the derive still reads 'already up to date', while a source that gained a new
-    # parameter reads out of date - a new version alone does not stale a derive link.
+    # parameter reads out of date - a new version alone does not stale a derive link. The same
+    # save restores the 10 mm fixture the rows after this leg read at z=10, so this reopened
+    # session uploads once here, not twice.
     ("doc_activate", lambda c: {"name": _ctx_get(c, "source_urn", "the source")},
      _activated(SOURCE_DOC), None),
     # the tip BEFORE the save, so the row below compares against a number this run read rather than
@@ -2136,15 +3550,22 @@ _CLOUD_DERIVE = [
     ("doc_get", {"include": ["default", "versions"]}, _tip_read,
      ("source_tip_before", _recall("source_tip_before",
                                    lambda p: p["versions"]["latest_version_number"]))),
+    ("param_set", {"name": "CloudPlateH", "expression": "10 mm"}, "ok", None),
     ("param_add", {"name": "CloudDeriveMark", "expression": "3 mm"}, "ok", None),
+    ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
+     _plate_geometry("the downstream reset plate", 10.0), None),
     ("data_get", _version_args("derive_save_before"),
      _version_snapshot("derive_save_before"), ("derive_save_before", _recall("derive_save_before", _version_record))),
-    ("doc_save", {"description": "the edit the derive link goes stale against"},
+    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
+     _file_settled(FOLDER), None),
+    ("doc_save", {"description": "the 10 mm fixture restored, and the edit the derive link goes stale against"},
      _versioned(SOURCE_DOC), None),
     ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
      _version_settled("derive_save_before"), None),
     _dwell(_TIP_SETTLE_S),
     ("doc_get", {"include": ["default", "versions"]}, _tip_advanced("source_tip_before"), None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
+     _file_settled(FOLDER), None),
     # CLOSED and REOPENED once the cloud is publishing the new version: the hand measurement was
     # taken on a reference the session had reloaded, not on one held open since the derive landed.
     ("doc_close", lambda c: {"name": _ctx_get(c, "derive_urn", "the derive host"),
@@ -2243,7 +3664,7 @@ _CLOUD_LINK = [
 # milestoned, rolled back, copied, and inserted as an xref into a host saved beside it. The SOURCE is
 # left standing - the drawing act generates from it and deletes it; the copy and the host are this
 # act's own and go at the end of it.
-_CLOUD_DOC = [
+_CLOUD_DOC = _fit_refusal_rows() + _sketch_roll_dirty_rows() + _named_derive_rows() + [
     ("doc_new", {}, _new_document, None),
     ("model_create_component", {"name": SRC_COMP, "activate": True}, _made_component, None),
     ("sketch_create", {"plane": "xy", "name": SRC_SKETCH}, "ok", None),
@@ -2262,7 +3683,19 @@ _CLOUD_DOC = [
     # the lineage URN read off the SESSION rather than off the save: doc_save_as waits for the urn
     # before it answers, and this read is where the tier refuses a local path in its place.
 ] + _settled(SOURCE_DOC, "source_urn") + [
+    # A fit_to shot on the just-saved source: the flag reads clear before it, the shot says its
+    # isolate set it, and doc_get reads it set; the doc_save below clears it with the 14 mm edit.
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, False), None),
+    ("view_screenshot", {"fit_to": SRC_COMP + ":1", "width": 300, "height": 240},
+     _fit_to_modified_disclosed, None),
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, True), None),
     ("param_set", {"name": "CloudPlateH", "expression": "14 mm"}, "ok", None),
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, True),
+     ("hub_edit_census", _recall("hub_edit_census", lambda p: p))),
+    ("sys_execute_script", _hub_edit_preflight_probe, _hub_edit_preflight_result, None),
+    ("doc_get", {}, lambda p: _measured("hub preflight preserved the complete session census", p,
+                                      p == _RECALL.get("hub_edit_census")), None),
+    ("data_get", {"include": ["hubs"]}, _hubs_untouched, None),
     ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
      _plate_geometry("the changed unsaved plate", 14.0), None),
     ("doc_get", {"include": ["default", "versions"]}, _tip_read,
@@ -2280,16 +3713,21 @@ _CLOUD_DOC = [
     ("doc_get", {"include": ["default", "versions"]}, _tip_advanced("plate_tip_before"), None),
     ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
      _file_settled(FOLDER), None),
-    ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
-     _activated(), None),
-    ("doc_close", lambda c: {"name": _ctx_get(c, "source_urn", "the source"),
-                              "save_changes": False}, _document_closed, None),
-    ("doc_open", lambda c: {"file_id": _ctx_get(c, "source_urn", "the source"),
-                             "force_api_open": True},
-     _opened(SOURCE_DOC, lambda: _RECALL.get("source_urn")), None),
-    _dwell(3.0),
-    ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
-     _plate_geometry("the reopened source plate", 14.0), None),
+    # view_set on the saved source: the flag reads clear, the isolate reports setting it, and the
+    # clear that follows finds it already set and claims nothing.
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, False), None),
+    ("view_set", {"action": "isolate", "target": SRC_COMP + ":1"},
+     lambda p: _measured("the isolate reports turning the saved source modified",
+                         {k: p.get(k) for k in ("document_modified", "modified_by_this_call")},
+                         p.get("document_modified") is True
+                         and p.get("modified_by_this_call") is True), None),
+    ("doc_get", {}, _modified_reads(SOURCE_DOC, True), None),
+    ("view_set", {"action": "clear_isolation"},
+     lambda p: _measured("the clear finds the source already modified",
+                         {k: p.get(k) for k in ("cleared_count", "document_modified",
+                                                "modified_by_this_call")},
+                         p.get("cleared_count") == 1 and p.get("document_modified") is True
+                         and "modified_by_this_call" not in p), None),
     ("param_set", {"name": "CloudPlateH", "expression": "16 mm"}, "ok", None),
     ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
      _plate_geometry("the milestone source plate", 16.0), None),
@@ -2297,6 +3735,13 @@ _CLOUD_DOC = [
      _milestoned("SweepCloudMilestone", SOURCE_DOC), None),
     ("doc_get", {"include": ["default", "versions"], "versions_max": 10}, _versions_read(3),
      ("milestone_history", lambda p: p)),
+    ("doc_get", _restore_selector_baseline, _versions_read(3), None),
+] + _selector_reads(_RESTORE_SELECTOR_READS) + [
+    ("doc_restore_version", _restore_conflict,
+     _refused("No version matching", "and id", "matching number/id"), None),
+] + _selector_reads(_RESTORE_SELECTOR_READS, True) + [
+    ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
+     _plate_geometry("the refused restore leaves the milestone plate", 16.0), None),
     ("doc_restore_version", _milestone_restore_args, _restored(RESTORE_VERSION),
      ("milestone_restored", lambda p: p)),
     _dwell(_TIP_SETTLE_S),
@@ -2304,9 +3749,22 @@ _CLOUD_DOC = [
      _activated(), None),
     ("doc_close", lambda c: {"name": _ctx_get(c, "source_urn", "the source"),
                               "save_changes": False}, _document_closed, None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _measured("the prior cloud home is present before reopening the source", p,
+                         _home_document(p) and p.get("truncated") is False
+                         and p.get("open_count") == len(p.get("open_documents") or [])
+                         and p.get("open_count", 0) >= 2
+                         and (p.get("active") or {}).get("document_handle")
+                         == _RECALL.get("home_doc")), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "source_urn", "the source"),
                              "force_api_open": True},
-     _opened(SOURCE_DOC, lambda: _RECALL.get("source_urn")), None),
+     lambda p: _opened(SOURCE_DOC, lambda: _RECALL.get("source_urn"))(p)
+     and _measured("doc_open reports retaining the prior cloud home", p,
+                   p.get("previous_active_closed") is False
+                   and p.get("closed_previous_active") is None),
+     ("source_reopened_handle", _recall("source_reopened_handle",
+                                        lambda p: p["document_handle"]))),
+    ("doc_get", {"max_results": 1000}, _open_kept_cloud_home, None),
     ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
      _file_settled(FOLDER), None),
     _dwell(3.0),
@@ -2364,23 +3822,6 @@ _CLOUD_DOC = [
     ("data_download_file", lambda c: {"file": _ctx_get(c, "source_urn", "the source"),
                                       "destination_folder": DOWNLOAD_DIR},
      _refused("Fusion-native", "design_export"), None),
-    # restore the 10 mm fixture before derive and link rows that read the top face at z=10.
-    ("doc_get", {"include": ["default", "versions"]}, _tip_read,
-     ("reset_tip_before", _recall("reset_tip_before",
-                                  lambda p: p["versions"]["latest_version_number"]))),
-    ("param_set", {"name": "CloudPlateH", "expression": "10 mm"}, "ok", None),
-    ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
-     _plate_geometry("the downstream reset plate", 10.0), None),
-    ("data_get", _version_args("reset_save_before"),
-     _version_snapshot("reset_save_before"), ("reset_save_before", _recall("reset_save_before", _version_record))),
-    ("doc_save", {"description": "restore the 10 mm downstream fixture"},
-     _versioned(SOURCE_DOC), None),
-    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
-     _version_settled("reset_save_before"), None),
-    _dwell(_TIP_SETTLE_S),
-    ("doc_get", {"include": ["default", "versions"]}, _tip_advanced("reset_tip_before"), None),
-    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
-     _file_settled(FOLDER), None),
 ] + _CLOUD_DERIVE + [
     # TEARDOWN of this act's own two. The host goes first: it REFERENCES the source, and a referenced
     # file's delete is refused rather than orphaning what points at it.
@@ -2447,14 +3888,102 @@ _CLOUD_DRAWING = [
      ("drawing_persist_named_before_pdf", _recall("drawing_persist_named_before_pdf",
       _drawing_pdf_record))),
     ("drawing_dimension", lambda c: _drawing_overall_args(c, 0),
-     _drawing_overall_requested(0), None),
+     lambda p: _drawing_overall_requested(0)(p) and _auto_note_states_counts(p),
+     ("drawing_persist_auto", _recall("drawing_persist_auto", lambda p: p["dimension_count_after"]))),
+    # Independent: drawing_get's own count of the original sheet equals the count the note states.
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"]},
+     lambda p: _measured("drawing_get reads the count the auto run reported",
+                         [s.get("dimension_count") for s in p.get("sheets") or []],
+                         [s.get("dimension_count") for s in p.get("sheets") or []]
+                         == [_RECALL.get("drawing_persist_auto")]), None),
+    # 'overall' on projected view 1 after the base view's overall lands NO new dimension while
+    # autoDimension answers true; the count gate refuses it - the false success DRAW-1 named.
     ("drawing_dimension", lambda c: _drawing_overall_args(c, 1),
-     _drawing_overall_requested(1), None),
+     _refused("autoDimension returned true", "no added dimension is confirmed"), None),
+    # The manual route on the plate's base view: its curve points read, an angular, a linear and
+    # an aligned dimension placed from them, each judged by the sheet's count and the kind its new
+    # item reads, then that count read back.
+    ("drawing_get", _drawing_curves_args, _drawing_curves_listed,
+     ("drawing_persist_curves", _drawing_curves_record)),
+    ("drawing_dimension", _drawing_angular_args, _drawing_dimension_added("angular"),
+     ("drawing_persist_dims", _recall("drawing_persist_dims",
+                                      lambda p: p["dimension_count_after"]))),
+    ("drawing_dimension", _drawing_linear_args, _drawing_dimension_added("linear"),
+     ("drawing_persist_dims", _recall("drawing_persist_dims",
+                                      lambda p: p["dimension_count_after"]))),
+    ("drawing_dimension", _drawing_aligned_args, _drawing_dimension_added("aligned"),
+     ("drawing_persist_dims", _recall("drawing_persist_dims",
+                                      lambda p: p["dimension_count_after"]))),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"]},
+     _drawing_dimension_count_read,
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["sheets"][0].get("symbol_count")))),
+    # GD&T on the same corner of the ISO drawing: a datum A, a parallelism frame referencing it,
+    # an edge symbol and a taper/slope between the two lines - each judged by the sheet's count
+    # and the kind its returned symbol reads - then that count read back.
+    ("drawing_add_symbol", _drawing_symbol_args("datum_identifier"),
+     _drawing_symbol_added("datum_identifier"),
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["symbol_count_after"]))),
+    ("drawing_add_symbol", _drawing_symbol_args("feature_control_frame"),
+     _drawing_symbol_added("feature_control_frame"),
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["symbol_count_after"]))),
+    ("drawing_add_symbol", _drawing_symbol_args("edge"), _drawing_symbol_added("edge"),
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["symbol_count_after"]))),
+    ("drawing_add_symbol", _drawing_symbol_args("taper_slope"),
+     _drawing_symbol_added("taper_slope"),
+     ("drawing_persist_symbols", _recall("drawing_persist_symbols",
+                                         lambda p: p["symbol_count_after"]))),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"]},
+     _drawing_symbol_count_read, None),
+    # The revision table: added fresh (no table exists yet on the original sheet), then edited
+    # through a partial update, a refused delete of the header row, hide/show and a real delete,
+    # each judged by the returned row census.
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "add", rows=["A|INITIAL RELEASE|27 Sep 2026", "B|SLOT WIDENED|27 Sep 2026|PM|C3"]),
+     _drawing_revisions_added, None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     "ok", ("drawing_revision_before", _recall("drawing_revision_before", _drawing_revision_census))),
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "update", index=3, row="B|MUST NOT LAND|27 Sep 2026||C3"),
+     _refused("Cannot clear row 3", "approved", "Nothing changed", "Omit trailing fields"), None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     _drawing_revision_read(), None),
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "update", index=3, row="B||27 Sep 2026|MUST NOT LAND|C3"),
+     _refused("Cannot clear row 3", "description", "Nothing changed", "Omit trailing fields"), None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     _drawing_revision_read(), None),
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "update", index=2, row="A|INITIAL RELEASE|27 Sep 2026||"), "ok", None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     _drawing_revision_read(), None),
+    ("drawing_edit_revisions", _drawing_revision_args(
+        "update", index=3, row=f"B|{_REVISION_UPDATE_TEXT}"),
+     _drawing_revision_updated, None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"], "include": ["revisions", "views"]},
+     _drawing_revision_read(True), None),
+    ("drawing_edit_revisions", _drawing_revision_args("delete", index=1),
+     _refused("row 1 still reads", "title/header"), None),
+    ("drawing_edit_revisions", _drawing_revision_args("hide", index=2),
+     _drawing_revision_hidden, None),
+    ("drawing_edit_revisions", _drawing_revision_args("show", index=2),
+     _drawing_revision_shown, None),
+    ("drawing_edit_revisions", _drawing_revision_args("delete", index=2),
+     _drawing_revision_deleted, None),
+    ("drawing_get", lambda c: {"sheet": _drawing_original_sheet(c)["name"],
+                               "include": ["revisions"]},
+     _drawing_revision_count_read, None),
     ("drawing_get", {"include": ["views"]}, _drawing_named_sheets, None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_NAMED_AFTER_PDF),
      _drawing_persistence_pdf(_DRAWING_NAMED_AFTER_PDF),
      ("drawing_persist_named_after_pdf", _recall("drawing_persist_named_after_pdf",
       _drawing_pdf_record))),
+    # DRAWING-PDF-COPIED-SHEET-LABEL-1: actual PDF labels decide whether named attribution is safe.
+    ("drawing_get", _drawing_text_args(_DRAWING_NAMED_AFTER_PDF),
+     _drawing_named_text_read(_DRAWING_NAMED_AFTER_PDF), None),
     ("drawing_edit_sheet", _drawing_delete_copy_args, _drawing_copy_delete_requested, None),
     ("drawing_get", {"include": ["views"]}, _drawing_original_settled, None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_BEFORE_PDF),
@@ -2481,16 +4010,26 @@ _CLOUD_DRAWING = [
      and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "drawing_persist_source", "the original source session")},
      _activated(SOURCE_DOC), None),
-    ("doc_get", {}, _drawing_persistence_absent, None),
+    ("doc_get", {"max_results": 1000}, _drawing_persistence_absent, None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_persist_saved", "the saved drawing version")["version_id"],
                             "force_api_open": True, "expect_document": c["drawing_persist_source"]},
      _drawing_persistence_reopened,
      ("drawing_persist_reopened", _recall("drawing_persist_reopened", lambda p: p["document_handle"]))),
     ("doc_get", {}, _drawing_persistence_document("drawing_persist_reopened", version=True), None),
     ("drawing_get", {"include": ["views"]}, lambda p: _drawing_persistence_sheets(p, compare=True), None),
+    ("doc_get", {}, _drawing_persistence_document("drawing_persist_reopened", version=True,
+                                                   clean=True), None),
     ("drawing_export", _drawing_persistence_pdf_args(_DRAWING_AFTER_PDF),
      _drawing_persistence_pdf(_DRAWING_AFTER_PDF),
      ("drawing_persist_after_pdf", _recall("drawing_persist_after_pdf", _drawing_pdf_record))),
+    # On the clean reopened drawing: neither the export above nor this text read may leave it
+    # modified, and the saved linear dimension still draws the plate edge.
+    ("drawing_get", _drawing_text_args(_DRAWING_AFTER_PDF),
+     _drawing_text_read(_DRAWING_AFTER_PDF, clean=True), None),
+    ("drawing_get", lambda c: {"include": ["text"], "pdf": _DRAWING_AFTER_PDF,
+                               "layer": "No Such Layer",
+                               "sheet": _drawing_original_sheet(c)["name"]},
+     _refused("No text on layer 'No Such Layer'", "FD_Dimensions"), None),
     ("data_get", lambda c: _version_args("drawing_persist_saved")(
         {"source_urn": _ctx_get(c, "drawing", "the drawing")[0]}),
      lambda p: _drawing_persistence_version(p, unchanged=True), None),
@@ -2527,15 +4066,22 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "drawing_persist_source", "the source session")},
      _activated(SOURCE_DOC), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(
+    ("doc_get", {"max_results": 1000}, lambda p: _drawing_persistence_absent(
         p, "drawing_persist_reopened", "drawing_persist_source", SOURCE_DOC), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_two_saved", "the saved drawing")["version_id"],
                             "force_api_open": True, "expect_document": c["drawing_persist_source"]},
      _drawing_persistence_reopened(
         version_key="drawing_two_saved", prior_handle_key="drawing_persist_reopened"),
      ("drawing_two_reopened", _recall("drawing_two_reopened", lambda p: p["document_handle"]))),
-    ("doc_get", {}, _drawing_persistence_document("drawing_two_reopened", version=True,
-                                   version_key="drawing_two_saved"), None),
+    ("doc_get", {}, lambda p: _drawing_persistence_document(
+        "drawing_two_reopened", version=True, version_key="drawing_two_saved")(p)
+     and _measured("the reopened drawing reads clean", (p.get("active") or {}).get("is_modified"),
+                   (p.get("active") or {}).get("is_modified") is False), None),
+    ("drawing_get", {"include": ["views", "revisions", "tables"]}, _drawing_stays_clean_after_read, None),
+    ("doc_get", {}, lambda p: _drawing_persistence_document(
+        "drawing_two_reopened", version=True, version_key="drawing_two_saved")(p)
+     and _measured("the read left the drawing unmodified", (p.get("active") or {}).get("is_modified"),
+                   (p.get("active") or {}).get("is_modified") is False), None),
     ("drawing_get", {"include": ["views"]}, lambda p: _drawing_two_sheets(p, compare=True), None),
     ("drawing_export", _drawing_deferred_export_args(
         _DRAWING_TWO_AFTER_PDF, _DRAWING_TWO_AFTER_KEY, "drawing_two_reopened"),
@@ -2567,13 +4113,15 @@ _CLOUD_DRAWING = [
                                      "drawing_two_reopened", _DRAWING_POPULATED_PDF),
      ("drawing_populated_pdf", _recall("drawing_populated_pdf", _drawing_deferred_pdf_record))),
     ("drawing_get", {"include": ["views"]}, lambda p: _drawing_populated_sheets(p, compare=True), None),
-    ("drawing_dimension", {"view": 0, "strategy": "baseline"}, _dimensioned, None),
+    # No auto-dimension on a REOPENED, populated drawing: Sheet.autoDimension holds the main
+    # thread for minutes there, past the client's read timeout; the auto route is demonstrated
+    # on the fresh drawing above.
     ("doc_close", lambda c: {"name": _ctx_get(c, "drawing_two_reopened", "the populated drawing"),
                              "expect_document": c["drawing_two_reopened"], "save_changes": False},
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "drawing_persist_source", "the source session")},
      _activated(SOURCE_DOC), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(
+    ("doc_get", {"max_results": 1000}, lambda p: _drawing_persistence_absent(
         p, "drawing_two_reopened", "drawing_persist_source", SOURCE_DOC), None),
     ("param_get", {"name": "CloudPlateH"}, _drawing_parameter(10.0), None),
     ("model_inspect", {"include": ["default", "mass"], "units": "mm"},
@@ -2601,7 +4149,8 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
      _activated(), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(p, "drawing_persist_source", "home_doc", None), None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _drawing_persistence_absent(p, "drawing_persist_source", "home_doc", None), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_two_saved", "the older drawing")["version_id"],
                             "force_api_open": True, "expect_document": c["home_doc"]},
      _drawing_persistence_reopened(
@@ -2642,7 +4191,8 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
      _activated(), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(p, "drawing_update_opened", "home_doc", None), None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _drawing_persistence_absent(p, "drawing_update_opened", "home_doc", None), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_source_changed", "the changed source")["version_id"],
                             "force_api_open": True, "expect_document": c["home_doc"]},
      _drawing_source_reopened("drawing_source_changed", "drawing_persist_source"),
@@ -2673,7 +4223,8 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
      _activated(), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(p, "drawing_source_restore_session", "home_doc", None), None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _drawing_persistence_absent(p, "drawing_source_restore_session", "home_doc", None), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_two_saved", "the older drawing")["version_id"],
                             "force_api_open": True, "expect_document": c["home_doc"]},
      _drawing_persistence_reopened(
@@ -2720,7 +4271,8 @@ _CLOUD_DRAWING = [
      lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "home_doc", "the home document")},
      _activated(), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(p, "drawing_restore_opened", "home_doc", None), None),
+    ("doc_get", {"max_results": 1000},
+     lambda p: _drawing_persistence_absent(p, "drawing_restore_opened", "home_doc", None), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "drawing_source_restored", "the restored source")["version_id"],
                             "force_api_open": True, "expect_document": c["home_doc"]},
      _drawing_source_reopened("drawing_source_restored", "drawing_source_restore_session"),
@@ -2735,7 +4287,6 @@ _CLOUD_DRAWING = [
                                    version_key="drawing_restored_saved"), None),
     ("drawing_update", lambda c: {"expect_document": _ctx_get(c, "drawing_final_opened", "the drawing")},
      _drawing_reference_current("drawing_source_restored"), None),
-    ("drawing_dimension", {"view": 0, "strategy": "baseline"}, _dimensioned, None),
     ("drawing_insert_image", {"image_path": MARKER_PNG, "x": 150, "y": 100}, _image_placed, None),
     # A coordinate that size is refused before a sketch is added: one that lands stops the whole
     # document's DXF export until it is deleted, and the read-back below is that export.
@@ -2753,6 +4304,28 @@ _CLOUD_DRAWING = [
      _sketch_readback(_DRAWING_SKETCH_NAME, 4), None),
     ("drawing_edit_sheet", {"action": "add", "new_name": "SweepCloudSheet"},
      _sheet_added("SweepCloudSheet"), None),
+    ("drawing_add_sketch", {"name": _DRAWING_WORKLOAD_NAME,
+                             "sheet_name": "SweepCloudSheet",
+                             "geometry": _DRAWING_WORKLOAD_GEOMETRY},
+     _sketch_landed(_DRAWING_WORKLOAD_NAME, 16), None),
+    ("drawing_export", {"format": "dxf", "file_path": _DRAWING_WORKLOAD_DXF},
+     _sketch_readback(_DRAWING_WORKLOAD_NAME, 16), None),
+    ("drawing_delete_sketch", {"sketch": _DRAWING_WORKLOAD_NAME,
+                                "sheet": "SweepCloudSheet"},
+     _drawing_sketch_deleted(_DRAWING_WORKLOAD_NAME, "SweepCloudSheet"), None),
+    ("drawing_get", {}, _drawing_sketch_census,
+     ("drawing_workload_counts", _recall("drawing_workload_counts",
+                                          _drawing_sketch_count_values))),
+    ("drawing_add_sketch", {"name": _DRAWING_BLANK_SKETCH_NAME + "OverLimitEntries",
+                             "sheet_name": "SweepCloudSheet",
+                             "geometry": _DRAWING_WORKLOAD_17_ENTITIES},
+     _refused("brings this request to 17 curves", "Nothing was drawn"), None),
+    ("drawing_get", {}, _drawing_sketch_census_unchanged("drawing_workload_counts"), None),
+    ("drawing_add_sketch", {"name": _DRAWING_BLANK_SKETCH_NAME + "OverLimitChain",
+                             "sheet_name": "SweepCloudSheet",
+                             "geometry": [_DRAWING_WORKLOAD_17_SEGMENT_CHAIN]},
+     _refused("brings this request to 17 curves", "Nothing was drawn"), None),
+    ("drawing_get", {}, _drawing_sketch_census_unchanged("drawing_workload_counts"), None),
     # drawing_delete_sketch: a sketch added then deleted on the blank sheet, its own count
     # read-back (before - 1) proving the delete landed - the positive case beside the 1e300
     # refusal row above, which never lets a bad coordinate reach the sheet at all.
@@ -2777,7 +4350,7 @@ _CLOUD_DRAWING = [
      _document_closed, None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "drawing_final_source", "the source session")},
      _activated(SOURCE_DOC), None),
-    ("doc_get", {}, lambda p: _drawing_persistence_absent(
+    ("doc_get", {"max_results": 1000}, lambda p: _drawing_persistence_absent(
         p, "drawing_final_opened", "drawing_final_source", SOURCE_DOC), None),
     ("doc_close", lambda c: {"name": _ctx_get(c, "drawing_final_source", "the source session"),
                              "expect_document": c["drawing_final_source"], "save_changes": False},
@@ -2795,13 +4368,202 @@ _CLOUD_DRAWING = [
      _file_settled(FOLDER), None),
     ("data_delete_file", lambda c: {"document_id": _ctx_get(c, "source_urn", "the source"),
                                     "confirm_name": SOURCE_DOC}, _file_deleted, None),
-    # the witness standing apart from the deletes' own reports: the configured folder read back.
-    # NOT recursive - the tier's documents were saved into the folder ITSELF, and a recursive walk of a
-    # working folder is a walk of every run that ever used it (measured: 49 files over 30-odd
-    # subfolders, past the 20 s budget, which would red this row for the folder's size).
-    ("data_get", {"project": PROJECT, "folder": FOLDER, "recursive": False},
-     _files_gone(SOURCE_DOC, COPY_DOC, HOST_DOC, DERIVE_DOC, LINK_DOC), None),
+    # Independent reads of exact lineages avoid the configured folder's capped listing.
+    ("data_get", lambda c: {"file": _ctx_get(c, "source_urn", "the source")},
+     _refused("No cloud file resolves from"), None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "copy_urn", "the copy")},
+     _refused("No cloud file resolves from"), None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "host_urn", "the host")},
+     _refused("No cloud file resolves from"), None),
+    ("data_get", lambda c: {"file": _ctx_get(c, "derive_urn", "the derive host")},
+     _refused("No cloud file resolves from"), None),
 ]
+
+
+def _drawing_custom_size_rows():
+    """Compare mixed standard/display-unit custom sheets against native reads and PDF pages."""
+    prefix = "drawing_custom_"
+    name = "TestDetritus-CustomSheet." + _STAMP
+    cases = (("inch", "asme", "inch"), ("mm", "asme", "mm"), ("iso_inch", "iso", "inch"))
+
+    def key(suffix):
+        return prefix + suffix
+
+    def value(ctx, suffix):
+        return _ctx_get(_RECALL, key(suffix), "the custom-sheet " + suffix)
+
+    def documents(p):
+        rows = p.get("open_documents")
+        if (not isinstance(rows, list) or p.get("truncated") is not False
+                or p.get("open_count") != len(rows)):
+            raise AssertionError("the custom-sheet document census is incomplete")
+        result = {}
+        for row in rows:
+            handle = row.get("document_handle")
+            flags = (row.get("is_saved", True), row.get("is_modified", False))
+            if (not isinstance(handle, str) or not handle.startswith("session:")
+                    or handle in result or any(type(flag) is not bool for flag in flags)):
+                raise AssertionError("the custom-sheet census has unread document identity or flags")
+            result[handle] = (row.get("name"), *flags)
+        return result
+
+    def start(ctx):
+        for values in (ctx, _RECALL):
+            for item in list(values):
+                if item.startswith(prefix):
+                    values.pop(item)
+        return {"max_results": 1000}
+
+    def baseline(p):
+        original = documents(p)
+        home = (p.get("active") or {}).get("document_handle")
+        if home not in original:
+            raise AssertionError("the custom-sheet home is absent")
+        _RECALL[key("baseline")] = original
+        _RECALL[key("home")] = home
+        return _measured("the custom-sheet opening census is complete", original, True)
+
+    def census(active, owned, dependency=False):
+        def check(p):
+            current = documents(p)
+            original = _RECALL[key("baseline")]
+            expected = set(original) | {_RECALL[key(item)] for item in owned}
+            if dependency:
+                extras = set(current) - expected
+                if len(extras) != 1:
+                    raise AssertionError("expected one source dependency; attribution is unresolved")
+                _RECALL[key("dependency")] = next(iter(extras))
+                expected |= extras
+            return _measured("custom-sheet census preserves all opening documents", current,
+                set(current) == expected
+                and all(current.get(handle) == flags for handle, flags in original.items())
+                and (p.get("active") or {}).get("document_handle") == _RECALL[key(active)])
+        return check
+
+    def sheet(standard, unit, pdf=False):
+        def check(p):
+            rows = p.get("sheets") or []
+            row = rows[0] if len(rows) == 1 else {}
+            custom = row.get("custom_size") or {}
+            expected = (20.0, 10.0) if unit == "inch" else (508.0, 254.0)
+            label = "in" if unit == "inch" else "mm"
+            return _measured("custom sheet reads 508 x 254 mm with the requested display unit", p,
+                p.get("standard") == standard and p.get("dimension_display_unit") == label
+                and p.get("coordinate_unit") == ("in" if standard == "asme" else "mm")
+                and p.get("sheet_count") == 1
+                and row.get("width_height_unit") == "mm"
+                and _near(row.get("width"), 508, 0.01) and _near(row.get("height"), 254, 0.01)
+                and custom.get("unit") == label
+                and _near(custom.get("width"), expected[0], 0.01)
+                and _near(custom.get("height"), expected[1], 0.01)
+                and (row.get("pdf_page") == 1 if pdf else
+                     row.get("views") == 4 and len(row.get("view_rows") or []) == 4))
+        return check
+
+    def physical_pdf(path):
+        def check(p):
+            from pypdf import PdfReader
+            if not _exported(p) or os.path.normpath(p.get("file_path", "")) != os.path.normpath(path):
+                return False
+            pages = PdfReader(path).pages
+            sizes = [(float(page.mediabox.width) * 25.4 / 72,
+                      float(page.mediabox.height) * 25.4 / 72) for page in pages]
+            return _measured("the custom sheet's physical PDF page is 508 x 254 mm", sizes,
+                len(sizes) == 1 and _near(sizes[0][0], 508, 0.36)
+                and _near(sizes[0][1], 254, 0.36))
+        return check
+
+    rows = [
+        ("doc_get", start, baseline, None),
+        ("doc_new", lambda c: {"expect_document": value(c, "home")}, _new_document,
+         (key("source"), _recall(key("source"), lambda p: p["document_handle"]))),
+        ("model_create_component", lambda c: {"name": "TestDetritus-Part", "activate": True,
+            "expect_document": value(c, "source")}, _made_component, None),
+        ("sketch_create", lambda c: {"plane": "xy", "name": "TestDetritus-Sketch",
+            "expect_document": value(c, "source")}, lambda p: bool(p.get("sketch_name")), None),
+        ("sketch_add_geometry", lambda c: {"sketch_name": "TestDetritus-Sketch", "units": "mm",
+            "geometry": [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 23, "y2": 11}],
+            "expect_document": value(c, "source")},
+         lambda p: p.get("drawn") == 1 and p.get("requested") == 1
+            and p.get("curve_count_after") == 4, None),
+        ("model_extrude", lambda c: {"sketch_name": "TestDetritus-Sketch", "profile_index": 0,
+            "distance": 7, "units": "mm", "operation": "new", "expect_document": value(c, "source")},
+         _extruded, None),
+        ("model_inspect", {"target": "TestDetritus-Part:1", "include": ["mass"],
+            "accuracy": "very_high", "units": "mm"},
+         lambda p: _measured("the custom drawing source has 1771 mm3 volume", p,
+            _near((p.get("mass") or {}).get("volume"), 1771, 0.01)), None),
+        ("doc_save_as", lambda c: {"name": name, "project": PROJECT, "folder": FOLDER,
+            "create_path": False, "allow_duplicate_name": False,
+            "expect_document": value(c, "source")}, _saved_as(name, FOLDER),
+         (key("source_urn"), _recall(key("source_urn"), lambda p: p["document_id"]))),
+        ("doc_get", {"max_results": 1000},
+         lambda p: census("source", ("source",))(p)
+            and _measured("the owned source reads its saved lineage", p,
+                (p.get("active") or {}).get("document_id") == _RECALL[key("source_urn")]), None),
+        ("data_get", lambda c: {"file": value(c, "source_urn")},
+         _file_settled(FOLDER, polls=4, file_key=key("source_urn"), file_name=name), None),
+        _dwell(45.0), _dwell(45.0),
+    ]
+    for tag, standard, unit in cases:
+        rows.append(("drawing_create", lambda c, s=standard, u=unit: {"standard": s, "units": u,
+            "sheet_size": "custom", "custom_width_mm": 508, "custom_height_mm": 254,
+            "auto_dimension": "off", "creation_mode": "automatic",
+            "expect_document": value(c, "source")}, _drawing_created,
+            (key(tag + "_urn"), _recall(key(tag + "_urn"), lambda p: p["file_id"]))))
+    opened = ["source"]
+    previous = "source"
+    for tag, standard, unit in cases:
+        opened.append(tag)
+        rows += [
+            ("doc_open", lambda c, t=tag, prior=previous: {"file_id": value(c, t + "_urn"),
+                "force_api_open": True, "expect_document": value(c, prior)},
+             _opened(lambda: name + " Drawing", lambda t=tag: _RECALL[key(t + "_urn")]),
+             (key(tag), _recall(key(tag), lambda p: p["document_handle"]))),
+            _dwell(4.0),
+            ("doc_get", {"max_results": 1000}, census(tag, tuple(opened),
+                dependency=tag == "inch"), None),
+        ]
+        if tag == "inch":
+            opened.append("dependency")
+            rows += [
+                ("doc_activate", lambda c: {"name": value(c, "dependency"),
+                    "expect_document": value(c, "inch")}, _activated(), None),
+                ("doc_get", {"max_results": 1000},
+                 lambda p: census("dependency", ("source", "inch", "dependency"))(p)
+                    and _measured("the dependency is the exact saved custom-sheet source", p,
+                        (p.get("active") or {}).get("document_id") == _RECALL[key("source_urn")]), None),
+                ("doc_activate", lambda c: {"name": value(c, "inch"),
+                    "expect_document": value(c, "dependency")}, _activated(), None),
+            ]
+        rows.append(("drawing_get", {"include": ["views"]}, sheet(standard, unit), None))
+        previous = tag
+    for tag, standard, unit in reversed(cases):
+        path = DOWNLOAD_DIR + "/custom_" + tag + "_" + _STAMP + ".pdf"
+        if previous != tag:
+            rows.append(("doc_activate", lambda c, t=tag, prior=previous: {"name": value(c, t),
+                "expect_document": value(c, prior)}, _activated(), None))
+        rows += [
+            ("drawing_export", lambda c, t=tag, f=path: {"format": "pdf", "file_path": f,
+                "expect_document": value(c, t)}, physical_pdf(path), None),
+            ("drawing_get", {"include": ["text"], "pdf": path}, sheet(standard, unit, pdf=True), None),
+        ]
+        previous = tag
+    rows.append(("doc_activate", lambda c: {"name": value(c, "home"),
+        "expect_document": value(c, "inch")}, _activated(), None))
+    remaining = ["source", "dependency", "inch", "mm", "iso_inch"]
+    for target in ("iso_inch", "mm", "inch", "dependency", "source"):
+        remaining.remove(target)
+        rows += [
+            ("doc_close", lambda c, t=target: {"name": value(c, t), "save_changes": False,
+                "expect_document": value(c, "home")},
+             lambda p: _document_closed(p) and p.get("close_unconfirmed") == [], None),
+            ("doc_get", {"max_results": 1000}, census("home", tuple(remaining)), None),
+        ]
+    return rows
+
+
+_CLOUD_DRAWING += _drawing_custom_size_rows()
 
 
 # --- ACT 11d: CAM TEMPLATE PERSISTENCE ---------------------------------------------------------
@@ -3025,9 +4787,12 @@ _CLOUD_CAM_PERSISTENCE = [
                                       "preset": _CAM_PERSIST_PRESET},
      _preset_applied(_CAM_PERSIST_PRESET), None),
     ("cam_generate", {"target": _CAM_PERSIST_SOURCE, "skip_valid": False},
-     _launched_on(_CAM_PERSIST_SOURCE), None),
+     _launched_on(_CAM_PERSIST_SOURCE),
+     ("cam_persist_handle", _recall("cam_persist_handle", lambda p: p["handle"]))),
     ("cam_get_status", {"target": _CAM_PERSIST_SOURCE, "include_operations": True},
      _cam_persistence_generated(_CAM_PERSIST_SOURCE), None),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "cam_persist_handle", "the source launch")},
+     lambda p: p.get("completed") is True, None),
     ("cam_inspect_toolpaths", {"scope": _CAM_PERSIST_SOURCE},
      _cam_persistence_paths(_CAM_PERSIST_SOURCE), None),
     ("cam_get", lambda c: {"include": ["tool"], "preset": _CAM_PERSIST_PRESET,
@@ -3085,6 +4850,8 @@ _CLOUD_CAM_PERSISTENCE = [
      ("cam_persist_urn", _recall("cam_persist_urn", lambda p: p["document_id"]))),
     ("doc_get", {}, _cam_persistence_document("cam_persist_owned", saved=True),
      ("cam_persist_saved", _recall("cam_persist_saved", lambda p: p["active"]))),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "cam_persist_handle", "the source launch")},
+     _refused("is released", f"cam_get_status(target='{_CAM_PERSIST_SOURCE}')"), None),
     ("data_get", lambda c: _version_args("cam_persist_version")(
         {"source_urn": _ctx_get(c, "cam_persist_urn", "the saved coupon")}),
      _cam_persistence_cloud,
@@ -3096,7 +4863,8 @@ _CLOUD_CAM_PERSISTENCE = [
      and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "cam_persist_home", "the home session")},
      _activated(), None),
-    ("doc_get", {}, _cam_persistence_document("cam_persist_home", absent_key="cam_persist_owned"), None),
+    ("doc_get", {"max_results": 1000},
+     _cam_persistence_document("cam_persist_home", absent_key="cam_persist_owned"), None),
     ("doc_open", lambda c: {"file_id": _ctx_get(c, "cam_persist_urn", "the saved coupon"),
                             "force_api_open": True, "expect_document": c["cam_persist_home"]},
      lambda p: _opened(_CAM_PERSIST_DOC, lambda: _RECALL.get("cam_persist_urn"))(p)
@@ -3127,5 +4895,2118 @@ _CLOUD_CAM_PERSISTENCE = [
      and p.get("close_unconfirmed") == [], None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "cam_persist_home", "the home session")},
      _activated(), None),
-    ("doc_get", {}, _cam_persistence_document("cam_persist_home", absent_key="cam_persist_reopened"), None),
+    ("doc_get", {"max_results": 1000},
+     _cam_persistence_document("cam_persist_home", absent_key="cam_persist_reopened"), None),
+]
+
+
+def _configure_table_state(p, active="B"):
+    """Return the saved table's complete two-row/column identities without claiming cell values."""
+    table = p.get("configurations") or {}
+    rows, columns = table.get("configurations"), table.get("columns")
+    if (not table.get("table_id") or table.get("active_configuration") not in {"Configuration 1", "B"}
+            or (active is not None and table.get("active_configuration") != active)
+            or table.get("configuration_count") != 2 or not isinstance(rows, list) or len(rows) != 2
+            or {r.get("name") for r in rows} != {"Configuration 1", "B"}
+            or any(not r.get("id") or type(r.get("is_active")) is not bool
+                   or r["is_active"] != (r.get("name") == table.get("active_configuration")) for r in rows)
+            or len({r["id"] for r in rows}) != 2 or sum(r["is_active"] for r in rows) != 1
+            or not isinstance(columns, list) or not columns or table.get("truncated")
+            or "configurations_unread" in table or "columns_unread" in table
+            or any(not c.get("id") or not c.get("title") or not c.get("type") for c in columns)
+            or len({c["id"] for c in columns}) != len(columns)):
+        return None
+    return table
+
+
+def _configure_parameters(p):
+    """Return the complete readable owned parameter row, including physical values."""
+    rows = p.get("user_parameters")
+    if (p.get("user_parameter_count") != 1 or p.get("matched") != 1 or p.get("returned") != 1
+            or not isinstance(rows, list) or len(rows) != 1 or rows[0].get("name") != "ProbeW"
+            or rows[0].get("unit") != "mm" or rows[0].get("value_units") != "mm"
+            or not isinstance(rows[0].get("expression"), str)
+            or not all(_num(rows[0].get(k)) for k in ("value", "value_internal"))):
+        return None
+    return p
+
+
+def _configure_column_rows():
+    """Build the owned saved setter-refusal scene and active-configuration geometry control."""
+    name = "SweepConfigureColumn." + _STAMP
+    def write(args):
+        return lambda c: dict(args, expect_document=_ctx_get(c, "configure_owned", "the configuration coupon"))
+    def history(p):
+        state = _retire_design_state(p)
+        tl = (state or {}).get("timeline") or {}
+        return state if (tl.get("count") == 4 and (tl.get("summary") or {}).get("states") == {"healthy": 4}
+                         and (tl.get("summary") or {}).get("exceptions") == []) else None
+    def saved(p):
+        return (_document_is(name)(p) and _home_address(p) == _RECALL.get("configure_owned")
+                and p["active"]["document_id"] == _RECALL.get("configure_urn"))
+    def material(p):
+        state = _retire_material_state(p)
+        return p if (state is not None and len(state["bodies"]) == 2
+                     and {r["body"] for r in state["bodies"]} == {"Body1", "Body2"}) else None
+    def reads(after=False):
+        def table(p):
+            state = _configure_table_state(p)
+            if not after and (state is None or len(state["columns"]) != 1
+                              or state["columns"][0]["title"] != "Part Number"):
+                return None
+            return state
+        rows = [("design_get", {"include": ["configurations"]},
+                 _retire_compare("configure_table", table, after), None),
+                ("param_get", {}, _retire_compare("configure_params", _configure_parameters, after), None),
+                ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                                "max_depth": 10, "max_results": 2000},
+                 _retire_compare("configure_history", history, after), None),
+                ("model_inspect", {"include": ["default", "mass"], "units": "mm",
+                                   "accuracy": "very_high", "per_body": True},
+                 _retire_compare("configure_material", material, after), None)]
+        for body in ("Body1", "Body2"):
+            def initial_body(p, body=body):
+                state = _symmetric_target_body_state(p)
+                size, minimum, maximum, volume = ([10, 8, 10], [0, 0, 0], [10, 8, 10], 800) if body == "Body1" else (
+                    [5, 5, 5], [40, 0, 0], [45, 5, 5], 125)
+                return state if (state is not None and state["size"] == size
+                                 and [state["bounds"]["min_point"][a] for a in "xyz"] == minimum
+                                 and [state["bounds"]["max_point"][a] for a in "xyz"] == maximum
+                                 and _near(state["material"]["volume"], volume, .001)) else None
+            rows += [("model_inspect", _lit({"target": body, "include": ["default", "mass"], "units": "mm",
+                                             "accuracy": "very_high", "per_body": True}),
+                      _retire_compare("configure_" + body, initial_body, after), None),
+                     ("find_geometry", _lit({"target": body, "units": "mm", "max_results": 100}),
+                      _retire_compare("configure_" + body + "_geometry", _edge_extent_geometry, after), None)]
+        return rows
+    def legal_table(p, first="10 mm", active="B"):
+        now = (_configure_table_state(p, active=active)
+               if isinstance(p.get("configurations"), dict) else None)
+        old = _RECALL.get("configure_table")
+        new = [c for c in (now or {}).get("columns", []) if c.get("id") not in {c["id"] for c in (old or {}).get("columns", [])}]
+        cells = (now or {}).get("cells") or []
+        column_id = _RECALL.get("configure_legal_column")
+        added_cells = [c for c in cells if c.get("column_id") == column_id]
+        expected_cells = [{"row_id": r["id"], "column_id": column_id,
+                           "kind": "ConfigurationParameterCell",
+                           "expression": "13 mm" if r["name"] == "B" else first}
+                          for r in (old or {}).get("configurations", [])]
+        changed = {"columns", "cells", "cell_count", "active_configuration", "configurations"}
+        stable_rows = lambda table: [{k: r[k] for k in ("name", "id", "index")}
+                                     for r in table["configurations"]]
+        return _measured("one fresh ProbeW column with unchanged existing table identities", now,
+                         now is not None and old is not None and len(new) == 1 and new[0]["title"] == "ProbeW"
+                         and new[0]["type"] == "ConfigurationParameterColumn"
+                         and {k: v for k, v in now.items() if k not in changed} == {k: v for k, v in old.items() if k not in changed}
+                         and stable_rows(now) == stable_rows(old)
+                         and [c for c in now["columns"] if c not in new] == old["columns"]
+                         and new[0]["id"] == column_id
+                         and now.get("cell_count") == len(cells) == old.get("cell_count", 0) + 2
+                         and added_cells == expected_cells
+                         and [c for c in cells if c.get("column_id") != column_id] == old.get("cells"))
+    def legal_params(p):
+        old = copy.deepcopy(_RECALL.get("configure_params"))
+        if old:
+            old["user_parameters"][0].update(expression="13 mm", value=13.0, value_internal=1.3)
+        return _measured("active B drives actual ProbeW to 13 mm", p,
+                         old is not None and _configure_parameters(p) == old)
+    def legal_body(p, height=13):
+        state = _symmetric_target_body_state(p)
+        return _measured(f"actual driven 10x8x{height} mm solid, {80 * height} mm3", state,
+                         state is not None and state["size"] == [10, 8, height]
+                         and state["bounds"]["min_point"] == {"x": 0, "y": 0, "z": 0}
+                         and state["bounds"]["max_point"] == {"x": 10, "y": 8, "z": height}
+                         and _near(state["material"]["volume"], 80 * height, .001))
+    rows = [("doc_get", {}, _home_document, ("configure_home", _recall("configure_home", _home_address))),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                            "max_depth": 10, "max_results": 2000},
+             _retire_compare("configure_home_design", _retire_design_state, False), None),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "configure_home", "the home session")},
+             _new_document, ("configure_owned", _recall("configure_owned", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("param_add", write({"name": "ProbeW", "expression": "10 mm", "unit": "mm"}), "ok", None)]
+    for sketch, x, width, depth, distance, body in [("ConfigureStock", 0, 10, 8, "ProbeW", "Body1"),
+                                                  ("ConfigureWitness", 40, 5, 5, "5 mm", "Body2")]:
+        rows += [("sketch_create", write({"name": sketch, "plane": "xy"}), "ok", None),
+                 ("sketch_add_geometry", write({"sketch_name": sketch, "units": "mm", "geometry": [
+                     {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + width, "y2": depth}]}), "ok", None),
+                 ("model_extrude", write({"sketch_name": sketch, "distance": distance, "units": "mm", "operation": "new"}),
+                  lambda p, body=body: _extruded(p) and p.get("result_bodies") == [body], None)]
+    rows += [("view_set", write({"action": "orient", "orientation": "iso-top-right", "fit": True}), "ok", None),
+             ("doc_save_as", write({"name": name, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+              _saved_as(name, FOLDER), ("configure_urn", _recall("configure_urn", lambda p: p["document_id"]))),
+             ("doc_get", {}, saved, None),
+             ("design_configure", write({"action": "create"}),
+              lambda p: p.get("configured") is True and p.get("created") is True
+              and p.get("configurations") == ["Configuration 1"], None),
+             ("design_configure", write({"action": "add_configuration", "name": "B"}),
+              lambda p: p.get("configuration") == "B" and p.get("active_configuration") == "B"
+              and p.get("configurations") == ["Configuration 1", "B"], None),
+             ("doc_get", {}, saved, None)] + reads()
+    for expression in ("NoSuchProbe * 2", "5 kg"):
+        rows += [("design_configure", write({"action": "add_parameter", "parameter": "ProbeW", "values": {"B": expression}}),
+                  _refused("'ProbeW' cell 'B'", repr(expression), "invalid expression", "The new column was removed.",
+                           "design_get(include=['configurations'])"), None)] + reads(True)
+    rows += [("design_configure", write({"action": "add_parameter", "parameter": "ProbeW", "values": {"B": "13 mm"}}),
+              lambda p: p.get("parameter") == "ProbeW" and p.get("set") == 1 and bool(p.get("column_id")),
+              ("configure_legal_column", _recall("configure_legal_column", lambda p: p["column_id"]))),
+             ("design_get", {"include": ["configurations"]}, legal_table, None),
+             ("param_get", {}, legal_params, None),
+             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                             "max_depth": 10, "max_results": 2000},
+              _retire_compare("configure_history", history, True), None),
+             ("model_inspect", {"include": ["default", "mass"], "units": "mm",
+                                "accuracy": "very_high", "per_body": True},
+              lambda p: material(p) is not None and _near(p["mass"]["volume"], 1165, .001)
+              and _near(p["mass"]["area"], 778, .001), None),
+             ("model_inspect", _lit({"target": "Body1", "include": ["default", "mass"], "units": "mm",
+                                     "accuracy": "very_high", "per_body": True}), legal_body, None),
+             ("model_inspect", _lit({"target": "Body2", "include": ["default", "mass"], "units": "mm",
+                                     "accuracy": "very_high", "per_body": True}),
+              _retire_compare("configure_Body2", _symmetric_target_body_state, True), None),
+             ("find_geometry", _lit({"target": "Body2", "units": "mm", "max_results": 100}),
+              _retire_compare("configure_Body2_geometry", _edge_extent_geometry, True), None),
+             ("design_configure", write({"action": "set_parameter", "parameter": "ProbeW",
+                                          "values": {"Configuration 1": "12 mm"}}),
+              lambda p: p.get("changed") is True and p.get("parameter") == "ProbeW"
+              and (p.get("configuration") or {}).get("name") == "Configuration 1"
+              and p.get("column_id") == _RECALL.get("configure_legal_column")
+              and p.get("previous_expression") == "10 mm" and p.get("expression") == "12 mm"
+              and (p.get("active_configuration") or {}).get("name") == "B", None),
+             ("design_get", {"include": ["configurations"]},
+              lambda p: legal_table(p, "12 mm"), None),
+             ("param_get", {}, legal_params, None),
+             ("model_inspect", _lit({"target": "Body1", "include": ["default", "mass"],
+                                     "units": "mm", "accuracy": "very_high", "per_body": True}),
+              legal_body, None),
+             ("design_configure", write({"action": "activate", "name": "Configuration 1"}),
+              lambda p: p.get("activated") is True and p.get("now_active") == "Configuration 1", None),
+             ("design_get", {"include": ["configurations"]},
+              lambda p: legal_table(p, "12 mm", "Configuration 1"), None),
+             ("param_get", {},
+              lambda p: _configure_parameters(p) is not None
+              and p["user_parameters"][0]["expression"] == "12 mm"
+              and _near(p["user_parameters"][0]["value"], 12, .001), None),
+             ("model_inspect", _lit({"target": "Body1", "include": ["default", "mass"],
+                                     "units": "mm", "accuracy": "very_high", "per_body": True}),
+              lambda p: legal_body(p, 12), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "configure_owned", "the coupon"), "save_changes": False,
+                                      "expect_document": c["configure_owned"]}, _document_closed, None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "configure_home", "the home session")}, _activated(), None),
+             ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("configure_home")
+              and all(r.get("document_handle") != _RECALL.get("configure_owned") for r in p["open_documents"]), None),
+             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                             "max_depth": 10, "max_results": 2000},
+              _retire_compare("configure_home_design", _retire_design_state, True), None)]
+    return rows
+
+
+_CLOUD_CONFIGURE = _configure_column_rows()
+
+
+class _WrongLineage(_Refusal):
+    """doc_open's refusal naming the recalled Save As lineage as opened, the in-place one as asked."""
+
+    def __init__(self):
+        super().__init__(())
+
+    def missing(self, text):
+        want = ("The document that opened is 'SweepLineageSaveAs.",
+                f"({_RECALL.get('lin_saveas')}), not the file asked for ({_RECALL.get('lin_inplace')})",
+                "It stays open; discard it with doc_close(name='session:", "save_changes=false)")
+        return [f for f in want if f not in text]
+
+
+def _lineage_open_rows():
+    """A configured design saved in place then saved as: opening the in-place lineage is refused."""
+    first, second = "SweepLineageInPlace." + _STAMP, "SweepLineageSaveAs." + _STAMP
+    home = lambda c: _ctx_get(c, "lin_home", "the home session")
+
+    def write(args):
+        return lambda c: dict(args, expect_document=_ctx_get(c, "lin_owned", "the lineage coupon"))
+
+    def moved(p):
+        change = p.get("lineage_changed") or {}
+        status = p.get("version_status") or ""
+        return _measured("the in-place save moved the lineage", change,
+                         p.get("saved") is True and change.get("from") == _RECALL.get("lin_first")
+                         and bool(change.get("to")) and change.get("to") != change.get("from")
+                         and p.get("version_confirmed") is False and p.get("cloud_tip_advanced") is False
+                         and (f"read {change.get('from')} before the save and {change.get('to')} "
+                              "after it") in status
+                         and f"data_get(file='{change.get('to')}')" in status
+                         and (p.get("version_after") is None) == ("did not return a file" in status)
+                         and "advance cannot be inferred across them" in p.get("note", "")
+                         and "configuration backing file" in p.get("note", ""))
+
+    def source_state(p):
+        file, location = p.get("file") or {}, p.get("location") or {}
+        project, folder = location.get("project") or {}, location.get("parent_folder") or {}
+        return {"id": file.get("id"), "name": file.get("name"),
+                "project_id": project.get("id"), "project": project.get("name"),
+                "folder": folder.get("name")}
+
+    def source_args(key, name=None):
+        def args(c):
+            urn = _ctx_get(c, key, "the configured source")
+            missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
+                       "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+            for i in range(min(_SETTLE_POLLS, 16)):
+                failed, last = facade("call")("data_get", {"file": urn})
+                if failed:
+                    _measured("only this source's pending resolution is retried", last, last == missing)
+                else:
+                    _measured("the source read resolves the exact retained lineage", last,
+                              (last.get("file") or {}).get("id") == urn)
+                    state = source_state(last)
+                    if (all(isinstance(v, str) and v for v in state.values())
+                            and (name is None or state["name"] == name)):
+                        return {"file": urn}
+                if i + 1 < min(_SETTLE_POLLS, 16):
+                    time.sleep(_SETTLE_GAP_S)
+            raise AssertionError(f"Configured source {urn!r} did not read within the bound: {last!r}")
+        return args
+
+    def prior_backing(p):
+        state = source_state(p)
+        return _measured("independent pre-conversion lineage is now a backing file", state,
+                         state["id"] == _RECALL.get("lin_first")
+                         and state["name"] == "Configuration 1"
+                         and state["project"] == "System Project - CONFIG"
+                         and all(isinstance(v, str) and v for v in state.values()))
+
+    def source_before(p):
+        state = source_state(p)
+        valid = (state["id"] == _RECALL.get("lin_inplace")
+                 and all(isinstance(v, str) and v for v in state.values())
+                 and state["name"] == first and state["project"] == PROJECT)
+        return _measured("configured source before Save As", state, valid)
+
+    def saved_copy(p):
+        source = p.get("source_file") or {}
+        before, after = source.get("before") or {}, source.get("after") or {}
+        baseline = _RECALL.get("lin_source_before")
+        valid = (baseline is not None and all(before.get(k) == v for k, v in baseline.items())
+                 and source.get("changed") is True and after.get("id") == baseline["id"]
+                 and after.get("name") == "Configuration 1"
+                 and after.get("project") == "System Project - CONFIG"
+                 and "does not confirm publication" in p.get("note", "")
+                 and "the same URN again" in p.get("note", "")
+                 and p.get("document_id") not in (_RECALL.get("lin_first"), _RECALL.get("lin_inplace")))
+        _measured("Save As discloses relocated source and publication limitation", source, valid)
+        _RECALL["lin_source_claim"] = source
+        return _saved_as(second, FOLDER)(p)
+
+    def source_after(p):
+        now = source_state(p)
+        claimed = (_RECALL.get("lin_source_claim") or {}).get("after") or {}
+        before = _RECALL.get("lin_source_before") or {}
+        return _measured("independent read confirms source relocation", now,
+                         all(isinstance(v, str) and v and claimed.get(k) == v for k, v in now.items())
+                         and now["id"] == before.get("id")
+                         and now["name"] != before.get("name")
+                         and now["project_id"] != before.get("project_id"))
+
+    def reopened(p):
+        active = p.get("active") or {}
+        return _measured("the open document reads the Save As lineage", active,
+                         active.get("name") == second
+                         and active.get("document_id") == _RECALL.get("lin_saveas"))
+
+    def flagged(p):
+        return _measured("the Save As design opened as itself, flag read off it", p,
+                         p.get("opened") is True and p.get("is_configured_design") is True
+                         and p.get("document_id") == p.get("resolved_id") == _RECALL.get("lin_saveas")
+                         and "configured_design_note" in p
+                         and "was not compared" not in (p.get("note") or ""))
+
+    def published(p):
+        urn = _RECALL.get("lin_saveas")
+        active = p.get("active") or {}
+        _measured("the publishing document is this Save As coupon", active,
+                  bool(urn) and active.get("document_id") == urn and active.get("name") == second)
+        missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
+                   "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+        for i in range(_SETTLE_POLLS):
+            is_error, last = facade("call")("data_get", {"file": urn})
+            if is_error:
+                _measured("only the exact pending lineage resolution is retried", last, last == missing)
+            else:
+                file = last.get("file") or {}
+                _measured("publication reads only this Save As coupon", file,
+                          file.get("id") == urn and file.get("name") == second)
+                if (last.get("state") or {}).get("is_complete") is True:
+                    return _file_record(FOLDER)(last)
+            if i + 1 < _SETTLE_POLLS:
+                time.sleep(_SETTLE_GAP_S)
+        return _measured("the Save As coupon finished publishing within the bound", last, False)
+
+    return [
+        ("doc_get", {}, _home_document, ("lin_home", _recall("lin_home", _home_address))),
+        ("doc_new", lambda c: {"expect_document": home(c)}, _new_document,
+         ("lin_owned", _recall("lin_owned", lambda p: p["document_handle"]))),
+        ("design_activate_component", {"occurrence": "root"}, "ok", None),
+        ("param_add", write({"name": "ProbeW", "expression": "10 mm", "unit": "mm"}), "ok", None),
+        ("sketch_create", write({"name": "LineageStock", "plane": "xy"}), "ok", None),
+        ("sketch_add_geometry", write({"sketch_name": "LineageStock", "units": "mm", "geometry": [
+            {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 8}]}), "ok", None),
+        ("model_extrude", write({"sketch_name": "LineageStock", "distance": "ProbeW", "units": "mm",
+                                 "operation": "new"}), _extruded, None),
+        ("doc_save_as", write({"name": first, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+         _saved_as(first, FOLDER), ("lin_first", _recall("lin_first", lambda p: p["document_id"]))),
+        ("design_configure", write({"action": "create"}),
+         lambda p: (p.get("configured") is True and p.get("created") is True
+                    and "lineage_changed" in p.get("note", "")), None),
+        ("design_configure", write({"action": "add_configuration", "name": "B"}),
+         lambda p: p.get("active_configuration") == "B", None),
+        ("design_configure", write({"action": "add_parameter", "parameter": "ProbeW",
+                                    "values": {"B": "13 mm"}}),
+         lambda p: p.get("parameter") == "ProbeW" and p.get("set") == 1, None),
+        ("doc_save", write({"description": "lineage replay: in-place save after conversion"}), moved,
+         ("lin_inplace", _recall("lin_inplace", lambda p: p["lineage_changed"]["to"]))),
+        ("data_get", source_args("lin_first", name="Configuration 1"), prior_backing, None),
+        ("data_get", source_args("lin_inplace"), source_before,
+         ("lin_source_before", _recall("lin_source_before", source_state))),
+        ("doc_save_as", write({"name": second, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+         saved_copy,
+         ("lin_saveas", _recall("lin_saveas", lambda p: p["document_id"]))),
+        ("data_get", lambda c: {"file": _ctx_get(c, "lin_inplace", "in-place lineage")},
+         source_after, None),
+        ("doc_get", {}, published, None),
+        ("doc_activate", lambda c: {"name": home(c)}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "lin_owned", "the coupon"), "save_changes": False,
+                                 "expect_document": home(c)}, _document_closed, None),
+        ("doc_open", lambda c: {"file_id": _ctx_get(c, "lin_saveas", "the Save As lineage"),
+                                "force_api_open": True, "expect_document": home(c)},
+         flagged, ("lin_reopened", _recall("lin_reopened", lambda p: p["document_handle"]))),
+        # Opening its backing item keeps the already-open owning design active.
+        ("doc_open", lambda c: {"file_id": _ctx_get(c, "lin_inplace", "the in-place lineage"),
+                                "force_api_open": True,
+                                "expect_document": _ctx_get(c, "lin_reopened", "the reopened design")},
+         _WrongLineage(), None),
+        ("doc_get", {}, reopened, None),
+        ("design_get", {"include": ["configurations"]},
+         lambda p: _measured("the open design carries the two-row ProbeW configuration table",
+                             _configure_table_state(p, None),
+                             _configure_table_state(p, None) is not None
+                             and any(c.get("title") == "ProbeW" for c in p["configurations"]["columns"])), None),
+        ("doc_activate", lambda c: {"name": home(c)}, _activated(), None),
+        ("doc_close", lambda c: {"name": _ctx_get(c, "lin_reopened", "the reopened design"),
+                                 "save_changes": False, "expect_document": home(c)},
+         _document_closed, None),
+        ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("lin_home"), None),
+    ]
+
+
+_CLOUD_CONFIGURE += _lineage_open_rows()
+
+
+
+def _parameter_table(p):
+    """Return param_get's complete user and model rows by name, or None when the read is partial."""
+    users, models = p.get("user_parameters"), p.get("model_parameters")
+    if (not isinstance(users, list) or not isinstance(models, list)
+            or p.get("user_parameter_count") != len(users) or p.get("matched") != len(users)
+            or p.get("returned") != len(users) or p.get("model_parameter_count") != len(models)
+            or any(k in p for k in ("truncated", "walk_truncated", "generated_skipped",
+                                    "model_walk_truncated", "model_parameters_truncated"))):
+        return None
+    out = {"user": {}, "model": {}}
+    for group, rows in (("user", users), ("model", models)):
+        for row in rows:
+            name = row.get("name")
+            if (not isinstance(name, str) or not name or name in out["user"] or name in out["model"]
+                    or not isinstance(row.get("expression"), str)
+                    or not all(_num(row.get(k)) for k in ("value", "value_internal"))):
+                return None
+            out[group][name] = {k: row.get(k) for k in (
+                "expression", "unit", "value", "value_internal", "value_units", "favorite",
+                "comment", "owner", "owner_type", "role")}
+    return out
+
+
+def _parameter_table_renamed(table, previous, name, expressions):
+    """Return `table` with one row re-keyed and the named dependents' expressions replaced."""
+    out = copy.deepcopy(table)
+    for rows in out.values():
+        if previous in rows:
+            rows[name] = rows.pop(previous)
+        for dependent, expression in expressions.items():
+            if dependent in rows:
+                rows[dependent]["expression"] = expression
+    return out
+
+
+def _param_rename_rows():
+    """Rename a user and a model parameter on an owned scratch, refuse four renames, rename back."""
+    first, twice, span, depth = "RenameLen", "RenameTwice", "RenameSpan", "RenameDepth"
+    listing = {"include_model_parameters": True}
+    body_read = {"include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True}
+
+    def write(args):
+        return lambda c: dict(args(c) if callable(args) else args,
+                              expect_document=_ctx_get(c, "rename_owned", "the rename scratch"))
+
+    def driven(n):
+        return _RECALL.get("rename_d%d" % n)
+
+    def expected(stage):
+        table = _RECALL.get("rename_table")
+        if table is not None and stage >= 1:
+            table = _parameter_table_renamed(table, first, span, {twice: span + " * 2", driven(1): span})
+        if table is not None and stage >= 2:
+            table = _parameter_table_renamed(table, driven(1), depth, {driven(2): depth + " + 1 mm"})
+        return table
+
+    def table_is(stage):
+        def check(p):
+            want, now = expected(stage), _parameter_table(p)
+            return _measured(f"the parameter table after {stage} rename(s)", {"want": want, "now": now},
+                             now is not None and want is not None and now == want)
+        return check
+
+    def one_model_row(expression, reply_key):
+        def pick(p):
+            hits = [r.get("name") for r in p.get("model_parameters") or []
+                    if r.get("expression") == expression()]
+            _measured(f"one model parameter reads '{expression()}', the one the extrude reported",
+                      {"hits": hits, "reported": _RECALL.get(reply_key)},
+                      len(hits) == 1 and hits[0] == _RECALL.get(reply_key))
+            return hits[0]
+        return pick
+
+    def baseline(p):
+        table = _parameter_table(p)
+        users, models = (table or {}).get("user", {}), (table or {}).get("model", {})
+        stacked_on = [n for n, r in models.items() if r["expression"] == f"{driven(1)} + 1 mm"]
+        valid = (table is not None and set(users) == {first, twice}
+                 and users[first]["expression"] == "10 mm" and _near(users[first]["value"], 10, 1e-9)
+                 and users[twice]["expression"] == first + " * 2" and _near(users[twice]["value"], 20, 1e-9)
+                 and [n for n, r in models.items() if r["expression"] == first] == [driven(1)]
+                 and _near(models[driven(1)]["value"], 10, 1e-9)
+                 and stacked_on == [_RECALL.get("rename_d2_reply")]
+                 and _near(models[stacked_on[0]]["value"], 11, 1e-9))
+        if valid:
+            _RECALL["rename_table"] = table
+        return _measured("the two user parameters and both extrude depths before any rename", table, valid)
+
+    def renamed(previous, name, closure, follows):
+        def check(p):
+            was, now = previous(), name()
+            rows = p.get("dependents")
+            by_name = {r.get("name"): r for r in rows} if isinstance(rows, list) else {}
+            judged = {n: (r.get("expression_before"), r.get("expression_after"), r["follows"])
+                      for n, r in by_name.items() if "follows" in r}
+            before, after = p.get("before") or {}, p.get("after") or {}
+            return _measured(
+                f"'{was}' renamed '{now}' and the expressions naming it follow",
+                {k: p.get(k) for k in ("renamed", "previous_name", "requested_name", "name", "dependents",
+                                       "dependents_total", "unread", "note")},
+                p.get("renamed") is True and p.get("previous_name") == was
+                and p.get("requested_name") == now and p.get("name") == now
+                and before.get("name") == was and after.get("name") == now
+                and {k: v for k, v in before.items() if k != "name"}
+                == {k: v for k, v in after.items() if k != "name"}
+                and isinstance(rows, list) and len(by_name) == len(rows)
+                and p.get("dependents_total") == len(rows) and p.get("dependents_truncated") is False
+                and set(by_name) == set(closure())
+                and judged == {n: (b, a, True) for n, (b, a) in follows().items()}
+                and all(r.get("expression_before") == r.get("expression_after")
+                        for n, r in by_name.items() if n not in judged)
+                and not any(k in p for k in ("unread", "new_timeline_errors", "new_timeline_warnings", "note")))
+        return check
+
+    def history(p):
+        state = _retire_design_state(p)
+        tl = (state or {}).get("timeline") or {}
+        return state if (tl.get("count") == 4 and (tl.get("summary") or {}).get("states") == {"healthy": 4}
+                         and (tl.get("summary") or {}).get("exceptions") == []) else None
+
+    def geometry(after):
+        rows = [("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                                "max_depth": 10, "max_results": 2000},
+                 _retire_compare("rename_history", history, after), None)]
+        for body, size, volume in (("Body1", [10, 8, 10], 800), ("Body2", [5, 5, 11], 275)):
+            def solid(p, size=size, volume=volume):
+                state = _symmetric_target_body_state(p)
+                return state if (state is not None and state["size"] == size
+                                 and _near(state["material"]["volume"], volume, .001)) else None
+            rows.append(("model_inspect", _lit(dict(body_read, target=body)),
+                         _retire_compare("rename_" + body, solid, after), None))
+        return rows
+
+    def refusal(args, *fragments):
+        return [("param_set", write(args), _refused(*fragments), None),
+                ("param_get", listing, table_is(2), None)]
+
+    everything = lambda: {twice, driven(1), driven(2)}
+    stacked = lambda: {driven(2)}
+    rows = [("doc_get", {}, _home_document, ("rename_home", _recall("rename_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "rename_home", "the home session")},
+             _new_document, ("rename_owned", _recall("rename_owned", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("param_add", write({"name": first, "expression": "10 mm", "unit": "mm"}),
+             lambda p: p.get("added") is True and p["parameter"]["name"] == first, None),
+            ("param_add", write({"name": twice, "expression": first + " * 2", "unit": "mm"}),
+             lambda p: p.get("added") is True and p["parameter"]["name"] == twice, None),
+            ("sketch_create", write({"name": "RenameBase", "plane": "xy"}), "ok", None),
+            ("sketch_add_geometry", write({"sketch_name": "RenameBase", "units": "mm", "geometry": [
+                {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 8}]}), "ok", None),
+            ("model_extrude", write({"sketch_name": "RenameBase", "distance": first, "units": "mm",
+                                     "operation": "new"}),
+             lambda p: _extruded(p) and p.get("result_bodies") == ["Body1"],
+             ("rename_d1_reply", _recall("rename_d1_reply", lambda p: p["model_parameters"]["distance"]))),
+            ("param_get", listing, lambda p: bool(one_model_row(lambda: first, "rename_d1_reply")(p)),
+             ("rename_d1", _recall("rename_d1", one_model_row(lambda: first, "rename_d1_reply")))),
+            ("sketch_create", write({"name": "RenameStack", "plane": "xy"}), "ok", None),
+            ("sketch_add_geometry", write({"sketch_name": "RenameStack", "units": "mm", "geometry": [
+                {"kind": "rectangle", "x1": 40, "y1": 0, "x2": 45, "y2": 5}]}), "ok", None),
+            ("model_extrude", write(lambda c: {
+                "sketch_name": "RenameStack", "units": "mm", "operation": "new",
+                "distance": _ctx_get(c, "rename_d1", "the first extrude's depth parameter") + " + 1 mm"}),
+             lambda p: _extruded(p) and p.get("result_bodies") == ["Body2"],
+             ("rename_d2_reply", _recall("rename_d2_reply", lambda p: p["model_parameters"]["distance"]))),
+            ("param_get", listing, baseline,
+             ("rename_d2", _recall("rename_d2", one_model_row(lambda: f"{driven(1)} + 1 mm",
+                                                              "rename_d2_reply"))))]
+    rows += geometry(False)
+    rows += [("param_set", write({"name": first, "new_name": span}),
+              renamed(lambda: first, lambda: span, everything,
+                      lambda: {twice: (first + " * 2", span + " * 2"), driven(1): (first, span)}), None),
+             ("param_get", listing, table_is(1), None),
+             ("param_get", {"name": first}, _refused(f"Parameter not found: '{first}'."), None)]
+    rows += geometry(True)
+    rows += [("param_set", write(lambda c: {"name": _ctx_get(c, "rename_d1", "the depth parameter"),
+                                            "new_name": depth}),
+              renamed(lambda: driven(1), lambda: depth, stacked,
+                      lambda: {driven(2): (f"{driven(1)} + 1 mm", depth + " + 1 mm")}), None),
+             ("param_get", listing, table_is(2), None)]
+    rows += geometry(True)
+    rows += refusal({"name": twice, "new_name": span},
+                    f"Cannot rename '{twice}' to '{span}': another parameter already has that name.",
+                    "Nothing was renamed")
+    rows += refusal({"name": span, "new_name": span},
+                    f"'{span}' is already this parameter's name; nothing was renamed.")
+    rows += refusal({"name": span, "new_name": "RenameOther", "expression": "12 mm"},
+                    f"new_name 'RenameOther' only renames '{span}'; it was sent with expression '12 mm'.",
+                    "Rename in one call and set the value in another.")
+    # A name holding a space passes the tool's own checks; Fusion keeps the name and raises nothing.
+    rows += refusal({"name": twice, "new_name": "bad name"},
+                    f"Assigning 'bad name' raised no error but the parameter is still named '{twice}'",
+                    "the rename did not take")
+    rows += geometry(True)
+    rows += [("param_set", write(lambda c: {"name": depth,
+                                            "new_name": _ctx_get(c, "rename_d1", "the depth parameter")}),
+              renamed(lambda: depth, lambda: driven(1), stacked,
+                      lambda: {driven(2): (depth + " + 1 mm", f"{driven(1)} + 1 mm")}), None),
+             ("param_get", listing, table_is(1), None),
+             ("param_set", write({"name": span, "new_name": first}),
+              renamed(lambda: span, lambda: first, everything,
+                      lambda: {twice: (span + " * 2", first + " * 2"), driven(1): (span, first)}), None),
+             ("param_get", listing, table_is(0), None)]
+    rows += geometry(True)
+    rows += [("doc_close", lambda c: {"name": _ctx_get(c, "rename_owned", "the rename scratch"),
+                                      "save_changes": False, "expect_document": c["rename_owned"]},
+              _document_closed, None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "rename_home", "the home session")},
+              _activated(), None),
+             ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("rename_home")
+              and all(r.get("document_handle") != _RECALL.get("rename_owned") for r in p["open_documents"]),
+              None)]
+    return rows
+
+
+def _derive_favorite_rows():
+    """Derive one body with and without favourite parameters from a retained saved source."""
+    name = "SweepDeriveFavorite." + _STAMP
+    favorite, plain = "DeriveFav", "DerivePlain"
+    listing = {"include_model_parameters": True}
+    rows = [("doc_get", {}, _home_document, ("fav_home", _recall("fav_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": c["fav_home"]}, _new_document,
+             ("fav_source", _recall("fav_source", lambda p: p["document_handle"])))]
+
+    def write(tool, args, check="ok", save=None, owner="fav_source"):
+        rows.append((tool, lambda c, args=args, owner=owner: {
+            **(args(c) if callable(args) else args), "expect_document": c[owner]}, check, save))
+
+    def source_table(p):
+        table = _parameter_table(p)
+        users = (table or {}).get("user", {})
+        return table if (table is not None and set(users) == {favorite, plain}
+                         and users[favorite]["expression"] == "7 mm" and users[favorite]["favorite"] is True
+                         and users[plain]["expression"] == "3 mm" and users[plain]["favorite"] is False) else None
+
+    def cube(p):
+        return _measured("the derived 10 mm cube", {k: p.get(k) for k in ("kind", "x", "y", "z", "mass")},
+                         p.get("kind") == "design" and all(_near(p.get(a), 10, .0001) for a in "xyz")
+                         and _near((p.get("mass") or {}).get("volume"), 1000, .001))
+
+    def empty(p):
+        return _measured("the host lists no parameter", _parameter_table(p),
+                         _parameter_table(p) == {"user": {}, "model": {}})
+
+    def landed(count):
+        def check(p):
+            names = p.get("imported_parameter_names")
+            return _derived(name)(p) and _measured(
+                f"{count} favourite parameter(s) imported by the derive",
+                {k: p.get(k) for k in ("bodies_landed", "parameters_imported", "imported_parameter_names",
+                                       "model_parameters_added", "parameter_warning", "parameters_unread")},
+                p.get("bodies_landed") == 1 and p.get("parameters_imported") == count
+                and isinstance(names, list) and len(names) == count
+                and all(isinstance(n, str) and n for n in names)
+                and (count == 0 or p.get("model_parameters_added") == 1)
+                and not any(k in p for k in ("parameter_warning", "parameters_unread", "user_parameters_added",
+                                             "imported_parameter_names_truncated")))
+        return check
+
+    def derived_row(p):
+        table = _parameter_table(p)
+        row = ((table or {}).get("model") or {}).get(_RECALL.get("fav_derived"))
+        return _measured("the host lists exactly the imported name, at the source's 7 mm", table,
+                         table is not None and table["user"] == {} and len(table["model"]) == 1
+                         and row is not None and row["expression"] == "7 mm" and row["unit"] == "mm"
+                         and _near(row["value"], 7, 1e-9))
+
+    def derive(flag):
+        return lambda c: {"document_id": c["fav_urn"], "source_bodies": [c["fav_body"]],
+                          "include_parameters": False, "include_favorite_parameters": flag}
+
+    write("param_add", {"name": favorite, "expression": "7 mm", "unit": "mm", "favorite": True},
+          lambda p: p.get("added") is True and p.get("favorite") is True)
+    write("param_add", {"name": plain, "expression": "3 mm", "unit": "mm"},
+          lambda p: p.get("added") is True and p.get("favorite") is False)
+    write("sketch_create", {"plane": "xy", "name": "DeriveFavSource"})
+    write("sketch_add_geometry", {"sketch_name": "DeriveFavSource", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]})
+    write("model_extrude", {"sketch_name": "DeriveFavSource", "distance": 10, "operation": "new"},
+          lambda p: _extruded(p) and len(p.get("result_bodies") or []) == 1,
+          ("fav_body", _recall("fav_body", lambda p: p["result_bodies"][0])))
+    write("doc_save_as", {"name": name, "project": PROJECT, "folder": FOLDER},
+          _saved_as(name, FOLDER))
+    rows += _settled(name, "fav_urn")
+    rows.append(("data_get", lambda c: {"file": c["fav_urn"]},
+                 _file_settled(FOLDER, file_key="fav_urn", file_name=name), None))
+    rows.append(("param_get", listing, _retire_compare("fav_source_table", source_table, False), None))
+    for host, flag, owner in (("fav_host_on", True, "fav_source"), ("fav_host_off", False, "fav_host_on")):
+        write("doc_new", {}, _new_document, (host, _recall(host, lambda p: p["document_handle"])), owner=owner)
+        rows.append(("param_get", listing, empty, None))
+        write("doc_insert_derive", derive(flag), landed(1 if flag else 0),
+              ("fav_derived", _recall("fav_derived", lambda p: p["imported_parameter_names"][0]))
+              if flag else None, owner=host)
+        rows += [("param_get", listing, derived_row if flag else empty, None),
+                 ("model_inspect", {"include": ["default", "mass"], "units": "mm"}, cube, None)]
+    write("doc_activate", lambda c: {"name": c["fav_source"]}, _activated(name), owner="fav_host_off")
+    write("doc_close", lambda c: {"name": c["fav_host_off"], "save_changes": False}, _document_closed)
+    write("doc_close", lambda c: {"name": c["fav_host_on"], "save_changes": False}, _document_closed)
+    rows.append(("param_get", listing, _retire_compare("fav_source_table", source_table, True), None))
+    write("doc_activate", lambda c: {"name": c["fav_home"]}, _activated())
+    write("doc_close", lambda c: {"name": c["fav_source"], "save_changes": False},
+          _document_closed, owner="fav_home")
+    rows.append(("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("fav_home")
+                 and not {r.get("document_handle") for r in p["open_documents"]}
+                 & {_RECALL.get(k) for k in ("fav_source", "fav_host_on", "fav_host_off")}, None))
+    return rows
+
+
+_CLOUD_DOC += _param_rename_rows() + _derive_favorite_rows()
+
+
+# design_get's configuration cell table: its list key, then each cell's row id, column id and
+# expression keys.
+_CELL_TABLE_KEYS = ("cells", "row_id", "column_id", "expression")
+
+
+def _configure_row_rows():
+    """Copy and delete configuration rows on a retained saved coupon, re-reading the table each time."""
+    name = "SweepConfigureRows." + _STAMP
+    top, parameter = "Configuration 1", "ProbeW"
+    body_read = {"include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True}
+
+    def write(args):
+        return lambda c: dict(args, expect_document=_ctx_get(c, "configure_owned", "the configuration coupon"))
+
+    def saved(p):
+        return (_document_is(name)(p) and _home_address(p) == _RECALL.get("configure_owned")
+                and p["active"]["document_id"] == _RECALL.get("configure_urn"))
+
+    def table(p):
+        read = p.get("configurations") or {}
+        rows, columns = read.get("configurations"), read.get("columns")
+        if (not read.get("table_id") or read.get("truncated") or not isinstance(rows, list) or not rows
+                or read.get("configuration_count") != len(rows)
+                or any(not isinstance(r.get("name"), str) or not r.get("id") or not _num(r.get("index"))
+                       or type(r.get("is_active")) is not bool for r in rows)
+                or len({r["id"] for r in rows}) != len(rows)
+                or [r["name"] for r in rows if r["is_active"]] != [read.get("active_configuration")]
+                or any(a["index"] >= b["index"] for a, b in zip(rows, rows[1:]))
+                or not isinstance(columns, list)
+                or [(c.get("title"), c.get("type")) for c in columns]
+                != [("Part Number", "ConfigurationPropertyColumn"), (parameter, "ConfigurationParameterColumn")]
+                or not all(c.get("id") for c in columns) or columns[0]["id"] == columns[1]["id"]
+                or columns[1]["id"] != _RECALL.get("cfgrow_column")):
+            return None
+        return {"table_id": read["table_id"], "columns": columns,
+                "rows": [{k: r[k] for k in ("name", "id", "index", "is_active")} for r in rows]}
+
+    def identities(state):
+        return [(r["name"], r["id"]) for r in state["rows"]]
+
+    def active(state):
+        return next({"name": r["name"], "id": r["id"]} for r in state["rows"] if r["is_active"])
+
+    def position(state, row):
+        return [r["name"] for r in state["rows"]].index(row)
+
+    def table_reads(label, want):
+        def check(p):
+            now, before = table(p), _RECALL.get("cfgrow_table")
+            valid = (now is not None and before is not None and now["table_id"] == before["table_id"]
+                     and now["columns"] == before["columns"] and bool(want(before, now)))
+            if valid:
+                _RECALL["cfgrow_table"] = now
+            return _measured(label, {"before": before, "now": now}, valid)
+        return ("design_get", {"include": ["configurations"]}, check, None)
+
+    def base(p):
+        state = table(p)
+        valid = (state is not None and [r["name"] for r in state["rows"]] == [top, "B", "C"]
+                 and [r["id"] for r in state["rows"][1:]] == [_RECALL.get("cfgrow_B"), _RECALL.get("cfgrow_C")]
+                 and active(state)["name"] == "C")
+        if valid:
+            _RECALL["cfgrow_table"] = state
+        return _measured("three rows in the order added, the last added active", state, valid)
+
+    def same_rows(active_row):
+        return lambda before, now: now["rows"] == [dict(r, is_active=r["name"] == active_row)
+                                                   for r in before["rows"]]
+
+    def unchanged(before, now):
+        return now == before
+
+    def inserted_after_b(adopted, key):
+        def want(before, now):
+            at = position(before, "B") + 1
+            new = _RECALL.get(key) or {}
+            return (identities(now) == identities(before)[:at] + [(adopted, new.get("id"))] + identities(before)[at:]
+                    and now["rows"][:at] == before["rows"][:at] and now["rows"][at]["index"] == new.get("index")
+                    and active(now) == active(before))
+        return want
+
+    def removed(row):
+        def want(before, now):
+            at = position(before, row)
+            above = {k: before["rows"][at - 1][k] for k in ("name", "id")}
+            return (at == len(before["rows"]) - 1 and identities(now) == identities(before)[:at]
+                    and [r["index"] for r in now["rows"]] == [r["index"] for r in before["rows"][:at]]
+                    and active(now) == (above if before["rows"][at]["is_active"] else active(before)))
+        return want
+
+    def activated(row, previous):
+        return lambda p: _measured(f"'{row}' activated from '{previous}'", p,
+                                   p.get("activated") is True and p.get("requested") == row
+                                   and p.get("previous") == previous and p.get("now_active") == row
+                                   and "timeline_warning" not in p)
+
+    def copied(new_name, adopted):
+        def check(p):
+            before = _RECALL.get("cfgrow_table")
+            names = [r["name"] for r in before["rows"]]
+            at = names.index("B") + 1
+            source = before["rows"][at - 1]
+            cells, note = p.get("cells"), p.get("note") or ""
+            width = [c for c in cells or [] if c.get("column_id") == _RECALL.get("cfgrow_column")]
+            return _measured(
+                f"'B' copied as '{adopted}' with an equal {parameter} cell and the active row kept",
+                {k: p.get(k) for k in ("copied", "source", "configuration", "id", "index", "requested_name",
+                                       "adopted_differs", "active_before", "active_after", "active_changed",
+                                       "cells", "configurations")},
+                p.get("copied") is True and p.get("source") == {k: source[k] for k in ("name", "id", "index")}
+                and p.get("configuration") == adopted and isinstance(p.get("id"), str) and bool(p["id"])
+                and p["id"] not in {r["id"] for r in before["rows"]} and _num(p.get("index"))
+                and ((p.get("requested_name") == new_name and p.get("adopted_differs") is True)
+                     if adopted != new_name else
+                     ("requested_name" not in p and "adopted_differs" not in p))
+                and p.get("active_before") == p.get("active_after") == active(before)
+                and p.get("active_changed") is False and "active_unread" not in p
+                and isinstance(cells, list)
+                and [(c.get("column"), c.get("column_id")) for c in cells]
+                == [(c["title"], c["id"]) for c in before["columns"]]
+                and len(width) == 1 and width[0].get("equal") is True and "unread" not in width[0]
+                and (width[0].get("source") or {}).get("expression") == "20 mm"
+                and width[0]["source"] == width[0].get("copy")
+                and not any(c.get("equal") is False for c in cells)
+                and not any(k in p for k in ("verified", "cells_differ", "cells_unread", "cells_truncated",
+                                             "configurations_truncated"))
+                and p.get("configurations") == names[:at] + [adopted] + names[at:]
+                and f"Configuration 'B' copied as '{adopted}'" in note
+                and (f"not the requested '{new_name}'" in note) is (adopted != new_name))
+        return check
+
+    def deleted(row):
+        def check(p):
+            before = _RECALL.get("cfgrow_table")
+            at = position(before, row)
+            target, note = before["rows"][at], p.get("note") or ""
+            after = ({k: before["rows"][at - 1][k] for k in ("name", "id")}
+                     if target["is_active"] else active(before))
+            return _measured(
+                f"'{row}' deleted, the rows above it kept, the active row named",
+                {k: p.get(k) for k in ("deleted", "remaining", "active_before", "active_after",
+                                       "active_changed", "note")},
+                at == len(before["rows"]) - 1
+                and p.get("deleted") == {k: target[k] for k in ("name", "id", "index")}
+                and p.get("remaining") == [{k: r[k] for k in ("name", "id", "index")}
+                                           for r in before["rows"][:at]]
+                and "remaining_truncated" not in p and "active_unread" not in p
+                and p.get("active_before") == active(before) and p.get("active_after") == after
+                and p.get("active_changed") is target["is_active"]
+                and f"Configuration '{row}' deleted; this tool cannot restore a deleted configuration." in note
+                and (f"It was the active one: '{after['name']}' is active now" in note) is target["is_active"]
+                and ("read the model with design_get / param_get" in note) is target["is_active"])
+        return check
+
+    def width(expression, value):
+        def state(p):
+            return p if (_configure_parameters(p) is not None
+                         and p["user_parameters"][0]["expression"] == expression
+                         and _near(p["user_parameters"][0]["value"], value, 1e-9)) else None
+        return state
+
+    def stock(height):
+        def state(p):
+            now = _symmetric_target_body_state(p)
+            return now if (now is not None and now["size"] == [10, 10, height]
+                           and now["bounds"]["min_point"] == {"x": 0, "y": 0, "z": 0}
+                           and now["bounds"]["max_point"] == {"x": 10, "y": 10, "z": height}
+                           and _near(now["material"]["volume"], 100 * height, .001)) else None
+        return state
+
+    def witness(p):
+        now = _symmetric_target_body_state(p)
+        return now if (now is not None and now["size"] == [5, 5, 5]
+                       and _near(now["material"]["volume"], 125, .001)) else None
+
+    def held(tag, expression, height, after):
+        return [("param_get", {}, _retire_compare("cfgrow_params" + tag, width(expression, height), after), None),
+                ("model_inspect", _lit(dict(body_read, target="Body1")),
+                 _retire_compare("cfgrow_Body1" + tag, stock(height), after), None)]
+
+    def witness_read(after):
+        return ("model_inspect", _lit(dict(body_read, target="Body2")),
+                _retire_compare("cfgrow_Body2", witness, after), None)
+
+    def cell_step(want):
+        """Return the design_get cell-table read: the parameter column's expression per row name."""
+        list_key, row_key, column_key, expression_key = _CELL_TABLE_KEYS
+
+        def check(p):
+            read = p.get("configurations") or {}
+            names = {r.get("id"): r.get("name") for r in read.get("configurations") or []}
+            cells = [c for c in read.get(list_key) or [] if c.get(column_key) == _RECALL.get("cfgrow_column")]
+            got = {names.get(c.get(row_key)): c.get(expression_key) for c in cells}
+            return _measured(f"the {parameter} column's cell expression per row", got,
+                             len(cells) == len(want) and got == want)
+        return ("design_get", {"include": ["configurations"]}, check, None)
+
+    def configure(action, row, new_name=None):
+        args = {"action": action, "name": row}
+        return write(dict(args, new_name=new_name) if new_name else args)
+
+    rows = [("doc_get", {}, _home_document, ("configure_home", _recall("configure_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "configure_home", "the home session")},
+             _new_document, ("configure_owned", _recall("configure_owned", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None),
+            ("param_add", write({"name": parameter, "expression": "10 mm", "unit": "mm"}), "ok", None)]
+    for sketch, x, side, distance, body in [("ConfigureRowStock", 0, 10, parameter, "Body1"),
+                                            ("ConfigureRowWitness", 40, 5, "5 mm", "Body2")]:
+        rows += [("sketch_create", write({"name": sketch, "plane": "xy"}), "ok", None),
+                 ("sketch_add_geometry", write({"sketch_name": sketch, "units": "mm", "geometry": [
+                     {"kind": "rectangle", "x1": x, "y1": 0, "x2": x + side, "y2": side}]}), "ok", None),
+                 ("model_extrude", write({"sketch_name": sketch, "distance": distance, "units": "mm",
+                                          "operation": "new"}),
+                  lambda p, body=body: _extruded(p) and p.get("result_bodies") == [body], None)]
+    rows += [("view_set", write({"action": "orient", "orientation": "iso-top-right", "fit": True}), "ok", None),
+             ("doc_save_as", write({"name": name, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+              _saved_as(name, FOLDER), ("configure_urn", _recall("configure_urn", lambda p: p["document_id"]))),
+             ("doc_get", {}, saved, None),
+             ("design_configure", write({"action": "create"}),
+              lambda p: p.get("configured") is True and p.get("created") is True
+              and p.get("configurations") == [top], None)]
+    for row, listed in (("B", [top, "B"]), ("C", [top, "B", "C"])):
+        rows.append(("design_configure", configure("add_configuration", row),
+                     lambda p, row=row, listed=listed: p.get("configuration") == row and bool(p.get("id"))
+                     and p.get("active_configuration") == row and p.get("configurations") == listed,
+                     ("cfgrow_" + row, _recall("cfgrow_" + row, lambda p: p["id"]))))
+    rows += [("design_configure", write({"action": "add_parameter", "parameter": parameter,
+                                         "values": {"B": "20 mm", "C": "30 mm"}}),
+              lambda p: p.get("parameter") == parameter and p.get("set") == 2 and bool(p.get("column_id")),
+              ("cfgrow_column", _recall("cfgrow_column", lambda p: p["column_id"]))),
+             ("design_get", {"include": ["configurations"]}, base, None),
+             cell_step({top: "10 mm", "B": "20 mm", "C": "30 mm"}),
+             ("design_configure", configure("activate", top), activated(top, "C"), None),
+             table_reads("the first row active, every row identity kept", same_rows(top))]
+    rows += held("", "10 mm", 10, False) + [witness_read(False)]
+    rows += [("design_configure", configure("copy_configuration", "B", "B2"), copied("B2", "B2"),
+              ("cfgrow_B2", _recall("cfgrow_B2", lambda p: {"id": p["id"], "index": p["index"]}))),
+             table_reads("the copy listed directly after its source", inserted_after_b("B2", "cfgrow_B2"))]
+    rows += held("", "10 mm", 10, True) + [cell_step({top: "10 mm", "B": "20 mm", "B2": "20 mm", "C": "30 mm"})]
+    rows += [("design_configure", configure("copy_configuration", "B", "B"), copied("B", "B (1)"),
+              ("cfgrow_B1", _recall("cfgrow_B1", lambda p: {"id": p["id"], "index": p["index"]}))),
+             table_reads("the adopted name listed directly after its source",
+                         inserted_after_b("B (1)", "cfgrow_B1"))]
+    rows += held("", "10 mm", 10, True) + [cell_step({top: "10 mm", "B": "20 mm", "B (1)": "20 mm",
+                                                      "B2": "20 mm", "C": "30 mm"})]
+    rows += [("design_configure", configure("delete_configuration", "C"), deleted("C"), None),
+             table_reads("the deleted row gone, the others and the active row kept", removed("C"))]
+    rows += held("", "10 mm", 10, True)
+    rows += [("design_configure", configure("delete_configuration", top),
+              _refused(f"Fusion refused deleting configuration '{top}':", "Cannot delete the first row",
+                       f"The table reads unchanged (rows '{top}', 'B', 'B (1)', 'B2'; active '{top}')."), None),
+             table_reads("the refused first-row delete leaves the table as read", unchanged)]
+    rows += held("", "10 mm", 10, True)
+    rows += [("design_configure", configure("delete_configuration", "NoSuchRow"),
+              _refused(f"No configuration matched 'NoSuchRow'. Available: {top}, B, B (1), B2."), None),
+             table_reads("the unknown row name leaves the table as read", unchanged),
+             ("design_configure", configure("activate", "B2"), activated("B2", top), None),
+             table_reads("the copy active, every row identity kept", same_rows("B2"))]
+    rows += held("_copy", "20 mm", 20, False)
+    rows += [("design_configure", configure("delete_configuration", "B2"), deleted("B2"), None),
+             table_reads("the active row gone and the row above it active", removed("B2"))]
+    rows += held("_copy", "20 mm", 20, True)
+    rows += [("design_configure", configure("activate", top), activated(top, "B (1)"), None),
+             table_reads("the first row active again under its first id", same_rows(top))]
+    rows += held("", "10 mm", 10, True) + [witness_read(True),
+                                           cell_step({top: "10 mm", "B": "20 mm", "B (1)": "20 mm"})]
+    rows += [("doc_close", lambda c: {"name": _ctx_get(c, "configure_owned", "the coupon"), "save_changes": False,
+                                      "expect_document": c["configure_owned"]}, _document_closed, None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "configure_home", "the home session")},
+              _activated(), None),
+             ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("configure_home")
+              and all(r.get("document_handle") != _RECALL.get("configure_owned") for r in p["open_documents"]),
+              None)]
+    return rows
+
+
+_CLOUD_CONFIGURE += _configure_row_rows()
+
+
+def _configure_group_rows():
+    """Suppress a collapsed timeline group per configuration on a retained saved coupon."""
+    name = "SweepConfigureGroup." + _STAMP
+    top, asked = "Configuration 1", "SweepCutGroup"
+    body_read = {"include": ["default", "mass"], "units": "mm", "accuracy": "very_high", "per_body": True}
+    timeline_read = {"include": ["timeline"], "include_suppressed": True, "max_results": 250}
+
+    def group():
+        return _RECALL.get("cfggrp_group")
+
+    def write(args):
+        return lambda c: dict(args(c) if callable(args) else args,
+                              expect_document=_ctx_get(c, "configure_owned", "the configuration coupon"))
+
+    def saved(p):
+        return (_document_is(name)(p) and _home_address(p) == _RECALL.get("configure_owned")
+                and p["active"]["document_id"] == _RECALL.get("configure_urn"))
+
+    def flag(row):
+        return row.get("is_suppressed", False)
+
+    def rows_state(p):
+        tl = p.get("timeline") or {}
+        rows = tl.get("timeline")
+        if (not isinstance(rows, list) or len(rows) != 5 or tl.get("truncated")
+                or tl.get("count") != 5 or tl.get("returned") != 5 or tl.get("marker_position") != 5
+                or tl.get("groups") != {group(): 4} or [r.get("index") for r in rows] != list(range(5))
+                or any(not r.get("name") or not r.get("type") or type(flag(r)) is not bool for r in rows)
+                or [i for i, r in enumerate(rows) if r.get("is_group") is True] != [2]
+                or rows[2]["name"] != group() or rows[2]["type"] != "TimelineGroup"
+                or rows[2].get("member_count") != 4 or rows[2].get("is_collapsed") is not True):
+            return None
+        return {"rows": [(r["name"], r["type"]) for r in rows], "group_index": rows[2]["index"],
+                "group_suppressed": flag(rows[2]),
+                "others_suppressed": [flag(r) for i, r in enumerate(rows) if i != 2]}
+
+    def members_state(p):
+        rows = (p.get("timeline") or {}).get("timeline")
+        if (not isinstance(rows, list) or len(rows) != 4 or (p.get("timeline") or {}).get("truncated")
+                or any(r.get("parent_group") != group() or not r.get("name")
+                       or type(flag(r)) is not bool for r in rows)
+                or [r["name"] for r in rows] != ["GroupCutA", _RECALL.get("cfggrp_cut_a"),
+                                                 "GroupCutB", _RECALL.get("cfggrp_cut_b")]):
+            return None
+        return {"names": [r["name"] for r in rows], "suppressed": [flag(r) for r in rows]}
+
+    def clear(extract, key):
+        def state(p):
+            now = extract(p)
+            return now if (now is not None and not any(now[key])
+                           and not now.get("group_suppressed")) else None
+        return state
+
+    def timeline_reads(after):
+        return [("design_get", timeline_read,
+                 _retire_compare("cfggrp_rows", clear(rows_state, "others_suppressed"), after), None),
+                ("design_get", lambda c: dict(timeline_read, group=group()),
+                 _retire_compare("cfggrp_members", clear(members_state, "suppressed"), after), None)]
+
+    def block(volume):
+        def state(p):
+            now = _symmetric_target_body_state(p)
+            return now if (now is not None and now["size"] == [40, 20, 10]
+                           and now["bounds"]["min_point"] == {"x": 0, "y": 0, "z": 0}
+                           and now["bounds"]["max_point"] == {"x": 40, "y": 20, "z": 10}
+                           and _near(now["material"]["volume"], volume, .001)) else None
+        return state
+
+    def control(p):
+        now = _symmetric_target_body_state(p)
+        return now if (now is not None and now["size"] == [10, 10, 10]
+                       and _near(now["material"]["volume"], 1000, .001)) else None
+
+    def body(target):
+        return _lit(dict(body_read, target=target))
+
+    def bodies(after):
+        return [("model_inspect", body("Body1"), _retire_compare("cfggrp_Body1", block(7500), after), None),
+                ("model_inspect", body("Body2"), _retire_compare("cfggrp_Body2", control, after), None)]
+
+    def table(p):
+        state = _configure_table_state(p, top)
+        cells = (state or {}).get("cells")
+        return state if (state is not None and isinstance(cells, list)
+                         and state.get("cell_count") == len(cells) == 2 * len(state["columns"])
+                         and "cells_truncated" not in state and "cells_unread" not in state) else None
+
+    def table_before(p):
+        state = table(p)
+        return state if (state is not None and [c["title"] for c in state["columns"]] == ["Part Number"]
+                         and [r["name"] for r in state["configurations"]] == [top, "B"]
+                         and state["configurations"][1]["id"] == _RECALL.get("cfggrp_B")) else None
+
+    def table_with_column(p):
+        state, before = table(p), _RECALL.get("cfggrp_table") or {}
+        columns = (state or {}).get("columns") or []
+        column = columns[-1] if columns else {}
+        ids = [r["id"] for r in before.get("configurations") or []]
+        cells = {c.get("row_id"): c.get("is_suppressed") for c in (state or {}).get("cells") or []
+                 if c.get("column_id") == _RECALL.get("cfggrp_column")}
+        return state if (state is not None and columns[:-1] == before.get("columns")
+                         and state["configurations"] == before.get("configurations")
+                         and column.get("title") == group() and column.get("type") == "ConfigurationSuppressColumn"
+                         and column.get("id") == _RECALL.get("cfggrp_column")
+                         and cells == {ids[0]: False, ids[1]: True}) else None
+
+    def column_added(existed, suppressed_in):
+        def check(p):
+            before = _RECALL.get("cfggrp_table")
+            rows = before["configurations"]
+            timeline, members = _RECALL.get("cfggrp_rows"), _RECALL.get("cfggrp_members")
+            note = p.get("note") or ""
+            state = "was already in the table" if existed else "was added"
+            return _measured(
+                f"the group's suppress column {state}, only B's cell set, the first row still active",
+                {k: p.get(k) for k in ("target_kind", "group", "column_id", "column_title", "column_existed",
+                                       "suppressed_in", "cells", "active_configuration",
+                                       "members_suppressed_now", "note")},
+                p.get("target_kind") == "group"
+                and p.get("group") == {"name": group(), "index": timeline["group_index"],
+                                       "member_count": 4, "members": members["names"]}
+                and isinstance(p.get("column_id"), str) and bool(p["column_id"])
+                and ((p["column_id"] == _RECALL.get("cfggrp_column")) if existed else
+                     (p["column_id"] not in {c["id"] for c in before["columns"]}))
+                and p.get("column_title") == group() and p.get("column_existed") is existed
+                and p.get("suppressed_in") == suppressed_in
+                and p.get("cells") == [{"configuration": r["name"], "id": r["id"], "suppressed": r["name"] == "B"}
+                                       for r in rows]
+                and p.get("active_configuration") == {"name": top, "id": rows[0]["id"]}
+                and not any(k in p for k in ("members_suppressed_now", "members_unread", "members_differ",
+                                             "cells_failed", "cells_truncated", "active_unread"))
+                and f"Suppress column '{group()}' {state} for timeline group '{group()}'" in note
+                and "linked to its group by title only" in note
+                and "That title is not the group's name" not in note
+                and ("The model changes for 'B' when that configuration is activated" in note) is bool(suppressed_in)
+                and ("No cell was set; name configurations in suppressed_in." in note) is (not suppressed_in))
+        return check
+
+    def activated(row, previous):
+        return lambda p: _measured(f"'{row}' activated from '{previous}'", p,
+                                   p.get("activated") is True and p.get("requested") == row
+                                   and p.get("previous") == previous and p.get("now_active") == row
+                                   and "timeline_warning" not in p)
+
+    def group_suppressed(p):
+        now, before = rows_state(p), _RECALL.get("cfggrp_rows")
+        return _measured("the group row reads suppressed and no other row does", now,
+                         now is not None and now == dict(before, group_suppressed=True))
+
+    def members_suppressed(p):
+        now, before = members_state(p), _RECALL.get("cfggrp_members")
+        return _measured("every member of the group reads suppressed", now,
+                         now is not None and now == dict(before, suppressed=[True] * 4))
+
+    def suppress(feature, suppressed_in):
+        return write(lambda c: {"action": "add_suppress", "feature": feature(), "suppressed_in": suppressed_in})
+
+    class Qualified(_Refusal):
+        """The refusal naming the group that a component was put in front of."""
+
+        def __init__(self):
+            super().__init__(())
+
+        def missing(self, text):
+            want = (f"'feature': 'NoSuchComponent/{group()}' puts a component in front of the timeline "
+                    f"group '{group()}'", "a group takes no component qualifier")
+            return [f for f in want if f not in text]
+
+    def table_held():
+        return ("design_get", {"include": ["configurations"]},
+                _retire_compare("cfggrp_table_column", table_with_column, True), None)
+
+    rows = [("doc_get", {}, _home_document, ("configure_home", _recall("configure_home", _home_address))),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "configure_home", "the home session")},
+             _new_document, ("configure_owned", _recall("configure_owned", lambda p: p["document_handle"]))),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    for sketch, x, y, wide, deep, extra, made, key in [
+            ("GroupBlock", 0, 0, 40, 20, {"operation": "new"}, ["Body1"], None),
+            ("GroupCutA", 5, 5, 5, 5, {"operation": "cut", "symmetric": True}, None, "cfggrp_cut_a"),
+            ("GroupCutB", 25, 5, 5, 5, {"operation": "cut", "symmetric": True}, None, "cfggrp_cut_b"),
+            ("GroupControl", 60, 0, 10, 10, {"operation": "new"}, ["Body2"], None)]:
+        rows += [("sketch_create", write({"name": sketch, "plane": "xy"}), "ok", None),
+                 ("sketch_add_geometry", write({"sketch_name": sketch, "units": "mm", "geometry": [
+                     {"kind": "rectangle", "x1": x, "y1": y, "x2": x + wide, "y2": y + deep}]}), "ok", None),
+                 ("model_extrude", write(dict(extra, sketch_name=sketch, distance=10, units="mm")),
+                  lambda p, made=made: _extruded(p) and (made is None or p.get("result_bodies") == made),
+                  (key, _recall(key, lambda p: p["feature"])) if key else None)]
+    rows += [("design_edit_timeline", write(lambda c: {
+                  "action": "group", "feature": "GroupCutA", "name": asked,
+                  "end_feature": _ctx_get(c, "cfggrp_cut_b", "the second cut feature")}),
+              lambda p: _measured("the four cut rows grouped under the asked name", p,
+                                  p.get("grouped") is True and p.get("group") == asked
+                                  and p.get("member_count") == 4 and p.get("start_index") == 2
+                                  and p.get("end_index") == 5 and p.get("groups") == 1
+                                  and "name_warning" not in p),
+              ("cfggrp_group", _recall("cfggrp_group", lambda p: p["group"]))),
+             ("view_set", write({"action": "orient", "orientation": "iso-top-right", "fit": True}), "ok", None),
+             ("doc_save_as", write({"name": name, "project": PROJECT, "folder": FOLDER, "create_path": False}),
+              _saved_as(name, FOLDER), ("configure_urn", _recall("configure_urn", lambda p: p["document_id"]))),
+             ("doc_get", {}, saved, None),
+             ("design_configure", write({"action": "create"}),
+              lambda p: p.get("configured") is True and p.get("created") is True
+              and p.get("configurations") == [top], None),
+             ("design_configure", write({"action": "add_configuration", "name": "B"}),
+              lambda p: p.get("configuration") == "B" and bool(p.get("id"))
+              and p.get("active_configuration") == "B" and p.get("configurations") == [top, "B"],
+              ("cfggrp_B", _recall("cfggrp_B", lambda p: p["id"]))),
+             ("design_configure", write({"action": "activate", "name": top}), activated(top, "B"), None)]
+    rows += timeline_reads(False) + bodies(False)
+    rows += [("design_get", {"include": ["configurations"]},
+              _retire_compare("cfggrp_table", table_before, False), None),
+             ("design_configure", suppress(group, ["B"]), column_added(False, ["B"]),
+              ("cfggrp_column", _recall("cfggrp_column", lambda p: p["column_id"]))),
+             ("design_get", {"include": ["configurations"]},
+              _retire_compare("cfggrp_table_column", table_with_column, False), None)]
+    rows += timeline_reads(True) + bodies(True)
+    rows += [("design_configure", write({"action": "activate", "name": "B"}), activated("B", top), None),
+             ("design_get", timeline_read, group_suppressed, None),
+             ("design_get", lambda c: dict(timeline_read, group=group()), members_suppressed, None),
+             ("model_inspect", body("Body1"),
+              lambda p: _measured("the block without either cut, 8000 mm3", _symmetric_target_body_state(p),
+                                  block(8000)(p) is not None), None),
+             ("model_inspect", body("Body2"), _retire_compare("cfggrp_Body2", control, True), None),
+             ("design_configure", write({"action": "activate", "name": top}), activated(top, "B"), None)]
+    rows += timeline_reads(True) + bodies(True)
+    rows += [("design_configure", suppress(group, ["NoSuchRow"]),
+              _refused("No column was added - suppressed_in: No configuration matched 'NoSuchRow'. "
+                       f"Available: {top}, B."), None),
+             table_held(),
+             ("design_configure", suppress(lambda: f"NoSuchComponent/{group()}", ["B"]), Qualified(), None),
+             table_held(),
+             ("design_configure", suppress(group, []), column_added(True, []), None),
+             table_held()]
+    rows += timeline_reads(True) + bodies(True)
+    rows += [("doc_close", lambda c: {"name": _ctx_get(c, "configure_owned", "the coupon"), "save_changes": False,
+                                      "expect_document": c["configure_owned"]}, _document_closed, None),
+             ("doc_activate", lambda c: {"name": _ctx_get(c, "configure_home", "the home session")},
+              _activated(), None),
+             ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("configure_home")
+              and all(r.get("document_handle") != _RECALL.get("configure_owned") for r in p["open_documents"]),
+              None)]
+    return rows
+
+
+_CLOUD_CONFIGURE += _configure_group_rows()
+
+
+def _cr_tree(p):
+    """design_get tree: {full path: row} over the root's children, or None when cut or paths repeat."""
+    tree = p.get("tree") or {}
+    rows = tree.get("children")
+    if not isinstance(rows, list) or tree.get("truncated") or tree.get("children_truncated"):
+        return None
+    by_path = {r.get("full_path"): r for r in rows}
+    return by_path if len(by_path) == len(rows) and None not in by_path else None
+
+
+def _cr_poses(p):
+    """assembly_get poses: {occurrence name: row}, or None when two occurrences share a name."""
+    rows = p.get("occurrences") or []
+    by_name = {r.get("name"): r for r in rows}
+    return by_name if len(by_name) == len(rows) == p.get("occurrence_count") else None
+
+
+def _cr_pose_rows(p, key="occurrences", count_key="occurrence_count"):
+    """Keep pose rows as a list when two occurrence names collide."""
+    rows = p.get(key)
+    return rows if isinstance(rows, list) and len(rows) == p.get(count_key) else None
+
+
+# Part A's box in its own frame, as its sketch and extrude author it, and where the story's local
+# component stands in the host. The two placements below are both off the origin and turned.
+_CR_PART_A = ((0.0, 0.0, 0.0), (20.0, 20.0, 10.0))
+_CR_LOCAL_AT = (0.0, 60.0, 0.0)
+_CR_AT_ROOT = {"x": 300, "y": -40, "z": 15, "rotate_deg": 30, "rotate_axis": "z"}
+_CR_AT_NESTED = {"x": 30, "y": -25, "z": 12, "rotate_deg": 90, "rotate_axis": "x"}
+# mm for a pose origin (read to 3 places) and for a body box; a cosine for an axis (4 places).
+_CR_POSE_TOL, _CR_AXIS_TOL, _CR_BOUNDS_TOL = 0.0015, 0.001, 0.01
+
+
+def _cr_requested_frame(placement, owner_at=(0.0, 0.0, 0.0)):
+    """(origin, [x axis, y axis, z axis]) in mm a placement asks for, seen from the host: a
+    right-hand turn about the named axis through the owner's origin, then the offset, for an owner
+    standing unrotated at `owner_at`."""
+    turn = math.radians(placement["rotate_deg"])
+    first, second = {"x": (1, 2), "y": (2, 0), "z": (0, 1)}[placement["rotate_axis"]]
+    axes = [[float(row == col) for row in range(3)] for col in range(3)]
+    axes[first][first], axes[first][second] = math.cos(turn), math.sin(turn)
+    axes[second][first], axes[second][second] = -math.sin(turn), math.cos(turn)
+    return [placement[key] + owner_at[n] for n, key in enumerate("xyz")], axes
+
+
+def _cr_requested_bounds(placement, owner_at=(0.0, 0.0, 0.0)):
+    """(min corner, max corner, centre of mass) of part A's box in the host under a placement."""
+    origin, axes = _cr_requested_frame(placement, owner_at)
+
+    def placed(point):
+        return [origin[n] + sum(point[col] * axes[col][n] for col in range(3)) for n in range(3)]
+
+    corners = [placed([_CR_PART_A[bit >> n & 1][n] for n in range(3)]) for bit in range(8)]
+    return ([min(corner[n] for corner in corners) for n in range(3)],
+            [max(corner[n] for corner in corners) for n in range(3)],
+            placed([(low + high) / 2 for low, high in zip(*_CR_PART_A)]))
+
+
+def _cr_all_near(got, want, tol):
+    """Whether a read list matches a wanted one, number by number."""
+    return (isinstance(got, list) and len(got) == len(want)
+            and all(_near(g, w, tol) for g, w in zip(got, want)))
+
+
+def _cr_part_a_box(p):
+    """model_inspect on the unlinked part A at x=50 mm: the box the placement rows compute from."""
+    low, high = p.get("min_point") or {}, p.get("max_point") or {}
+    return _measured("part A is its authored 20 x 20 x 10 mm box, standing at x=50 mm",
+                     {"min_point": low, "max_point": high, "box_read": p.get("box_read")},
+                     all(_near(low.get(key), _CR_PART_A[0][n] + (50.0 if n == 0 else 0.0),
+                               _CR_BOUNDS_TOL)
+                         and _near(high.get(key), _CR_PART_A[1][n] + (50.0 if n == 0 else 0.0),
+                                   _CR_BOUNDS_TOL) for n, key in enumerate("xyz")))
+
+
+def _cr_insert_landed(p, nested=False):
+    """doc_insert_occurrence: an occurrence was made and it is a reference. Where it stands is
+    judged by the two reads after it, which are told what this reply claimed."""
+    name = p.get("new_occurrence_name")
+    return _measured("the insert made a referenced occurrence with a name",
+                     {key: p.get(key) for key in ("is_reference", "new_occurrence_name",
+                                                  "into_component", "placement_matches",
+                                                  "placed_at")},
+                     p.get("is_reference") is True and isinstance(name, str) and bool(name.strip())
+                     and (not nested or ("placed_at is in the host component's frame" in p.get("note", "")
+                          and "world placements are unconfirmed" in p.get("note", "")
+                          and "read each path with assembly_get" in p.get("note", ""))))
+
+
+def _cr_insert_claim(owner_key=None):
+    """A save extractor: the inserted occurrence's path in the host, and the placement the reply
+    claimed exactly as replied (placement_matches true, false or null; placed_at or null)."""
+    def take(p):
+        name = p["new_occurrence_name"]
+        return {"path": f"{_RECALL[owner_key]}+{name}" if owner_key else name,
+                "placement_matches": p.get("placement_matches"), "placed_at": p.get("placed_at")}
+    return take
+
+
+# What a read says of an insert, by what the insert claimed and whether the read bears the request
+# out. A row raises its sentence, so a failed row names which of the two is wrong.
+_CR_VERDICT = {
+    ("match", True): "claim true, geometry right",
+    ("match", False): ("claim true, geometry WRONG: the insert claimed a match this read does not "
+                       "bear out"),
+    ("mismatch", True): ("claim FALSE, geometry right: the insert reported a mismatch this read "
+                         "does not bear out"),
+    ("mismatch", False): ("claim false, geometry wrong: the insert told the truth about a "
+                          "placement that did not land, which is still not a passing read"),
+    ("unread", True): ("claim NULL, geometry right: the insert read no placement where this read "
+                       "finds the request"),
+    ("unread", False): ("claim null, geometry wrong: the insert read no placement, and it did not "
+                        "land as requested"),
+    ("inconsistent", True): ("claim true beside a placed_at that is NOT the request, geometry "
+                             "right"),
+    ("inconsistent", False): ("claim true beside a placed_at that is not the request, geometry "
+                              "WRONG"),
+}
+
+
+def _cr_claim(key, placement):
+    """(word, the claim as replied) for the insert saved under `key`: match, mismatch, unread, or
+    inconsistent when it claims a match beside a placed_at that is not the request."""
+    said = _RECALL.get(key) or {}
+    matches, at = said.get("placement_matches"), said.get("placed_at")
+    claimed = {"placement_matches": matches, "placed_at": at}
+    if matches is True:
+        told = isinstance(at, dict) and all(_near(at.get(k), placement[k], 0.0001) for k in "xyz")
+        return ("match" if told else "inconsistent"), claimed
+    return ("mismatch" if matches is False else "unread"), claimed
+
+
+def _cr_placed_pose(key, placement, owner_key=None):
+    """assembly_get all_occurrences: the inserted occurrence's world origin, axes and body box
+    against the request composed onto where its owner stands. It passes on that geometry alone;
+    on a miss its message says what the insert had claimed."""
+    def check(p):
+        path, owner_path = (_RECALL.get(key) or {}).get("path"), _RECALL.get(owner_key)
+        rows = _cr_pose_rows(p, "all_occurrences", "all_occurrence_count") or []
+        mine = [row for row in rows if row.get("full_path") == path]
+        owners = [row for row in rows if owner_key and row.get("full_path") == owner_path]
+        owner_at = _CR_LOCAL_AT if owner_key else (0.0, 0.0, 0.0)
+        origin, axes = _cr_requested_frame(placement, owner_at)
+        low, high, _centre = _cr_requested_bounds(placement, owner_at)
+        # An unrotated owner off the origin is what makes its frame differ from the host's.
+        owner_stands = not owner_key or (
+            len(owners) == 1
+            and _cr_all_near(owners[0].get("origin"), list(_CR_LOCAL_AT), _CR_POSE_TOL)
+            and all(_cr_all_near(owners[0].get(axis), [float(n == m) for m in range(3)],
+                                 _CR_AXIS_TOL)
+                    for n, axis in enumerate(("x_axis", "y_axis", "z_axis"))))
+        _measured("this read cannot judge the insert: it needs one row at the insert's path, a "
+                  "whole listing and the owner where the story put it",
+                  {"path": path, "rows_at_path": len(mine),
+                   "truncated": p.get("all_occurrences_truncated"),
+                   "owner": [(r.get("full_path"), r.get("origin"), r.get("x_axis"))
+                             for r in owners]},
+                  len(mine) == 1 and p.get("all_occurrences_truncated") is False and owner_stands)
+        row = mine[0]
+        wanted = {"origin": origin, "x_axis": axes[0], "y_axis": axes[1], "z_axis": axes[2],
+                  "bbox_center": [(a + b) / 2 for a, b in zip(low, high)],
+                  "bbox_size": [b - a for a, b in zip(low, high)]}
+        bands = {"origin": _CR_POSE_TOL, "bbox_center": _CR_BOUNDS_TOL, "bbox_size": _CR_BOUNDS_TOL}
+        right = all(_cr_all_near(row.get(k), want, bands.get(k, _CR_AXIS_TOL))
+                    for k, want in wanted.items())
+        word, claimed = _cr_claim(key, placement)
+        return _measured(_CR_VERDICT[(word, right)],
+                         {"claimed": claimed, "read": [row.get(k) for k in wanted],
+                          "wanted": [[round(v, 4) for v in want] for want in wanted.values()]},
+                         right)
+    return check
+
+
+def _cr_placed_bounds(key, placement, owner_key=None):
+    """model_inspect on the inserted occurrence: its body's world box, volume and centre of mass
+    against part A's own box carried through the request. The last word on the insert: it passes
+    only when this geometry is right AND the insert had claimed a match."""
+    def check(p):
+        low, high, centre = _cr_requested_bounds(placement,
+                                                 _CR_LOCAL_AT if owner_key else (0.0, 0.0, 0.0))
+        mass = p.get("mass") or {}
+        lo, hi = p.get("min_point") or {}, p.get("max_point") or {}
+        read = [[lo.get(axis) for axis in "xyz"], [hi.get(axis) for axis in "xyz"],
+                mass.get("center_of_mass")]
+        right = (all(_cr_all_near(got, want, _CR_BOUNDS_TOL)
+                     for got, want in zip(read, (low, high, centre)))
+                 and _near(mass.get("volume"), 4000.0, 0.5))
+        word, claimed = _cr_claim(key, placement)
+        return _measured(_CR_VERDICT[(word, right)],
+                         {"claimed": claimed, "read": read + [mass.get("volume")],
+                          "wanted": [[round(v, 4) for v in want] for want in (low, high, centre)]
+                          + [4000.0], "box_read": p.get("box_read")},
+                         right and word == "match")
+    return check
+
+
+def _cr_collision_break_probe(ctx):
+    """Break one inserted PartB link without renaming it, recording before and after state."""
+    urn = json.dumps(_ctx_get(ctx, "cr_urn_B", "the saved PartB lineage"))
+    script = r'''import json
+import adsk.core
+import adsk.fusion
+
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    outcome = {"marker": "W2N-CLOUD-BREAK", "expected_source": __EXPECTED_SOURCE__,
+               "preflight_error": None, "break_answer": None, "break_error": None,
+               "before": None, "after": None, "after_error": None}
+    def census(root):
+        rows = []
+        for i in range(root.occurrences.count):
+            occ = root.occurrences.item(i)
+            point = occ.transform2.translation
+            data_file = occ.documentReference.dataFile if occ.isReferencedComponent else None
+            rows.append({"name": occ.name, "full_path": occ.fullPathName,
+                         "source_id": data_file.id if data_file else None,
+                         "is_reference": occ.isReferencedComponent,
+                         "origin_mm": [point.x * 10.0, point.y * 10.0, point.z * 10.0]})
+        return rows
+    try:
+        if design is None:
+            raise RuntimeError("active product is not a Fusion design")
+        root = design.rootComponent
+        before = census(root)
+        outcome["before"] = before
+        targets = [root.occurrences.item(i) for i in range(root.occurrences.count)
+                   if root.occurrences.item(i).isReferencedComponent is True
+                   and root.occurrences.item(i).documentReference.dataFile is not None
+                   and root.occurrences.item(i).documentReference.dataFile.id == __EXPECTED_SOURCE__
+                   and abs(root.occurrences.item(i).transform2.translation.x * 10.0 - 250.0) < 0.001
+                   and abs(root.occurrences.item(i).transform2.translation.y * 10.0) < 0.001
+                   and abs(root.occurrences.item(i).transform2.translation.z * 10.0) < 0.001]
+        originals = [root.occurrences.item(i) for i in range(root.occurrences.count)
+                     if root.occurrences.item(i).isReferencedComponent is True
+                     and root.occurrences.item(i).documentReference.dataFile is not None
+                     and root.occurrences.item(i).documentReference.dataFile.id == __EXPECTED_SOURCE__
+                     and abs(root.occurrences.item(i).transform2.translation.x * 10.0) < 0.001
+                     and abs(root.occurrences.item(i).transform2.translation.y * 10.0) < 0.001
+                     and abs(root.occurrences.item(i).transform2.translation.z * 10.0) < 0.001]
+        if len(targets) != 1 or len(originals) != 1 or targets[0] == originals[0]:
+            raise RuntimeError("expected one linked PartB at x=250 mm and a distinct linked PartB at x=0 mm")
+    except Exception as exc:
+        outcome["preflight_error"] = repr(exc)
+    else:
+        try:
+            outcome["break_answer"] = targets[0].breakLink()
+        except Exception as exc:
+            outcome["break_error"] = repr(exc)
+        try:
+            outcome["after"] = census(design.rootComponent)
+        except Exception as exc:
+            outcome["after_error"] = repr(exc)
+    print(json.dumps(outcome, sort_keys=True))
+'''.replace("__EXPECTED_SOURCE__", urn)
+    return {"script": script, "read_only": False}
+
+
+def _cr_collision_membership_probe(_ctx):
+    """Read held joint halves against each root occurrence after the link break."""
+    return {"read_only": True, "script": r'''import json
+import adsk.core
+import adsk.fusion
+
+def run(context):
+    design = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    result = {"marker": "W2N-CLOUD-MEMBERSHIP", "error": None, "joint_count": None,
+              "occurrences": []}
+    try:
+        if design is None:
+            raise RuntimeError("active product is not a Fusion design")
+        root = design.rootComponent
+        joints = []
+        for collection_name in ("joints", "asBuiltJoints"):
+            collection = getattr(root, collection_name)
+            for i in range(collection.count):
+                joint = collection.item(i)
+                if joint.name == "CrJoint":
+                    joints.append(joint)
+        result["joint_count"] = len(joints)
+        if len(joints) != 1:
+            raise RuntimeError("expected exactly one root joint named CrJoint")
+        joint = joints[0]
+        one, two = joint.occurrenceOne, joint.occurrenceTwo
+        for i in range(root.occurrences.count):
+            occurrence = root.occurrences.item(i)
+            point = occurrence.transform2.translation
+            result["occurrences"].append({
+                "name": occurrence.name, "full_path": occurrence.fullPathName,
+                "origin_mm": [point.x * 10.0, point.y * 10.0, point.z * 10.0],
+                "is_joint_member": (occurrence == one) is True or (occurrence == two) is True})
+    except Exception as exc:
+        result["error"] = repr(exc)
+    print(json.dumps(result, sort_keys=True))
+'''}
+
+
+def _cr_collision_break_result(value):
+    """Require one exact break and the measured duplicate path, retaining raw refusal details."""
+    result = _script_reply(value)
+    before, after = result.get("before") or [], result.get("after") or []
+
+    def at_x(rows, x):
+        return [row for row in rows if at_origin(row.get("origin_mm"), [x, 0.0, 0.0])]
+
+    def at_origin(origin, expected):
+        return (isinstance(origin, list) and len(origin) == 3
+                and all(_near(got, want, 0.001) for got, want in zip(origin, expected)))
+
+    source = result.get("expected_source")
+    before_zero, before_far = at_x(before, 0.0), at_x(before, 250.0)
+    after_zero, after_far = at_x(after, 0.0), at_x(after, 250.0)
+    collision = (len(after_zero) == len(after_far) == 1
+                 and after_zero[0].get("name") == after_far[0].get("name")
+                 and after_zero[0].get("full_path") == after_far[0].get("full_path"))
+    return _measured("native breakLink without rename, checked on both placed PartB rows", result,
+                     result.get("marker") == "W2N-CLOUD-BREAK"
+                     and result.get("preflight_error") is None
+                     and result.get("break_error") is None
+                     and result.get("break_answer") is True
+                     and result.get("after_error") is None
+                     and len(before_zero) == len(before_far) == 1
+                     and before_zero[0].get("source_id") == source
+                     and before_far[0].get("source_id") == source
+                     and before_zero[0].get("is_reference") is True
+                     and before_far[0].get("is_reference") is True
+                     and len(after_zero) == len(after_far) == 1
+                     and after_zero[0].get("source_id") == source
+                     and after_zero[0].get("is_reference") is True
+                     and after_far[0].get("source_id") is None
+                     and after_far[0].get("is_reference") is False
+                     and collision)
+
+
+def _cr_collision_membership_result(value):
+    """Require independent native equality to select only the original PartB placement."""
+    result = _script_reply(value)
+    rows = result.get("occurrences") or []
+    zero = [row for row in rows if len(row.get("origin_mm") or []) == 3
+            and _near(row["origin_mm"][0], 0.0, 0.001)
+            and _near(row["origin_mm"][1], 0.0, 0.001)
+            and _near(row["origin_mm"][2], 0.0, 0.001)]
+    far = [row for row in rows if len(row.get("origin_mm") or []) == 3
+           and _near(row["origin_mm"][0], 250.0, 0.001)
+           and _near(row["origin_mm"][1], 0.0, 0.001)
+           and _near(row["origin_mm"][2], 0.0, 0.001)]
+    local = [row for row in rows if row.get("name") == _RECALL.get("cr_local")]
+    return _measured("read-only native held-wrapper equality for the colliding occurrences", result,
+                     result.get("marker") == "W2N-CLOUD-MEMBERSHIP"
+                     and result.get("error") is None and result.get("joint_count") == 1
+                     and len(zero) == len(far) == len(local) == 1
+                     and zero[0].get("is_joint_member") is True
+                     and far[0].get("is_joint_member") is False
+                     and local[0].get("is_joint_member") is True)
+
+
+def _component_reference_rows():
+    """Copy a component as new, switch an inserted row, replace a reference and break a link."""
+    names = {key: f"SweepRef{key}." + _STAMP for key in "ABC"}
+    home = lambda c: _ctx_get(c, "cr_home", "the home session")
+    host = lambda c: _ctx_get(c, "cr_host", "the host document")
+    got = lambda key, what: (lambda c: _ctx_get(c, key, what))
+    rows = [("doc_get", {}, _home_document, ("cr_home", _recall("cr_home", _home_address)))]
+
+    def settled(key):
+        """data_get arguments once the saved lineage under `key` resolves and reads complete."""
+        def args(c):
+            urn = _ctx_get(c, key, "a saved part")
+            missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
+                       "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+            for i in range(_SETTLE_POLLS):
+                failed, last = facade("call")("data_get", {"file": urn})
+                if failed:
+                    # _measured raises on any other refusal, which ends the story there.
+                    _measured("only this part's pending resolution is retried", last,
+                              last == missing)
+                elif (last.get("state") or {}).get("is_complete") is True:
+                    return {"file": urn}
+                if i + 1 < _SETTLE_POLLS:
+                    time.sleep(_SETTLE_GAP_S)
+            raise AssertionError(f"{urn!r} did not read complete within the bound: {last!r}")
+        return args
+
+    def part(key, build, configure=False):
+        doc = got("cr_doc_" + key, "the part document")
+        write = lambda args: (lambda c: dict(args, expect_document=doc(c)))
+        rows.extend([
+            ("doc_new", lambda c: {"expect_document": home(c)}, _new_document,
+             ("cr_doc_" + key, lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)])
+        rows.extend((tool, write(args), check, None) for tool, args, check in build)
+        rows.append(("doc_save_as", write({"name": names[key], "project": PROJECT, "folder": FOLDER,
+                                           "create_path": False}), _saved_as(names[key], FOLDER),
+                     ("cr_urn_" + key, _recall("cr_urn_" + key, lambda p: p["document_id"]))))
+        if configure:
+            rows.extend([
+                ("design_configure", write({"action": "create"}),
+                 lambda p: p.get("configured") is True and len(p.get("configurations") or []) == 1,
+                 ("cr_row", _recall("cr_row", lambda p: p["configurations"][0]))),
+                ("design_configure", write({"action": "add_configuration", "name": "Wide"}),
+                 lambda p: p.get("active_configuration") == "Wide", None),
+                ("design_configure", write({"action": "add_parameter", "parameter": "CrW",
+                                            "values": {"Wide": "25 mm"}}),
+                 lambda p: p.get("parameter") == "CrW" and p.get("set") == 1, None),
+                ("design_configure", lambda c: {"action": "activate", "expect_document": doc(c),
+                                                "name": _ctx_get(c, "cr_row", "the first row")},
+                 "ok", None),
+                # Converting a saved design moves it to a new lineage on its next save.
+                ("doc_save", write({"description": "component reference coupon"}),
+                 lambda p: p.get("saved") is True and bool((p.get("lineage_changed") or {}).get("to")),
+                 ("cr_urn_" + key, _recall("cr_urn_" + key,
+                                           lambda p: p["lineage_changed"]["to"])))])
+        rows.extend([
+            ("data_get", settled("cr_urn_" + key),
+             lambda p: (p.get("state") or {}).get("is_complete") is True, None),
+            ("doc_activate", lambda c: {"name": home(c), "expect_document": doc(c)},
+             _activated(), None),
+            ("doc_close", lambda c: {"name": doc(c), "save_changes": False,
+                                     "expect_document": home(c)}, _document_closed, None)])
+
+    def box(sketch, size, distance):
+        return [("sketch_create", {"name": sketch, "plane": "xy"}, "ok"),
+                ("sketch_add_geometry", {"sketch_name": sketch, "units": "mm", "geometry": [
+                    {"kind": "rectangle", "x1": 0, "y1": 0, "x2": size, "y2": size}]}, "ok"),
+                ("model_extrude", {"sketch_name": sketch, "distance": distance, "units": "mm",
+                                   "operation": "new"}, _extruded)]
+    part("A", box("CrASk", 20, 10))
+    part("B", [("sketch_create", {"name": "CrBSk", "plane": "xy"}, "ok"),
+               ("sketch_add_geometry", {"sketch_name": "CrBSk", "units": "mm", "geometry": [
+                   {"kind": "circle", "cx": 0, "cy": 0, "radius": 5}]}, "ok"),
+               ("model_extrude", {"sketch_name": "CrBSk", "distance": 30, "units": "mm",
+                                  "operation": "new"}, _extruded)])
+    part("C", [("param_add", {"name": "CrW", "expression": "10 mm", "unit": "mm"}, "ok")]
+         + box("CrCSk", 20, "CrW"), configure=True)
+
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c, args=args: {**(args(c) if callable(args) else args),
+                                                 "expect_document": host(c)}, check, save))
+
+    def read(tool, args, check, save=None):
+        rows.append((tool, args, check, save))
+    tree_args = {"include": ["tree"], "tree_handles": True, "max_results": 200}
+    at = lambda origin, want: (isinstance(origin, list) and len(origin) == 3
+                               and all(_near(v, w, 0.001) for v, w in zip(origin, want)))
+    pose_args = {"include": ["poses"], "max_joints": 100, "units": "mm"}
+
+    def volume(key, want):
+        read("model_inspect", lambda c: {"target": _ctx_get(c, key, "an occurrence"),
+                                         "include": ["default", "mass"], "units": "mm"},
+             lambda p: _measured(f"volume {want} mm3", (p.get("mass") or {}).get("volume"),
+                                 _near((p.get("mass") or {}).get("volume"), want, 0.5)))
+
+    def tree(label, check, save=None):
+        read("design_get", tree_args,
+             lambda p: _measured(label, sorted(_cr_tree(p) or []), _cr_tree(p) is not None
+                                 and bool(check(_cr_tree(p), _RECALL))), save)
+
+    def poses(label, check):
+        read("assembly_get", pose_args,
+             lambda p: _measured(label, {k: (v.get("origin"), v.get("joints"))
+                                         for k, v in (_cr_poses(p) or {}).items()},
+                                 _cr_poses(p) is not None and p.get("is_healthy") is True
+                                 and p.get("broken_joints") == [] and bool(check(_cr_poses(p), _RECALL))))
+
+    rows.extend([("doc_new", lambda c: {"expect_document": home(c)}, _new_document,
+                  ("cr_host", lambda p: p["document_handle"])),
+                 ("design_activate_component", {"occurrence": "root"}, "ok", None)])
+    for key, urn, x in (("cr_a1", "cr_urn_A", 0), ("cr_a2", "cr_urn_A", 50), ("cr_c", "cr_urn_C", 100)):
+        write("doc_insert_occurrence", lambda c, urn=urn, x=x: {
+            "document_id": _ctx_get(c, urn, "a saved part"), "x": x, "units": "mm"},
+            lambda p: p.get("inserted") is True and p.get("is_reference") is True,
+            (key, _recall(key, lambda p: p["new_occurrence_name"])))
+    write("model_create_component", {"name": "CrLocal", "y": 60, "units": "mm", "activate": True},
+          lambda p: bool(p.get("full_path")), ("cr_local", _recall("cr_local", lambda p: p["full_path"])))
+    for tool, args, check in box("CrLocalSk", 10, 10):
+        write(tool, args, check)
+    write("design_activate_component", {"occurrence": "root"})
+    write("joint_create_as_built", lambda c: {
+        "occurrence_one": _ctx_get(c, "cr_a1", "the first part"),
+        "occurrence_two": _ctx_get(c, "cr_local", "the local component"),
+        "joint_type": "rigid", "name": "CrJoint"})
+    tree("four distinct children, two on part A", lambda t, r: len(t) == 4
+         and all(t[r[k]].get("source_id") == r["cr_urn_A"] for k in ("cr_a1", "cr_a2"))
+         and "is_reference" not in t[r["cr_local"]])
+
+    # 1. An independent copy: refused on a reference, made from the local component.
+    write("design_add_instance", lambda c: {"component": _ctx_get(c, "cr_a1", "the first part"),
+                                            "independent": True},
+          _refused("is an external reference", "action='break_link'"))
+    write("design_add_instance", lambda c: {"component": _ctx_get(c, "cr_local", "the local one"),
+                                            "independent": True, "y": 90, "units": "mm"},
+          lambda p: p.get("independent") is True and bool(p.get("new_component"))
+          and p.get("new_component") != "CrLocal",
+          ("cr_copy", _recall("cr_copy", lambda p: p["full_path"])))
+    tree("one more child, a local component of its own", lambda t, r: len(t) == 5
+         and "is_reference" not in t[r["cr_copy"]] and t[r["cr_copy"]].get("body_count") == 1
+         and t[r["cr_copy"]].get("component") != t[r["cr_local"]].get("component"))
+    volume("cr_copy", 1000)
+    volume("cr_local", 1000)
+
+    # 2. Switch the inserted configuration to its other row; the occurrence takes the row's name.
+    switch = lambda c, **args: {"action": "switch_occurrence", **args}
+    volume("cr_c", 4000)
+    write("design_configure", lambda c: switch(c, occurrence=_ctx_get(c, "cr_local", "local"),
+                                               name="Wide"),
+          _refused("is not an inserted configuration"))
+    write("design_configure", lambda c: switch(c, occurrence=_ctx_get(c, "cr_c", "the row"),
+                                               name="Tall"), _refused("Got 'Tall'. Rows:", "Wide"))
+    write("design_configure", lambda c: switch(c, occurrence=_ctx_get(c, "cr_c", "the row"),
+                                               name="Wide"),
+          lambda p: p.get("switched") is True and p.get("row") == "Wide"
+          and p.get("row_before") == _RECALL.get("cr_row") and p.get("old_path_resolves") is False,
+          ("cr_c2", _recall("cr_c2", lambda p: p["occurrence"])))
+    volume("cr_c2", 10000)
+    tree("the switched occurrence under its new path only",
+         lambda t, r: len(t) == 5 and r["cr_c2"] in t and r["cr_c"] not in t)
+    poses("the switched occurrence kept its place",
+          lambda o, r: at(o[r["cr_c2"]].get("origin"), [100.0, 0.0, 0.0]))
+
+    # 3. Replace the jointed part A occurrence by part B; its sibling stays on A.
+    replace = lambda c, occurrence, urn: {"action": "replace",
+                                          "occurrence": _ctx_get(c, occurrence, "an occurrence"),
+                                          "file": _ctx_get(c, urn, "a saved part")}
+    write("doc_update_xref", lambda c: replace(c, "cr_local", "cr_urn_B"),
+          _refused("is a local component, not an external reference"))
+    write("doc_update_xref", lambda c: replace(c, "cr_a1", "cr_urn_A"),
+          _refused("already references that file"))
+    write("doc_update_xref", lambda c: replace(c, "cr_a1", "cr_urn_B"),
+          lambda p: p.get("replaced") is True and len(p.get("occurrences") or []) == 1
+          and p["occurrences"][0].get("path_before") == _RECALL.get("cr_a1")
+          and p["occurrences"][0].get("old_path_resolves") is False,
+          ("cr_b1", _recall("cr_b1", lambda p: p["occurrences"][0]["path"])))
+    tree("the replaced occurrence on part B, its sibling still on part A",
+         lambda t, r: len(t) == 5 and t[r["cr_b1"]].get("source_id") == r["cr_urn_B"]
+         and t[r["cr_b1"]].get("is_reference") is True
+         and t[r["cr_a2"]].get("source_id") == r["cr_urn_A"] and r["cr_a1"] not in t)
+    volume("cr_b1", 2356.19)
+    poses("the joint followed the replaced occurrence, which kept its place",
+          lambda o, r: at(o[r["cr_b1"]].get("origin"), [0.0, 0.0, 0.0])
+          and {name for name, row in o.items() if "CrJoint" in (row.get("joints") or [])}
+          == {r["cr_b1"], r["cr_local"]})
+
+    # 4. Break the last link to part A under a new, unique component name.
+    unlink = lambda c, **args: {"action": "break_link",
+                                "occurrence": _ctx_get(c, "cr_a2", "the second part"), **args}
+    write("doc_update_xref", lambda c: unlink(c), _refused("needs 'new_name'"))
+    write("doc_update_xref", lambda c: unlink(c, new_name="CrLocal"),
+          _refused("A component named 'CrLocal' already exists"))
+    write("doc_update_xref", lambda c: unlink(c, new_name="CrLoose"),
+          lambda p: p.get("broken") is True and p.get("component") == "CrLoose"
+          and p.get("reversible") is False and p.get("path_before") == _RECALL.get("cr_a2"),
+          ("cr_loose", _recall("cr_loose", lambda p: p["occurrence"])))
+    tree("the unlinked occurrence is local under its new name; the reference to B is untouched",
+         lambda t, r: len(t) == 5 and "is_reference" not in t[r["cr_loose"]]
+         and t[r["cr_loose"]].get("component") == "CrLoose"
+         and t[r["cr_loose"]].get("body_count") == 1 and r["cr_a2"] not in t
+         and t[r["cr_b1"]].get("source_id") == r["cr_urn_B"])
+    volume("cr_loose", 4000)
+    poses("the unlinked occurrence kept its place and carries no joint",
+          lambda o, r: at(o[r["cr_loose"]].get("origin"), [50.0, 0.0, 0.0])
+          and not o[r["cr_loose"]].get("joints"))
+
+    # 5. Reuse the already-saved PartB lineage for a second placed reference. All public create and
+    # reference-edit checks above finish before the native break below; the coupon closes unsaved.
+    write("doc_insert_occurrence", lambda c: {
+        "document_id": _ctx_get(c, "cr_urn_B", "the saved PartB lineage"),
+        "x": 250, "units": "mm"},
+        lambda p: p.get("inserted") is True and p.get("is_reference") is True,
+        ("cr_b2", _recall("cr_b2", lambda p: p["new_occurrence_name"])))
+    tree("the second reference uses the same PartB lineage at x=250 mm",
+         lambda t, r: len(t) == 6
+         and t[r["cr_b1"]].get("source_id") == r["cr_urn_B"]
+         and t[r["cr_b2"]].get("source_id") == r["cr_urn_B"]
+         and t[r["cr_b2"]].get("is_reference") is True)
+    volume("cr_b2", 2356.19)
+    poses("the second PartB reference is placed at x=250 mm before break",
+          lambda o, r: at(o[r["cr_b2"]].get("origin"), [250.0, 0.0, 0.0]))
+
+    write("sys_execute_script", _cr_collision_break_probe, _cr_collision_break_result)
+    read("sys_execute_script", _cr_collision_membership_probe,
+         _cr_collision_membership_result)
+
+    def collision_rows(p, key="occurrences", count_key="occurrence_count"):
+        rows = _cr_pose_rows(p, key, count_key)
+        return rows
+
+    def collision_claim(p, key="occurrences", count_key="occurrence_count"):
+        rows = collision_rows(p, key, count_key)
+        local_name = _RECALL.get("cr_local")
+        if rows is None or not local_name:
+            return False
+        zero = [row for row in rows if at(row.get("origin"), [0.0, 0.0, 0.0])]
+        far = [row for row in rows if at(row.get("origin"), [250.0, 0.0, 0.0])]
+        local = [row for row in rows if row.get("name") == local_name]
+        return (len(zero) == len(far) == len(local) == 1
+                and zero[0].get("name") == far[0].get("name")
+                and zero[0].get("joints") == ["CrJoint"]
+                and far[0].get("joints") == []
+                and local[0].get("joints") == ["CrJoint"]
+                and all("joints_unverified" not in row for row in (zero[0], far[0], local[0])))
+
+    read("assembly_get", {"include": ["poses"], "max_occurrences": 100,
+                           "max_joints": 100, "units": "mm"},
+         lambda p: _measured("top-level pose rows attribute CrJoint only to the original PartB",
+                             [(row.get("name"), row.get("origin"), row.get("joints"))
+                              for row in p.get("occurrences") or []],
+                             p.get("is_healthy") is True and p.get("broken_joints") == []
+                             and p.get("occurrences_truncated") is False
+                             and p.get("occurrence_count") == 6
+                             and collision_claim(p)))
+    read("assembly_get", {"include": ["poses", "all_occurrences"],
+                           "max_occurrences": 100, "max_all_occurrences": 100,
+                           "max_joints": 100, "units": "mm"},
+         lambda p: _measured("complete all-occurrences rows preserve the same wrapper attribution",
+                             [(row.get("name"), row.get("origin"), row.get("joints"))
+                              for row in p.get("all_occurrences") or []],
+                             p.get("is_healthy") is True and p.get("broken_joints") == []
+                             and p.get("occurrences_truncated") is False
+                             and p.get("all_occurrences_truncated") is False
+                             and p.get("occurrence_count") == p.get("all_occurrence_count") == 6
+                             and collision_claim(p, "all_occurrences", "all_occurrence_count")))
+
+    # 6. The placement an insert reports. Part A goes in twice more, off the origin and turned: at
+    # the root, then inside the local component, whose frame is not the host's. A failed row ends
+    # the act, so the insert row judges no placement: it hands its claim to the two reads.
+    read("model_inspect", lambda c: {"target": _ctx_get(c, "cr_loose", "the unlinked part A"),
+                                     "units": "mm"}, _cr_part_a_box)
+    for key, owner_key, placement in (("cr_at_root", None, _CR_AT_ROOT),
+                                      ("cr_at_nested", "cr_local", _CR_AT_NESTED)):
+        write("doc_insert_occurrence", lambda c, owner_key=owner_key, placement=placement: {
+            "document_id": _ctx_get(c, "cr_urn_A", "the saved PartA lineage"), "units": "mm",
+            **placement,
+            **({"into_component": _ctx_get(c, owner_key, "the local component")}
+               if owner_key else {})},
+            lambda p, owner_key=owner_key: _cr_insert_landed(p, nested=bool(owner_key)),
+            (key, _recall(key, _cr_insert_claim(owner_key))))
+        read("assembly_get", {"include": ["poses", "all_occurrences"], "max_occurrences": 100,
+                              "max_all_occurrences": 100, "max_joints": 100, "units": "mm"},
+             Independent(_cr_placed_pose(key, placement, owner_key),
+                         ("doc_insert_occurrence",), "tool:assembly_get"))
+        read("model_inspect", lambda c, key=key: {
+            "target": _ctx_get(c, key, "the inserted occurrence")["path"],
+            "include": ["default", "mass"], "units": "mm"},
+            Independent(_cr_placed_bounds(key, placement, owner_key), ("doc_insert_occurrence",),
+                        "tool:model_inspect"))
+    rows.extend([
+        ("doc_activate", lambda c: {"name": home(c), "expect_document": host(c)}, _activated(), None),
+        ("doc_close", lambda c: {"name": host(c), "save_changes": False,
+                                 "expect_document": home(c)}, _document_closed, None),
+        ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("cr_home"), None)])
+    return rows
+
+
+_CLOUD_CONFIGURE += _component_reference_rows()
+
+
+# --- ACT 11h: A PLACED COMPONENT PUBLISHED AS A LOCAL DESIGN -------------------------------
+_COMPONENT_COPY_NAME = "SweepComponentCopy " + _STAMP
+_COMPONENT_COPY_FIXTURE = '''import adsk.core, adsk.fusion, json, math
+def run(context):
+    app = adsk.core.Application.get()
+    doc = app.activeDocument
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    if design is None:
+        raise RuntimeError('Component copy fixture has no Design product')
+    root = design.rootComponent
+    if doc.isSaved or root.occurrences.count or root.bRepBodies.count or design.timeline.count:
+        raise RuntimeError('Component copy fixture requires a new empty design')
+    def part(name, matrix, w, h, d):
+        occ = root.occurrences.addNewComponent(matrix)
+        comp = occ.component
+        comp.name = name
+        sketch = comp.sketches.add(comp.xYConstructionPlane)
+        sketch.name = name + 'Profile'
+        sketch.sketchCurves.sketchLines.addTwoPointRectangle(
+            adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(w, h, 0))
+        if sketch.profiles.count != 1:
+            raise RuntimeError('Fixture sketch has no unique profile')
+        ext = comp.features.extrudeFeatures.createInput(
+            sketch.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        if ext.setDistanceExtent(False, adsk.core.ValueInput.createByReal(d)) is not True:
+            raise RuntimeError('Fixture extent refused')
+        feature = comp.features.extrudeFeatures.add(ext)
+        if feature is None or feature.bodies.count != 1:
+            raise RuntimeError('Fixture extrusion refused')
+        feature.bodies.item(0).name = name + 'Body'
+        return occ
+    placed = adsk.core.Matrix3D.create()
+    if placed.setToRotation(math.radians(31), adsk.core.Vector3D.create(0, 0, 1),
+                            adsk.core.Point3D.create(0, 0, 0)) is not True:
+        raise RuntimeError('Fixture placement refused')
+    placed.translation = adsk.core.Vector3D.create(7, 3, 5)
+    chosen = part('CopyPart', placed, 3, 4, 2)
+    part('CopyControl', adsk.core.Matrix3D.create(), 1, 2, 3)
+    print(json.dumps({'occurrence': chosen.entityToken, 'path': chosen.fullPathName,
+                      'component': chosen.component.name}))
+'''
+
+_COMPONENT_COPY_READ = '''import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    doc = app.activeDocument
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    if design is None:
+        raise RuntimeError('Component copy read has no Design product')
+    root = design.rootComponent
+    def shape(body):
+        return {'name': body.name, 'solid': body.isSolid,
+                'volume_cm3': body.getPhysicalProperties(
+                    adsk.fusion.CalculationAccuracy.VeryHighCalculationAccuracy).volume,
+                'vertices_cm': sorted([v.geometry.asArray() for v in body.vertices])}
+    occurrences = []
+    for occ in root.allOccurrences:
+        occurrences.append({'path': occ.fullPathName, 'component': occ.component.name,
+                            'frame': list(occ.transform2.asArray()),
+                            'local_bodies': [shape(b) for b in occ.component.bRepBodies]})
+    try:
+        data_file = doc.dataFile
+    except Exception:
+        data_file = None
+    print(json.dumps({'name': doc.name, 'saved': doc.isSaved, 'modified': doc.isModified,
+        'document_id': data_file.id if data_file is not None else None,
+        'root_bodies': [shape(b) for b in root.bRepBodies], 'occurrences': occurrences,
+        'timeline': [{'name': design.timeline.item(i).name,
+                      'health': int(design.timeline.item(i).healthState)}
+                     for i in range(design.timeline.count)],
+        'parameters': sorted([{'name': p.name, 'expression': p.expression, 'value': p.value}
+                             for p in design.allParameters], key=lambda p: p['name'])}))
+'''
+
+
+def _component_copy_fixture(p):
+    """Require the fixture to choose one exact occurrence in a two-part design."""
+    row = _script_reply(p)
+    return _measured("two-part component-copy fixture selected one occurrence",
+                     row, bool(row.get("occurrence")) and row.get("component") == "CopyPart"
+                     and row.get("path") == "CopyPart:1")
+
+
+def _component_copy_before(p):
+    """Record an independent source geometry and history baseline."""
+    row = _script_reply(p)
+    occs = row.get("occurrences") or []
+    chosen = next((o for o in occs if o.get("component") == "CopyPart"), {})
+    control = next((o for o in occs if o.get("component") == "CopyControl"), {})
+    frame = chosen.get("frame") or []
+    _RECALL["cc_source_before"] = row
+    _RECALL["cc_selected_local"] = (chosen.get("local_bodies") or [None])[0]
+    _RECALL["cc_selected_history"] = [t for t in row.get("timeline") or []
+                                       if t.get("name") in ("CopyPartProfile", "Extrude1")]
+    return _measured("source has placed chosen part and separate control",
+                     {"occurrences": occs, "timeline": row.get("timeline"),
+                      "parameters": row.get("parameters")},
+                     row.get("saved") is False and row.get("modified") is True
+                     and len(occs) == 2 and len(frame) == 16
+                     and _near(frame[3], 7, 1e-8) and _near(frame[7], 3, 1e-8)
+                     and _near(frame[11], 5, 1e-8)
+                     and len(chosen.get("local_bodies") or []) == 1
+                     and len(control.get("local_bodies") or []) == 1
+                     and len(row.get("timeline") or []) == 6
+                     and len(row.get("parameters") or []) == 4)
+
+
+def _component_copy_source_unchanged(p):
+    """Compare a fresh native read to the pre-publication source snapshot."""
+    row = _script_reply(p)
+    before = _RECALL.get("cc_source_before")
+    return _measured("component publication kept source geometry, placement and history",
+                     {"before": before, "after": row}, row == before)
+
+
+def _component_copy_started(p):
+    """Require a held future with no claimed cloud lineage at start."""
+    return _measured("component copy started without a claimed finished file",
+                     {"copy_started": p.get("copy_started"), "upload_handle": p.get("upload_handle"),
+                      "requested_name": p.get("requested_name"),
+                      "destination_folder": p.get("destination_folder")},
+                     p.get("copy_started") is True and bool(p.get("upload_handle"))
+                     and p.get("requested_name") == _COMPONENT_COPY_NAME
+                     and p.get("destination_folder") == FOLDER
+                     and "copied_id" not in p and "file_id" not in p)
+
+
+def _component_copy_finished(p):
+    """Require the existing poller to read exact completed component publication."""
+    return _measured("component copy settled with an exact cloud lineage",
+                     {k: p.get(k) for k in ("state", "operation", "file_id", "file_name",
+                                              "destination_folder", "source_component")},
+                     p.get("state") == "complete" and p.get("operation") == "component_copy"
+                     and str(p.get("file_id") or "").startswith("urn:")
+                     and p.get("file_name") == _COMPONENT_COPY_NAME
+                     and p.get("destination_folder") == FOLDER
+                     and p.get("source_component") == "CopyPart")
+
+
+def _component_copy_cloud(p):
+    """Read the completed file through data_get rather than trusting the poller's echo."""
+    f, loc, state = p.get("file") or {}, p.get("location") or {}, p.get("state") or {}
+    return _measured("published file independently reads in the intended folder",
+                     {"file": f, "location": loc, "state": state},
+                     f.get("name") == _COMPONENT_COPY_NAME
+                     and f.get("id") == _RECALL.get("cc_copy_id")
+                     and (loc.get("parent_folder") or {}).get("path") == FOLDER
+                     and state.get("is_complete") is True)
+
+
+def _component_copy_opened(p):
+    """Compare the reopened design's raw geometry and history to the chosen local part."""
+    row = _script_reply(p)
+    before = _RECALL.get("cc_source_before") or {}
+    selected = _RECALL.get("cc_selected_local")
+    timeline = row.get("timeline") or []
+    parameters = row.get("parameters") or []
+    source_timeline = before.get("timeline") or []
+    source_parameters = before.get("parameters") or []
+    return _measured("reopened copy retains component-local geometry and editable history",
+                     {"copy": row, "source_selected_body": selected},
+                     row.get("document_id") == _RECALL.get("cc_copy_id")
+                     and row.get("name") == _COMPONENT_COPY_NAME
+                     and row.get("saved") is True and row.get("modified") is False
+                     and row.get("root_bodies") == [selected]
+                     and row.get("occurrences") == []
+                     and len(timeline) == 2 and all(t.get("health") == 0 for t in timeline)
+                     and [t.get("name") for t in timeline] ==
+                     [t.get("name") for t in source_timeline[1:3]]
+                     and len(parameters) == 2
+                     and parameters == source_parameters[:2])
+
+
+_CLOUD_COMPONENT_COPY = [
+    ("doc_get", {}, _home_document, ("cc_home", _recall("cc_home", _home_address))),
+    ("doc_new", {}, _new_document, ("cc_source", _recall("cc_source", lambda p: p["document_handle"]))),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_FIXTURE, "read_only": False},
+     _component_copy_fixture, ("cc_occurrence", lambda p: _script_reply(p)["occurrence"])),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_READ, "read_only": True},
+     _component_copy_before, None),
+    ("doc_copy", lambda c: {"occurrence": _ctx_get(c, "cc_occurrence", "selected component"),
+                             "name": _COMPONENT_COPY_NAME, "project": PROJECT, "folder": FOLDER,
+                             "expect_document": _ctx_get(c, "cc_source", "source scratch")},
+     _component_copy_started, ("cc_upload", lambda p: p["upload_handle"])),
+    ("data_get_upload_status", lambda c: {"handle": _ctx_get(c, "cc_upload", "copy future")},
+     _component_copy_finished, ("cc_copy_id", _recall("cc_copy_id", lambda p: p["file_id"]))),
+    ("data_get", lambda c: {"file": _ctx_get(c, "cc_copy_id", "copy lineage")},
+     _component_copy_cloud, None),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_READ, "read_only": True},
+     _component_copy_source_unchanged, None),
+    ("doc_open", lambda c: {"file_id": _ctx_get(c, "cc_copy_id", "copy lineage"),
+                            "force_api_open": True,
+                            "expect_document": _ctx_get(c, "cc_source", "source scratch")},
+     _opened(_COMPONENT_COPY_NAME, lambda: _RECALL.get("cc_copy_id")),
+     ("cc_copy_session", _recall("cc_copy_session", lambda p: p["document_handle"]))),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_READ, "read_only": True},
+     _component_copy_opened, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "cc_source", "source scratch")},
+     _activated(), None),
+    ("sys_execute_script", {"script": _COMPONENT_COPY_READ, "read_only": True},
+     _component_copy_source_unchanged, None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "cc_copy_session", "copy document"),
+                              "save_changes": False,
+                              "expect_document": _ctx_get(c, "cc_source", "source scratch")},
+     _document_closed, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "cc_home", "home document")},
+     _activated(), None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "cc_source", "source scratch"),
+                              "save_changes": False,
+                              "expect_document": _ctx_get(c, "cc_home", "home document")},
+     _document_closed, None),
+    ("doc_get", {}, lambda p: _home_address(p) == _RECALL.get("cc_home")
+     and p.get("open_count") >= 1 and all(
+         r.get("document_handle") not in {_RECALL.get("cc_source"),
+                                          _RECALL.get("cc_copy_session")}
+         for r in p.get("open_documents") or []), None),
 ]

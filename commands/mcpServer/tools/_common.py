@@ -7,45 +7,86 @@ and cm-based unit ``scale``/``UNIT_TO_CM``."""
 
 import json
 import math
-import re
 
 import adsk.core
 import adsk.fusion
 
+from ._read_primitives import safe
+from ._design_primitives import MODE_DIRECT, current_design_type
+from ._design_primitives import _HealthName, timeline_health, timeline_message  # noqa: F401 - helper exports
+from ._design_primitives import _MESSAGE_MARKUP, _MESSAGE_GLUE, _MESSAGE_LIMIT  # noqa: F401 - helper exports
+from ._feature_address import feature_address
+
 MAP_BLURB = (
-    "response+resolve: ok/error/safe (per-FIELD, never a MUTATION), "
-    "measured/read_flag/counted (None, not 0), design/target_component, "
-    "find_sketch/resolve_sketch (shared name REFUSED), timeline_health/timeline_message/"
-    "set_verified/rolled_to (effect reads; ONE roll-restore), same_component/native_identity/occurrence_walk/"
-    "broken_reference (TRI-STATE), scale/iter_collection/named_with_remainder/told_apart")
+    "core: ok/error/unwrap/normalize_include/safe (reads only), "
+    "read_optional/measured/read_flag/counted/finite_number, design/require_design/target_component, "
+    "find_sketch, timeline_health/timeline_message/"
+    "set_verified/rolled_to (effect; roll-restore), same_component/native_identity/occurrence_walk/"
+    "broken_reference, box_center/box_extent/scale/iter_collection/named_with_remainder/told_apart")
 
 app = adsk.core.Application.get()
 
 
 # ── response builders (the MCP tool-result contract) ────────────────────────
 
-def ok(payload: dict) -> dict:
-    """A successful tool result: JSON-encodes ``payload`` as the text content."""
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}], "isError": False}
+def ok(payload=None, *, content=None, message=None) -> dict:
+    """Return a success with JSON payload or supplied MCP content blocks."""
+    blocks = content if content is not None else [
+        {"type": "text", "text": json.dumps(payload, indent=2)}]
+    result = {"content": blocks, "isError": False}
+    if message is not None:
+        result["message"] = message
+    return result
 
 
-def error(text: str) -> dict:
-    """A failed tool result. ``message`` mirrors the text so callers can read either field."""
-    return {"content": [{"type": "text", "text": text}], "isError": True, "message": text}
-
-
-# ── safe getter ─────────────────────────────────────────────────────────────
-
-def safe(getter, default=None):
-    """Call ``getter()`` and swallow any exception, returning ``default`` - the per-FIELD read
-    guard for a Fusion object model where a missing property raises. Never around a MUTATION."""
-    try:
-        return getter()
-    except Exception:
-        return default
+def error(text: str, payload=None, *, message=None) -> dict:
+    """A failed result; an explicit message preserves the payload and supplies its envelope summary."""
+    if payload is None:
+        content = text
+    elif message is not None:
+        content = json.dumps(payload, indent=2)
+    else:
+        body = dict(payload)
+        note = body.get("note")
+        if isinstance(note, str) and (note == text or note.startswith(text + " ")):
+            body = {"note": body.pop("note"), **body}
+        else:
+            body.pop("error", None)
+            body = {"error": text, **body}
+        content = json.dumps(body, indent=2)
+    return {"content": [{"type": "text", "text": content}], "isError": True,
+            "message": text if message is None else message}
 
 
 _UNREADABLE = object()      # a getter that RAISED - distinct from one that returned None
+
+
+def normalize_include(include):
+    """Return normalized slice names from a list, comma-string, or absent selector."""
+    if include in (None, "", []):
+        return []
+    if isinstance(include, str):
+        return [s.strip().lower() for s in include.split(",") if s.strip()]
+    return [str(s).strip().lower() for s in include]
+
+
+def unwrap(result):
+    """Return (decoded payload, None), or (None, original result) on error or decode failure."""
+    if result.get("isError"):
+        return None, result
+    try:
+        return json.loads(result["content"][0]["text"]), None
+    except Exception:
+        return None, result
+
+
+def read_optional(getter):
+    """(value, None), or (None, why) when a field raises or answers nothing."""
+    try:
+        value = getter()
+    except Exception as exc:
+        return None, str(exc) or type(exc).__name__
+    return (value, None) if value is not None else (None, "the read answered nothing")
 
 
 def read_flag(getter):
@@ -75,6 +116,17 @@ def counted(getter):
     return int(n) if isinstance(n, int) and not isinstance(n, bool) else None
 
 
+def finite_number(value, text=False):
+    """float(value) for a finite non-bool number (and numeric text when `text`), else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str) if text else (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 # ── design / component resolution ───────────────────────────────────────────
 
 def design():
@@ -85,6 +137,16 @@ def design():
         d = safe(lambda: adsk.fusion.Design.cast(
             app.activeDocument.products.itemByProductType('DesignProductType')))
     return d
+
+
+def require_design(remedy=None, *, none_only=False):
+    """Return (active design, None), or (None, the shared no-active-design refusal)."""
+    active = design()
+    absent = active is None if none_only else not active
+    if absent:
+        fix = remedy or "Create or open a document first (see doc_new)."
+        return None, error(f"No active design. {fix}")
+    return active, None
 
 
 def target_component(d):
@@ -196,6 +258,13 @@ def broken_reference(occ):
     except Exception as exc:                    # noqa: BLE001 - the raise IS the signal
         return True, (str(exc) or type(exc).__name__)
     return False, None
+
+
+def ground_flags(occ):
+    """{'grounded', 'ground_to_parent'} for ONE occurrence: the UI Ground/Fix flag and the parent
+    lock, two native flags read apart - the one read assembly_get and workspace_orient share."""
+    return {"grounded": bool(safe(lambda: occ.isGrounded, False)),
+            "ground_to_parent": bool(safe(lambda: occ.isGroundToParent, False))}
 
 
 # The walk that produced an occurrence census, published beside every count it feeds.
@@ -586,13 +655,17 @@ def named_with_remainder(items, cap=_MAX_NAMED_CANDIDATES):
 _ECHO_CHARS = 60
 
 
+_MEASURED_EXTENSION_REFUSALS = (
+    "Manufacturing or Design Extension is required",
+    "Requires the Manufacturing Extension to be active",
+)
+
+
 def entitlement_clause(exc, needs, alternative):
-    """The next step after a platform raise names a missing extension, else '': what this install
-    lacks, where that reads, and the route that still works."""
-    if "xtension" not in str(exc):
+    """Add the action requirement and alternative only for a measured extension refusal."""
+    if not any(text in str(exc) for text in _MEASURED_EXTENSION_REFUSALS):
         return ""
-    return (f" This install carries no {needs} entitlement (workspace_orient's "
-            f"machining_capabilities.entitled reads it); {alternative}.")
+    return f" This operation requires the {needs}; {alternative}."
 
 
 def short_ref(value):
@@ -763,12 +836,6 @@ def find_sketch_in(d, name, comp, label, input_name="component"):
                   + (named_with_remainder(held) or "(no sketches)") + ".")
 
 
-def resolve_sketch(d, name):
-    """The live Sketch a name addresses design-wide, or None both when NO sketch carries it and
-    when SEVERAL do. A caller that can surface WHY calls ``find_sketch``."""
-    return find_sketch(d, name)[0]
-
-
 def find_or_recent_sketch(d, name, remedy=None):
     """(sketch-or-None, the stripped name or None when blank, ambiguity_error-or-None): a NAME
     resolves design-wide, an EMPTY name means the most recent sketch in the ACTIVE component, and
@@ -885,9 +952,7 @@ def direct_feature_absence(design, feature) -> bool:
     """True when a falsy Features.*.add() return is the DIRECT-mode shape rather than a failure -
     it never says anything LANDED (a direct combine of two non-touching bodies returned None with
     body count and volume unmoved), so the caller confirms its effect off the MODEL."""
-    # _inputs imports _common, so the ONE mode reader is bound at call time, not at import.
-    from . import _inputs
-    return not feature and _inputs.current_design_type(design) == _inputs.MODE_DIRECT
+    return not feature and current_design_type(design) == MODE_DIRECT
 
 
 def null_feature_note(design, feature, base_feature_name, what) -> str:
@@ -917,14 +982,34 @@ def body_count(host):
     return safe(lambda: host.bRepBodies.count)
 
 
-def failed_effect_remedy(design, feature) -> str:
-    """The remediation sentence a wrong-effect error ends with - the timeline entry to delete, or
-    Fusion's own undo where direct mode leaves neither a feature nor a timeline to name."""
-    if direct_feature_absence(design, feature):
+def left_in_timeline(design, address):
+    """The retained item's design_delete_feature sentence, or the undo one in DIRECT mode."""
+    # A direct design's timeline read raises (measured), so design_delete_feature has no row to take.
+    if current_design_type(design) == MODE_DIRECT:
         return ("This design is in DIRECT mode: there is no timeline feature to remove, so whatever "
                 "did change is already in the model - undo in Fusion, or re-run with corrected "
                 "inputs.")
-    return "The feature remains in the timeline; remove it with design_delete_feature."
+    if not address:
+        return "The feature remains in the timeline; remove it with design_delete_feature."
+    return (f"'{address}' remains in the timeline; remove it with "
+            f"design_delete_feature(feature='{address}').")
+
+
+def failed_effect_remedy(design, feature) -> str:
+    """The remediation sentence a wrong-effect error ends with, naming `feature`'s timeline row."""
+    return left_in_timeline(design, feature_address(feature))
+
+
+def delete_failed_feature(design, feature):
+    """(deleted, sentence): run the deleteMe a failed write already applies to its own `feature`."""
+    remedy = failed_effect_remedy(design, feature)
+    try:
+        removed = feature.deleteMe()
+    except Exception as exc:
+        return False, f"Deleting it raised ({str(exc)[:120]}). {remedy}"
+    if removed is True:
+        return True, "Deleting it returned True."
+    return False, f"Deleting it returned {removed!r}. {remedy}"
 
 
 def no_feature_error(design, what, hint="") -> str:
@@ -941,102 +1026,57 @@ def no_feature_error(design, what, hint="") -> str:
     return text
 
 
-class _HealthName(str):
-    """One unhealthy timeline item's name that serializes as the name while ``==`` compares the
-    row's ENTITY token - timeline names are NOT unique across components (measured), so a bare-name
-    diff is blind to a namesake's damage. ``__hash__`` stays the NAME's hash."""
-
-    def __new__(cls, name, token=None):
-        obj = str.__new__(cls, name)
-        obj.token = token or None
-        return obj
-
-    def __eq__(self, other):
-        mine, theirs = self.token, getattr(other, "token", None)
-        if mine and theirs:
-            return mine == theirs
-        return str.__eq__(self, other)
-
-    def __ne__(self, other):
-        same = self.__eq__(other)
-        return same if same is NotImplemented else not same
-
-    __hash__ = str.__hash__
+def marker_clause(was, now, during):
+    """The clause for a timeline marker that did not come back to `was` around `during`."""
+    return (f"the timeline marker stood at {was} before {during} and reads {now} after it - "
+            "roll it back with design_edit_timeline")
 
 
-def timeline_health(design, limit=None):
-    """(error_names, warning_names, total) over the parametric timeline by healthState (2=error,
-    1=warning) - the shared before/after guard for edits that break downstream features; a direct
-    design yields empty lists. Each name is a ``_HealthName``, compared on the row's entity token."""
-    # ``limit`` bounds the walk to the first n items, keeping a CREATE's guard off the entry it just
-    # added: a freshly added assembly constraint's own healthState RAISES '1 : Unknown exception'
-    # (measured), and that caught error inside Python.Run rolled the whole transaction back.
-    errors, warnings, total = [], [], 0
-    tl = safe(lambda: design.timeline)
-    if tl is None:
-        return errors, warnings, total
-    count = safe(lambda: tl.count, 0) or 0
-    if limit is not None:
-        count = min(count, max(int(limit), 0))
-    for i in range(count):
-        it = tl.item(i)
-        total += 1
-        hs = safe(lambda it=it: it.healthState)
-        if hs not in (1, 2):
-            continue
-        # A TimelineObject carries no entityToken of its own; the ENTITY it stands for does, and
-        # that token re-reads identical within a session (measured). TimelineObject.entity is None
-        # for a group row and for a feature class with no public-API form, which keys on its name.
-        label = _HealthName(safe(lambda it=it: it.name) or f"#{i}",
-                            safe(lambda it=it: it.entity.entityToken))
-        (errors if hs == 2 else warnings).append(label)
-    return errors, warnings, total
-
-
-# A timeline row's errorOrWarningMessage carries <b>/<br/> markup, glues its 'Body N missing'
-# items and sentences together, and ends with the row's own name after the last sentence.
-_MESSAGE_MARKUP = re.compile(r"<[^>]*>")
-_MESSAGE_GLUE = re.compile(r"(?<=missing)(?=[A-Z0-9])|(?<=[.!?])(?=[A-Z])")
-_MESSAGE_LIMIT = 400
-
-
-def timeline_message(raw, name=None, limit=_MESSAGE_LIMIT):
-    """A timeline errorOrWarningMessage as '; '-joined plain text, less the row's `name` suffix."""
-    text = raw if isinstance(raw, str) else ""
-    if isinstance(name, str) and name and text.endswith(name):
-        text = text[:-len(name)]
-    items = []
-    for part in _MESSAGE_MARKUP.split(text):
-        for item in _MESSAGE_GLUE.split(part):
-            item = " ".join(item.split()).rstrip(".")
-            if item:
-                items.append(item)
-    text = "; ".join(items)
-    return text[:limit].rstrip() + " ..." if len(text) > limit else text
-
-
-def rolled_to(design, entity, read, subject):
-    """(what `read()` answered with the timeline marker parked at `entity`'s own row, a clause for a
-    marker that did not come back where it stood) - (None, None) when the roll could not run.
-
-    `subject` names the read inside that clause."""
+def rolled_to(design, entity, read, subject, park=None):
+    """(read() at `entity`'s row, a marker clause naming `subject`), marker back at `park` or `was`."""
     # Some properties answer ONLY with the marker before their own row ("Didn't roll editing feature
     # back"; "referencePlane is a BRefFace"). The marker is put back WHERE IT STOOD: moveToEnd
     # instead rolls a deliberately parked marker past the features it was parked before.
     timeline = safe(lambda: design.timeline)
     tl_obj = safe(lambda: entity.timelineObject)
     was = counted(lambda: timeline.markerPosition) if timeline is not None else None
+    back = was if park is None else park
     if tl_obj is None or was is None or safe(lambda: tl_obj.rollTo(True)) is not True:
         return None, None
     try:
         got = read()
     finally:
-        safe(lambda: setattr(timeline, "markerPosition", was))
+        safe(lambda: setattr(timeline, "markerPosition", back))
     now = counted(lambda: timeline.markerPosition)
-    if now == was:
+    if now == back:
         return got, None
-    return got, (f"the timeline marker stood at {was} before {subject} was read and reads {now} "
-                 "after it - roll it back with design_edit_timeline")
+    return got, marker_clause(back, now, f"{subject} was read")
+
+
+def _said(value):
+    """A read value as an outcome sentence quotes it."""
+    return "unread" if value is None else value
+
+
+def outcome_clause(state, subject, rows=(), remedy="", evidence=""):
+    """A failed edit's kept/rolled_back/rollback_failed/unconfirmed/unchanged sentence over (field, now, was)."""
+    if state == "rolled_back":
+        text = "It was rolled back and re-read: " + "; ".join(
+            f"{field} reads {_said(was)} again" for field, _now, was in rows)
+        return text + (f"; {evidence}." if evidence else ".")
+    if state == "unchanged":
+        return "Nothing changed: " + "; ".join(
+            f"{field} still reads {_said(was)}" for field, _now, was in rows) + " (re-read)."
+    if state == "unconfirmed":
+        return (f"Whether {subject} changed is UNCONFIRMED ({evidence}); read {remedy} before "
+                "retrying - a retry may apply it twice.")
+    lead = ("This STAYED APPLIED (not rolled back): " if state == "kept"
+            else "A rollback ran but did not verify: ")
+    text = lead + "; ".join(f"{field} now reads {_said(now)} (was {_said(was)})"
+                            for field, now, was in rows) + "."
+    if evidence:
+        text += f" {evidence[0].upper()}{evidence[1:]}."
+    return text + (f" {remedy}" if remedy else "")
 
 
 # A before/after volume difference (cm3) smaller than this is NO CHANGE - the ONE band every
@@ -1102,6 +1142,48 @@ def ptxyz(p, f):
     if not all(math.isfinite(c) for c in scaled):
         return None
     return {"x": round(scaled[0], 6), "y": round(scaled[1], 6), "z": round(scaled[2], 6)}
+
+
+def occurrence_world_translation(occ, factor=1.0):
+    """A current-assembly occurrence's world translation, scaled by factor, or None."""
+    unknown = object()
+    context = safe(lambda: occ.assemblyContext, unknown)
+    if context is unknown:
+        return None
+    if context is None:
+        comp = safe(lambda: occ.component)
+        path = safe(lambda: occ.fullPathName)
+        current = safe(design)
+        if comp is None or not isinstance(path, str) or not path or current is None:
+            return None
+        placed = safe(lambda: current.rootComponent.allOccurrencesByComponent(comp))
+        count = counted(lambda: placed.count)
+        if count is None or count < 0:
+            return None
+        matches = []
+        for index in range(count):
+            candidate = safe(lambda: placed.item(index))
+            parent = safe(lambda: candidate.assemblyContext, unknown)
+            if parent is unknown:
+                return None
+            if parent is not None:
+                continue
+            candidate_path = safe(lambda: candidate.fullPathName)
+            if not isinstance(candidate_path, str) or not candidate_path:
+                return None
+            if candidate_path == path:
+                matches.append(candidate)
+        if len(matches) != 1:
+            return None
+        occ = matches[0]
+    return ptxyz(safe(lambda: occ.transform2.translation), factor)
+
+
+def box_center(box):
+    """Return a box's unrounded (x, y, z) midpoint in its own coordinate space."""
+    return ((box.minPoint.x + box.maxPoint.x) / 2,
+            (box.minPoint.y + box.maxPoint.y) / 2,
+            (box.minPoint.z + box.maxPoint.z) / 2)
 
 
 def box_extent(box, f):
@@ -1268,9 +1350,8 @@ def _midpoint_sketch_point(sketch, line):
     return pt, None
 
 
-def anchor_point(sketch, entity, anchor):
-    """(point, error) for the SketchPoint an anchored ref names - mid/midpoint CREATES a welded
-    point, where every other anchor only reads one."""
+def anchor_preflight(entity, anchor):
+    """Return (existing point, refusal) without creating a midpoint or constraint."""
     start = safe(lambda: entity.startSketchPoint)
     end = safe(lambda: entity.endSketchPoint)
     center = safe(lambda: entity.centerSketchPoint)
@@ -1283,6 +1364,16 @@ def anchor_point(sketch, entity, anchor):
     # mid / midpoint - a line only (a well-defined addMidPoint target; a circle/arc uses 'center')
     if center is not None or start is None or end is None:
         return None, "anchor 'mid' applies to a LINE (line:N:mid); for a circle/arc use 'center'."
+    return None, None
+
+
+def anchor_point(sketch, entity, anchor):
+    """Return (point, error), creating a welded point only for a midpoint anchor."""
+    point, refusal = anchor_preflight(entity, anchor)
+    if refusal:
+        return None, refusal
+    if point is not None:
+        return point, None
     return _midpoint_sketch_point(sketch, entity)
 
 
@@ -1295,107 +1386,6 @@ OPERATIONS = {
     "intersect": "IntersectFeatureOperation",
     "new_component": "NewComponentFeatureOperation",
 }
-
-
-# ── the ONE path resolver (sweep / pipe / path pattern / on-path datum) ──────
-
-def build_path(comp, path_raw):
-    """(path, label, error): 'sketch:<name>' chains that sketch's connected curves, ONE edge handle
-    chains from that seed across TANGENT connections (a sharp corner stops the chain, so the built
-    Path's count is the truth), and a JSON list of handles is used exactly. Requesting chaining is
-    not getting it, so the label reports that BUILT count."""
-    # _inputs imports _common, so the edge-handle kind is bound at call time rather than at import.
-    from . import _inputs
-    if isinstance(path_raw, str) and path_raw.strip().lower().startswith("sketch:"):
-        nm = path_raw.split(":", 1)[1].strip()
-        sk, _ = target_sketch(comp, nm)
-        if not sk:
-            return None, None, f"No sketch named '{nm}' for the path. Use sketch_get or sketch_create."
-        curves = safe(lambda: sk.sketchCurves)
-        cn = safe(lambda: curves.count, 0) if curves else 0
-        if not cn:
-            return None, None, f"Path sketch '{nm}' has no curves to build a path from."
-        # Every non-construction curve as ONE unchained collection: separately drawn curves keep
-        # their own SketchPoints (a seed chain stops at the first join) and the static Path.create
-        # raises on native sketch curves in every context (measured); this call takes them all.
-        coll = adsk.core.ObjectCollection.create()
-        for c in iter_collection(curves):
-            if not bool(safe(lambda c=c: c.isConstruction, False)):
-                coll.add(c)
-        p = None
-        if safe(lambda: coll.count, 0):
-            try:
-                built = comp.features.createPath(coll, False)
-            except Exception:
-                built = None
-            if built is not None and (counted(lambda: built.count) or 0) > 0:
-                p = built
-        if p is None:
-            seed = safe(lambda: curves.item(0))
-            try:
-                p = comp.features.createPath(seed, True) # isChain=True: chain the connected curves
-            except Exception as e:
-                return None, None, f"Could not build a path from sketch '{nm}': {e}"
-        if not p:
-            return None, None, f"createPath returned nothing for sketch '{nm}'."
-        return p, f"sketch:{nm}", None
-
-    # A single handle is kept whole - a composite handle carries commas in its locator, so it must
-    # NOT be comma-split; several must arrive as a JSON list.
-    if path_raw in (None, "", []):
-        return None, None, ("'path' is required: a find_geometry edge 'handle' (or a JSON list of "
-                            "them), or 'sketch:<name>' for a path sketch.")
-    handles = [path_raw] if isinstance(path_raw, str) else list(path_raw)
-    edges, err = _inputs.GeometryHandleList("path", require="edge").resolve(handles)
-    if err:
-        return None, None, err
-    if len(edges) == 1:
-        try:
-            p = comp.features.createPath(edges[0], True) # request chaining from the seed edge
-        except Exception as e:
-            return None, None, f"Could not build a path from the edge: {e}"
-    else:
-        coll = adsk.core.ObjectCollection.create()
-        for e in edges:
-            coll.add(e)
-        try:
-            # Multiple edges: use them exactly (noChainedCurves); they must connect into one path.
-            p = adsk.fusion.Path.create(coll, adsk.fusion.ChainedCurveOptions.noChainedCurves)
-        except Exception as e:
-            return None, None, f"Could not build a path from the {len(edges)} edges: {e}"
-    if not p:
-        return None, None, "Path build returned nothing (the edges may not connect into one path)."
-    # MEASURED behind the tangent rule: an arc seed between two tangent lines built a 3-entity
-    # path, a tangent-continuous closed loop chained all 8 of its edges from one seed, and a sharp
-    # corner stopped it - open vs closed does not decide it.
-    built = safe(lambda: int(p.count), 0) or 0
-    how = ("from 1 seed handle" if len(edges) == 1
-           else f"from {len(edges)} handles, used exactly")
-    return p, (f"{built} edge(s) {how}" if built else f"{how}; edge count unreadable"), None
-
-
-def path_sketch_curve_count(comp, path_raw):
-    """How many SWEEPABLE (non-construction) curves the sketch a 'sketch:<name>' path names holds -
-    None for any other path form or an unreadable sketch."""
-    if not (isinstance(path_raw, str) and path_raw.strip().lower().startswith("sketch:")):
-        return None
-    sk, _ = target_sketch(comp, path_raw.split(":", 1)[1].strip())
-    if sk is None:
-        return None
-    curves = safe(lambda: sk.sketchCurves)
-    if counted(lambda: curves.count) is None:
-        return None
-    return sum(1 for c in iter_collection(curves) if not bool(safe(lambda c=c: c.isConstruction, False)))
-
-
-def path_chain_warning(path_curves, sketch_curves, action):
-    """The WARNING clause for a path that chained fewer curves than its sketch holds - '' when it
-    covers all of them or either count is unreadable. `action` names the geometric verb (sweep/pipe)."""
-    if path_curves is None or sketch_curves is None or path_curves >= sketch_curves:
-        return ""
-    return (f"WARNING: the path chained {path_curves} of the sketch's {sketch_curves} curves, so "
-           f"the {action} covers only that run - chaining follows tangent continuity and a sharp "
-           f"corner stops it. Make the junction tangent, or {action} each run separately.")
 
 
 def iter_collection(coll):

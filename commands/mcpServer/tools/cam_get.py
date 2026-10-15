@@ -1,11 +1,9 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""The rich CAM read (CLAUDE.md "Reads are RICH"): the active document's CAM state, zoomed via
+"""The rich CAM read (AGENTS.md "Reads are RICH"): the active document's CAM state, zoomed via
 include=[...]. The handler is a thin router over _slice_*() helpers, one per slice. Operation
 validity is only trustworthy once the Manufacture workspace has been entered."""
-
-import json
 
 import adsk.core
 import adsk.cam
@@ -15,19 +13,21 @@ from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import (CM_TO_UNIT, iter_collection, measured, named_with_remainder, ok, error,
                       read_flag, safe, terse)
+from ._common import normalize_include as _normalize_include, unwrap as _unwrap
 from ._cam_common import (STRATEGY_PAIR_NOTE, choice_expressions, clamp_rows, expression_error,
                           get_cam, find_setup, resolve_cam_node, resolve_operation, strategy_pair)
 from . import _cam_common as _cc
-from ._cam_presets import _preset_names, _presets_named
+from ._cam_presets import _preset_expressions, _preset_names, _presets_named
 from ..guidance.loader import STRATEGY_RECIPE_ID
 from . import _inputs
 from . import _cam_read as _cr
+from . import _cam_additive
 
 app = adsk.core.Application.get()
 
 _SLICES = ("operations", "strategies", "parameters", "tool", "references", "nc_programs", "time",
            "tools", "library", "library_types", "machine", "machines", "print_settings",
-           "templates", "inspection")
+           "templates", "inspection", "print_setting", "placement", "additive_results")
 
 # The slices that read CAMManager.libraryManager rather than the document's CAM product. A read of
 # these ALONE answers on a document that has never entered Manufacture, so it skips get_cam().
@@ -46,16 +46,6 @@ _OP_NOISE = {"is_generating": False, "is_suppressed": False, "is_optional": Fals
 
 
 # ── slice helpers - each calls a read core in _cam_read, then shapes and bounds its payload ───────
-
-def _unwrap(result):
-    """(payload, None) on ok; (None, error_result) on error (so a slice's own guard can surface)."""
-    if result.get("isError"):
-        return None, result
-    try:
-        return json.loads(result["content"][0]["text"]), None
-    except Exception:
-        return None, result
-
 
 def _slice_setups(cam, setup, units):
     """The setups orientation default: machine + model/fixture/stock + per-setup operation_count (the
@@ -113,8 +103,8 @@ def _slice_operations(cam, setup):
                 emitted += 1
             su["operations"] = rows
         if payload.get("truncated"):
-            payload["note"] = (f"Operation rows capped at {_OPERATIONS_CAP} - 'setup' scopes to one, "
-                               "or include 'default' for the per-setup operation_count. "
+            payload["note"] = (f"Operation rows capped at {_OPERATIONS_CAP}; 'setup' scopes, "
+                               "'default' keeps setup counts. "
                                + (payload.get("note") or ""))
     return payload, err
 
@@ -193,9 +183,9 @@ def _slice_references(cam, setup):
 
 
 def _slice_nc_programs(cam):
-    """The NC/post programs - SUMMARY only (name, machine, post, op count + post_parameter_count). The
+    """NC/post summary: listing name, emitted number, machine, post, counts and parameter count. The
     full post_parameters are the post's static schema (often 60+ rows, identical across programs), a
-    deeper level not dumped here - point at it rather than flooding (CLAUDE.md 'point, don't inline')."""
+    deeper level not dumped here - point at it rather than flooding (AGENTS.md 'point, don't inline')."""
     payload, err = _unwrap(_cr.get_nc_programs_handler())
     if payload:
         for p in payload.get("nc_programs", []):
@@ -222,17 +212,76 @@ def _slice_machine(cam, setup, units):
     return _unwrap(_cr.get_machine_limits_handler(setup=setup, units=units))
 
 
+def _additive_setup(cam, setup, slice_name, units="mm"):
+    """(the one additive setup a slice reads, None) or (None, error)."""
+    if units not in CM_TO_UNIT:
+        return None, error(f"Unknown units '{units}'. Use mm, cm, or in.")
+    if not (setup or "").strip():
+        return None, error(f"include=['{slice_name}'] reads one additive setup; pass 'setup'.")
+    found, _names, serr = _cc.find_setup(cam, setup)
+    if not found:
+        return None, error(serr)
+    if not _cc.is_additive_setup(found):
+        return None, error(f"Setup '{setup}' is not additive, so it has no {slice_name}.")
+    return found, None
+
+
+def _slice_print_setting(cam, setup, units):
+    """One additive setup's print setting and printer as the setup holds them."""
+    found, serr = _additive_setup(cam, setup, "print_setting", units)
+    if serr:
+        return None, serr
+    row = _cam_additive.print_setting_row(found)
+    if row is None:
+        return None, error(f"The print setting of setup '{setup}' did not read.")
+    return {"setup": safe(lambda: found.name), **row,
+            "printer": _cam_additive.printer_row(found, CM_TO_UNIT[units]), "units": units}, None
+
+
+def _slice_placement(cam, setup, units):
+    """Where each part of one additive setup sits on the Manufacture side."""
+    found, serr = _additive_setup(cam, setup, "placement", units)
+    if serr:
+        return None, serr
+    rows, reason = _cam_additive.placement_rows(cam, found, CM_TO_UNIT[units])
+    if reason:
+        return None, error(reason)
+    return {"setup": safe(lambda: found.name), "frame": "manufacture", "units": units, "parts": rows,
+            "note": "Each 'pose' is the part's Manufacture-side transform (16 cells, row-major, "
+                    "translation in 'units'); orientation and arrange move it, the design does not "
+                    "change."}, None
+
+
+def _slice_additive_results(cam, operation, setup):
+    """What one additive operation holds: its parts, state, and typed results."""
+    if not (operation or "").strip():
+        return None, error("include=['additive_results'] reads one operation; pass 'operation'.")
+    op, oerr = _resolve_op_in_scope(cam, operation, setup)
+    if oerr:
+        return None, oerr
+    out = _cam_additive.additive_results(cam, op)
+    rows = out.get("orientation")
+    if rows is not None:
+        out["note"] = ("Orientation lengths, areas and volumes are in cm. Pass a candidate's 'index' "
+                       "to cam_edit_operation(orientation_candidate=...); current_index is null "
+                       "until one was chosen.")
+    return out, None
+
+
 def _slice_tools(cam):
     """The distinct cutting tools used across operations (the tool sheet)."""
     return _unwrap(_cr.get_tool_list_handler())
 
 
-def _slice_library(cam, scope, library, tool_type):
+def _slice_library(cam, scope, library, tool_type, library_tool=None, preset=""):
     """A tool LIBRARY's catalog (the tools you can ADD), by scope: document/local/cloud/hub/fusion.
     A shared scope with no 'library' lists the libraries there. Distinct from 'tools' (what ops USE);
     the write actions stay on cam_edit_tools, which refuses every write at the fusion scope."""
     from . import cam_edit_tools
-    return _unwrap(cam_edit_tools.read_library(scope or "document", library, tool_type))
+    if library_tool is None and not preset:
+        return _unwrap(cam_edit_tools.read_library(scope or "document", library, tool_type))
+    return _unwrap(cam_edit_tools.read_library(scope or "document", library, tool_type,
+                                               library_tool, preset))
 
 
 def _slice_library_types(cam):
@@ -241,6 +290,19 @@ def _slice_library_types(cam):
     tools); the add/remove/edit writes stay on cam_edit_tools."""
     from . import cam_edit_tools
     return _unwrap(cam_edit_tools._do_list_types())
+
+
+def _bounded(payload, max_results, *keys):
+    """payload with its first present `keys` list cut to 'max_results' (unset keeps every row)."""
+    key = next((k for k in keys if isinstance(payload.get(k), list)), None)
+    if key is not None:
+        rows = payload[key]
+        cap = clamp_rows(max_results, len(rows), len(rows))
+        payload[key] = rows[:cap]
+        payload["returned"] = len(payload[key])
+        # A slice's own truncated (its walk hit a bound) stays true beside this cap.
+        payload["truncated"] = bool(payload.get("truncated")) or cap < len(rows)
+    return payload
 
 
 def _slice_machines(cam, vendor, machine_type, max_results):
@@ -678,12 +740,6 @@ _SHARED_PRESET_NAME_NOTE = (
     "'preset' for the preset_names / preset_count / active_preset summary.")
 
 
-def _preset_expressions(preset):
-    """{parameter name: expression} for ONE tool preset - its feeds/speeds recipe as authored."""
-    return {safe(lambda p=p: p.name): safe(lambda p=p: p.expression)
-            for p in iter_collection(safe(lambda: preset.parameters))}
-
-
 def _slice_tool(cam, operation, preset, setup="", units="mm"):
     """ONE operation's tool: spec + cutting geometry + its preset NAMES (a tool can hold 20+);
     'preset' drills one preset's expressions (the feeds/speeds recipe). Requires 'operation'; 'setup'
@@ -749,11 +805,14 @@ def _slice_tool(cam, operation, preset, setup="", units="mm"):
 
 # ── the router ─────────────────────────────────────────────────────────────────────────────────────
 
-_VALIDITY_NOTE = "Readable from any workspace; operation validity only in Manufacture."
+_VALIDITY_NOTE = (
+    "validity_synced means checkValidity ran; summary basis 'checked' means synced Manufacture; "
+    "Design is unverified.")
 
 
 def handler(include=None, setup: str = "", operation: str = "", preset: str = "",
-            scope: str = "", library: str = "", tool_type: str = "", vendor: str = "",
+            scope: str = "", library: str = "", tool_type: str = "", library_tool=None,
+            vendor: str = "",
             machine_type: str = "", technology: str = "", material: str = "",
             template_location: str = "", template_url: str = "", template_depth: int = 0,
             measure: str = "", max_results: int = 0, units: str = "mm",
@@ -771,6 +830,14 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
             ) and "parameters" not in inc:
         return error("'parameter_names', 'include_unavailable' and 'unavailable_offset' apply only "
                      "with include=['parameters'].")
+    if library_tool is not None and "library" not in inc:
+        return error("'library_tool' needs include=['library']; first list that library for indices.")
+    if preset and library_tool is not None and "tool" in inc:
+        return error("'preset' cannot select both an operation tool and a library tool in one "
+                     "call. Read include=['tool'] and include=['library'] separately.")
+    if preset and "tool" not in inc and not ("library" in inc and library_tool is not None):
+        return error("'preset' needs include=['tool'] with operation=, or include=['library'] "
+                     "with library_tool=.")
 
     deep = [s for s in inc if s in _SLICES]
     want_default = not deep or any(s in _DEFAULT_NAMES for s in inc)
@@ -820,18 +887,37 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
         out["machine"], e = _slice_machine(cam, setup, units)
         if e:
             return e
+    if "print_setting" in inc:
+        out["print_setting"], e = _slice_print_setting(cam, setup, units)
+        if e:
+            return e
+    if "placement" in inc:
+        out["placement"], e = _slice_placement(cam, setup, units)
+        if e:
+            return e
+    if "additive_results" in inc:
+        out["additive_results"], e = _slice_additive_results(cam, operation, setup)
+        if e:
+            return e
     if "tools" in inc:
         out["tools"], e = _slice_tools(cam)
         if e:
             return e
+        _bounded(out["tools"], max_results, "tools")
     if "library" in inc:                        # the tool-library catalog (tools you can ADD)
-        out["library"], e = _slice_library(cam, scope, library, tool_type)
+        if library_tool is None:
+            out["library"], e = _slice_library(cam, scope, library, tool_type)
+        else:
+            out["library"], e = _slice_library(cam, scope, library, tool_type,
+                                                library_tool, preset)
         if e:
             return e
+        _bounded(out["library"], max_results, "tools", "libraries")
     if "library_types" in inc:                  # the from_type vocabulary add_tools clones from
         out["library_types"], e = _slice_library_types(cam)
         if e:
             return e
+        _bounded(out["library_types"], max_results, "types")
     if "machines" in inc:                       # the machine catalog (names cam_edit_setup accepts)
         out["machines"], e = _slice_machines(cam, vendor, machine_type, max_results)
         if e:
@@ -861,8 +947,7 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
     remaining = [s for s in _SLICES if s not in inc]
     lines = []
     if want_default and remaining:
-        lines.append("Setups orientation; other slices are the 'include' enum - 'setup' scopes, "
-                     "'operation' drills.")
+        lines.append("Default: setups; 'include' adds slices, 'setup' scopes, 'operation' drills.")
     if want_default or "operations" in inc:
         lines.append(_VALIDITY_NOTE)
     if lines:
@@ -872,17 +957,9 @@ def handler(include=None, setup: str = "", operation: str = "", preset: str = ""
     return ok(out)
 
 
-def _normalize_include(include):
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
-
-
 TOOL_DESCRIPTION = (
-    "Read the active document's CAM (Manufacture) state: one row per setup by default, deeper "
-    "slices via 'include'. Edits go through cam_edit_setup / cam_edit_operation / cam_edit_tools."
+    "Read CAM state: setup summary by default, deeper slices via 'include'. "
+    "Edits: cam_edit_setup, cam_edit_operation, cam_edit_tools."
 )
 
 tool = (
@@ -901,12 +978,14 @@ tool = (
     .add_input_property("unavailable_offset", {"type": "integer", "minimum": 0,
             "description": "Continues the unavailable listing."})
     .add_input_property("preset", {"type": "string",
-            "description": "With include=['tool']: this preset's feeds/speeds."})
+            "description": "With 'tool' or selected 'library' tool: cutting expressions."})
     .add_input_property("scope", {"type": "string",
             "enum": ["document", "local", "cloud", "hub", "fusion"],
             "description": "Location for 'library'; default document."})
     .add_input_property("library", {"type": "string",
             "description": "A name or url; omit to list the libraries there."})
+    .add_input_property("library_tool", {"type": "integer", "minimum": 0,
+            "description": "With 'library': index from its tool list; reads presets."})
     .add_input_property("tool_type", {"type": "string"})
     .add_input_property("vendor", {"type": "string"})
     .add_input_property("machine_type", {"type": "string",

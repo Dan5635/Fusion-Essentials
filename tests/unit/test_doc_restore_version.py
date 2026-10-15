@@ -7,8 +7,9 @@ instant promote returns) and a tip that never moves is reported pending with wha
 guards (no cloud DataFile, unknown version, no selector, already-latest no-op).
 """
 
-import json
 import time
+
+import pytest
 
 from conftest import (FakeApplication, FakeData, FakeDataFile, FakeFusionDocument, error_message,
                       load_tool)
@@ -16,9 +17,7 @@ from conftest import (FakeApplication, FakeData, FakeDataFile, FakeFusionDocumen
 drv = load_tool("doc_restore_version")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _ver(num, promote_ok=True, promote_raises=None):
@@ -152,7 +151,34 @@ class TestRestoreHonesty:
         assert "latest reads unreadable" in out["note"]
 
 
+@pytest.fixture
+def selector_versions(monkeypatch):
+    def setup(refusal=False):
+        versions = [_ver(2), _ver(3)]
+        df = _df(5, versions)
+        _use(monkeypatch, _doc(df), fresh_latest=6)
+        if refusal:
+            for version in [df, *versions]:
+                monkeypatch.setattr(version, "promote", lambda: pytest.fail("must not promote"))
+    return setup
+
+
 class TestGuards:
+    @pytest.mark.parametrize("number,vid", [(2, "urn:v:3"), (99, "urn:v:2"),
+                                          (2, "urn:missing"), ("bad", "urn:v:2"),
+                                          (True, "urn:v:2"), (2.9, "urn:v:2")])
+    def test_supplied_selectors_must_agree_before_promote(self, selector_versions, number, vid):
+        selector_versions(refusal=True)
+        res = drv.handler(version_number=number, version_id=vid)
+        assert res["isError"] is True
+        assert str(number) in error_message(res)
+
+    @pytest.mark.parametrize("selectors", [{"version_number": "2"}, {"version_id": "urn:v:2"},
+                                           {"version_number": 2, "version_id": "urn:v:2"}])
+    def test_compatible_selectors_restore_same_version(self, selector_versions, selectors):
+        selector_versions()
+        assert _payload(drv.handler(**selectors))["restored_version"] == 2
+
     def test_restoring_the_latest_is_a_noop(self, monkeypatch):
         df = _df(5, [_ver(2)])
         _use(monkeypatch, _doc(df), fresh_latest=5)

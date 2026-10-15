@@ -8,7 +8,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe, counted
-from ._data_common import _data
+from ._data_common import _data, absence_after_delete
 
 
 def _folder_counts(folder):
@@ -33,6 +33,9 @@ def _unreadable_counts(file_count, sub_count):
 _SUBTREE_VISIT_BUDGET = 60
 
 _UNREADABLE = object()      # a dataFolders enumeration that RAISED - distinct from one that is empty
+
+# findFolderById RAISES '3 : 404 - HTTP error "STORAGE_NODE_DOES_NOT_EXIST"' for a deleted folder.
+_NOT_FOUND = "STORAGE_NODE_DOES_NOT_EXIST"
 
 
 def _subtree_counts(folder, _depth=0, _state=None):
@@ -86,7 +89,9 @@ def handler(folder_id: str = "", confirm_name: str = "",
     try:
         folder = data.findFolderById(folder_id)
     except Exception as e:
-        return error(f"findFolderById failed for '{folder_id}': {e}")
+        if _NOT_FOUND not in str(e):
+            return error(f"findFolderById failed for '{folder_id}': {e}")
+        folder = None
     if not folder:
         return error(f"No folder found for folder_id '{folder_id}'. It may already be "
     "deleted. Verify with data_get(include=['folders']).")
@@ -165,15 +170,25 @@ def handler(folder_id: str = "", confirm_name: str = "",
     if not did:
         return error(f"Fusion declined to delete folder '{actual_name}'. No change was made.")
 
+    absence_observed, absence_unreadable = absence_after_delete(
+        data.findFolderById, folder_id, _NOT_FOUND)
+    if absence_observed is False:
+        return error(f"deleteMe answered true for folder '{actual_name}', but findFolderById still "
+                     f"resolved '{folder_id}' afterwards, so the folder may remain. Confirm with "
+                     "data_get(include=['folders']).")
     payload = {
     "deleted": True,
     "name": actual_name,
     "folder_id": folder_id,
+    "absence_observed": absence_observed,
     "contained_files": file_count,
     "contained_subfolders": sub_count,
     # Whether this delete took a subtree with it is only knowable from a census that READ.
     "recursive": None if unreadable else bool(non_empty),
     }
+    if absence_unreadable:
+        payload["absence_unreadable"] = (f"{absence_unreadable}; confirm with "
+                                         "data_get(include=['folders'])")
     if unreadable:
         payload["census_unreadable"] = unreadable
         payload["note"] = ("The folder's contents could not be read before the delete ("
@@ -204,12 +219,12 @@ tool = (
 item = Item.create_tool_item(
     tool=tool, write="destructive", handler=handler,
     run_on_main_thread=True,
-    # deleteMe()'s own answer is the whole gate: whether findFolderById stops resolving a just-deleted
-    # folder - and how long the data model takes to show that - is not measured here.
+    # A deleted folder's findFolderById raises STORAGE_NODE_DOES_NOT_EXIST from the first read after
+    # deleteMe, so one re-resolve is the absence read; no settle window was observed.
     verification=Verification(
         kind="inline",
-        evidence_test="tests/unit/test_data_delete_folder.py::TestDeleteFolderGate"
-                      "::test_a_declined_delete_is_an_error_not_a_reported_delete",
+        evidence_test="tests/unit/test_data_delete_folder.py::TestAbsenceAfterDelete"
+                      "::test_a_folder_that_still_resolves_is_an_error",
         rung="exists")
 )
 

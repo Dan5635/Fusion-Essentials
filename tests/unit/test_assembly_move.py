@@ -117,6 +117,32 @@ class TestBodyGeometryCarried:
 
 
 class TestMove:
+    def test_first_root_ground_to_parent_note_is_scoped_and_keeps_quiet(self, wire):
+        first = _occurrence(path="First:1", entity_token="FIRST", ground_to_parent=True,
+                            joints=["PoseJoint"])
+        later = _occurrence(path="Later:1", entity_token="LATER", ground_to_parent=True)
+        wire(first, later)
+
+        locked = payload(asm.handler(occurrence="First:1", dx=10))
+        assert locked["moved"] is True and locked["position"] == {"x": 10.0, "y": 0.0, "z": 0.0}
+        assert "'First:1' is the first root occurrence" in locked["note"]
+        assert "capture can reset this pending move" in locked["note"]
+        assert "assembly_ground(occurrence='First:1', ground_to_parent=false)" in locked["note"]
+        assert "PoseJoint" in locked["jointed_warning"]
+
+        later_note = payload(asm.handler(occurrence="Later:1", dx=10))["note"]
+        assert "first root occurrence" not in later_note
+        first.isGroundToParent = False
+        released = payload(asm.handler(occurrence="First:1", dx=10))["note"]
+        assert "first root occurrence" not in released
+        first.isGroundToParent = True
+        quiet = payload(asm.handler(occurrence="First:1", dx=10, quiet=True))
+        assert "capture can reset this pending move" in quiet["note"]
+        assert "jointed_warning" not in quiet
+        first._raises_on["isGroundToParent"] = "ground flag unreadable"
+        unreadable = payload(asm.handler(occurrence="First:1", dx=10))["note"]
+        assert "first root occurrence" not in unreadable
+
     def test_move_that_does_not_take_bites(self, wire):
         # the transform assignment is accepted but the pose reads unchanged -> error, not ok
         class FrozenMatrix(FakeMatrix3D):

@@ -1,4 +1,4 @@
-"""Lint: every agent-facing wire string is pure ASCII (CLAUDE.md "Tool descriptions").
+"""Lint: every agent-facing wire string is pure ASCII (AGENTS.md "Tool descriptions").
 The strings cross the wire JSON-encoded with ensure_ascii, so a non-ASCII character becomes a
 6-character \\uXXXX escape - use the plain-ASCII spelling (' - ', '...', '->', 'deg'). Three
 surfaces: the live registry's descriptions, module-level constants, and ok()/error() literals."""
@@ -87,8 +87,7 @@ def _non_ascii(text):
 
 
 # A constant that must hold a non-ASCII character: {(file, CONSTANT): reason}. Keyed by BOTH, so an
-# entry covers the one constant that earned it. EMPTY today, and _stale_exemptions keeps it
-# shrink-only.
+# entry covers the one constant that earned it. EMPTY today; it only shrinks.
 _ASCII_EXEMPT = {}
 
 
@@ -100,27 +99,6 @@ def _ascii_report(fn, const_name, strings):
     return [f"{fn}: {const_name} has {bad} - "
             f"replace with a plain-ASCII spelling (' - ', '...', '->')"
             for bad in (_non_ascii(s) for s in strings) if bad]
-
-
-def _stale_exemptions():
-    """Entries in _ASCII_EXEMPT that no longer earn their place: no reason, no such file, no such
-    constant, or a constant whose text is ASCII again."""
-    stale = []
-    for (fn, const_name), reason in _ASCII_EXEMPT.items():
-        if not (reason or "").strip():
-            stale.append(f"{fn}:{const_name}: needs a plain-English reason")
-            continue
-        path = os.path.join(TOOLS_DIR, fn)
-        if not os.path.exists(path):
-            stale.append(f"{fn}:{const_name}: no such file - drop the entry")
-            continue
-        strings = [s for name, ss in _module_constant_strings(_corpus.tree(path))
-                   if name == const_name for s in ss]
-        if not strings:
-            stale.append(f"{fn}:{const_name}: no such module-level constant - drop the entry")
-        elif not any(_non_ascii(s) for s in strings):
-            stale.append(f"{fn}:{const_name}: the constant is ASCII again - drop the entry")
-    return stale
 
 
 class TestToolDescriptionsAreAscii:
@@ -152,9 +130,6 @@ class TestModuleConstantsAreAscii:
             for const_name, strings in _module_constant_strings(_corpus.tree(path)):
                 offenders += _ascii_report(fn, const_name, strings)
         assert not offenders, "non-ASCII module constant(s):\n  " + "\n  ".join(offenders)
-
-    def test_the_exemption_table_only_shrinks(self):
-        assert _stale_exemptions() == []
 
 
 class TestRuntimePayloadStringsAreAscii:

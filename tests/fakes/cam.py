@@ -144,8 +144,8 @@ class FakeSetup(FakeCAMFolder):
     three, so an unset one is this fake's DECLARED absence rather than a shape live presents.
     `machine=None` is the measured "no machine assigned" answer (what setup_blockers calls
     no_machine_selected), and `has_error=False` the plain no-fault answer live_readiness reads.
-    `operation_type` is unset the same way; pass adsk.cam.OperationTypes.AdditiveOperation for the
-    additive exclusions (is_additive_setup). `models` is unset the same way too - a setup whose
+    `operation_type` defaults to MillingOperation; pass adsk.cam.OperationTypes.AdditiveOperation
+    for the additive exclusions (is_additive_setup). `models` is unset: a setup whose
     Setup.models does not read (measured: it can raise) stays a testable state; pass a list of
     objects each carrying `entityToken` to model the bodies this setup's stock is defined against.
     `stock_solids` mirrors `models` for Setup.stockSolids - pass a list of objects each carrying
@@ -157,7 +157,7 @@ class FakeSetup(FakeCAMFolder):
 
     def __init__(self, name, ops=(), folders=(), patterns=(), others=(), parameters=None,
                  is_active=False, activate_ok=True, activate_lies=False, machine=_UNSET,
-                 has_error=_UNSET, error=_UNSET, operation_type=_UNSET, models=_UNSET,
+                 has_error=_UNSET, error=_UNSET, operation_type=_UNSET, models=(),
                  stock_solids=_UNSET):
         super().__init__(name, ops=ops, folders=folders, patterns=patterns, others=others)
         # Operation.parentSetup names the owning Setup; an op already carrying one keeps it, and a
@@ -172,8 +172,8 @@ class FakeSetup(FakeCAMFolder):
             self.hasError = has_error
         if error is not FakeSetup._UNSET:
             self.error = error
-        if operation_type is not FakeSetup._UNSET:
-            self.operationType = operation_type
+        self.operationType = (_api_facts.ENUMS["cam.OperationTypes"]["MillingOperation"]
+                              if operation_type is FakeSetup._UNSET else operation_type)
         if models is not FakeSetup._UNSET:
             self.models = models
         if stock_solids is not FakeSetup._UNSET:
@@ -600,10 +600,14 @@ class FakePrintSetting:
     """A print setting from the library or off an additive setup: the name a request resolves by,
     the technology a filter reads, and the description - the one member two shipped settings that
     agree on everything else differ in, so it is what says WHICH one landed."""
-    def __init__(self, name, technology="SLM", description="a print setting"):
+    def __init__(self, name, technology="SLM", description="a print setting", fits=True):
         self.name = name
         self.technology = technology
         self.description = description
+        self._fits = fits
+
+    def isCompatibleWithMachine(self, machine):
+        return self._fits
 
 
 @fusion_fake(live_type="SetupInput", facts=("shape-dump-cam-job-world",))

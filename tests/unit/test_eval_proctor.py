@@ -6,9 +6,11 @@ refuses, which chain document is opened, when a run counts as stalled, and what 
 The Fusion wire is a stub returning (is_error, payload); nothing here launches an executor."""
 
 import json
+import io
 import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -77,6 +79,25 @@ class TestPrompt:
         prompt = proctor.build_prompt(body, "P", "F", skill="practice", preamble_path=str(preamble))
         assert prompt.index("Build a widget") < prompt.index(proctor.SKILL_HEADER) < prompt.index("PLAN FIRST")
         assert "name: practice" not in prompt
+
+    def test_stock_prompt_never_resolves_optional_guidance(self, scenario, monkeypatch):
+        def refuse(name):
+            raise AssertionError(f"stock launch resolved skill {name}")
+        monkeypatch.setattr(proctor, "skill_body", refuse)
+        path, preamble = scenario
+        _, _, body = proctor.read_scenario(str(path))
+        assert proctor.build_prompt(body, "P", "F", preamble_path=str(preamble)) == (
+            "PREAMBLE RULES\n\nBuild a widget and save it into project P, folder F.\n")
+
+    def test_optional_design_practice_renders_the_full_document_at_runtime(self, scenario):
+        from mcpServer.guidance import loader, render
+        doc, _sha = loader.load()
+        path, preamble = scenario
+        _, _, body = proctor.read_scenario(str(path))
+        prompt = proctor.build_prompt(body, "P", "F", skill="parametric-cad-design",
+                                      preamble_path=str(preamble))
+        assert prompt.split(proctor.SKILL_HEADER + "\n\n", 1)[1] == render.body(doc)
+        assert proctor.skill_body("parametric-cad-design") != render.map_text(doc).strip()
 
     def test_a_chain_stage_receives_the_newest_prior_report_after_its_brief(self, scenario, tmp_path):
         path, preamble = scenario
@@ -242,18 +263,141 @@ class TestWatch:
         proctor.kill_tree(proc)
         assert ran[-1] == "kill"
 
-    def test_launch_records_executor_start_failure(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("start_fails", [False, True])
+    def test_launch_isolates_cwd_and_preserves_artifacts(self, tmp_path, monkeypatch, start_fails):
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         monkeypatch.setattr(proctor.shutil, "which", lambda name: "claude")
         monkeypatch.setattr(proctor, "CONFIG_DIR", str(tmp_path / "config"))
         monkeypatch.setattr(proctor, "executor_login", lambda env: {})
-        monkeypatch.setattr(proctor.subprocess, "Popen",
-                            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("quota")))
+        working_dirs = []
+        def spawn(*args, **kwargs):
+            cwd = kwargs["cwd"]
+            working_dirs.append(cwd)
+            assert os.path.isdir(cwd) and os.listdir(cwd) == []
+            for parent in (str(tmp_path), proctor.harness.REPO_ROOT):
+                assert not Path(cwd).resolve().is_relative_to(Path(parent).resolve())
+            if start_fails:
+                raise OSError("quota")
+            return types.SimpleNamespace(stdin=io.StringIO(), stderr=io.StringIO(),
+                                         poll=lambda: 0, wait=lambda: 0, returncode=0)
+        monkeypatch.setattr(proctor.subprocess, "Popen", spawn)
+        monkeypatch.setattr(proctor, "kill_tree", lambda proc: None)
         ended, call_times, returncode = proctor.launch("prompt", str(run_dir), "opus")
-        assert ended == "executor launch failed: quota"
-        assert call_times == [] and returncode is None
-        assert (run_dir / "stderr.txt").read_text(encoding="utf-8") == "quota"
+        assert ended == ("executor launch failed: quota" if start_fails else
+                         "blocked init: no system init event")
+        assert call_times == [] and returncode == (None if start_fails else 0)
+        assert (run_dir / "stderr.txt").read_text(encoding="utf-8") == ("quota" if start_fails else "")
+        assert (run_dir / "transcript.jsonl").exists() and (run_dir / "mcp.json").exists()
+        assert len(working_dirs) == 1 and not os.path.exists(working_dirs[0])
+
+    @pytest.mark.parametrize("server,tools,tool_search,expected", [
+        ({"name": "fusion-essentials", "status": "failed"}, ["DesignSync"], False,
+         "blocked init: fusion-essentials status failed"),
+        (None, ["DesignSync"], False, "blocked init: fusion-essentials status missing"),
+        ({"name": "fusion-essentials", "status": "connected"}, ["DesignSync"], False,
+         "blocked init: no fusion-essentials tools"),
+        ({"name": "fusion-essentials", "status": "connected"},
+         ["DesignSync", "mcp__fusion-essentials__workspace_orient", "Bash"], False,
+         "blocked init: tools held beside the Fusion ones: Bash, DesignSync"),
+        ({"name": "fusion-essentials", "status": "connected"},
+         ["mcp__fusion-essentials__workspace_orient", "ListMcpResourcesTool", "ReadMcpResourceTool",
+          "ReadMcpResourceDirTool", "WaitForMcpServers"], False, "report"),
+        ({"name": "fusion-essentials", "status": "connected"}, [], True, "report"),
+        ({"name": "fusion-essentials", "status": "pending"}, ["DesignSync", "ToolSearch"], True, "report"),
+        ({"name": "fusion-essentials", "status": "pending"}, [], False,
+         "blocked init: fusion-essentials status pending"),
+        ({"name": "fusion-essentials", "status": "failed"}, [], True,
+         "blocked init: fusion-essentials status failed"),
+    ])
+    def test_launch_validates_exact_init_even_after_quick_exit(self, tmp_path, monkeypatch,
+                                                                server, tools, tool_search, expected):
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setattr(proctor.shutil, "which", lambda name: "claude")
+        monkeypatch.setattr(proctor, "CONFIG_DIR", str(tmp_path / "config"))
+        monkeypatch.setattr(proctor, "executor_login", lambda env: {})
+        killed = []
+        monkeypatch.setattr(proctor, "kill_tree", lambda proc: killed.append(True))
+        init = {"type": "system", "subtype": "init", "tools": tools,
+                "mcp_servers": [server] if server else []}
+
+        def spawn(*args, **kwargs):
+            kwargs["stdout"].write(json.dumps({"type": "system", "subtype": "notice"}) + "\n")
+            kwargs["stdout"].write(json.dumps(init) + "\n")
+            kwargs["stdout"].flush()
+            return types.SimpleNamespace(stdin=io.StringIO(), stderr=io.StringIO(),
+                                         poll=lambda: 0, wait=lambda: 0, returncode=0)
+
+        monkeypatch.setattr(proctor.subprocess, "Popen", spawn)
+        ended, calls, code = proctor._launch("prompt", str(run_dir), "opus", (), tool_search,
+                                             str(tmp_path))
+        assert (ended, calls, code) == (expected, [], 0)
+        assert killed == [True]
+
+    def test_a_second_server_at_start_blocks_the_run_by_name(self):
+        init = {"tools": ["mcp__fusion-essentials__doc_get"],
+                "mcp_servers": [{"name": "fusion-essentials", "status": "connected"},
+                                {"name": "fusion-spatial", "status": "connected"}]}
+        for tool_search in (False, True):
+            assert proctor.start_verdict(init, tool_search) == (
+                "blocked init: a second server is configured: fusion-spatial")
+
+    @pytest.mark.parametrize("tool_search", [False, True])
+    def test_built_in_tools_are_switched_off_unless_tool_search_needs_its_own(self, tmp_path, monkeypatch,
+                                                                              tool_search):
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setattr(proctor.shutil, "which", lambda name: "claude")
+        monkeypatch.setattr(proctor, "CONFIG_DIR", str(tmp_path / "config"))
+        monkeypatch.setattr(proctor, "executor_login", lambda env: {})
+        monkeypatch.setattr(proctor, "kill_tree", lambda proc: None)
+        lines = []
+
+        def spawn(cmd, **kwargs):
+            lines.append(cmd)
+            return types.SimpleNamespace(stdin=io.StringIO(), stderr=io.StringIO(),
+                                         poll=lambda: 0, wait=lambda: 0, returncode=0)
+
+        monkeypatch.setattr(proctor.subprocess, "Popen", spawn)
+        proctor._launch("prompt", str(run_dir), "opus", (), tool_search, str(tmp_path))
+        cmd = lines[0]
+        assert ("--tools" in cmd) is (not tool_search)
+        if not tool_search:
+            assert cmd[cmd.index("--tools") + 1] == ""
+        assert cmd[cmd.index("--allowedTools") + 1] == "mcp__fusion-essentials__*"
+
+    def test_blocked_init_records_artifacts_without_save_or_next_run(self, tmp_path, monkeypatch):
+        scenario = tmp_path / "S99_Widget.md"
+        scenario.write_text(_SCENARIO, encoding="utf-8")
+        results = tmp_path / "results"
+        monkeypatch.setattr(proctor, "RESULTS", str(results))
+        monkeypatch.setattr(proctor, "INDEX", str(results / "index.md"))
+        monkeypatch.setattr(proctor, "scenario_path", lambda name: str(scenario))
+        monkeypatch.setattr(proctor.cloud_config, "load_config",
+                            lambda: ({"hub": "H", "project": "P", "folder": "F"}, None))
+        monkeypatch.setattr(proctor.harness, "health_gate", lambda: None)
+        monkeypatch.setattr(proctor, "ensure_hub", lambda hub, call: None)
+        monkeypatch.setattr(proctor, "ensure_project", lambda project, hub, call: project)
+        monkeypatch.setattr(proctor, "ensure_folder", lambda project, folder, name, call: name)
+        staged = []
+        monkeypatch.setattr(proctor, "stage_empty", lambda call: staged.append("staged") or "staged-doc")
+        monkeypatch.setattr(proctor, "build_prompt", lambda *args, **kwargs: "prompt")
+        monkeypatch.setattr(proctor, "launch", lambda *args: ("blocked init: fusion-essentials status failed", [], 0))
+        monkeypatch.setattr(proctor, "audit", lambda transcript: (0, 0, ""))
+        monkeypatch.setattr(proctor, "run_facts", lambda transcript: (None, ""))
+        saves = []
+        monkeypatch.setattr(proctor, "save_result", lambda *args: saves.append(args))
+        monkeypatch.setattr(proctor.sys, "argv", ["proctor.py", "S99_Widget", "--runs", "3"])
+
+        assert proctor.main() == 1
+        run_dirs = list(results.glob("Eval-*/S99_Widget_*"))
+        assert len(run_dirs) == 1 and staged == ["staged"] and saves == []
+        rec = json.loads((run_dirs[0] / "run.json").read_text(encoding="utf-8"))
+        assert rec["outcome"] == rec["execution_state"] == "blocked_init"
+        assert rec["saved"]["error"] == "save skipped: blocked init: fusion-essentials status failed"
+        assert (run_dirs[0] / "prompt.txt").exists() and (run_dirs[0] / "report.txt").exists()
+        assert "blocked init: fusion-essentials status failed" in (results / "index.md").read_text(encoding="utf-8")
 
     def test_main_records_failed_staged_and_partial_runs_and_returns_nonzero(self, tmp_path, monkeypatch):
         scenario = tmp_path / "S99_Widget.md"
@@ -282,6 +426,9 @@ class TestWatch:
                             lambda prompt, run_dir, model, deny, tool_search: next(outcomes)[:3])
         monkeypatch.setattr(proctor, "audit",
                             lambda transcript: (next_audit.pop(0), 0, ""))
+        said = ["You've hit your weekly limit | resets 11pm", "", "ignored on a report"]
+        monkeypatch.setattr(proctor, "run_facts",
+                            lambda transcript: ({"tools_beside_fusion": []}, said.pop(0) if said else ""))
         next_audit = [0, 2, 2]
         monkeypatch.setattr(proctor.sys, "argv",
                             ["proctor.py", "S99_Widget", "--runs", "3"])
@@ -294,6 +441,13 @@ class TestWatch:
             "staged_only", "partial_failed", "completed"]
         assert records[0]["executor_exit"] == 1 and records[0]["calls"] == 0
         assert records[1]["calls"] == 2 and records[2]["executor_exit"] == 0
+        # The client's own error text joins a failed exit, in the record and on one index line.
+        assert [record["ended"] for record in records] == [
+            "executor exited 1: You've hit your weekly limit | resets 11pm", "executor exited 1", "report"]
+        assert records[0]["start"] == {"tools_beside_fusion": []}
+        index = (results / "index.md").read_text(encoding="utf-8").splitlines()
+        assert "| executor exited 1: You've hit your weekly limit / resets 11pm |" in index[2]
+        assert index[2].count("|") == index[1].count("|")
         outcomes = iter([("report", [], 0)])
         next_audit[:] = [0]
         monkeypatch.setattr(proctor.sys, "argv",
@@ -319,6 +473,20 @@ class TestRecord:
                 {"type": "tool_use", "name": "mcp__fusion-essentials__model_extrude"}]}},
             {"type": "result", "result": "Built it.", "usage": {"output_tokens": 1234}}])
         assert proctor.audit(path) == (2, 1234, "Built it.")
+
+    def test_run_facts_read_the_start_record_and_only_an_error_result(self, tmp_path):
+        init = {"type": "system", "subtype": "init", "claude_code_version": "2.1.197",
+                "model": "claude-opus-4-8", "tools": ["mcp__fusion-essentials__doc_get", "DesignSync"],
+                "mcp_servers": [{"name": "fusion-essentials", "status": "pending"}]}
+        start = {"client_version": "2.1.197", "model": "claude-opus-4-8",
+                 "servers": {"fusion-essentials": "pending"}, "fusion_tools": 1,
+                 "tools_beside_fusion": ["DesignSync"]}
+        limit = {"type": "result", "is_error": True, "result": "You've hit your weekly limit\n resets 11pm"}
+        assert proctor.run_facts(self._transcript(tmp_path, [init, limit])) == (
+            start, "You've hit your weekly limit resets 11pm")
+        report = {"type": "result", "is_error": False, "result": "Built it."}
+        assert proctor.run_facts(self._transcript(tmp_path, [init, report])) == (start, "")
+        assert proctor.run_facts(self._transcript(tmp_path, [report])) == (None, "")
 
     def test_save_reports_the_refusal_and_still_takes_the_screenshot(self, tmp_path):
         call = _wire({"doc_save_as": (True, "Fusion declined to save"),

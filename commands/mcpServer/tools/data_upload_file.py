@@ -42,7 +42,11 @@ def handler(file_path: str = "", project: str = "", project_id: str = "",
     except Exception as e:
         return error(str(e))
 
-    proj, available = _find_project(data, name=project or None, project_id=project_id or None)
+    try:
+        proj, available = _find_project(data, name=project or None,
+                                        project_id=project_id or None)
+    except Exception as e:
+        return error(f"Could not resolve project: {e}")
     if not proj:
         ident = project_id or project
         return error(f"Project not found: {ident}. Available: {', '.join(available) or '(none)'}")

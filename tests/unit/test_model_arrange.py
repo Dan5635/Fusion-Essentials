@@ -1007,7 +1007,8 @@ class TestActiveComponentPreflight:
         af.add = _boom
         res = ar.handler(boundary_sketch="Boundary", shapes="A:1")
         assert res["isError"] is True
-        assert res["message"] == "Arrange failed: 3 :"
+        assert res["message"] == ("Arrange failed: 3 : Not measured whether this raise leaves an "
+                                  "arrange feature; re-read with design_get(include=['timeline']).")
 
 
 class TestHonesty:
@@ -1227,8 +1228,23 @@ class TestHonesty:
                                   partial=True))
         note = out["note"]
         assert "did not fit" in note and "volumes in mm^3" in note
-        assert "restructured" in note      # the short clause: this scenario MOVED an input too
+        assert "Inputs moved on their own paths" in note   # this scenario MOVED an input too
         assert len(note) <= 400, len(note)      # test_prose_budget.NOTE_BUDGET_CHARS
+
+    @pytest.mark.parametrize("reparent", [False, True])
+    def test_the_moved_clause_claims_kept_paths_only_when_they_still_read(self, reparent):
+        design, af = _install([_sketch("B")], ["A:1"])
+        real_add = af.add
+        def _moving_add(inp):
+            occ = design.rootComponent.allOccurrences[0]
+            occ.transform2.translation = _vec(5.0, 0.0, 0.0)
+            if reparent:
+                occ._path = "Arrange1:1+A:1"
+            return real_add(inp)
+        af.add = _moving_add
+        note = _payload(ar.handler(boundary_sketch="B", shapes="A:1"))["note"]
+        assert ("Input path(s) no longer read: A:1;" in note) is reparent
+        assert ("Inputs moved on their own paths" in note) is not reparent
 
     def test_a_shortfall_and_the_null_unarranged_clause_never_compose_together(self):
         # stat_unarranged truthy (the shortfall fires) and stat_unarranged is None (the null clause

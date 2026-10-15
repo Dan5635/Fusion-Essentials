@@ -12,6 +12,7 @@ touches the operator's own cloud files or session state is read here as data for
 import ast
 import os
 import sys
+import types
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "live"))
@@ -25,6 +26,21 @@ def _run_body(row_id):
     tree = ast.parse(measure_api._compose(row))
     return next(n for n in ast.walk(tree)
                 if isinstance(n, ast.FunctionDef) and n.name == "run")
+
+
+def _dumped_shape_labels(row):
+    """A row's dump_shape("Label", ...) labels, direct or via a (label, object) tuple literal."""
+    tree = ast.parse(measure_api._compose(row))
+    labels = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "dump_shape" and node.args
+                and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+            labels.add(node.args[0].value)
+        elif (isinstance(node, ast.Tuple) and len(node.elts) == 2
+              and isinstance(node.elts[0], ast.Constant) and isinstance(node.elts[0].value, str)):
+            labels.add(node.elts[0].value)
+    return labels
 
 
 class TestRowRegistry:
@@ -62,6 +78,24 @@ class TestRowRegistry:
                 if not str(row.get("claim", "")).strip()
                 or not str(row.get("encoded_in", "")).strip()]
         assert not thin, "rows with an empty claim or encoded_in: " + ", ".join(thin)
+
+    def test_gated_rows_name_a_known_entitlement_and_their_owned_shapes_match_the_body(self):
+        offenders = []
+        for row in measure_api.ROWS:
+            entitlement = row.get("entitlement")
+            if entitlement is None:
+                continue
+            if entitlement not in measure_api._ENTITLEMENTS:
+                offenders.append(f"{row['id']}: unknown entitlement {entitlement!r}")
+                continue
+            dumped, owned = _dumped_shape_labels(row), set(row.get("owns_shapes", []))
+            if dumped != owned:
+                offenders.append(f"{row['id']}: body dumps {sorted(dumped)}, "
+                                 f"owns_shapes declares {sorted(owned)}")
+        assert not offenders, offenders
+        gated = {row["id"] for row in measure_api.ROWS if row.get("entitlement")}
+        assert gated == {"shape-dump-pmi-world", "cam-advanced-swarf-surface-set-editable",
+                         "cam-curves-parameter-carriers"}
 
 
 class TestWireChecksPinTheScratch:
@@ -154,9 +188,28 @@ class TestPlatformSkips:
         platform = sorted(skipping["skip_on"])[0]
         written = self._projection_of(
             skipping, "SKIP", measure_api._skip_detail(skipping, platform))
-        assert written in measure_api._accepted_ledger_fields(skipping)
+        assert written in measure_api._accepted_ledger_fields(skipping, platform)
         forged = self._projection_of(running, "SKIP", "not run on " + platform + ": hangs")
-        assert forged not in measure_api._accepted_ledger_fields(running)
+        assert forged not in measure_api._accepted_ledger_fields(running, platform)
+
+    def test_a_darwin_skip_satisfies_the_check_on_darwin_and_on_no_other_platform(
+            self, tmp_path, monkeypatch):
+        row = {"id": "r1", "claim": "c1", "encoded_in": "e1", "skip_on": {"darwin": "hangs"}}
+        seen = {"implementation_fingerprint": "a" * 64, "schema_fingerprint": "b" * 64,
+                "load_id": "L1", "session_id": "S1"}
+        monkeypatch.setattr(measure_api, "LEDGER", str(tmp_path / "VERIFIED_API_FACTS.md"))
+        monkeypatch.setattr(measure_api, "ROWS", [row])
+        monkeypatch.setattr(measure_api, "health_gate", lambda: "HEALTH")
+        monkeypatch.setattr(measure_api, "_current_attestation", lambda health=None: dict(seen))
+        monkeypatch.setattr(measure_api, "_fusion_version", lambda health=None: "B1")
+        monkeypatch.setattr(measure_api, "_measure_source_hash", lambda: "0" * 64)
+        measure_api.write_ledger([(row, "SKIP", measure_api._skip_detail(row, "darwin"))],
+                                 "B1", "D1", "0" * 64, seen)
+        assert measure_api.check(platform="darwin") == 0
+        assert measure_api.check(platform="win32") == 1
+        # With no platform passed, the checking machine's own sys.platform decides.
+        monkeypatch.setattr(measure_api, "sys", types.SimpleNamespace(platform="win32"))
+        assert measure_api.check() == 1
 
     def test_a_skipped_row_runs_on_a_platform_it_does_not_name(self):
         skipping = next(r for r in measure_api.ROWS if r.get("skip_on"))

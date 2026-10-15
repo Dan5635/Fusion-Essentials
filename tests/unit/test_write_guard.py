@@ -43,6 +43,27 @@ def _decode(result):
     return json.loads(result["content"][0]["text"])
 
 
+class TestDrawingAutoDimensionCommand:
+    @pytest.fixture(autouse=True)
+    def active_command(self, monkeypatch):
+        monkeypatch.setattr(wg, "app", SimpleNamespace(
+            userInterface=SimpleNamespace(activeCommand="FusionDrawingAutoDimensionEditCommand")))
+        monkeypatch.setattr(wg, "_active_identity", lambda: ("Drawing", "urn:drawing"))
+
+    def test_write_refuses_before_handler_but_read_remains_available(self):
+        called = []
+        write = wg.wrap(lambda **kw: called.append("write") or _ok({"written": True}))
+        result = write()
+        payload = _decode(result)
+        assert result["isError"] is True and called == []
+        assert payload["blocked_by"] == ["active_drawing_auto_dimension_command"]
+        assert payload["active_command"] == "FusionDrawingAutoDimensionEditCommand"
+        assert "finish or cancel" in payload["note"].lower()
+        assert "auto_dimension='off'" in payload["note"]
+        read = wg.wrap_read(lambda **kw: _ok({"read": True}))
+        assert _decode(read())["read"] is True
+
+
 class TestActedOnStamp:
     @pytest.fixture(autouse=True)
     def healthy_scan(self, monkeypatch):
@@ -582,6 +603,44 @@ class TestOpenDocumentsSessionWalk:
         live_app(active=_FakeDoc("Bracket", "urn:a"), docs=_HoledDocuments([]))
         out = _decode(wg.wrap(lambda **kw: _ok({"created": True}))(expect_document="Bracket"))
         assert out["blocked_by"] == ["document_collection_unreadable"]
+
+
+class TestNameLetterCase:
+    """expect_document compares a display name exactly, where doc_activate ignores letter case."""
+
+    def test_a_case_only_mismatch_is_refused_toward_the_handle_not_back_to_doc_activate(
+            self, live_app, monkeypatch):
+        # doc_activate answers 'bracket' with the document named 'Bracket', so a remedy of
+        # doc_activate('bracket') succeeds and leaves this refusal exactly as it was.
+        da, dc = load_tool("doc_activate"), load_tool("_doc_common")
+        active = _FakeDoc("Bracket", "urn:lineage:abc")
+        app = live_app(active=active, docs=_HoledDocuments([active, _FakeDoc("Other", "urn:o")]))
+        monkeypatch.setattr(da, "app", app)
+        monkeypatch.setattr(dc, "app", app)
+        activated = _decode(da.handler(name="bracket"))
+        assert activated["document_name"] == "Bracket" and activated["is_active"] is True
+        called = []
+        res = wg.wrap(lambda **kw: called.append(kw) or _ok({}))(expect_document="bracket")
+        payload = _decode(res)
+        assert called == [] and res["isError"] is True
+        assert payload["blocked_by"] == ["active_document_changed"]
+        assert "'bracket'" in payload["note"] and "'Bracket'" in payload["note"]
+        assert payload["requires"] == {
+            "tool": "doc_get", "result": "open_documents[].document_handle"}
+
+    def test_the_other_twins_spelling_never_writes_the_active_twin(self, live_app):
+        # 'Bracket' is active beside a second document named 'bracket'. A guard that ignored case
+        # on its first comparison would count one 'bracket' in the census and write 'Bracket'.
+        active = _FakeDoc("Bracket", "urn:lineage:abc")
+        live_app(active=active, docs=_HoledDocuments([active, _FakeDoc("bracket", None)]))
+        called = []
+        guarded = wg.wrap(lambda **kw: called.append(kw) or _ok({"created": True}))
+        res = guarded(expect_document="bracket")
+        assert called == [] and res["isError"] is True
+        assert _decode(res)["requires"]["tool"] == "doc_get"
+        out = _decode(guarded(expect_document="Bracket"))
+        assert len(called) == 1
+        assert out["acted_on"] == {"name": "Bracket", "document_id": "urn:lineage:abc"}
 
 
 class TestWrapEdges:

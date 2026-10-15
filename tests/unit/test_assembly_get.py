@@ -228,6 +228,9 @@ def kin_design():
                         all_occurrences=list(occs) if all_occs is None else list(all_occs),
                         joints=list(joints), as_built_joints=list(asbuilt),
                         assembly_constraints=constraints)
+        for joint in list(joints) + list(asbuilt):
+            if not hasattr(joint, "parentComponent"):
+                joint.parentComponent = root
         # marker below count = a rolled-back timeline; left None it sits at the end.
         design = make_design(comp=root,
                              timeline=FakeTimeline(list(timeline or []), marker=marker))
@@ -236,9 +239,7 @@ def kin_design():
     return _build
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestGuards:
@@ -362,11 +363,13 @@ class TestProbe:
     def test_ground_flags_and_grounded_list(self, kin_design):
         block = _occ("Block:1", "Block", grounded=True, ground_to_parent=True)
         crank = _occ("Crank:1", "Crank", grounded=False, ground_to_parent=False)
-        kin_design(occs=[block, crank])
+        vise = _occ("Vise:1", "Vise", grounded=False, ground_to_parent=True)
+        kin_design(occs=[block, crank, vise])
         out = _payload(ap.handler())
-        assert out["grounded_occurrences"] == ["Block:1"]
+        assert out["grounded_occurrences"] == ["Block:1"]      # the parent lock alone is not grounded
         bycomp = {o["name"]: o for o in out["occurrences"]}
         assert bycomp["Crank:1"]["ground_to_parent"] is False
+        assert (bycomp["Vise:1"]["grounded"], bycomp["Vise:1"]["ground_to_parent"]) == (False, True)
 
     def test_joint_type_and_dof_mapping(self, kin_design):
         kin_design(occs=[_occ("A:1", "A"), _occ("B:1", "B")],
@@ -410,12 +413,59 @@ class TestProbe:
         assert inch["origin"] == [1.0, 0.0, 0.0]    # 2.54 cm -> 1 inch
 
     def test_occurrence_joint_cross_index(self, kin_design):
-        kin_design(occs=[_occ("Crank:1", "Crank"), _occ("Block:1", "Block")],
-                   joints=[_joint("CrankMain", _REVOLUTE, "Crank:1", "Block:1")])
+        crank, block = _occ("Crank:1", "Crank"), _occ("Block:1", "Block")
+        kin_design(occs=[crank, block],
+                   joints=[_joint("CrankMain", _REVOLUTE, crank, block)])
         out = _payload(ap.handler())
         by = {o["name"]: o for o in out["occurrences"]}
         assert by["Crank:1"]["joints"] == ["CrankMain"]
         assert by["Block:1"]["joints"] == ["CrankMain"]
+
+    def test_reused_parent_child_membership_uses_the_native_half_path(self, kin_design):
+        first = _occ("Leaf:1", "Leaf", full_path="ReusedParent:1+Leaf:1")
+        second = make_occurrence(path="ReusedParent:2+Leaf:1", component=first.component,
+                                 bodies=[BRepBody("Body1")])
+        anchor = _occ("Anchor:1", "Anchor", body_count=0)
+        parents = [_occ("ReusedParent:1", "ReusedParent", body_count=0),
+                   _occ("ReusedParent:2", "ReusedParent", body_count=0)]
+        walk = [first, parents[0], second, parents[1], anchor]
+        kin_design(occs=parents + [anchor], all_occs=walk)
+        assert all(r["joints"] == [] for r in _payload(ap.handler(include=["all_occurrences"]))["all_occurrences"])
+        joint = FakeAsBuiltJoint("OnlyFirst", _RIGID, first, anchor)
+        kin_design(occs=parents + [anchor], all_occs=walk, asbuilt=[joint])
+        out = _payload(ap.handler(include=["all_occurrences"]))
+        rows = {r["full_path"]: r for r in out["all_occurrences"]}
+        assert rows[first.fullPathName]["joints"] == ["OnlyFirst"]
+        assert rows[second.fullPathName]["joints"] == []
+        assert rows[anchor.fullPathName]["joints"] == ["OnlyFirst"]
+        assert out["joints"][0]["occurrence_one"] == "Leaf:1"
+        assert out["joints"][0]["occurrence_one_path"] == first.fullPathName
+        assert out["joints"][0]["occurrence_two_path"] == anchor.fullPathName
+        quiet = _payload(ap.handler(include=["all_occurrences"], include_joints=False))
+        assert quiet["joint_count"] == 1 and quiet["joints"] is None
+        assert all("joints" not in r for r in quiet["all_occurrences"])
+
+    def test_a_sub_assembly_joint_is_listed_on_every_placement_of_its_owner(self, kin_design):
+        # The native halves answer PSub:1's paths only; each placement's proxy answers its own.
+        psub = MakeComp(name="PSub", entity_token="PSUB")
+        placed = [make_occurrence(path=f"PSub:{n}", component=psub) for n in (1, 2)]
+        kids = {f"PSub:{n}+{c}:1": make_occurrence(path=f"PSub:{n}+{c}:1")
+                for n in (1, 2) for c in ("PChildA", "PChildB")}
+        inner = _joint("Inner", _RIGID, kids["PSub:1+PChildA:1"], kids["PSub:1+PChildB:1"])
+        inner.parentComponent = psub
+        inner.createForAssemblyContext = lambda occ: SimpleNamespace(
+            occurrenceOne=kids[occ.fullPathName + "+PChildA:1"],
+            occurrenceTwo=kids[occ.fullPathName + "+PChildB:1"])
+        kin_design(occs=placed, all_occs=placed + list(kids.values()), joints=[inner])
+        out = _payload(ap.handler(include=["all_occurrences"]))
+        rows = {r["full_path"]: r for r in out["all_occurrences"]}
+        assert all(rows[path]["joints"] == ["Inner"] for path in kids)
+        assert rows["PSub:2"]["joints"] == [] and out["joint_count"] == 1
+        record = out["joints"][0]
+        assert record["owner_component"] == "PSub"
+        assert record["placements"][1] == {"placement": "PSub:2",
+                                           "occurrence_one_path": "PSub:2+PChildA:1",
+                                           "occurrence_two_path": "PSub:2+PChildB:1"}
 
     def test_include_joints_false_skips(self, kin_design):
         kin_design(occs=[_occ("A:1", "A")], joints=[_joint("J", _REVOLUTE, "A:1", None)])
@@ -439,9 +489,10 @@ class TestProbe:
         # must read both, or a script-created as-built joint is invisible (joint_count undercounts and
         # the occurrence cross-index misses it). AsBuiltJoint exposes the same name/jointMotion/
         # occurrenceOne/Two surface, so the shared Joint fake stands in.
-        kin_design(occs=[_occ("Ring:1", "Ring"), _occ("Rotor:1", "Rotor")],
-                   joints=[_joint("RegularPin", _REVOLUTE, "Ring:1", "Rotor:1")],
-                   asbuilt=[_joint("AsBuiltSpin", _REVOLUTE, "Rotor:1", "Ring:1")])
+        ring, rotor = _occ("Ring:1", "Ring"), _occ("Rotor:1", "Rotor")
+        kin_design(occs=[ring, rotor],
+                   joints=[_joint("RegularPin", _REVOLUTE, ring, rotor)],
+                   asbuilt=[_joint("AsBuiltSpin", _REVOLUTE, rotor, ring)])
         out = _payload(ap.handler())
         by = {j["name"]: j for j in out["joints"]}
         assert "AsBuiltSpin" in by and by["AsBuiltSpin"]["type"] == "revolute"
@@ -725,7 +776,7 @@ class TestRelationHealthWithheldWhenUnread:
         assert [r["name"] for r in out["broken_relations"]] == ["Bad"]
 
 
-# ── BOUNDED READS: occurrences/joints arrays cap + report truncated (CLAUDE.md "Bound it") ──────
+# ── BOUNDED READS: occurrences/joints arrays cap + report truncated (AGENTS.md "Bound it") ──────
 
 class TestCaps:
     def test_occurrences_under_cap_untruncated_and_unchanged(self, kin_design):
@@ -919,13 +970,80 @@ class TestJointOriginsSlice:
         stock = _SliceJO("Stock_Center", token="S")
         vise = _SliceJO("Vise_Center", token="V")
         grip = _slice_joint("Stock_Gripped_By_Vise", origin_one=stock, origin_two=vise)
-        jo_design(_slice_design(_slice_root(jos=[stock, vise], joints=[grip])))
+        root = _slice_root(jos=[stock, vise], joints=[grip])
+        stock.parentComponent = vise.parentComponent = root
+        jo_design(_slice_design(root))
         rows = {r["name"]: r for r in _payload(ap.handler(include=["joint_origins"]))["joint_origins"]}
         assert rows["Stock_Center"]["consumed_by"] == ["Stock_Gripped_By_Vise"]
         assert rows["Vise_Center"]["consumed_by"] == ["Stock_Gripped_By_Vise"]
 
+    def test_same_named_distinct_origins_use_canonical_identity_and_readable_joint_half(self, jo_design):
+        a, b = _slice_comp("OriginA"), _slice_comp("OriginB")
+        oa, ob = _slice_occ("OriginA:1", a), _slice_occ("OriginB:1", b)
+        first = _SliceJO("Datum", token="JO:A", comp=a)
+        other = _SliceJO("Datum", token="JO:B", comp=b)
+        a.jointOrigins, b.jointOrigins = _NamedCollection([first]), _NamedCollection([other])
+        anchor = _SliceJO("RootAnchor", token="JO:ROOT")
+        stored = _SliceJO("Datum", token="JO:A", comp=a)
+        joint = _slice_joint("AOnly", stored, anchor)
+        joint.occurrenceOne, joint.occurrenceTwo = oa, None
+        root = _slice_root(jos=[anchor], joints=[joint], occ_by_comp={"OriginA": [oa], "OriginB": [ob]})
+        anchor.parentComponent = root
+        jo_design(_slice_design(root, subs=[a, b]))
+        def consumers():
+            return {r["qualified_name"]: r["consumed_by"] for r in
+                    _payload(ap.handler(include=["joint_origins"], include_joints=False))["joint_origins"]}
+        assert stored.assemblyContext is None
+        assert consumers() == {"RootAnchor": ["AOnly"], "OriginA:1:Datum": ["AOnly"], "OriginB:1:Datum": []}
+        joint.occurrenceOne = ob
+        assert consumers()["OriginA:1:Datum"] is None
+        joint.occurrenceOne = oa
+        stored.entityToken = None
+        assert all(value is None for value in consumers().values())
+        stored.entityToken = "JO:A"
+        first.entityToken = None
+        assert consumers()["OriginA:1:Datum"] is None
+        first.entityToken = "JO:A"
+        a.entityToken = None
+        assert consumers()["OriginA:1:Datum"] is None
+        a.entityToken = "COMP:OriginA"
+        class UnreadRootHalf(FakeJoint):
+            @property
+            def occurrenceTwo(self):
+                raise RuntimeError("unread half")
+            @occurrenceTwo.setter
+            def occurrenceTwo(self, value):
+                pass
+        root.joints = _NamedCollection([UnreadRootHalf(name="Unread", geometry_one=stored,
+                                                     geometry_two=anchor, occurrence_one=oa)])
+        assert consumers()["RootAnchor"] is None
+        root.joints = _NamedCollection([])
+        assert all(value == [] for value in consumers().values())
+
+    def test_a_sub_assembly_joint_consumes_its_datum_on_every_placement(self, jo_design):
+        # The native half answers PSub:1's path only; each placement's proxy answers its own.
+        child, sub = _slice_comp("PChildA"), _slice_comp("PSub")
+        datum = _SliceJO("PChildADatum", token="JO:DA", comp=child)
+        child.jointOrigins = _NamedCollection([datum])
+        kids = {n: _slice_occ(f"PSub:{n}+PChildA:1", child) for n in (1, 2)}
+        inner = _slice_joint("Inner", datum, None)
+        inner.occurrenceOne, inner.parentComponent = kids[1], sub
+        inner.createForAssemblyContext = lambda occ: SimpleNamespace(
+            occurrenceOne=kids[int(occ.fullPathName[-1])], occurrenceTwo=None)
+        sub.joints = _NamedCollection([inner])
+        root = _slice_root(occ_by_comp={"PChildA": list(kids.values()),
+                                        "PSub": [_slice_occ(f"PSub:{n}", sub) for n in (1, 2)]})
+        jo_design(_slice_design(root, subs=[sub, child]))
+        rows = {r["qualified_name"]: r["consumed_by"] for r in
+                _payload(ap.handler(include=["joint_origins"], include_joints=False))["joint_origins"]}
+        assert rows == {"PSub:1+PChildA:1:PChildADatum": ["Inner"],
+                        "PSub:2+PChildA:1:PChildADatum": ["Inner"]}
+
     def test_unconsumed_jo_has_empty_consumed_by(self, jo_design):
-        jo_design(_slice_design(_slice_root(jos=[_SliceJO("Lonely", token="L")])))
+        jo = _SliceJO("Lonely", token="L")
+        root = _slice_root(jos=[jo])
+        jo.parentComponent = root
+        jo_design(_slice_design(root))
         r = _payload(ap.handler(include=["joint_origins"]))["joint_origins"][0]
         assert r["consumed_by"] == []
 
@@ -1215,7 +1333,7 @@ class TestRelationsSlice:
         assert row["joint_one"] == "CrankAxis" and row["joint_two"] is None
 
     def test_a_broken_relation_reports_unhealthy_with_its_message(self, relations_design):
-        relations_design(links=[_link("Bad", health=2, message="Compute Failed")],
+        relations_design(links=[_link("Bad", health=_ERROR, message="Compute Failed")],
                          constraints=[_RelConstraint("AC1", health=1, message="over-constrained")])
         rels = _payload(ap.handler(include=["relations"]))["relations"]
         assert rels["motion_links"][0]["healthy"] is False
@@ -2025,7 +2143,7 @@ class TestAllOccurrencesSlice:
     def test_the_slice_row_is_the_same_record_as_a_top_level_row(self, kin_design):
         occ = _occ("Tower:1", "Tower", origin=(1.0, 0.0, 0.0), body_bbox=((0, 0, 0), (2, 1, 1)),
                    grounded=True, ground_to_parent=True, body_count=3, rotation_deg=0.0)
-        kin_design(occs=[occ], joints=[_joint("J1", _REVOLUTE, "Tower:1", None)])
+        kin_design(occs=[occ], joints=[_joint("J1", _REVOLUTE, occ, None)])
         out = _payload(ap.handler(include=["all_occurrences", "poses"], units="mm"))
         top, nested = out["occurrences"][0], out["all_occurrences"][0]
         assert set(nested) - set(top) == {"full_path"}       # the ONE key the slice adds
@@ -2033,6 +2151,67 @@ class TestAllOccurrencesSlice:
         assert nested["grounded"] is True and nested["ground_to_parent"] is True
         assert nested["body_count"] == 3 and nested["joints"] == ["J1"]
         assert nested["bbox_size"] == [20.0, 10.0, 10.0] and nested["z_axis"] == [0.0, 0.0, 1.0]
+
+    def test_colliding_paths_keep_joint_membership_on_the_exact_occurrence(self, kin_design):
+        first = make_occurrence(path="PartA:1", component=MakeComp(name="PartA"),
+                                transform2=FakeMatrix3D(0.0, (0.0, 0.0, 0.0)),
+                                entity_token="Occurrence:first")
+        collision = make_occurrence(path="PartA:1", component=MakeComp(name="PartA"),
+                                    transform2=FakeMatrix3D(0.0, (5.0, 0.0, 0.0)),
+                                    entity_token="Occurrence:collision")
+        anchor = _occ("Anchor:1", "Anchor")
+        kin_design(occs=[first, collision, anchor], all_occs=[first, collision, anchor],
+                   joints=[_joint("OnlyFirst", _REVOLUTE, first, anchor)])
+        out = _payload(ap.handler(include=["all_occurrences", "poses"], units="mm"))
+
+        for rows in (out["occurrences"], out["all_occurrences"]):
+            parts = [row for row in rows if row.get("name") == "PartA:1"]
+            by_origin = {tuple(row["origin"]): row for row in parts}
+            assert by_origin[(0.0, 0.0, 0.0)]["joints"] == ["OnlyFirst"]
+            assert by_origin[(50.0, 0.0, 0.0)]["joints"] == []
+            assert all("joints_unverified" not in row for row in parts)
+
+    def test_unread_occurrence_equality_marks_membership_unverified(self, kin_design):
+        class UnreadEqualityOccurrence(FakeOccurrence):
+            def __eq__(self, other):
+                raise RuntimeError("occurrence equality unavailable")
+
+        member = _occ("Member:1", "Member")
+        unread = UnreadEqualityOccurrence(path="Member:1", component=member.component,
+                                          entity_token="Occurrence:unread")
+        anchor = _occ("Anchor:1", "Anchor")
+        kin_design(occs=[unread, anchor], all_occs=[unread, anchor],
+                   joints=[_joint("MemberJoint", _REVOLUTE, member, anchor)])
+        out = _payload(ap.handler(include=["all_occurrences"]))
+        row = next(row for row in out["occurrences"] if row["name"] == "Member:1")
+        assert row["joints"] == [] and row["joints_unverified"] is True
+        assert "joints list may be incomplete" in out["note"]
+
+    def test_unread_placed_joint_proxy_marks_membership_unverified(self, kin_design):
+        owner = MakeComp(name="Pin", entity_token="COMP:Pin")
+        first = _slice_occ("Pin:1", owner, transform2=_zrot(0.0, 0.0))
+        second = _slice_occ("Pin:2", owner, transform2=_zrot(90.0, 5.0))
+        anchor = _occ("Anchor:1", "Anchor")
+        joint = _joint("PinJoint", _REVOLUTE, first, anchor)
+        joint.parentComponent = owner
+
+        def proxy(occurrence):
+            if occurrence is second:
+                raise RuntimeError("diagnostic proxy refusal")
+            return SimpleNamespace(occurrenceOne=occurrence, occurrenceTwo=anchor)
+
+        joint.createForAssemblyContext = proxy
+        design = kin_design(occs=[first, second, anchor], all_occs=[first, second, anchor],
+                            joints=[joint])
+        design.rootComponent.allOccurrencesByComponent = (
+            lambda component: [first, second] if component is owner else [])
+        out = _payload(ap.handler(include=["poses", "all_occurrences"]))
+        rows = {tuple(row["origin"]): row for row in out["occurrences"]}
+        assert rows[(0.0, 0.0, 0.0)]["joints"] == ["PinJoint"]
+        assert rows[(0.0, 0.0, 0.0)]["joints_unverified"] is True
+        assert rows[(50.0, 0.0, 0.0)]["joints"] == []
+        assert rows[(50.0, 0.0, 0.0)]["joints_unverified"] is True
+        assert "joints list may be incomplete" in out["note"]
 
     def test_poses_reaches_the_nested_rows_too(self, kin_design):
         # the two arrays are built by two calls: a poses flag wired into only one of them leaves

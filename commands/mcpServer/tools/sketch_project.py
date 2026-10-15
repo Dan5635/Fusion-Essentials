@@ -1,11 +1,10 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""MCP building block: project existing geometry into a sketch - Fusion's Project command - plus the
-two projections that do not land flat on the sketch plane: curves ONTO model faces
-(Sketch.projectToSurface) and a section through the sketch plane (Sketch.intersectWithSketchPlane).
-WRITES. Only into_sketch's project2 carries a link flag; the other two always create reference
-curves.
+"""MCP building block: sketch curves from model geometry - Fusion's Project command, curves ONTO
+model faces (Sketch.projectToSurface), a section through the sketch plane, included and cut edges,
+and isoparametric curves on one face. WRITES. 'link' steers into_sketch's project2 and the
+isoparametric add / addUnlinked choice; the other actions take no link flag.
 """
 
 import adsk.core
@@ -15,15 +14,17 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, all_sketch_names
+from ._common import same_component as _same_sketch
 from . import _assert
 from . import _common
+from . import _edit_feature_common
 from . import _inputs
 from . import _outputs
 from . import _sketch_detail
 
 app = adsk.core.Application.get()
 
-_ACTIONS = ("into_sketch", "to_surface", "intersect")
+_ACTIONS = ("into_sketch", "to_surface", "intersect", "include", "cut_edges", "isoparametric")
 _ACTION = _inputs.Choice("action", list(_ACTIONS), default="into_sketch")
 
 # The geometry to project: find_geometry handles at edges/faces/vertices (a face projects all its
@@ -46,6 +47,13 @@ _PROJECT_TYPE = _inputs.Choice("project_type", ["closest_point", "along_vector"]
 # entity_only refuses a face handle - a face resolves to a direction VECTOR the call cannot consume.
 _DIRECTION = _inputs.AxisRef("direction", entity_only=True)
 
+_ISO_DIRECTION = _inputs.Choice("iso_direction", ["u", "v"])
+# Unitless: a quantity and a 0-1 proportion both read back off the definition's model parameter.
+_ISO_VALUE_TOL = 1e-6
+# One call's curve population, built on the main thread.
+_ISO_QUANTITY_MAX = 100
+_ISO_CURVE_MAX = 1000
+
 # The sketch-entity ref kinds sketch_constrain / sketch_dimension can address ('<type>:<index>') -
 # _common.ENTITY_REF_KINDS is the single source of truth; defer to it instead of a local copy that
 # can drift.
@@ -60,17 +68,20 @@ _SHORTFALL_NOTE = (" Some created curves have no '<type>:<index>' ref - list the
 # with a different signature, so an input the chosen method has no argument for is refused; accepting
 # it would put a value in the payload that never reached Fusion.
 _ACTION_ONLY = (
-    ("link", ("into_sketch",)),
-    ("entities", ("into_sketch", "intersect")),
+    ("link", ("into_sketch", "isoparametric")),
+    ("entities", ("into_sketch", "intersect", "include")),
     ("curves", ("into_sketch",)),
-    ("target_faces", ("to_surface",)),
+    ("target_faces", ("to_surface", "isoparametric")),
     ("source_sketch", ("into_sketch", "to_surface")),
     ("source_component", ("to_surface",)),
     ("curve_refs", ("to_surface",)),
     ("curve_handles", ("to_surface",)),
     ("project_type", ("to_surface",)),
     ("direction", ("to_surface",)),
-    ("bodies", ("intersect",)),
+    ("bodies", ("intersect", "cut_edges")),
+    ("iso_direction", ("isoparametric",)),
+    ("quantity", ("isoparametric",)),
+    ("at", ("isoparametric",)),
 )
 
 # What this tool RETURNS (declared once; drives the PRODUCES: prose + the assert-present contract test).
@@ -226,22 +237,6 @@ def _resolve_curve(sketch, ref, label):
                       + "/".join(_ADDRESSABLE)
                       + " - ids come from sketch_get(include_entities=true).")
     return ent, None
-
-
-def _same_sketch(a, b):
-    """True when two sketch reads denote the SAME sketch, False for DIFFERENT ones, None when the
-    comparison COULD NOT BE MADE - so callers branch on all three states."""
-    # An entityToken is DOCUMENT-LOCAL: two components brought in by two references of ONE source
-    # design read byte-identical tokens, so a token compare answers "same sketch" for two different
-    # ones. ``_common.native_identity`` carries the urn half that tells them apart.
-    if a is None or b is None:
-        return None
-    if a is b:
-        return True
-    ia, ib = _common.native_identity(a), _common.native_identity(b)
-    if ia is None or ib is None:
-        return None
-    return ia == ib
 
 
 def _source_label(ent) -> str:
@@ -651,10 +646,269 @@ def _intersect(sketch, entities, bodies) -> dict:
     return ok(out)
 
 
+def _off_plane(items):
+    """How many created curves have an end off the sketch plane, or None when an end did not read."""
+    off = 0
+    for c in items:
+        zs = [safe(lambda c=c, n=n: getattr(c, n).geometry.z)
+              for n in ("startSketchPoint", "endSketchPoint")
+              if safe(lambda c=c, n=n: getattr(c, n)) is not None]
+        if any(z is None for z in zs):
+            return None
+        off += 1 if any(abs(z) > 1e-6 for z in zs) else 0
+    return off
+
+
+def _one_by_one(sketch, act, method, sources, labels):
+    """(items per source, error): `method` called once per source, each call's entities kept apart."""
+    per, landed = [], 0
+    for src, label in zip(sources, labels):
+        try:
+            items = _as_list(method(src))
+        except Exception as e:
+            done = (f" {landed} entity(ies) from the earlier source(s) ARE in the sketch."
+                    if landed else " Re-read the sketch with sketch_get for anything it left.")
+            return None, (f"action='{act}' failed on '{label}' in sketch "
+                          f"'{safe(lambda: sketch.name)}': {e}.{done}")
+        per.append(items)
+        landed += len(items)
+    return per, None
+
+
+def _include(sketch, entities) -> dict:
+    """Sketch.include per entity: linked reference geometry where the source is, not flattened."""
+    sources, eerr = _ENTITIES.resolve(entities)
+    if eerr:
+        return error(eerr)
+    if not sources:
+        return error("action='include' needs 'entities': find_geometry handles at edges, faces or "
+                     "vertices.")
+    labels = [_source_label(e) for e in sources]
+    before = _addressable_counts(sketch)
+    per, perr = _one_by_one(sketch, "include", sketch.include, sources, labels)
+    if perr:
+        return error(perr)
+    items = [c for group in per for c in group]
+    after = _addressable_counts(sketch)
+    if not items:
+        return error(f"include returned no sketch entities in '{safe(lambda: sketch.name)}' from "
+                     + ", ".join(labels) + ".")
+    if _delta(before, after) <= 0:
+        return error(f"include returned {len(items)} entity(ies) but the entity counts of "
+                     f"'{safe(lambda: sketch.name)}' did not rise; re-read it with sketch_get.")
+    refs = _new_refs(before, after)
+    ref_yes, ref_no, ref_unknown = _flag_tally(items, "isReference")
+    curves = [c for c in items if safe(lambda c=c: c.startSketchPoint) is not None]
+    off = _off_plane(curves)
+    note = " ".join(p for p in (
+        "Geometry included where its source is, not flattened onto the sketch plane.",
+        _linkage_note(len(items), ref_yes, ref_no, ref_unknown, "its source"),
+        (f"{off} of the {len(curves)} curves have an end off the sketch plane; such a curve does "
+         "not bound a profile - action='into_sketch' gives the flat projection." if off else ""),
+        ("An end point did not read, so which curves lie off the plane is not known."
+         if off is None else ""),
+        _REFS_NOTE) if p)
+    if len(items) > len(refs):
+        note += _SHORTFALL_NOTE
+    out = {"projected": True, "action": "include", "sketch": safe(lambda: sketch.name),
+           "source_count": len(sources), "created_count": len(items), "entity_refs": refs,
+           "per_source": [{"source": lab, "created": len(g)} for lab, g in zip(labels, per)],
+           "note": note}
+    if off is not None:
+        out["off_plane_count"] = off
+    return ok(out)
+
+
+def _cut_edges(sketch, bodies) -> dict:
+    """Sketch.projectCutEdges per body: the curves where the sketch plane cuts each body."""
+    sources, berr = _BODIES.resolve(bodies)
+    if berr:
+        return error(berr)
+    if not sources:
+        return error("action='cut_edges' needs 'bodies': the bodies the sketch plane cuts.")
+    labels = [_source_label(b) for b in sources]
+    before = _addressable_counts(sketch)
+    per, perr = _one_by_one(sketch, "cut_edges", sketch.projectCutEdges, sources, labels)
+    if perr:
+        return error(perr)
+    items = [c for group in per for c in group]
+    after = _addressable_counts(sketch)
+    if items and _delta(before, after) <= 0:
+        return error(f"cut_edges returned {len(items)} entity(ies) but the entity counts of "
+                     f"'{safe(lambda: sketch.name)}' did not rise; re-read it with sketch_get.")
+    if not items:
+        # A body the plane misses answers with an empty collection and no error.
+        return error(f"The plane of sketch '{safe(lambda: sketch.name)}' ({_plane_label(sketch)}) "
+                     "cuts none of: " + ", ".join(labels) + ". No sketch geometry was created. "
+                     "Move the sketch plane through the body, or pass a body that spans it.")
+    refs = _new_refs(before, after)
+    ref_yes, ref_no, ref_unknown = _flag_tally(items, "isReference")
+    missed = [lab for lab, g in zip(labels, per) if not g]
+    note = " ".join(p for p in (
+        "Cut edges created where the sketch plane cuts the bodies.",
+        _linkage_note(len(items), ref_yes, ref_no, ref_unknown, "the body it was cut from"),
+        (f"The plane does not cut {', '.join(missed)}; nothing came from "
+         + ("it." if len(missed) == 1 else "them.") if missed else ""),
+        _REFS_NOTE) if p)
+    if len(items) > len(refs):
+        note += _SHORTFALL_NOTE
+    return ok({"projected": True, "action": "cut_edges", "sketch": safe(lambda: sketch.name),
+               "source_count": len(sources), "created_count": len(items), "entity_refs": refs,
+               "per_source": [{"source": lab, "created": len(g)} for lab, g in zip(labels, per)],
+               "note": note})
+
+
+def _own_face(design, sketch, face, label):
+    """Return a root-owned native face or an ownership refusal before adding curves."""
+    owner = safe(lambda: sketch.parentComponent)
+    root = safe(lambda: design.rootComponent)
+    if _common.same_component(owner, root) is not True:
+        return None, (f"Sketch '{safe(lambda: sketch.name)}' belongs to component "
+                      f"'{safe(lambda: owner.name)}'. Isoparametric curves in a non-root "
+                      "sketch can land away from the face, so nothing was added. Use a "
+                      "root-owned sketch and root-owned face, or choose another modeling route.")
+    native = _common._native_of(face)
+    if _common.same_component(_inputs.entity_component(native), owner) is True:
+        return native, None
+    return None, (f"'target_faces' resolved to {label}, which is not read as belonging to "
+                  f"component '{safe(lambda: owner.name)}' that holds sketch "
+                  f"'{safe(lambda: sketch.name)}', so isoparametric curves on it are not available "
+                  "here. Use a root-owned sketch and root-owned face, or choose another "
+                  "modeling route.")
+
+
+def _iso_definition(made, asked):
+    """(the definition fields read back, the mismatches against `asked`, the names unread)."""
+    parameter = safe(lambda: made.quantityOrDistance)
+    is_u = _common.read_flag(lambda: made.isUDirection)
+    got = {"iso_direction": None if is_u is None else ("u" if is_u else "v"),
+           "single": _common.read_flag(lambda: made.isSingle),
+           "value": _common.finite_number(safe(lambda: parameter.value))}
+    differs = [f"{key} reads {got[key]!r}, requested {asked[key]!r}" for key in asked
+               if got[key] is not None and (abs(got[key] - asked[key]) > _ISO_VALUE_TOL
+                                            if key == "value" else got[key] != asked[key])]
+    fields = {"parameter": safe(lambda: parameter.name),
+              "parameter_expression": safe(lambda: parameter.expression)}
+    return fields, differs, [key for key in asked if got[key] is None]
+
+
+def _isoparametric(design, sketch, target_faces, iso_direction, quantity, at, link) -> dict:
+    """SketchIsoparametricCurves.add / addUnlinked on ONE face, judged by what reads back."""
+    faces, ferr = _TARGET_FACES.resolve(target_faces)
+    if ferr:
+        return error(ferr)
+    if len(faces) != 1:
+        return error(f"action='isoparametric' takes ONE face in 'target_faces'; got {len(faces)}. "
+                     "Call it once per face.")
+    direction, derr = _ISO_DIRECTION.resolve(iso_direction or "u")
+    if derr:
+        return error(derr)
+    if (quantity is None) == (at is None):
+        return error("action='isoparametric' needs exactly one of 'quantity' (that many positions "
+                     "spread evenly across the face) or 'at' (one position at that 0-1 proportion "
+                     f"across it); got quantity={quantity!r}, at={at!r}.")
+    if quantity is not None and (type(quantity) is not int
+                                 or not 1 <= quantity <= _ISO_QUANTITY_MAX):
+        return error(f"'quantity' must be a whole number from 1 to {_ISO_QUANTITY_MAX} per "
+                     f"call; got {quantity!r}.")
+    position = None if at is None else _common.finite_number(at)
+    if at is not None and (position is None or not 0.0 <= position <= 1.0):
+        return error(f"'at' must be a number from 0 to 1; got {at!r}.")
+    label = _source_label(faces[0])
+    face, oerr = _own_face(design, sketch, faces[0], label)
+    if oerr:
+        return error(oerr)
+
+    name = safe(lambda: sketch.name)
+    requested = True if link is None else bool(link)
+    want = float(quantity) if quantity is not None else position
+    setter = "setDistributed" if quantity is not None else "setSingle"
+    try:
+        iso = sketch.sketchCurves.sketchIsoparametricCurves
+        iso_input = iso.createInput(face)
+        if iso_input is None:
+            return error(f"createInput answered nothing for {label}; nothing was added.")
+        iso_input.isUDirection = direction == "u"
+        value = adsk.core.ValueInput.createByReal(want)
+        took = (iso_input.setDistributed(value) if quantity is not None
+                else iso_input.setSingle(False, value))
+    except Exception as e:
+        return error(f"The isoparametric input for {label} could not be built in sketch "
+                     f"'{name}': {e}. Nothing was added.")
+    if took is not True:
+        return error(f"{setter} answered {took!r} for {label}; nothing was added.")
+
+    before = _addressable_counts(sketch)
+    definition_count_before = safe(lambda: iso.count)
+    method = "add" if requested else "addUnlinked"
+    try:
+        made = iso.add(iso_input) if requested else iso.addUnlinked(iso_input)
+    except Exception as e:
+        return error(f"SketchIsoparametricCurves.{method} failed on {label} in sketch "
+                     f"'{name}': {e}")
+    curves = _edit_feature_common.collection_entities(
+        safe(lambda: made.resultCurves) if requested else made, cap=_ISO_CURVE_MAX)
+    refs = _new_refs(before, _addressable_counts(sketch))
+    remain = f" Sketch '{name}' gained: {', '.join(refs) or 'no addressable entity'}."
+    if curves is None:
+        return error(f"{method} answered a {type(made).__name__} on {label} whose curves did not "
+                     f"read back within {_ISO_CURVE_MAX}, so the result is unverified.{remain} "
+                     "Read it with sketch_get.")
+    if not curves:
+        definition_count_after = safe(lambda: iso.count)
+        kept = (" One empty isoparametric definition remains in the sketch."
+                if requested and isinstance(definition_count_before, int)
+                and isinstance(definition_count_after, int)
+                and definition_count_after > definition_count_before else "")
+        return error(f"{method} created no curve on {label}.{remain}{kept} "
+                     "Read design_get(include=['timeline']) for a sketch warning.")
+    link_yes, link_no, link_unknown = _flag_tally(curves, "isLinked")
+    linked = _landed_flag(link_yes, link_no, link_unknown)
+    asked_link = "true" if requested else "false"
+    if linked is not None and linked != requested:
+        return error(f"link={asked_link} was requested, but all {len(curves)} curve(s) {method} "
+                     f"created on {label} read back as "
+                     + ("LINKED" if linked else "NOT linked") + f".{remain}")
+    fields, unread = {}, []
+    if requested:
+        fields, differs, unread = _iso_definition(
+            made, {"iso_direction": direction, "single": quantity is None, "value": want})
+        if differs:
+            return error(f"The isoparametric definition on {label} read back differently from "
+                         f"the request: {'; '.join(differs)}. Its {len(curves)} curve(s) "
+                         f"REMAIN.{remain} Read them with sketch_get.")
+    expected = quantity if quantity is not None else 1
+    note = " ".join(p for p in (
+        f"{len(curves)} isoparametric curve(s) created on {label}.",
+        ("They read back as linked." if linked is True else
+         "They read back as not linked." if linked is False else
+         f"isLinked did not read the same on every curve, so link={asked_link} is the request, "
+         "not a confirmed state."),
+        (f"Its model parameter reads back as '{fields['parameter']}' = "
+         f"'{fields['parameter_expression']}'." if fields.get("parameter") else ""),
+        (f"{expected} position(s) were requested and {len(curves)} curve(s) read back."
+         if len(curves) != expected else ""),
+        ("Not read back off the definition: " + ", ".join(unread) + "." if unread else ""),
+        _REFS_NOTE) if p)
+    if len(curves) > sum(1 for r in refs if not r.startswith("point:")):
+        note += _SHORTFALL_NOTE
+    mode = ({"iso_direction": direction,
+             **({"quantity": quantity} if quantity is not None else {"at": position})}
+            if requested else
+            {"iso_direction_requested": direction,
+             **({"quantity_requested": quantity} if quantity is not None
+                else {"at_requested": position})})
+    return ok({"projected": True, "action": "isoparametric", "sketch": name, "face": label,
+               **mode,
+               "linked": linked, "link_requested": requested, **fields,
+               "created_count": len(curves), "entity_refs": refs, "note": note})
+
+
 def handler(entities="", sketch_name: str = "", link: bool = None, action: str = "into_sketch",
             target_faces="", source_sketch: str = "", curve_refs="", curve_handles="",
             project_type: str = "", direction: str = "", bodies="", component: str = "",
-            source_component: str = "", curves="") -> dict:
+            source_component: str = "", curves="", iso_direction: str = "",
+            quantity: int = None, at: float = None) -> dict:
     """See TOOL_DESCRIPTION."""
     act, aerr = _ACTION.resolve(action)
     if aerr:
@@ -663,13 +917,14 @@ def handler(entities="", sketch_name: str = "", link: bool = None, action: str =
         "link": link, "entities": entities, "target_faces": target_faces,
         "source_sketch": source_sketch, "source_component": source_component,
         "curve_refs": curve_refs, "curve_handles": curve_handles, "curves": curves,
-        "project_type": project_type, "direction": direction, "bodies": bodies})
+        "project_type": project_type, "direction": direction, "bodies": bodies,
+        "iso_direction": iso_direction, "quantity": quantity, "at": at})
     if ferr:
         return error(ferr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     sk, requested, refusal = _sketch_detail.scoped_or_recent_sketch(design, sketch_name, component)
     if refusal:
@@ -687,6 +942,12 @@ def handler(entities="", sketch_name: str = "", link: bool = None, action: str =
                            project_type, direction, source_component)
     if act == "intersect":
         return _intersect(sk, entities, bodies)
+    if act == "include":
+        return _include(sk, entities)
+    if act == "cut_edges":
+        return _cut_edges(sk, bodies)
+    if act == "isoparametric":
+        return _isoparametric(design, sk, target_faces, iso_direction, quantity, at, link)
     return _into_sketch(design, sk, entities, link, source_sketch, curves)
 
 
@@ -711,6 +972,10 @@ tool = (
     .add_input_property(*_PROJECT_TYPE.as_property())
     .add_input_property(*_DIRECTION.as_property())
     .add_input_property(*_BODIES.as_property())
+    .add_input_property(*_ISO_DIRECTION.as_property())
+    .add_input_property("quantity", {"type": "integer", "minimum": 1,
+                                     "maximum": _ISO_QUANTITY_MAX})
+    .add_input_property("at", {"type": "number", "maximum": 1})
     .strict_schema()
 )
 

@@ -6,6 +6,7 @@ The census (a fresh walk of the collection the item lived in) is the only honest
 a wrapper held across a successful remove keeps answering isValid True, so nothing here lets the
 handler trust the object it was handed.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -317,7 +318,7 @@ class TestGuards:
         assert "'body'" in msg and "'occurrence'" in msg
 
     def test_no_active_design_is_a_clean_error(self, monkeypatch):
-        monkeypatch.setattr(drf._common, "design", lambda: None)
+        _install_design(drf, None)
         assert "No active design" in error_message(drf.handler(body="Body1"))
 
     def test_an_unreadable_target_name_is_refused_before_any_mutation(self):

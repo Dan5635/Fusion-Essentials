@@ -9,14 +9,15 @@ resolved inside a component is scanned through its occurrence PROXY, so the posi
 world and not component-local.
 """
 
-import json
+import math
 import os
 import sys
 
 import adsk.core
 
-from conftest import (Circle3D, Ellipse3D, MakeDesign, MeshBody, load_tool, _NamedCollection,
-                      _Vertex)
+from conftest import (Circle3D, Ellipse3D, FakeMatrix3D, FakePoint, FakeSketchPoint, MakeComp,
+                      MakeDesign, MeshBody, Sketch, install, load_tool, make_occurrence,
+                      _NamedCollection, _Vertex)
 
 fg = load_tool("find_geometry")
 
@@ -218,9 +219,35 @@ def _install(occs, root_bodies=(), all_occs=None, meshes=(), active=None):
     return design
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
+
+
+@pytest.mark.parametrize("units, factor", [("in", 1 / 2.54), ("mm", 10)])
+def test_acquired_geometry_retains_close_tolerance_precision(units, factor):
+    radii = [0.312125 * 2.54, 0.88575 * 2.54]
+    center = (1.23456789, 2.34567891, 3.45678912)
+    faces = [FakeFace("cyl" + str(i), _CylGeo(r), center) for i, r in enumerate(radii)]
+    edges = [FakeEdge("circle", _circle(radii[0], center), center),
+             FakeEdge("ellipse", _EllipseGeo(*radii, center), center)]
+    plane = FakeFace("plane", _PlaneGeo(center, (1, 0, 0), (0, 1, 0), (0, 0, 1)), center)
+    vertex = _Vertex(_Pt(*center))
+    vertex.entityToken = "vertex"
+    _install([], root_bodies=[FakeBody(faces=faces + [plane], edges=edges, vertices=[vertex])])
+    result = _payload(fg.handler(units=units))
+    cylinders = [r for r in result["matches"] if r["kind"] == "cylinder_face"]
+    assert [r["radius"] for r in cylinders] == [round(r * factor, 6) for r in radii]
+    assert abs(2 * cylinders[1]["radius"] / (factor * 2.54) - 1.7715) < 0.000002
+    expected_position = [round(v * factor, 6) for v in center]
+    assert all(r["position"] == expected_position for r in result["matches"])
+    planar = next(r for r in result["matches"] if r["kind"] == "planar_face")
+    assert planar["frame"]["origin"] == expected_position
+    ellipse = next(r for r in result["matches"] if r["kind"] == "ellipse_edge")
+    assert (ellipse["major_radius"], ellipse["minor_radius"]) == tuple(round(r * factor, 6) for r in radii)
+    verts = _payload(fg.handler(kind="vertex", units=units))["matches"]
+    assert verts[0]["position"] == expected_position
+    other = _payload(fg.handler(units="cm"))["matches"]
+    assert [r["handle"] for r in result["matches"]] == [r["handle"] for r in other]
+    assert cylinders[0]["handle"] == fg._inputs.make_handle(faces[0], "cylinder_face", center)
 
 
 _WALK_RAISE = "2 : InternalValidationError : occ"
@@ -370,9 +397,9 @@ class TestFind:
         assert filtered["matches"] == []
 
     @pytest.mark.parametrize(("units", "within", "outside", "display"), [
-        ("mm", 2.55524, 2.554, 2.682),
-        ("cm", 0.255524, 0.2554, 0.268),
-        ("in", 0.1006, 0.1005511811023622, 0.106),
+        ("mm", 2.55524, 2.554, 2.68224),
+        ("cm", 0.255524, 0.2554, 0.268224),
+        ("in", 0.1006, 0.1005511811023622, 0.1056),
     ])
     @pytest.mark.parametrize("kind", ["cylinder_face", "circular_edge"])
     def test_radius_filter_compares_the_unrounded_measurement(
@@ -953,7 +980,7 @@ class TestPlanarFaceFrame:
         assert "frame" not in out["matches"][0]
 
 
-# ── BOUNDED READS: 'matches' is capped (CLAUDE.md "Bound it") ────────────────────────────────────
+# ── BOUNDED READS: 'matches' is capped (AGENTS.md "Bound it") ────────────────────────────────────
 
 class TestCaps:
     def _many_faces(self, n):
@@ -1042,3 +1069,98 @@ class TestEllipseAndSplineEdges:
         # one of the six the classifier knows
         self._edges(FakeEdge("POLY", _PolylineGeo(), (1.0, 0, 0)))
         assert _payload(fg.handler(target="X:1"))["matches"][0]["kind"] == "edge"
+
+
+# ── sketch entities and construction points: world locators minted through their occurrence ──────
+
+class ConstructionPoint:
+    """A construction point - no live shape dump, so a local double: name, owner, local point."""
+    def __init__(self, name, component, geometry):
+        self.name, self.component, self.geometry = name, component, geometry
+        self.assemblyContext = None
+        self.entityToken = "CP:" + name
+
+
+class SketchCircle:
+    """A sketch circle - no live shape dump, so a local double: centre point, radius, sketch."""
+    def __init__(self, centre, radius, sketch):
+        self.centerSketchPoint, self.radius, self.parentSketch = centre, radius, sketch
+        self.assemblyContext = None
+
+
+def _bench_design(root_points=(), circles=(), twice=False):
+    """Root plus 'Bench' as Bench:1 (30 deg, (10, 20, 0) cm) [and Bench:2 at (40, 0, 0)]: sketch S."""
+    root = MakeComp(name="Root", entity_token="TOKEN:Root")
+    bench = MakeComp(name="Bench", entity_token="TOKEN:Bench")
+    occ = make_occurrence("Bench:1", component=bench,
+                          transform2=FakeMatrix3D(deg=30.0, t=(10.0, 20.0, 0.0)))
+    root.allOccurrences = [occ] + ([make_occurrence("Bench:2", component=bench,
+                                                    transform2=FakeMatrix3D(t=(40.0, 0.0, 0.0)))]
+                                   if twice else [])
+    sketch = Sketch("S", parent_component=bench, transform=FakeMatrix3D())
+    native = FakeSketchPoint(FakePoint(1.0, 2.0, 0.0), parent_sketch=sketch, entity_token="P")
+    proxy = FakeSketchPoint(native.geometry, parent_sketch=sketch, entity_token="P@Bench:1",
+                            assembly_context=occ, native_object=native)
+    native.createForAssemblyContext = lambda _occ: proxy
+    sketch.sketchPoints = _NamedCollection([native])
+    sketch.sketchCurves.sketchCircles = _NamedCollection(
+        [SketchCircle(FakeSketchPoint(FakePoint(x, y, 0.0), parent_sketch=sketch), r, sketch)
+         for x, y, r in circles])
+    bench.sketches = _NamedCollection([sketch])
+    root.constructionPoints = _NamedCollection(
+        [ConstructionPoint(n, root, FakePoint(*p)) for n, p in root_points])
+    return MakeDesign(comp=root, all_components=[root, bench])
+
+
+class TestPlacedKinds:
+    def test_a_sketch_point_is_minted_through_its_occurrence_in_world_space(self):
+        install(fg, _bench_design())
+        out = _payload(fg.handler(kind="sketch_point", units="mm"))
+        (row,) = out["matches"]
+        c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+        world_cm = (c - 2 * s + 10.0, s + 2 * c + 20.0, 0.0)
+        assert row["position"] == [round(v * 10, 6) for v in world_cm]
+        assert (row["occurrence"], row["sketch"], row["id"]) == ("Bench:1", "S", "point:0")
+        token, loc = fg._inputs._split_handle(row["handle"])
+        assert token == "P@Bench:1" and loc[0] == "sketch_point" and loc[5] == "Bench:1"
+        assert all(abs(a - round(b, 6)) < 1e-9 for a, b in zip(loc[1:4], world_cm))
+        assert _payload(fg.handler(kind="sketch_point", sketch="Other"))["match_count"] == 0
+
+    def test_a_construction_point_name_matches_exactly_ignoring_case(self):
+        install(fg, _bench_design(root_points=(("Point1", (1, 2, 3)), ("Point10", (4, 5, 6)))))
+        out = _payload(fg.handler(kind="construction_point", name="point1", units="cm"))
+        assert [(m["name"], m["position"]) for m in out["matches"]] == [("Point1", [1.0, 2.0, 3.0])]
+
+    def test_unread_datum_collection_cannot_be_reported_as_no_matches(self):
+        design = _bench_design()
+        root, bench = design._all_components
+        root.constructionAxes = None
+        bench.constructionAxes = _NamedCollection([])
+        install(fg, design)
+        unknown = _payload(fg.handler(kind="construction_axis"))
+        assert unknown["match_count"] is None and unknown["incomplete"] is True
+        assert unknown["matches"] == []
+        root.constructionAxes = _NamedCollection([])
+        empty = _payload(fg.handler(kind="construction_axis"))
+        assert empty["match_count"] == 0 and "incomplete" not in empty
+
+    def test_a_placed_circle_reads_its_world_centre_and_the_radius_filter_holds_its_edge(self):
+        # radius 10 mm keeps the 10.5 mm circle at exactly its 5% edge and drops the 10.6 mm one;
+        # with the component placed twice each row's centre is read through its own instance.
+        install(fg, _bench_design(circles=((3.0, 3.0, 1.05), (3.0, 3.0, 1.06)), twice=True))
+        out = _payload(fg.handler(kind="sketch_circle", radius=10, units="mm"))
+        c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+        want = {"Bench:1": [round(v * 10, 6) for v in (3 * c - 3 * s + 10.0, 3 * s + 3 * c + 20.0, 0.0)],
+                "Bench:2": [430.0, 30.0, 0.0]}
+        assert sorted(row["occurrence"] for row in out["matches"]) == ["Bench:1", "Bench:2"]
+        for row in out["matches"]:
+            centre = want[row["occurrence"]]
+            assert row["radius"] == 10.5 and row["id"] == "circle:0"
+            assert row["center"] == centre and row["position"] == centre
+        assert "'<sketch>/<id>:center'" in out["note"]
+        assert "sketch_line handle in 'axis' and two_edges' 'edges'" in out["note"]
+
+    def test_a_sketch_or_name_filter_on_a_body_kind_is_refused(self):
+        install(fg, _bench_design())
+        res = fg.handler(kind="planar_face", sketch="S")
+        assert res["isError"] is True and "kind='planar_face' reads bodies" in res["message"]

@@ -178,7 +178,7 @@ def replace_with_library_tool(operations: List[adsk.cam.Operation], library: Too
         tool_json = json.loads(tool.toJson(), parse_float=lambda x: round(float(x), 3)) # APIDUMB: All the floats coming out of a newly opened file are .3f so we need to do this so the hash matches
         library_tool_used.append(LibraryTool(tool))
         lib_num = library_tool_used.__len__() - 1
-        
+
         library_tool_description[tool_json["description"]] = lib_num
         library_tool_product_ids[tool_json["product-id"]] = lib_num
         if "geometry" in tool_json.keys():

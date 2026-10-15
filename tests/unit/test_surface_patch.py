@@ -79,16 +79,21 @@ class _RailsColl(_FakeObjectCollection):
 
 class FakeFeature(_SharedFeature):
     """The shared feature plus the extent a depth read-back reads and a patch's group pair."""
-    def __init__(self, name="Surface1", bodies=None, extent_cm=None, group_continuity=None):
+    def __init__(self, name="Surface1", bodies=None, extent_cm=None, group_continuity=None,
+                 continuity_arrays=None):
         super().__init__(name=name, bodies=bodies if bodies is not None else [_body()])
         self.groupContinuity = group_continuity
         self.groupWeight = 0.5
+        self._continuity_arrays = continuity_arrays
         if extent_cm is not None:
             # ExtrudeFeature.extentOne is a DistanceExtentDefinition (a SymmetricExtentDefinition
             # for a symmetric extrude) whose .distance is a ModelParameter reading CM, signed as
             # requested. extent_cm=None gives a feature whose extent cannot be read at all.
             self.extentOne = types.SimpleNamespace(
                 distance=types.SimpleNamespace(value=extent_cm))
+
+    def getContinuity(self):
+        return [True, *self._continuity_arrays]
 
 
 class FakePatchInput:
@@ -100,6 +105,17 @@ class FakePatchInput:
         self.groupContinuity = _connected()
         self._rails = []
         self._rails_dropped = rails_dropped
+        self._edges = list(boundary) if isinstance(boundary, _FakeObjectCollection) else [boundary]
+        self._cont = [_connected() for _ in self._edges]
+        self._weight = [0.5 for _ in self._edges]
+        self._flipped = [False for _ in self._edges]
+
+    def getContinuity(self):
+        return [True, list(self._edges), list(self._cont), list(self._weight), list(self._flipped)]
+
+    def setContinuity(self, continuity, weights, flipped):
+        self._cont, self._weight, self._flipped = list(continuity), list(weights), list(flipped)
+        return True
 
     @property
     def interiorRailsAndPoints(self):
@@ -138,16 +154,20 @@ class FakePatchFeatures:
         self._raises = raises
         self._rails_dropped = rails_dropped
         self._ignores = ignores_continuity
+        self.added = 0
     def createInput(self, boundary, op):
         self.last_input = FakePatchInput(boundary, op, rails_dropped=self._rails_dropped)
         return self.last_input
     def add(self, inp):
+        self.added += 1
         if self._raises:
             raise RuntimeError(self._raises)
         if not self._feature:
             return None
         landed = _connected() if self._ignores else getattr(inp, "groupContinuity", None)
-        return FakeFeature(name="Patch1", bodies=self._result, group_continuity=landed)
+        arrays = [list(inp._edges), list(inp._cont), list(inp._weight), list(inp._flipped)]
+        return FakeFeature(name="Patch1", bodies=self._result, group_continuity=landed,
+                           continuity_arrays=arrays)
 
 
 class FakePatchFeaturesRejectContinuity(FakePatchFeatures):
@@ -430,6 +450,64 @@ class TestSurfacePatch:
         assert first is not second
         assert list(first) == [r1, r2]
 
+    def test_edge_conditions_map_by_native_edge_identity_and_read_feature_settings(self, wire,
+                                                                                     monkeypatch):
+        edges = _rim("ab", "bc", "ca")
+        for i, edge in enumerate(edges):
+            edge.entityToken = f"E{i}"
+        pf = FakePatchFeatures(result_bodies=[_body("Patch1")])
+        wire(_comp(FakeFeatures(pf=pf)), handle_map={f"E{i}": edge for i, edge in enumerate(edges)})
+        monkeypatch.setattr(sc._common, "native_identity", lambda entity: entity.entityToken)
+        monkeypatch.setattr(sc._common, "rolled_to",
+                            lambda _design, _feature, read, _subject, park=None: (read(), None))
+        out = payload(sc.handler(boundary=["E0", "E1", "E2"], edge_conditions=[
+            {"edge": "E2", "continuity": "curvature", "weight": 2.0, "flipped": True},
+            {"edge": "E0", "continuity": "tangent"},
+            {"edge": "E1", "continuity": "connected"},
+        ]))
+        assert pf.last_input._cont == [adsk.fusion.SurfaceContinuityTypes.TangentSurfaceContinuityType,
+                                       adsk.fusion.SurfaceContinuityTypes.ConnectedSurfaceContinuityType,
+                                       adsk.fusion.SurfaceContinuityTypes.CurvatureSurfaceContinuityType]
+        assert pf.last_input._flipped == [False, False, True]
+        assert out["edge_conditions"] == [
+            {"edge": "E0", "continuity": "tangent", "weight": 0.5, "flipped": False},
+            {"edge": "E1", "continuity": "connected", "weight": 0.5, "flipped": False},
+            {"edge": "E2", "continuity": "curvature", "weight": 2.0, "flipped": True},
+        ]
+
+    def test_edge_conditions_require_the_complete_boundary_map_before_add(self, wire,
+                                                                           monkeypatch):
+        edges = _rim("ab", "bc", "ca")
+        for i, edge in enumerate(edges):
+            edge.entityToken = f"E{i}"
+        pf = FakePatchFeatures(result_bodies=[_body("Patch1")])
+        wire(_comp(FakeFeatures(pf=pf)), handle_map={f"E{i}": edge for i, edge in enumerate(edges)})
+        monkeypatch.setattr(sc._common, "native_identity", lambda entity: entity.entityToken)
+        res = sc.handler(boundary=["E0", "E1", "E2"],
+                         edge_conditions=[{"edge": "E0", "continuity": "tangent"}])
+        assert res["isError"] is True and "every boundary edge exactly once" in res["message"]
+        assert pf.added == 0
+
+    @pytest.mark.parametrize("weight", [float("nan"), float("inf"), True])
+    def test_unreadable_native_weight_cannot_certify_conditions(self, monkeypatch, weight):
+        edge = _edge()
+        monkeypatch.setattr(sc._common, "native_identity", lambda entity: "edge")
+        read, refusal = sc._native_conditions_read((True, [edge], [0], [weight], [False]), [edge])
+        assert read is None and "finite numbers" in refusal
+
+    def test_failed_retained_conditions_names_a_remedy_for_created_feature(self, wire, monkeypatch):
+        edges = _rim("ab", "bc", "ca")
+        for i, edge in enumerate(edges):
+            edge.entityToken = f"E{i}"
+        pf = FakePatchFeatures(result_bodies=[_body("Patch1")])
+        wire(_comp(FakeFeatures(pf=pf)), handle_map={f"E{i}": edge for i, edge in enumerate(edges)})
+        monkeypatch.setattr(sc._common, "native_identity", lambda entity: entity.entityToken)
+        monkeypatch.setattr(sc, "_feature_edge_conditions", lambda *args: (None, "unreadable"))
+        result = sc.handler(boundary=["E0", "E1", "E2"], edge_conditions=[
+            {"edge": f"E{i}", "continuity": "connected"} for i in range(3)])
+        assert result["isError"] is True and "was built" in result["message"]
+        assert "design_delete_feature" in result["message"] and pf.added == 1
+
     def test_interior_rails_count_mismatch_is_refused(self, wire):
         # the input keeps only some of the assigned rails -> the patch would run without them
         e1, r1, r2 = _edge(), _edge(), _edge()
@@ -575,3 +653,60 @@ class TestSurfacePatch:
         out = payload(sc.handler(boundary=h0))
         assert out["patched"] is True
         assert pf.last_input.boundary is e0     # the ONE edge, not a shredded fragment
+
+
+@pytest.fixture
+def sketch_boundary(wire, monkeypatch):
+    from conftest import Profile, Sketch, FakeSketchPoint, FakePoint
+    pf = FakePatchFeatures(result_bodies=[_body("Patch1")])
+    root = _comp(FakeFeatures(pf=pf))
+    sketch = Sketch("Square", parent_component=root, entity_token="square")
+    profile = Profile(entity_token="profile", parent_sketch=sketch)
+    line_type = type("SketchLine", (), {})
+    monkeypatch.setattr(adsk.fusion, "SketchLine", line_type)
+    monkeypatch.setattr(adsk.fusion, "Profile", Profile)
+    points = [FakeSketchPoint(FakePoint(x, y, 0)) for x, y in [(0, 0), (1, 0), (1, 1), (0, 1)]]
+    lines = []
+    for i in range(4):
+        line = line_type()
+        line.parentSketch, line.assemblyContext, line.entityToken = sketch, None, f"line{i}"
+        line.startSketchPoint, line.endSketchPoint = points[i], points[(i + 1) % 4]
+        lines.append(line)
+    wire(root, {"profile": profile, **{f"line{i}": line for i, line in enumerate(lines)}})
+    return pf, profile, lines
+
+
+@pytest.mark.parametrize("kind", ["profile", "sketch_lines"])
+def test_sketch_boundary_reaches_native_input_as_profile_or_closed_lines(sketch_boundary, kind):
+    pf, profile, lines = sketch_boundary
+    boundary = "profile" if kind == "profile" else [f"line{i}" for i in range(4)]
+    out = payload(sc.handler(boundary=boundary))
+    assert out["boundary_kind"] == kind and out["is_solid"] is False
+    if kind == "profile":
+        assert pf.last_input.boundary is profile
+    else:
+        assert list(pf.last_input.boundary) == lines
+
+
+def test_open_sketch_boundary_is_refused_before_patch_creation(sketch_boundary):
+    from conftest import FakeSketchPoint, FakePoint
+    pf, _profile, lines = sketch_boundary
+    lines[-1].endSketchPoint = FakeSketchPoint(FakePoint(.1, 0, 0))
+    result = sc.handler(boundary=[f"line{i}" for i in range(4)])
+    assert result["isError"] is True and "gap" in result["message"]
+    assert pf.last_input is None
+
+
+@pytest.mark.parametrize("args", [{"continuity": "tangent"}, {"operation": "new_component"}])
+def test_sketch_boundary_refuses_unmeasured_patch_options(sketch_boundary, args):
+    result = sc.handler(boundary="profile", **args)
+    assert result["isError"] is True and "Sketch boundaries take" in result["message"]
+    assert sketch_boundary[0].last_input is None
+
+
+def test_sketch_boundary_refuses_active_child_before_write(sketch_boundary, monkeypatch):
+    child = MakeComp(name="Child", entity_token="child")
+    monkeypatch.setattr(sc, "target_component", lambda design: child)
+    result = sc.handler(boundary="profile")
+    assert result["isError"] is True and "root component active" in result["message"]
+    assert sketch_boundary[0].last_input is None

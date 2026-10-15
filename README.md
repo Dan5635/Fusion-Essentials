@@ -28,15 +28,15 @@ in `%USERPROFILE%\AppData\Roaming\GTF_Fusion-Essentials\FusionEssentialsSettings
 entry and installation folder. Remove the server entry from any MCP client you configured. The settings
 file is retained; delete it separately if you want to reset preferences before reinstalling.
 
-## QoL features
+## Quality-of-life features
 
-1. **Add Tool Holder** This command provides a quick way to add a single-body toolholder to the tool library.
-2. **Clean Chamfer** This command will take a set of surfaces that form an existing chamfer and turn them into a single freeform surface with the isocurves aligned to the original surfaces. This is useful for interpolating chamfers with a ball endmill, although it is made largely obsolete by the Pencil operation.
-3. **Automatically Enable Design History** This command will automatically enable design history for what it perceives to be a newly imported file.
-4. **Automatically Switch Units** This command will automatically switch the units of a newly imported file to the units of the current document.
-5. **Ability to Change Settings** You can enable/disable features or change the default units, and the settings persist between sessions.
-6. **Color Holes** This command will color all same-sized holes in a part and tell you what nominal size they might be based on the defaults in common CAD software.
-7. **Update Tools from Libraries** This command in the Manufacturing workspace will replace tools in your document with identical tools from the library they came from.
+1. **Add Tool Holder:** Adds a single-body toolholder to the tool library.
+2. **Clean Chamfer:** Takes a set of surfaces that form an existing chamfer and turns them into a single freeform surface with the isocurves aligned to the original surfaces. This is useful for interpolating chamfers with a ball endmill, although the Pencil operation has made it largely obsolete.
+3. **Automatically Enable Design History:** Enables design history for a file it detects as newly imported.
+4. **Automatically Switch Units:** Switches the units of a newly imported file to the units of the current document.
+5. **Ability to Change Settings:** You can enable or disable features or change the default units, and the settings persist between sessions.
+6. **Color Holes:** Colors all same-sized holes in a part and tells you what nominal size they might be, based on the defaults in common CAD software.
+7. **Update Tools from Libraries:** In the Manufacturing workspace, replaces tools in your document with identical tools from the library they came from.
 
 ## The MCP server
 
@@ -44,10 +44,10 @@ Everything about the server - setup, connecting a client, the full tool list, pe
 why it is built the way it is - lives in the [MCP Server README](commands/mcpServer/README.md).
 It is **off by default**.
 
-The tools are workflow-agnostic. Each does a single job and assumes nothing about how your shop
-works, so a repeatable procedure is something you assemble in your client out of whichever calls it
-needs. Anything that changes the model reads the design back afterwards, so an LLM works like an
-incremental designer rather than a script shotgun.
+Each tool does a single job and assumes nothing about how your shop works, so a repeatable procedure
+is something you assemble in your client out of whichever calls it needs. Anything that changes the
+model reads the design back afterwards, so the assistant checks each step instead of running one
+long script blind.
 
 ## Contributing
 

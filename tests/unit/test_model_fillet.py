@@ -1,4 +1,7 @@
 """Unit tests for model_fillet.py - the fillet shapes, the edge scope and the rule fillet."""
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import math
 import pytest
@@ -65,33 +68,60 @@ def make_body(name, edge_kinds, volume=None, area=None):
     return body
 
 
+class FakeVariableEdgeSetInput:
+    """The input a variable-radius add answers; it has no measured shape. setMidRadii(radii,
+    positions) takes the binding's argument order. The list-only arguments and the False answer
+    are INJECTED, not measured."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def setMidRadii(self, radii, positions):
+        for name, arg in (("radii", radii), ("positions", positions)):
+            if not isinstance(arg, list):
+                raise TypeError(f"in method 'VariableRadiusFilletEdgeSetInput_setMidRadii', "
+                                f"argument '{name}' is not a vector")
+        self._owner.mid_calls += 1
+        self._owner.variable_set = self._owner.variable_set[:3] + (positions, radii)
+        return not self._owner.refuse_mid_radii
+
+
+class FakeFilletEdgeSetInputs:
+    """FilletFeatureInput.edgeSetInputs; it has no measured shape. Each add takes the binding's
+    arity and answers an edge-set input object. The None it answers under `refuse` is INJECTED,
+    not measured."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def addConstantRadiusEdgeSet(self, entities, radius, isTangentChain):
+        self._owner.edge_set = (entities, radius, isTangentChain)
+        return None if self._owner.refuse else types.SimpleNamespace()
+
+    def addVariableRadiusEdgeSet(self, tangentEdges, startRadius, endRadius, isTangentChain):
+        self._owner.variable_set = (tangentEdges, startRadius, endRadius, [], [])
+        self._owner.variable_chain = isTangentChain
+        return None if self._owner.refuse else FakeVariableEdgeSetInput(self._owner)
+
+    def addChordLengthEdgeSet(self, entities, chordLength, isTangentChain):
+        self._owner.chord_set = (entities, chordLength, isTangentChain)
+        return None if self._owner.refuse else types.SimpleNamespace()
+
+
 class FakeFilletInput:
-    """FilletFeatureInput. Each add*EdgeSet returns True (the API returns a bool), and the arity of
-    each matches the real one - addVariableRadiusEdgeSet has NO isTangentChain argument, and its
-    positions/radii are plain Python lists (a vector argument): an ObjectCollection raises live, so
-    it raises here."""
+    """FilletFeatureInput at the one member the tool reads, edgeSetInputs. It carries no add*EdgeSet
+    of its own, so a call to one fails the test. The slots record what each add was sent;
+    variable_set is (edges, start, end, positions, radii)."""
 
     def __init__(self):
         self.edge_set = None
         self.variable_set = None
+        self.variable_chain = None
         self.chord_set = None
+        self.mid_calls = 0
         self.refuse = False
-
-    def addConstantRadiusEdgeSet(self, edges, val, tangent):
-        self.edge_set = (edges, val, tangent)
-        return not self.refuse
-
-    def addVariableRadiusEdgeSet(self, tangentEdges, startRadius, endRadius, positions, radii):
-        for name, arg in (("positions", positions), ("radii", radii)):
-            if not isinstance(arg, list):
-                raise TypeError(f"in method 'FilletFeatureInput_addVariableRadiusEdgeSet', "
-                                f"argument '{name}' is not a vector")
-        self.variable_set = (tangentEdges, startRadius, endRadius, positions, radii)
-        return not self.refuse
-
-    def addChordLengthEdgeSet(self, edges, chordLength, tangent):
-        self.chord_set = (edges, chordLength, tangent)
-        return not self.refuse
+        self.refuse_mid_radii = False
+        self.edgeSetInputs = FakeFilletEdgeSetInputs(self)
 
 
 class FakeRuleFilletInput:
@@ -119,46 +149,6 @@ class FakeRuleFilletInput:
         self._check("setByBetweenFacesOrFeatures", two)
         self.between = (one, two)
         return not self.refuse
-
-
-# The sentinel a fresh ChamferFeatureInput carries, so "never assigned" is distinguishable from
-# "assigned Fusion's own default member".
-_UNSET_CORNER = "corner:api-default"
-
-
-class FakeChamferInput:
-    """ChamferFeatureInput. Each setTo* returns its documented bool, and cornerType is a PROPERTY -
-    so the SWIG trap applies to it: an assignment the proxy drops leaves the API default in place
-    and only a read-back tells. `swallow_corner_set` models that."""
-
-    swallow_corner_set = False
-
-    def __init__(self, edges, tangent):
-        self.edges = edges
-        self.tangent = tangent
-        self.distance = None
-        self.two_distances = None
-        self.distance_and_angle = None
-        self.refuse = None            # the name of the setTo* that answers False
-        self._corner = _UNSET_CORNER
-    def setToEqualDistance(self, val):
-        self.distance = val
-        return self.refuse != "equal"
-    def setToTwoDistances(self, val1, val2):
-        self.two_distances = (val1, val2)
-        return self.refuse != "two"
-    def setToDistanceAndAngle(self, distance, angle):
-        self.distance_and_angle = (distance, angle)
-        return self.refuse != "angle"
-
-    @property
-    def cornerType(self):
-        return self._corner
-
-    @cornerType.setter
-    def cornerType(self, value):
-        if not self.swallow_corner_set:
-            self._corner = value
 
 
 class FakeFullRoundFaceSets:
@@ -195,7 +185,7 @@ class FakeCountingFeature:
     # constant, not the fillet's setting.
     FEATURE_FLAG = True
 
-    def __init__(self, name, faces, health=0, message="", tangent=None, cut_edges=None):
+    def __init__(self, name, faces, health=_HEALTHY, message="", tangent=None, cut_edges=None):
         self.name = name
         self.faces = _NamedCollection([None] * faces)
         self.healthState = health
@@ -235,6 +225,7 @@ class FakeFilletFeatures:
         # applied when a feature is added, so a test can model the geometry actually moving
         self.on_add = None
         self.refuse_edge_set = False
+        self.refuse_mid_radii = False
     def createFullRoundFilletInput(self):
         self.full_round_last = FakeFullRoundFilletInput()
         self.full_round_last.faceSets.refuse = self.refuse_edge_set
@@ -246,6 +237,7 @@ class FakeFilletFeatures:
     def createInput(self):
         self.last = FakeFilletInput()
         self.last.refuse = self.refuse_edge_set
+        self.last.refuse_mid_radii = self.refuse_mid_radii
         return self.last
     def add(self, inp):
         if self.on_add:
@@ -270,55 +262,9 @@ class FakeFilletFeatures:
         return self.rule_result
 
 
-class FakeChamferFeatures:
-    """A live ChamferFeature reports what it BUILT, and that is the only signal a wrong corner type
-    or angle leaves - all three corner types build the same face count. So the created feature
-    carries cornerType, and (for a distance-and-angle chamfer) chamferType plus a
-    chamferTypeDefinition whose .distance/.angle are ModelParameters in CM and RADIANS. The fake
-    echoes what the input took; the *_override knobs model the platform building something else."""
-
-    def __init__(self):
-        self.last = None
-        self.result = type("F", (), {"name": "Chamfer1"})()
-        self.refuse = None            # 'equal' | 'two' | 'angle' - which setTo* answers False
-        self.added = 0
-        self.corner_override = None       # (value,) - what the FEATURE reports instead
-        self.definition_override = None   # (distance_cm, angle_rad) - ditto, or False for absent
-        self.chamfer_type_override = None
-        # applied when a feature is added, so a test can model the geometry actually moving
-        self.on_add = None
-    def createInput(self, edges, tangent):
-        self.last = FakeChamferInput(edges, tangent)
-        self.last.refuse = self.refuse
-        return self.last
-    def add(self, inp):
-        import adsk.fusion
-        self.added += 1
-        if self.on_add:
-            self.on_add()
-        if self.result is None:
-            return self.result
-        if self.corner_override is not False:      # False = the feature does not answer cornerType
-            self.result.cornerType = (self.corner_override[0] if self.corner_override
-                                      else inp.cornerType)
-        if inp.distance_and_angle is not None:
-            self.result.chamferType = (
-                self.chamfer_type_override[0] if self.chamfer_type_override
-                else getattr(adsk.fusion.ChamferTypes, "DistanceAndAngleChamferType"))
-            if self.definition_override is False:
-                self.result.chamferTypeDefinition = None
-            else:
-                dist_cm, angle_rad = (self.definition_override or
-                                      (inp.distance_and_angle[0][1], inp.distance_and_angle[1][1]))
-                self.result.chamferTypeDefinition = type("D", (), {
-                    "distance": type("P", (), {"value": dist_cm})(),
-                    "angle": type("P", (), {"value": angle_rad})()})()
-        return self.result
-
-
 def _component(bodies, ff, cf):
-    """The active component: its bodies, plus the fillet/chamfer feature collections the handler
-    builds through."""
+    """The active component: its bodies, plus the fillet feature collection the handler builds
+    through. No fillet call reaches the chamfer collection, so `cf` is None here."""
     comp = MakeComp(name="Comp")
     comp.bRepBodies = _NamedCollection(bodies)
     comp.features = type("F", (), {"filletFeatures": ff, "chamferFeatures": cf})()
@@ -326,7 +272,7 @@ def _component(bodies, ff, cf):
 
 
 def _install(bodies):
-    ff = FakeFilletFeatures(); cf = FakeChamferFeatures()
+    ff = FakeFilletFeatures(); cf = None
     install(fl, make_design(comp=_component(bodies, ff, cf)))
     import adsk.fusion, adsk.core
     # BodyRef(kind='solid') does isinstance(body, adsk.fusion.BRepBody) + checks isSolid — make the
@@ -361,7 +307,7 @@ def _install_edge_handles(handle_map, timeline=None):
     reads an edge/face handle through, before its isinstance(BRepEdge/BRepFace) gate. `timeline` is
     the marker the resolved-edge-set read rolls and puts back; a design without one is the shape
     where that read declines."""
-    ff = FakeFilletFeatures(); cf = FakeChamferFeatures()
+    ff = FakeFilletFeatures(); cf = None
     install(fl, make_design(comp=_component([], ff, cf), tokens=handle_map, timeline=timeline))
     import adsk.fusion, adsk.core
     adsk.fusion.BRepEdge = BRepEdge
@@ -681,12 +627,15 @@ class TestFilletType:
         assert ff.last.variable_set is None and ff.last.chord_set is None
 
     def test_refused_edge_set_errors_instead_of_adding_a_feature(self):
-        # addConstantRadiusEdgeSet returns a bool; a False means nothing was selected, so adding the
-        # feature anyway would report a fillet that rounds nothing.
+        # The add answers an edge-set input; None is no set, so adding the feature anyway would
+        # report a fillet that rounds nothing.
         ff, _ = _install_edge_handles({"E1": _edge_ent()})
         ff.refuse_edge_set = True
+        added = []
+        ff.on_add = lambda: added.append(True)
         res = fl.handler(edges=["E1"], radius=1)
         assert res["isError"] is True and "constant-radius" in res["message"]
+        assert added == []
 
 
 class TestFullRoundFillet:
@@ -836,12 +785,13 @@ class TestTangentChainTargeting:
         out = _payload(fl.handler(edges=["E1"], radius=1))
         assert "edges_cut" not in out and "did not read" in out["note"]
 
-    def test_variable_radius_refuses_the_flag_the_api_has_no_argument_for(self):
+    def test_variable_radius_refuses_the_flag_this_tool_does_not_offer(self):
         self._seeded(cut_edges=1)
         res = fl.handler(edges=["E1"], radius=1, end_radius=2, fillet_type="variable",
                          tangent_chain=False)
-        assert res["isError"] is True and "variable-radius edge set has no such argument" \
-            in res["message"]
+        assert res["isError"] is True and (
+            "cannot take tangent_chain=false: this tool does not offer that combination. Drop "
+            "'tangent_chain', or use fillet_type='constant'.") in res["message"]
 
     def test_a_variable_radius_set_is_not_judged_against_a_flag_it_was_never_given(self):
         # Its edge set reads isTangentChain False while the default request is True; comparing the
@@ -851,7 +801,10 @@ class TestTangentChainTargeting:
         out = _payload(fl.handler(edges=["E1"], radius=1, end_radius=2, fillet_type="variable"))
         assert out["filleted"] is True and ff.result.deleted is False
         assert out["tangent_chain"] is False          # published as READ, not as requested
-        assert "no such argument" in out["note"] and "cuts the edges handed in" in out["note"]
+        assert "built with chaining off" in out["note"]
+        assert "cuts the edges handed in" in out["note"]
+        # the default request is true, and the set is still sent chaining off
+        assert ff.last.variable_chain is False
 
     def test_a_short_edge_set_is_the_partial_application_faces_cannot_see(self):
         # Corner patches can lift faces_created to the requested number while the set Fusion built
@@ -860,13 +813,109 @@ class TestTangentChainTargeting:
         res = fl.handler(edges=["E1", "E2"], radius=1, tangent_chain=False)
         assert res["isError"] is True and "PARTIALLY applied" in res["message"]
         assert "resolved to 1" in res["message"] and ff.result.deleted is True
+        assert "retry. Deleting it returned True." in res["message"]
+
+    def test_repeated_resolved_root_edge_is_one_request_at_both_partial_gates(self):
+        one, alias = _edge_ent(token="physical"), _edge_ent(token="physical")
+        ff, _ = _install_edge_handles({"E1": one, "Alias": alias},
+                                      timeline=make_timeline("Extrude1", "Fillet1", marker=2))
+        root = fl._inputs._common.design().rootComponent
+        for edge in (one, alias):
+            edge.assemblyContext = None
+            edge.body.parentComponent = root
+        ff.result = FakeCountingFeature("Fillet1", faces=1, tangent=False, cut_edges=1)
+        out = _payload(fl.handler(edges=["E1", "Alias", "E1"], radius=.5,
+                                  tangent_chain=False))
+        assert ff.last.edge_set[0].count == out["edges_cut"] == 1 and out["edges_requested"] == 3
+        assert out["edge_selection"] == "1 edge seed(s) from handles" and ff.result.deleted is False
+
+    def test_three_handles_naming_two_edges_say_so_and_publish_what_was_sent(self):
+        one, alias, two = (_edge_ent(token=t) for t in ("physical", "physical", "other"))
+        ff, _ = _install_edge_handles({"E1": one, "Alias": alias, "E2": two},
+                                      timeline=make_timeline("Extrude1", "Fillet1", marker=2))
+        root = fl._inputs._common.design().rootComponent
+        for edge in (one, alias, two):
+            edge.assemblyContext = None
+            edge.body.parentComponent = root
+        ff.result = FakeCountingFeature("Fillet1", faces=2, tangent=False, cut_edges=2)
+        out = _payload(fl.handler(edges=["E1", "Alias", "E2"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == out["edges_cut"] == 2 and out["edges_requested"] == 3
+        assert ("The 3 handles named 2 distinct edge(s), so each was sent once." in out["note"]
+                and ff.result.deleted is False)
+
+    def test_edges_from_distinct_component_definitions_refuse_before_feature_creation(self):
+        owner_a = MakeComp("EdgeA", entity_token="EDGE-A")
+        owner_b = MakeComp("EdgeB", entity_token="EDGE-B")
+        body_a = BRepBody(name="EdgeABody", parent_component=owner_a)
+        body_b = BRepBody(name="EdgeBBody", parent_component=owner_b)
+        edge_a = _edge_ent(body=body_a, token="EDGE-A-PROXY")
+        edge_b = _edge_ent(body=body_b, token="EDGE-B-PROXY")
+        ff, _ = _install_edge_handles({"A": edge_a, "B": edge_b})
+
+        result = fl.handler(edges=["A", "B"], radius=1, units="mm", tangent_chain=False)
+
+        assert result["isError"] is True
+        assert "component 'EdgeA'" in result["message"]
+        assert "component 'EdgeB'" in result["message"]
+        assert "Fillet one component's edges per call" in result["message"]
+        assert "no feature was created" in result["message"]
+        assert ff.last is None
+
+    def test_native_subcomponent_aliases_are_sent_once(self):
+        one, alias = (_edge_ent(token="physical") for _ in range(2))
+        ff, _ = _install_edge_handles({"E1": one, "Alias": alias})
+        owner = MakeComp("Child", entity_token="child-token")
+        for edge in (one, alias):
+            edge.assemblyContext = None
+            edge.body.parentComponent = owner
+        out = _payload(fl.handler(edges=["E1", "Alias"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == 1 and out["edges_requested"] == 2
+        assert "2 handles named 1 distinct edge(s)" in out["note"]
+
+    @pytest.mark.parametrize("kw,slot", [
+        ({"fillet_type": "chord_length", "chord_length": .5, "tangent_chain": False}, "chord_set"),
+        ({"fillet_type": "variable", "radius": .5, "end_radius": 1}, "variable_set")])
+    def test_a_repeated_handle_is_one_edge_for_every_variant(self, kw, slot):
+        one = _edge_ent(token="physical")
+        ff, _ = _install_edge_handles({"E1": one},
+                                      timeline=make_timeline("Extrude1", "Fillet1", marker=2))
+        one.assemblyContext = None
+        one.body.parentComponent = fl._inputs._common.design().rootComponent
+        ff.result = FakeCountingFeature("Fillet1", faces=1, tangent=False, cut_edges=1)
+        out = _payload(fl.handler(edges=["E1", "E1"], **kw))
+        assert getattr(ff.last, slot)[0].count == out["edges_cut"] == 1
+        assert out["edges_requested"] == 2 and ff.result.deleted is False
+        assert out["edge_selection"] == "1 edge seed(s) from handles"
+
+    def test_proxy_aliases_use_native_identity_with_the_same_actual_placement(self):
+        native = _edge_ent(token="physical")
+        one, alias = _edge_ent(token="proxy-one"), _edge_ent(token="proxy-two")
+        for edge in (one, alias):
+            edge.nativeObject = native
+            edge.assemblyContext = type("Context", (), {"fullPathName": "Placed:1"})()
+        ff, _ = _install_edge_handles({"E1": one, "Alias": alias})
+        out = _payload(fl.handler(edges=["E1", "Alias"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == 1 and out["edges_requested"] == 2
+
+    @pytest.mark.parametrize("paths,tokens", [(("A:1", "A:2"), ("physical", "physical")),
+        (("A:1", None), ("physical", "physical")), ((None, None), ("physical", "physical")),
+        (("A:1", "A:1"), ("first", "second")), (("A:1", "A:1"), (None, None))])
+    def test_distinct_edges_placements_or_unread_identity_are_not_collapsed(self, paths, tokens):
+        one, two = (_edge_ent(token=token) for token in tokens)
+        ff, _ = _install_edge_handles({"E1": one, "E2": two})
+        for edge, path in zip((one, two), paths):
+            if path is not None:
+                edge.assemblyContext = type("Context", (), {"fullPathName": path})()
+        out = _payload(fl.handler(edges=["E1", "E2"], radius=.5, tangent_chain=False))
+        assert ff.last.edge_set[0].count == out["edges_requested"] == 2
+        assert "handles named" not in out["note"]
 
 
 class TestVariableRadius:
 
     def test_positions_and_radii_cross_as_plain_lists(self):
-        # The API takes positions/radii as vectors - plain Python lists. An ObjectCollection there
-        # raises a vector-type argument error live, and the fake raises the same way.
+        # setMidRadii takes (radii, positions) as vectors - plain Python lists. The fake files each
+        # under its own name, so the two swapped would read back swapped here.
         ff, _ = _install_edge_handles({"E1": _edge_ent()})
         out = _payload(fl.handler(edges=["E1"], radius=2, end_radius=5, units="mm",
                                           fillet_type="variable",
@@ -886,8 +935,18 @@ class TestVariableRadius:
         out = _payload(fl.handler(edges=["E1"], radius=1, end_radius=2,
                                           fillet_type="variable"))
         _, _, _, positions, radii = ff.last.variable_set
-        assert positions == [] and radii == []
+        assert positions == [] and radii == [] and ff.last.mid_calls == 0
         assert "positions" not in out and "radii" not in out
+
+    def test_intermediate_radii_the_set_did_not_take_stop_before_the_feature(self):
+        ff, _ = _install_edge_handles({"E1": _edge_ent()})
+        ff.refuse_mid_radii = True
+        added = []
+        ff.on_add = lambda: added.append(True)
+        res = fl.handler(edges=["E1"], radius=1, end_radius=2, fillet_type="variable",
+                         positions=[0.5], radii=[1.5])
+        assert res["isError"] is True and "setMidRadii returned False" in res["message"]
+        assert "no fillet was created" in res["message"] and added == []
 
     def test_needs_end_radius(self):
         _install_edge_handles({"E1": _edge_ent()})
@@ -1201,7 +1260,7 @@ class TestFilletGuardsBite:
         # A mis-ordered variable chain yields healthState 2 with NO message and 0 faces. Reading
         # only the face count would blame a tangent edge - a cause that observation cannot support.
         ff, _ = _install_edge_handles({"E1": _edge_ent("Bracket")})
-        ff.result = FakeCountingFeature("Fillet1", faces=0, health=2, message="")
+        ff.result = FakeCountingFeature("Fillet1", faces=0, health=_ERROR, message="")
         res = fl.handler(fillet_type="variable", edges=["E1"], radius=2, end_radius=5,
                                  units="mm")
         assert res["isError"] is True
@@ -1211,7 +1270,7 @@ class TestFilletGuardsBite:
 
     def test_a_failed_feature_passes_fusions_own_message_through(self):
         ff, _ = _install_edge_handles({"E1": _edge_ent("Bracket")})
-        ff.result = FakeCountingFeature("Fillet1", faces=0, health=2,
+        ff.result = FakeCountingFeature("Fillet1", faces=0, health=_ERROR,
                                         message="radius too large for the edge")
         res = fl.handler(edges=["E1"], radius=2, units="mm")
         assert res["isError"] is True and "radius too large for the edge" in res["message"]
@@ -1420,3 +1479,93 @@ class TestRuleFilletRadiusTakesAnExpression:
         out = _payload(fl.handler(fillet_type="rule", faces=["F1"], radius="Odd",
                                           units="mm"))
         assert out["radius"] == 6.5 and out["radius_expression"] == "Odd"
+
+
+class TestWave2BlendRoutes:
+
+    @pytest.mark.parametrize("extra", [
+        {"end_radius": 2}, {"positions": [0.5]}, {"radii": [1]},
+        {"chord_length": 1}, {"second_faces": ["F1"]}, {"center_face": "F1"},
+        {"radius": 2}, {"topology": "rounds_only"}, {"tangent_chain": False},
+        {"body_name": "Unrelated"},
+    ])
+    def test_mixed_sets_refuse_top_level_controls_before_resolving(self, monkeypatch, extra):
+        captured = self._route(monkeypatch)
+        result = fl.handler(edge_sets=[{"edges": ["E1"], "radius": 0.1}], **extra)
+        assert result["isError"] is True and next(iter(extra)) in result["message"]
+        assert captured == {}
+
+    @pytest.mark.parametrize("extra", [
+        {"positions": [0.5]}, {"radii": [1]}, {"chord_length": 1},
+        {"second_faces": ["F1"]}, {"center_face": "F1"}, {"topology": "rounds_only"},
+    ])
+    def test_asymmetric_refuses_other_variant_controls(self, monkeypatch, extra):
+        captured = self._route(monkeypatch)
+        result = fl.handler(fillet_type="asymmetric", edges=["E1"],
+                            radius=0.1, end_radius=0.2, **extra)
+        assert result["isError"] is True and next(iter(extra)) in result["message"]
+        assert captured == {}
+
+    def _route(self, monkeypatch):
+        edges = {name: _edge_ent("Bracket", token=f"native:{name}") for name in ("E1", "E2")}
+        monkeypatch.setattr(fl._EDGES, "resolve",
+                            lambda handles: ([edges[h] for h in handles], None))
+        monkeypatch.setattr(fl._common, "native_identity", lambda edge: edge.entityToken)
+        captured = {}
+        monkeypatch.setattr(fl, "_apply", lambda *args, **kwargs: captured.update(
+            args=args, kwargs=kwargs) or {"ok": True})
+        return captured
+
+    def test_asymmetric_refuses_every_explicit_continuity_before_apply(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        for mode in ("tangent", "curvature"):
+            result = fl.handler(fillet_type="asymmetric", edges=["E1"], radius=0.1,
+                                end_radius=0.2, continuity=mode)
+            assert result["isError"] is True and "including tangent" in result["message"]
+        assert captured == {}
+
+    def test_asymmetric_omitted_continuity_and_flip_reach_native_route(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(fillet_type="asymmetric", edges=["E1"], radius=0.1,
+                            end_radius=0.2, flipped=True)
+        assert result == {"ok": True}
+        assert captured["kwargs"]["variant"] == {
+            "type": "asymmetric", "end_radius": 0.2, "flipped": True}
+        assert captured["kwargs"]["continuity"] is None
+
+    def test_constant_curvature_request_reaches_native_route(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(fillet_type="constant", edges=["E1"], radius=0.1,
+                            continuity="curvature")
+        assert result == {"ok": True}
+        assert captured["kwargs"]["continuity"] == "curvature"
+
+    def test_variable_continuity_passes_tangent_false_to_the_typed_edge_set(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(fillet_type="variable", edges=["E1"], radius=0.1,
+                            end_radius=0.2, continuity="curvature", tangent_chain=False)
+        assert result == {"ok": True}
+        assert captured["kwargs"]["continuity"] == "curvature"
+        assert captured["kwargs"]["tangent_chain"] is False
+
+    def test_mixed_sets_reach_route_with_resolved_disjoint_edges(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(edge_sets=[
+            {"edges": ["E1"], "radius": 0.1, "continuity": "tangent"},
+            {"edges": ["E2"], "fillet_type": "asymmetric", "radius": 0.1,
+             "end_radius": 0.2, "flipped": True},
+        ])
+        assert result == {"ok": True}
+        specs = captured["kwargs"]["edge_sets"]
+        assert [spec["fillet_type"] for spec in specs] == ["constant", "asymmetric"]
+        assert specs[1]["flipped"] is True
+        assert specs[0]["continuity"] == "tangent"
+
+    def test_mixed_asymmetric_set_refuses_explicit_tangent(self, monkeypatch):
+        captured = self._route(monkeypatch)
+        result = fl.handler(edge_sets=[
+            {"edges": ["E1"], "fillet_type": "asymmetric", "radius": 0.1,
+             "end_radius": 0.2, "continuity": "tangent"},
+        ])
+        assert result["isError"] is True and "including tangent" in result["message"]
+        assert captured == {}

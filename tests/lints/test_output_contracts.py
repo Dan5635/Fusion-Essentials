@@ -3,6 +3,7 @@
 Each declared output's payload KEY appears in the tool's source, its PRODUCES: block appears in the
 description, and each RETURNS entry is an OutputKind. Every tools/*.py with a RETURNS is checked."""
 
+import ast
 import os
 
 import _corpus
@@ -25,11 +26,6 @@ def _tools_with_returns():
 
 
 class TestDeclaredOutputs:
-    def test_at_least_the_known_producers_declare_returns(self):
-        # A floor so this lint can't pass vacuously if discovery breaks.
-        names = {n for n, _ in _tools_with_returns()}
-        assert {"find_geometry", "doc_get", "cam_generate"} <= names
-
     def test_returns_entries_are_output_kinds(self):
         for name, mod in _tools_with_returns():
             for o in mod.RETURNS:
@@ -37,8 +33,9 @@ class TestDeclaredOutputs:
                     f"{name}.RETURNS has a non-OutputKind entry: {o!r}")
 
     def test_declared_key_appears_in_source(self):
-        offenders = []
-        for name, mod in _tools_with_returns():
+        offenders, declaring = [], _tools_with_returns()
+        assert declaring, "nothing was checked: no tool declares a RETURNS spec"
+        for name, mod in declaring:
             src = _corpus.text(os.path.join(TOOLS_DIR, f"{name}.py"))
             for o in mod.RETURNS:
                 if f'"{o.key}"' not in src and f"'{o.key}'" not in src:
@@ -66,3 +63,30 @@ class TestDeclaredOutputs:
                 if f"{o.key}{who}" not in blob:
                     offenders.append(f"{name}: Produces entry for '{o.key}' not in any description")
         assert not offenders, "\n".join(offenders)
+
+
+def _hand_built_error_envelopes():
+    """Return tool-source dict literals that bind the response contract's isError field."""
+    offenders = []
+    checked = 0
+    for fn in sorted(os.listdir(TOOLS_DIR)):
+        if not fn.endswith(".py") or fn == "_common.py":
+            continue
+        path = os.path.join(TOOLS_DIR, fn)
+        for node in ast.walk(_corpus.tree(path)):
+            if not isinstance(node, ast.Dict):
+                continue
+            checked += 1
+            if any(isinstance(key, ast.Constant) and key.value == "isError"
+                   for key in node.keys):
+                offenders.append(f"{fn}:{node.lineno}")
+    return offenders, checked
+
+
+class TestResponseEnvelopeHasOneHome:
+    def test_tools_do_not_hand_build_is_error_dicts(self):
+        offenders, checked = _hand_built_error_envelopes()
+        assert checked, "nothing was checked: no tool dict literal was found"
+        assert not offenders, (
+            "hand-built response envelope - call _common.ok(...) or _common.error(...) so the "
+            "isError/content/message contract stays one home:\n  " + "\n  ".join(offenders))

@@ -7,10 +7,9 @@ False return into an error, and the guards (no CAM, position not before/after, e
 moving an entity relative to itself).
 """
 
-import json
 
-from conftest import (FakeCAMFolder, FakeOperation, FakeSetup, _NamedCollection, load_tool,
-                      make_cam)
+from conftest import (FakeCAMFolder, FakeOperation, FakeSetup, _AdditiveContainer,
+                      _NamedCollection, load_tool, make_cam)
 
 cr = load_tool("cam_reorder")
 
@@ -85,9 +84,7 @@ def _install(monkeypatch, setups=None):
     return cam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _named(cam, name):
@@ -398,3 +395,46 @@ class TestPublishedOrder:
         assert out["order"] is None and out["order_unverified"] is True
         assert "could NOT be read back" in out["note"]
         assert "no 'operations' collection" in out["note"]
+
+
+class _ContainerOp(Operation):
+    """An operation held in an additive container's `children`; a move re-seats it there."""
+
+    def _relocate(self, other, before):
+        if not self._allow:
+            return False
+        row = self._parent._ops
+        row.remove(self)
+        at = row.index(other)
+        row.insert(at if before else at + 1, self)
+        return True
+
+
+class _StuckContainerOp(_ContainerOp):
+    def moveBefore(self, other):
+        return True
+
+
+def _additive_setup(*ops):
+    container = _AdditiveContainer("Orientations", strategy="additive_orientations_folder",
+                                   ops=list(ops))
+    for op in ops:
+        op._parent = container
+    s = Setup("AddBuild", ops=[Operation("Additive Toolpath1")])
+    s._others.append(container)
+    return s
+
+
+class TestAdditiveContainerOrder:
+    def test_a_landed_move_inside_a_container_is_read_back_off_its_children(self, monkeypatch):
+        _install(monkeypatch, [_additive_setup(_ContainerOp("Orient1"), _ContainerOp("Orient2"))])
+        out = _payload(cr.handler(entity="Orient2", position="before", reference="Orient1"))
+        assert out["order"] == ["Orient2", "Orient1"] and "order_unverified" not in out
+        assert out["entity_index"] == 0 and "'AddBuild / Orientations'" in out["note"]
+
+    def test_a_swallowed_move_inside_a_container_errors(self, monkeypatch):
+        _install(monkeypatch, [_additive_setup(_ContainerOp("Orient1"),
+                                               _StuckContainerOp("Orient2"))])
+        res = cr.handler(entity="Orient2", position="before", reference="Orient1")
+        assert res["isError"] is True and "did not land" in res["message"]
+        assert "gives ['Orient1', 'Orient2']" in res["message"]

@@ -7,6 +7,7 @@ fallthrough), ``_apply_limits`` (the read-back writer create and edit share) and
 handler end to end. Resolve-one/qualified/ambiguity of a JO by name is the JointOriginRef kind's
 contract - tested in test_inputs.py, not here.
 """
+from conftest import install as _install_design
 
 import math as _math
 from types import SimpleNamespace
@@ -630,8 +631,12 @@ class TestJointedPoses:
     def test_a_child_turned_in_place_is_published_as_moved(self, monkeypatch):
         _d, coll = _install_create(monkeypatch)
         coll._new = FakeJoint(name="Joint1", health=_HEALTH.HealthyFeatureHealthState)
-        pad = make_occurrence("Pad:1", transform2=FakeMatrix3D())
-        frame = make_occurrence("Frame:1", transform2=FakeMatrix3D(t=(5.0, 0.0, 0.0)))
+        pad = make_occurrence("Pad:1", component=MakeComp(name="Pad", entity_token="pad-component"),
+                              transform2=FakeMatrix3D())
+        frame = make_occurrence("Frame:1", component=MakeComp(name="Frame", entity_token="frame-component"),
+                                transform2=FakeMatrix3D(t=(5.0, 0.0, 0.0)))
+        _d.rootComponent.occurrences = _NamedCollection([pad, frame])
+        _d.rootComponent.allOccurrences = [pad, frame]
         inputs = {"A": SimpleNamespace(assemblyContext=pad),
                   "B": SimpleNamespace(assemblyContext=frame)}
         monkeypatch.setattr(joint, "_resolve_input", lambda d, spec: (inputs[spec], spec, None))
@@ -649,8 +654,12 @@ class TestJointedPoses:
     def test_moved_is_null_when_no_jointed_occurrence_reads(self, monkeypatch):
         _d, coll = _install_create(monkeypatch)
         coll._new = FakeJoint(name="Joint1", health=_HEALTH.HealthyFeatureHealthState)
+        unread = make_occurrence("Pad:1", component=MakeComp(name="Pad", entity_token="unread-component"),
+                                 raises_on={"transform2": "world pose unreadable"})
+        _d.rootComponent.occurrences = _NamedCollection([unread])
+        _d.rootComponent.allOccurrences = [unread]
         monkeypatch.setattr(joint, "_resolve_input",
-                            lambda d, spec: (SimpleNamespace(), spec, None))
+                            lambda d, spec: (SimpleNamespace(assemblyContext=unread), spec, None))
         out = _payload(joint.handler(occurrence_one="A", occurrence_two="B"))
         assert out["moved"] is None and "'moved' is null" in out["note"]
 
@@ -683,7 +692,7 @@ class TestCreatedJointHealth:
         assert "FAILED to compute" in res["message"]
         assert "conflicts with assembly relationships" in res["message"]
         assert "Compute Failed" not in res["message"]     # the repeating blob is condensed
-        assert "design_delete_feature" in res["message"]  # the joint REMAINS - say how to remove it
+        assert "design_delete_feature(feature='Joint1')" in res["message"]
         assert "ground_to_parent" in res["message"]       # and name the measured cause
 
     def test_an_ERROR_health_state_is_refused_too(self, monkeypatch):
@@ -1205,7 +1214,7 @@ def _raise_refusal(*_a, **_k):
 
 class TestCreateHandlerFailurePaths:
     def test_no_active_design(self, monkeypatch):
-        monkeypatch.setattr(joint._common, "design", lambda: None)
+        _install_design(joint, None)
         res = joint.handler(occurrence_one="JO_A", occurrence_two="JO_B")
         assert res["isError"] is True and "No active design" in res["message"]
 

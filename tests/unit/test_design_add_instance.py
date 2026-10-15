@@ -7,6 +7,7 @@ other tool can resolve. The fakes reproduce that asymmetry, the global per-compo
 counter that names the new instance, and the failure the read-back exists to catch: a call that
 returns an occurrence while the tree gains nothing.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
 
@@ -37,6 +38,18 @@ def _comp(name):
 _UNREADABLE = "2 : InternalValidationError : occ"
 
 
+class _CopyPlacement(SimpleNamespace):
+    """One placement of a copy as the root lists it: assigning transform2 hands its WORLD cells to
+    the placement's own `take`."""
+    @property
+    def transform2(self):
+        return SimpleNamespace(asArray=lambda: list(self.world_cells))
+
+    @transform2.setter
+    def transform2(self, matrix):
+        self.take(self, list(matrix.asArray()))
+
+
 def _path(node):
     parent = node.parent
     return f"{_path(parent)}+{node.name}" if parent is not None else node.name
@@ -48,6 +61,10 @@ def _refresh(des):
     for node in des.tree:
         node.fullPathName = _path(node)
         node.sourceComponent = node.parent.component if node.parent is not None else des.rootComponent
+        parent_world = node.parent.world_cells if node.parent is not None else _cells()
+        node.world_cells = _multiply(parent_world, node.local_cells) if len(node.local_cells) == 16 else node.local_cells
+        if not isinstance(node, _CopyPlacement):
+            node.transform2 = SimpleNamespace(asArray=lambda node=node: list(node.world_cells))
     des.rootComponent.allOccurrences = list(des.tree)
     for comp in des.comps.values():
         if comp is des.rootComponent:
@@ -63,13 +80,13 @@ def _refresh(des):
         comp.allOccurrences = inside
 
 
-def _instance(des, comp, parent=None):
+def _instance(des, comp, parent=None, local_cells=None):
     """Add one occurrence of `comp` under `parent` (None = root), numbered off the GLOBAL
     per-component counter - the measured naming ('BasePlate:2' for the second instance anywhere)."""
     des.counter[comp.name] = des.counter.get(comp.name, 0) + 1
     node = SimpleNamespace(component=comp, parent=parent, isValid=True,
                            name=f"{comp.name}:{des.counter[comp.name]}", fullPathName="",
-                           sourceComponent=None)
+                           sourceComponent=None, local_cells=_cells() if local_cells is None else local_cells)
     des.tree.append(node)
     _refresh(des)
     return node
@@ -81,7 +98,8 @@ def _clone_children(des, src, dst):
     ('Sub:2+Bolt:1', not 'Bolt:2')."""
     for node in [n for n in list(des.tree) if n.parent is src]:
         child = SimpleNamespace(component=node.component, parent=dst, isValid=True,
-                                name=node.name, fullPathName="", sourceComponent=None)
+                                name=node.name, fullPathName="", sourceComponent=None,
+                                local_cells=list(node.local_cells))
         des.tree.append(child)
         _clone_children(des, node, child)
 
@@ -95,7 +113,8 @@ def _make(names=("Bolt",), refuse=None, ghost=False):
     """
     root = _comp("Root")
     des = MakeDesign(comp=root)
-    des.tree, des.counter, des.comps = [], {}, {"Root": root}
+    des.tree, des.counter, des.comps, des.landed = [], {}, {"Root": root}, None
+    des.lands = None
     for name in names:
         comp = _comp(name)
         des.comps[name] = comp
@@ -120,19 +139,23 @@ def _make(names=("Bolt",), refuse=None, ghost=False):
             des.counter[component.name] = des.counter.get(component.name, 0) + 1
             inst_name = f"{component.name}:{des.counter[component.name]}"
             source = next((n for n in des.tree if n.component is component), None)
+            landed = des.landed if des.landed is not None else transform.asArray()
+            if des.landed is None and des.lands is not None:
+                landed = des.lands(transform.asArray())
             made = []
             for parent in parents:
                 node = SimpleNamespace(component=component, parent=parent, isValid=True,
-                                       name=inst_name, fullPathName="", sourceComponent=None)
+                                       name=inst_name, fullPathName="", sourceComponent=None,
+                                       local_cells=list(landed))
                 des.tree.append(node)
                 made.append(node)
                 if source is not None:
                     _clone_children(des, source, node)
             _refresh(des)
-            # The RETURN is the measured read asymmetry: an occurrence taken from <component>.
-            # occurrences reports a COMPONENT-LOCAL fullPathName, not the assembly path.
+            # The immediate return carries a component-local path; placed rows own current world cells.
             return SimpleNamespace(name=made[0].name, fullPathName=made[0].name,
-                                   isValid=(refuse != "invalid"), component=component)
+                                   isValid=(refuse != "invalid"), component=component,
+                                   transform2=SimpleNamespace(asArray=lambda: list(landed)))
         host.occurrences.addExistingComponent = add_existing
 
     for comp in des.comps.values():
@@ -141,10 +164,28 @@ def _make(names=("Bolt",), refuse=None, ghost=False):
     return des
 
 
+def _cells(tx=0.0, ty=0.0, tz=0.0, **cells):
+    """Row-major Matrix3D cells: the identity translated by (tx, ty, tz) cm, with `cells` overrides
+    keyed 'c<index>'."""
+    out = [1.0, 0, 0, tx, 0, 1.0, 0, ty, 0, 0, 1.0, tz, 0, 0, 0, 1.0]
+    for key, value in cells.items():
+        out[int(key[1:])] = value
+    return out
+
+
+def _multiply(a, b):
+    """The fixture's stored world pose from parent world and child local cells."""
+    import numpy as np
+    return [float(v) for v in (np.array(a).reshape(4, 4) @ np.array(b).reshape(4, 4)).flatten()]
+
+
 def _matrix():
+    """The placement matrix; its cells carry the translation only - rotation is recorded, not applied."""
     m = SimpleNamespace(translation=None, rotation=None)
     m.setToRotation = lambda angle, axis, origin: (setattr(m, "rotation", (angle, axis, origin))
                                                    or True)
+    m.asArray = lambda: _cells(*(m.translation[1:] if m.translation else ()))
+    m.setWithArray = lambda cells: setattr(m, "asArray", lambda: list(cells)) or True
     return m
 
 
@@ -368,7 +409,7 @@ class TestPlacement:
         des = wire()
         out = payload(ai.handler(component="Bolt"))
         assert des.last_transform.translation is None
-        assert out["position"] == "origin"
+        assert out["position"] == {"x": 0.0, "y": 0.0, "z": 0.0}
 
     def test_rotation_is_about_the_named_world_axis(self, wire):
         des = wire()
@@ -407,8 +448,7 @@ class TestGuards:
         assert getattr(des, "added", None) is None
 
     def test_no_active_design_refused(self, monkeypatch):
-        monkeypatch.setattr(ai._common, "design", lambda: None)
-        monkeypatch.setattr(ai._inputs._common, "design", lambda: None)
+        _install_design(ai, None)
         assert "No active design" in error_message(ai.handler(component="Bolt"))
 
 
@@ -527,8 +567,184 @@ class TestPlacementCannotBeCaptured:
     def test_an_instance_at_the_origin_makes_no_placement_claim(self, wire):
         wire()
         out = payload(ai.handler(component="Bolt"))
-        assert out["position"] == "origin"
         assert "cannot be captured" not in out["note"]
+
+
+class TestLandedPlacement:
+    """The landed LOCAL matrix is read back and compared with the request: a non-root host can take
+    an already-placed component at another matrix, and that is never reported as the request."""
+
+    def test_the_position_is_the_read_back_local_origin_in_units(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        des.landed = _cells(1.0, 0.0, 0.5)              # cm: the request below, as landed
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1", x=10.0, z=5.0))
+        assert out["position"] == {"x": 10.0, "y": 0.0, "z": 5.0}
+        assert out["axes"] == {"x": [1.0, 0, 0], "y": [0, 1.0, 0], "z": [0, 0, 1.0]}
+
+    def test_the_addressed_host_pose_wins_over_its_first_placement(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        des.tree[0].local_cells = [float(v) for v in _pose(90, 10, 20, 5).flatten()]
+        _instance(des, des.comps["Outer"], local_cells=[float(v) for v in _pose(-30, -3, 7, .5).flatten()])
+        out = payload(ai.handler(component="Bolt", into_component="Outer:2", x=10, z=5))
+        assert out["full_path"] == "Outer:2+Bolt:2"
+        assert out["position"] == {"x": 10.0, "y": 0.0, "z": 5.0}
+        assert out["axes"] == {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}
+
+    def test_an_unreadable_nested_host_path_is_not_treated_as_root(self, wire, monkeypatch):
+        des = wire(names=("Outer", "Bolt"))
+        des.tree[0].local_cells = [float(v) for v in _pose(90, 10, 20, 5).flatten()]
+        _refresh(des)
+        host = SimpleNamespace(component=des.comps["Outer"], fullPathName=None)
+        monkeypatch.setattr(ai._INTO_COMPONENT, "resolve", lambda raw: (host, None))
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1", x=10, z=5))
+        assert out["created"] is True and out["full_path"] == "Outer:1+Bolt:2"
+        assert "position" not in out and "axes" not in out
+        assert "its local frame could not be read" in out["note"]
+
+    @pytest.mark.parametrize("scope", ["placed", "host"])
+    @pytest.mark.parametrize("defect", ["count", "path", "zero", "multiple", "matrix"])
+    def test_an_unconfirmed_placed_or_host_frame_publishes_no_coordinates(self, wire, monkeypatch, scope, defect):
+        des = wire(names=("Outer", "Bolt"))
+        des.tree[0].local_cells = [float(v) for v in _pose(90, 10, 20, 5).flatten()]
+        _refresh(des)
+        real = des.rootComponent.allOccurrencesByComponent
+
+        def observed(component):
+            values = list(real(component))
+            wanted = "Bolt" if scope == "placed" else "Outer"
+            if not hasattr(des, "added") or component.name != wanted:
+                return _NamedCollection(values)
+            target = "Outer:1+Bolt:2" if scope == "placed" else "Outer:1"
+            matching = [occ for occ in values if occ.fullPathName == target]
+            assert len(matching) == 1
+            if defect == "count":
+                return _NamedCollection(raises=_UNREADABLE)
+            if defect == "path":
+                return _NamedCollection(values + [SimpleNamespace(fullPathName=None)])
+            if defect == "zero":
+                return _NamedCollection([])
+            if defect == "multiple":
+                return _NamedCollection(values + matching)
+            unread = SimpleNamespace(fullPathName=target,
+                                      transform2=SimpleNamespace(asArray=lambda: [1.0] * 15))
+            return _NamedCollection([unread if occ.fullPathName == target else occ for occ in values])
+
+        monkeypatch.setattr(des.rootComponent, "allOccurrencesByComponent", observed)
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1", x=10, z=5))
+        assert out["created"] is True and out["full_path"] == "Outer:1+Bolt:2"
+        assert "position" not in out and "axes" not in out
+        assert "its local frame could not be read" in out["note"]
+
+    def test_a_landing_off_the_request_is_an_error_naming_the_kept_instance(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        des.landed = _cells(0.0, 1.89323, 4.06004, c0=-1.0, c10=-1.0)
+        msg = error_message(ai.handler(component="Bolt", into_component="Outer:1",
+                                       rotate_deg=180.0))
+        assert "as 'Bolt:2' at 'Outer:1+Bolt:2' (kept)" in msg
+        assert "reads (0.0, 18.9323, 40.6004) mm, 44.797594 mm from the requested one" in msg
+        assert "local axes x [-1.0, 0.0, 0.0] y [0.0, 1.0, 0.0] z [0.0, 0.0, -1.0]" in msg
+        assert "Its transform was not reset to the request." in msg and "assembly_move" in msg
+        assert len(des.tree) == 3                        # the instance is kept, not deleted
+
+    @pytest.mark.parametrize("cells,lands", [
+        ({"tx": 1e-6}, True), ({"tx": 2e-6}, False),     # origin tolerance: 1e-6 cm
+        ({"c1": 1e-5}, True), ({"c1": 2e-5}, False)])    # axis tolerance: 1e-5
+    def test_the_tolerances_are_inclusive_at_their_bound(self, wire, cells, lands):
+        des = wire(names=("Outer", "Bolt"))
+        des.landed = _cells(**cells)
+        res = ai.handler(component="Bolt", into_component="Outer:1", rotate_deg=180.0)
+        assert res["isError"] is (not lands)
+
+    def test_an_unreadable_transform_publishes_no_position(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        des.landed = [1.0] * 15                          # not 16 cells: the read declines
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1"))
+        assert "position" not in out and "axes" not in out
+        assert "not compared with the request: its local frame could not be read" in out["note"]
+
+
+def _pose(deg, tx, ty, tz, axis="z"):
+    """A 4x4 numpy pose: `deg` about `axis`, then the translation (cm)."""
+    import numpy as np
+    c, s = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+    i, j = {"x": (1, 2), "y": (2, 0), "z": (0, 1)}[axis]
+    out = np.eye(4)
+    out[i, i], out[i, j], out[j, i], out[j, j] = c, -s, s, c
+    out[:3, 3] = (tx, ty, tz)
+    return out
+
+
+def _placed(des, direct, bolt, outer=None):
+    """Give the first Bolt (and Outer) occurrence a world pose and land by the measured rule."""
+    import numpy as np
+    import adsk.fusion
+    types = adsk.fusion.DesignTypes
+    des.designType = types.DirectDesignType if direct else types.ParametricDesignType
+    host = np.eye(4) if outer is None else outer
+    for node in des.tree:
+        pose = bolt if node.component.name == "Bolt" else outer
+        node.local_cells = [float(v) for v in pose.flatten()]
+    _refresh(des)
+    inv = np.linalg.inv
+
+    def lands(cells):
+        m = np.array(cells, dtype=float).reshape(4, 4)
+        out = inv(host) @ m @ bolt if direct else inv(host) @ bolt @ host @ inv(bolt) @ m
+        if not direct and np.allclose(m, np.eye(4)):
+            out = inv(host) @ bolt
+        return [float(v) for v in out.flatten()]
+    des.lands = lands
+
+
+class TestPreCompensation:
+    """The matrix passed is the one that lands the instance at the request under the measured rule."""
+
+    def test_a_direct_design_instance_lands_at_the_request(self, wire):
+        des = wire()
+        _placed(des, True, _pose(90, 4.0, 2.0, 1.0))
+        out = payload(ai.handler(component="Bolt", x=-50.0, y=-20.0, z=30.0))
+        assert out["position"] == {"x": -50.0, "y": -20.0, "z": 30.0}
+        assert out["axes"]["x"] == [1.0, 0.0, 0.0]
+        assert [round(des.last_transform.asArray()[i], 6) for i in (0, 1, 3, 7, 11)] == [
+            0.0, 1.0, -7.0, 2.0, 2.0]
+
+    def test_a_direct_design_host_pose_is_part_of_the_matrix_passed(self, wire):
+        des = wire(names=("Outer", "Bolt"))
+        _placed(des, True, _pose(90, 4.0, 2.0, 1.0), _pose(-30, -3.0, 7.0, 0.5))
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1", x=10.0, z=5.0))
+        assert out["position"] == {"x": 10.0, "y": 0.0, "z": 5.0}
+
+    def test_a_parametric_host_instance_lands_at_the_request(self, wire):
+        # poses about different axes do not commute, so the order of the product is what lands it
+        des = wire(names=("Outer", "Bolt"))
+        _placed(des, False, _pose(70, 4.0, 2.0, 1.0, "y"), _pose(40, -3.0, 7.0, 0.5, "x"))
+        out = payload(ai.handler(component="Bolt", into_component="Outer:1", x=10.0, y=-20.0,
+                                 z=5.0))
+        assert out["position"] == {"x": 10.0, "y": -20.0, "z": 5.0}
+        assert out["axes"] == {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}
+
+    def test_a_parametric_root_instance_is_passed_the_request_itself(self, wire):
+        des = wire()
+        _placed(des, False, _pose(90, 4.0, 2.0, 1.0))
+        payload(ai.handler(component="Bolt", x=10.0))
+        assert des.last_transform.translation == ("vec", 1.0, 0.0, 0.0)
+
+    def test_no_placement_stacked_on_the_first_occurrence_is_ok_with_the_read_back(self, wire):
+        des = wire()
+        _placed(des, False, _pose(90, 4.0, 2.0, 1.0))
+        out = payload(ai.handler(component="Bolt"))
+        assert out["position"] == {"x": 40.0, "y": 20.0, "z": 10.0}
+        assert out["axes"]["x"] == [0.0, 1.0, 0.0]
+        assert ("No placement was requested; it reads at (40.0, 20.0, 10.0) mm in the root component."
+                in out["note"])
+
+    def test_a_given_placement_that_still_misses_is_the_kept_instance_error(self, wire):
+        des = wire()
+        _placed(des, False, _pose(90, 4.0, 2.0, 1.0))
+        des.landed = _cells(4.0, 2.0, 1.0)
+        msg = error_message(ai.handler(component="Bolt", x=10.0))
+        assert "as 'Bolt:2' at 'Bolt:2' (kept), but not at the requested placement" in msg
+        assert "reads (40.0, 20.0, 10.0) mm" in msg and "assembly_move" in msg
 
 
 class TestHostPrefixes:
@@ -546,3 +762,306 @@ class TestHostPrefixes:
         assert ai._host_prefixes(
             ["Frame:1+Bolt:2", "Frame:2+Bolt:2", "Frame:1+Bolt:2+Washer:1"], "Bolt:2") == {
             "Frame:1", "Frame:2"}
+
+
+# -- independent=true: copy as a NEW component --------------------------------------------------
+
+
+def _bodies(*volumes):
+    held = [SimpleNamespace(volume=v) for v in volumes]
+    return SimpleNamespace(count=len(held), item=lambda i: held[i])
+
+
+def _copy_design(monkeypatch, external=False, lie=None, into_host=False, twice=False,
+                 assign="moves", pending=False, capture="takes"):
+    """'Bolt' (one 2 cm3 body, one instance) with addNewComponentCopy wired on the root. `lie`:
+    'same' (another instance of Bolt comes back, as measured on an external reference), 'empty'
+    (the copy has no body), 'thin' (half the volume), 'source' (the source loses its body).
+
+    `twice` places 'Outer' again: the copy shows the matrix it was passed under the first placement
+    and its own cells (`native_copy_cells`) under the second. Each placement the root lists takes
+    WORLD cells and moves alone; the returned occurrence refuses an assignment. `assign` INJECTS
+    'first' (only the first placement takes it), 'ignored' or 'raises'.
+
+    `pending` is the design's pending-position flag before the call (None: it does not read); the
+    copy sets it. snapshots.add() clears it; `capture` INJECTS 'raises', 'sticks' (the flag stays),
+    'nothing' (the flag clears but no snapshot comes back) or 'blinds' (the flag stops reading)."""
+    des = _make(names=("Bolt", "Outer") if into_host else ("Bolt",))
+    bolt, root = des.comps["Bolt"], des.rootComponent
+    bolt.bRepBodies = _bodies(2.0)
+    source = des.tree[0]
+    source.isReferencedComponent = external
+    des.copied, des.assigned, des.captures = [], [], []
+    if twice:
+        _instance(des, des.comps["Outer"], local_cells=[float(v) for v in _pose(-30, -3, 7, .5).flatten()])
+    if pending is not None:
+        def add_snapshot():
+            des.captures.append(len(des.captures) + 1)
+            if capture == "raises":
+                raise RuntimeError("3 : Has no pending snapshot")
+            if capture == "blinds":
+                del des.snapshots.hasPendingSnapshot
+            elif capture != "sticks":
+                des.snapshots.hasPendingSnapshot = False
+            return None if capture == "nothing" else SimpleNamespace(name="Snapshot1")
+        des.snapshots = SimpleNamespace(hasPendingSnapshot=pending, add=add_snapshot)
+
+    def add_copy(component, transform):
+        des.copied.append((component, transform))
+        made = component
+        if lie != "same":
+            made = _comp("Bolt (1)")
+            made.bRepBodies = _bodies(*{"empty": (), "thin": (1.0,)}.get(lie, (2.0,)))
+            des.comps[made.name] = made
+            des._all_components.append(made)
+        if lie == "source":
+            component.bRepBodies = _bodies()
+        parents = [n for n in des.tree if n.component is des.comps["Outer"]] if into_host else [None]
+        returned_cells = des.native_copy_cells if hasattr(des, "native_copy_cells") else transform.asArray()
+        des.counter[made.name] = des.counter.get(made.name, 0) + 1
+        nodes = []
+
+        def take(node, cells):
+            des.assigned.append((node.fullPathName, cells))
+            if assign == "raises":
+                raise RuntimeError("the occurrence is locked")
+            if assign == "moves" or (assign == "first" and node is nodes[0]):
+                above = node.parent.world_cells if node.parent is not None else _cells()
+                node.local_cells = _multiply(ai._rigid_inverse(above), cells)
+            _refresh(des)
+        for n, parent in enumerate(parents):
+            nodes.append(_CopyPlacement(
+                component=made, parent=parent, isValid=True, fullPathName="", sourceComponent=None,
+                name=f"{made.name}:{des.counter[made.name]}", take=take,
+                local_cells=list(returned_cells if n else transform.asArray())))
+            des.tree.append(nodes[-1])
+        _refresh(des)
+        if pending is not None:
+            des.snapshots.hasPendingSnapshot = True
+
+        def refused(_self, matrix):
+            raise RuntimeError("3 : transform overrides can only be set on Occurrence proxy from "
+                               "root component")
+        returned = type("ReturnedCopy", (), {"transform2": property(
+            lambda _self: SimpleNamespace(asArray=lambda: list(returned_cells)), refused)})()
+        returned.name = returned.fullPathName = nodes[0].name
+        returned.isValid, returned.component = True, made
+        return returned
+    (des.comps["Outer"] if into_host else root).occurrences.addNewComponentCopy = add_copy
+    install(ai, des)
+    monkeypatch.setattr(ai._COMPONENT, "resolve", lambda raw: ((source, "occurrence"), None))
+    return des
+
+
+class TestIndependentCopy:
+    def test_a_local_component_is_copied_and_the_copy_is_named_from_a_read(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        out = payload(ai.handler(component="Bolt:1", independent=True, x=10))
+        assert des.copied[0][0] is des.comps["Bolt"]
+        assert out["independent"] is True and out["new_component"] == "Bolt (1)"
+        assert out["full_path"] == "Bolt (1):1" and out["position"]["x"] == 10.0
+        assert "Joints on the source were not copied" in out["note"]
+        assert "SHARES" not in out["note"]
+
+    @pytest.mark.parametrize("direct", [False, True])
+    def test_a_stale_copy_return_uses_the_current_placed_world_pose(self, monkeypatch, direct):
+        des = _copy_design(monkeypatch, into_host=True)
+        types = ai.adsk.fusion.DesignTypes
+        des.designType = types.DirectDesignType if direct else types.ParametricDesignType
+        des.tree[1].local_cells = [float(v) for v in _pose(90, 10, 20, 5).flatten()]
+        des.native_copy_cells = [float(v) for v in _pose(30, 2, 3, 4).flatten()]
+        _refresh(des)
+        out = payload(ai.handler(component="Bolt:1", into_component="Outer:1", independent=True,
+                                 x=-15, y=25, z=7.5))
+        assert out["independent"] is True and out["full_path"] == "Outer:1+Bolt (1):1"
+        assert out["position"] == {"x": -15.0, "y": 25.0, "z": 7.5}
+        assert out["axes"] == {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}
+        assert des.copied[0][0] is des.comps["Bolt"] and len(des.tree) == 3
+
+    def test_an_external_reference_is_refused_with_the_one_remedy(self, monkeypatch):
+        des = _copy_design(monkeypatch, external=True)
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert "'Bolt' is an external reference" in msg
+        assert "doc_update_xref action='break_link'" in msg and des.copied == []
+
+    def test_an_unreadable_reference_flag_makes_no_copy(self, monkeypatch):
+        des = _copy_design(monkeypatch, external=None)
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert "did not read whether it is an external reference" in msg and des.copied == []
+
+    @pytest.mark.parametrize("lie, text", [
+        ("same", "is another instance of that same component"),
+        ("empty", "holds 0 body(ies) against the source's 1"),
+        ("thin", "reads a volume of 1.0 cm3 against the source's 2.0"),
+        ("source", "changed the source")])
+    def test_a_copy_that_is_not_one_is_an_error_that_says_what_is_in_the_design(
+            self, monkeypatch, lie, text):
+        _copy_design(monkeypatch, lie=lie)
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert text in msg and "is in the design" in msg
+
+    def test_a_shared_instance_still_goes_through_add_existing(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        out = payload(ai.handler(component="Bolt:1"))
+        assert des.copied == [] and des.added == ("Root", "Bolt")
+        assert "independent" not in out and "SHARES" in out["note"]
+
+
+class TestCopyIsPlacedUnderEveryHostPlacement:
+    """A placed copy that reads off the request under any placement of its host is assigned the
+    request under each of them, judged again, and captured when nothing else was pending."""
+
+    WANT = {"x": -15, "y": 25, "z": 7.5}                # mm; -1.5 / 2.5 / 0.75 cm in the cells
+
+    def _twice(self, monkeypatch, own=None, **kw):
+        des = _copy_design(monkeypatch, into_host=True, twice=True, **kw)
+        des.tree[1].local_cells = [float(v) for v in _pose(90, 10, 20, 5).flatten()]
+        des.native_copy_cells = [float(v) for v in _pose(30, 2, 3, 4).flatten()] if own is None else own
+        _refresh(des)
+        return des
+
+    def _copy(self, host="Outer:1", **kw):
+        return ai.handler(component="Bolt:1", into_component=host, independent=True,
+                          **{**self.WANT, **kw})
+
+    @pytest.mark.parametrize("host", ["Outer:1", "Outer:2"])
+    def test_each_host_placement_is_assigned_the_request_in_world_cells(self, monkeypatch, host):
+        des = self._twice(monkeypatch)
+        out = payload(self._copy(host))
+        worlds = {n.fullPathName: n.world_cells for n in des.tree if n.component is des.comps["Outer"]}
+        assert dict(des.assigned) == {
+            f"{at}+Bolt (1):1": pytest.approx(_multiply(world, _cells(-1.5, 2.5, 0.75)))
+            for at, world in worlds.items()} and len(des.assigned) == 2
+        assert out["full_path"] == host + "+Bolt (1):1"
+        assert out["paths"] == ["Outer:1+Bolt (1):1", "Outer:2+Bolt (1):1"]
+        assert out["position"] == {"x": -15.0, "y": 25.0, "z": 7.5}
+        assert des.captures == [1] and "Its position was captured" in out["note"]
+        assert "cannot be captured" not in out["note"]
+
+    @pytest.mark.parametrize("other_x, writes", [(1e-6, 0), (2e-6, 2)])  # origin tolerance: 1e-6 cm
+    def test_a_copy_at_the_request_under_every_placement_is_not_assigned(self, monkeypatch, other_x,
+                                                                         writes):
+        des = _copy_design(monkeypatch, into_host=True, twice=True)
+        des.tree[2].local_cells = _cells()               # unturned hosts: the read-back is exact
+        des.native_copy_cells = _cells(other_x, 2.5, 0.75)
+        _refresh(des)
+        out = payload(ai.handler(component="Bolt:1", into_component="Outer:1", independent=True,
+                                 y=25, z=7.5))
+        assert len(des.assigned) == writes and out["position"] == {"x": 0.0, "y": 25.0, "z": 7.5}
+
+    def test_a_copy_that_landed_in_its_only_host_placement_is_captured_unassigned(self, monkeypatch):
+        des = _copy_design(monkeypatch, into_host=True)
+        des.native_copy_cells = [float(v) for v in _pose(30, 2, 3, 4).flatten()]
+        out = payload(self._copy())
+        assert des.assigned == [] and des.captures == [1]
+        assert "Its position was captured" in out["note"]
+
+    def test_a_copy_given_no_placement_is_left_where_it_reads(self, monkeypatch):
+        des = self._twice(monkeypatch)
+        out = payload(ai.handler(component="Bolt:1", into_component="Outer:2", independent=True))
+        assert des.assigned == [] and out["position"] == {"x": 20.0, "y": 30.0, "z": 40.0}
+        assert "No placement was requested; it reads at (20.0, 30.0, 40.0) mm" in out["note"]
+
+    def test_an_assignment_that_does_not_take_is_the_kept_copy_error(self, monkeypatch):
+        des = self._twice(monkeypatch, assign="ignored")
+        msg = error_message(self._copy("Outer:2"))
+        assert "as 'Bolt (1):1' at 'Outer:2+Bolt (1):1' (kept), but not at the requested" in msg
+        assert "reads (20.0, 30.0, 40.0) mm" in msg
+        assert "It was assigned the request there after the copy and still reads off it" in msg
+        assert len(des.assigned) == 2 and des.captures == []     # a misplaced copy is not captured
+
+    def test_a_copy_off_the_request_under_the_other_host_placement_is_refused(self, monkeypatch):
+        self._twice(monkeypatch, assign="first")
+        msg = error_message(self._copy())
+        assert "at 'Outer:2+Bolt (1):1' (kept), but not at the requested placement" in msg
+        assert "its local origin in host placement 'Outer:2' reads (20.0, 30.0, 40.0) mm" in msg
+
+    def test_a_refused_assignment_names_the_kept_copy_and_the_reason(self, monkeypatch):
+        des = self._twice(monkeypatch, assign="raises")
+        msg = error_message(self._copy())
+        assert "Copied 'Bolt' as 'Bolt (1):1' at 'Outer:1+Bolt (1):1' (kept)" in msg
+        assert "the occurrence is locked" in msg
+        assert len(des.tree) == 5                        # both placements of the copy stay
+
+    def test_an_unread_frame_under_the_other_host_placement_is_said(self, monkeypatch):
+        self._twice(monkeypatch)
+        real = ai._world_at_path
+        monkeypatch.setattr(ai, "_world_at_path", lambda design, comp, path: (
+            None if path == "Outer:2+Bolt (1):1" else real(design, comp, path)))
+        out = payload(self._copy())
+        assert out["position"] == {"x": -15.0, "y": 25.0, "z": 7.5}
+        assert "Under 1 other placement(s) of the host its frame could not be read ('Outer:2')" in out["note"]
+
+    def test_a_placement_that_did_not_read_is_no_reason_to_assign(self, monkeypatch):
+        des = self._twice(monkeypatch)
+        monkeypatch.setattr(ai, "_world_at_path", lambda design, comp, path: None)
+        out = payload(self._copy())
+        assert des.assigned == [] and "position" not in out
+
+
+class TestCopyPositionIsCaptured:
+    """A copy's placement is a pending position, lost at the next feature unless captured."""
+
+    def _copy(self, **kw):
+        return ai.handler(component="Bolt:1", independent=True, x=-15, **kw)
+
+    def test_positions_pending_before_the_call_are_left_for_the_caller_to_capture(self, monkeypatch):
+        des = _copy_design(monkeypatch, pending=True)
+        out = payload(self._copy())
+        assert des.captures == []
+        assert "Its position is PENDING, not captured" in out["note"]
+        assert "the next feature moves the copy to the pose of 'Bolt'" in out["note"]
+
+    @pytest.mark.parametrize("capture, why", [
+        ("raises", "its position was not captured: 3 : Has no pending snapshot."),
+        ("sticks", "its position was not captured - the design still reads a pending position.")])
+    def test_a_capture_that_does_not_take_is_the_kept_copy_error(self, monkeypatch, capture, why):
+        des = _copy_design(monkeypatch, capture=capture)
+        msg = error_message(self._copy())
+        assert "Copied 'Bolt' as 'Bolt (1):1' at 'Bolt (1):1' (kept), but " + why in msg
+        assert "assembly_capture_position(action='capture')" in msg and des.captures == [1]
+
+    @pytest.mark.parametrize("capture, read", [
+        ("nothing", "snapshots.add() returned no snapshot and the pending-position flag reads false"),
+        ("blinds", "snapshots.add() returned a snapshot and the pending-position flag did not read")])
+    def test_a_capture_that_cannot_be_verified_says_what_was_read(self, monkeypatch, capture, read):
+        des = _copy_design(monkeypatch, capture=capture)
+        msg = error_message(self._copy())
+        assert "(kept), but its capture is not verified: " + read in msg
+        assert "assembly_capture_position(action='status')" in msg
+        assert "action='capture'" not in msg and "still reads a pending position" not in msg
+
+    @pytest.mark.parametrize("direct, said", [(False, True), (True, False)])
+    def test_a_flag_that_does_not_read_is_said_in_a_parametric_design_only(self, monkeypatch,
+                                                                           direct, said):
+        des = _copy_design(monkeypatch, pending=None)
+        types = ai.adsk.fusion.DesignTypes
+        des.designType = types.DirectDesignType if direct else types.ParametricDesignType
+        out = payload(self._copy())
+        assert ("Whether its position is pending did not read" in out["note"]) is said
+        assert des.captures == [] and "was captured" not in out["note"]
+
+    def test_a_shared_instance_is_not_captured_and_says_it_cannot_be(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        out = payload(ai.handler(component="Bolt:1", x=-15))
+        assert des.captures == [] and "The placement cannot be captured" in out["note"]
+
+
+class TestCopyNeedsReadableEvidence:
+    def test_a_source_whose_volume_does_not_read_is_not_copied(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        des.comps["Bolt"].bRepBodies = _bodies(float("nan"))
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert "did not read" in msg and "no copy was made" in msg and des.copied == []
+
+    def test_a_copy_whose_volume_does_not_read_is_not_a_verified_copy(self, monkeypatch):
+        des = _copy_design(monkeypatch)
+        root_copy = des.rootComponent.occurrences.addNewComponentCopy
+
+        def unread_copy(component, transform):
+            occ = root_copy(component, transform)
+            occ.component.bRepBodies = _bodies(float("inf"))
+            return occ
+        des.rootComponent.occurrences.addNewComponentCopy = unread_copy
+        msg = error_message(ai.handler(component="Bolt:1", independent=True))
+        assert "reads a volume of None cm3 against the source's 2.0" in msg

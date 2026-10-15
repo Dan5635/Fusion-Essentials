@@ -9,8 +9,8 @@ Verified against the live adsk.cam API (op.parameters.itemByName(name).expressio
 live Fusion here — fakes mimic CAMParameters.
 """
 
-import json
 import types
+import pytest
 
 from conftest import (FakeCAMFolder, FakeCAMParameter, FakeCAMParameters, FakeTool,
                       _NamedCollection, load_tool, make_cam)
@@ -274,9 +274,7 @@ def _install_two_setups(monkeypatch, first_ops, second_ops):
     return cam
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestEditOperation:
@@ -493,8 +491,11 @@ class TestStuckParameter:
         assert "did not take" not in res["message"]
         assert "cam_edit_tools" not in res["message"]
         assert "cam_get(include=['operations'])" in res["message"]
-        # rolled back exactly like the other two failure paths
-        assert "Rolled back all 2 parameter(s)" in res["message"]
+        # the other row is rolled back; the unreadable one is not claimed restored
+        assert "Restored 1 of 2 parameter(s)" in res["message"]
+        assert "'tolerance' did not read back after the restore, held '0.01'" in res["message"]
+        assert res["message"].count("'tolerance'") == 2     # the request and the unread restore
+        assert "Restored and re-read: 'tool_stepover' reads '2.'." in res["message"]
         assert op.parameters.itemByName("tool_stepover").expression == "2."
 
     def test_two_unreadable_reads_are_UNCONFIRMED_never_a_nothing_moved_verdict(self, monkeypatch):
@@ -506,6 +507,14 @@ class TestStuckParameter:
         assert res["isError"] is True
         assert "UNCONFIRMED" in res["message"]
         assert "did not take" not in res["message"]
+        # None == None is not a restore that was re-read
+        assert "Rolled back all" not in res["message"]
+        assert ("Restored 0 of 1 parameter(s); the restore of 1 is NOT confirmed: 'tolerance' did "
+                "not read back after the restore, held None. Read each with "
+                "cam_get(include=['parameters'], operation=<name>) before relying on it."
+                ) in res["message"]
+        # an unread row supports no claim about what the operation holds
+        assert "left holding" not in res["message"] and "come back" not in res["message"]
 
     def test_a_request_the_parameter_already_holds_is_an_ok_no_op(self, monkeypatch):
         # Nothing moved, but nothing was asked to move: an idempotent set is a success, disclosed
@@ -714,9 +723,10 @@ class TestNotEditable:
         res = ce.handler(operation="Adaptive1",
                          parameters={"tool_feedCutting": "3000", "tool_diameter": "12"})
         assert res["isError"] is True
-        assert "tool_diameter" in res["message"] and "tool_feedCutting" not in res["message"]
+        assert "does not accept a write to: tool_diameter (" in res["message"]
         assert "WROTE 1 parameter(s) on the operation and then restored each one" in res["message"]
-        assert "every restored expression reads back what it held" in res["message"]
+        assert ("every restored expression reads back what it held: 'tool_feedCutting' reads "
+                "'5210.23'. No other") in res["message"]
         assert "No other state was read" in res["message"]        # no claim it is as it was found
         assert op.parameters.itemByName("tool_feedCutting").expression == "5210.23"
         assert op.parameters.itemByName("tool_diameter").expression == "10."
@@ -1195,10 +1205,32 @@ class InvalidatingToolOp(FakeOp):
         self.isToolpathValid = False
 
 
+@pytest.fixture
+def selector_conflict_operation(monkeypatch):
+    """Install one operation with a held cutter and a different document-library cutter."""
+    op = FakeOp("Adaptive1", {"tool_stepover": "2."})
+    old_tool = FakeLibTool("Old Cutter", 3)
+    op.tool = old_tool
+    _install_op(monkeypatch, op, doc_tools=[FakeLibTool("New Cutter", 7)])
+    return op, old_tool
+
+
 class TestToolChange:
     """The WRITE side of Operation.tool: resolve a library tool by the addressing
     cam_create_operation takes, assign it, and compare what Operation.tool READS back - two fetches
     of one tool are different objects, so the description and tool number are the comparison."""
+
+    def test_conflicting_selectors_refuse_before_any_requested_edit(self, selector_conflict_operation):
+        op, old_tool = selector_conflict_operation
+        result = ce.handler(operation="Adaptive1", tool_scope="document", tool_library_url="u",
+                            tool_index=0, parameters={"tool_stepover": "5"},
+                            suppressed=True, rename="Changed", preset="Other")
+        assert result["isError"] is True
+        assert "tool_scope='document'" in result["message"] and "tool_library_url='u'" in result["message"]
+        assert "without document scope" in result["message"]
+        assert op.tool is old_tool and op.name == "Adaptive1" and op.toolPreset is None
+        assert op.isSuppressed is False and op.hasToolpath is True
+        assert op.parameters.itemByName("tool_stepover").expression == "2."
 
     def test_assigns_a_document_library_tool_and_reads_its_identity_back(self, monkeypatch):
         op = FakeOp("Adaptive1", {"tool_stepover": "2."})       # a template op arriving with no tool
@@ -1963,6 +1995,41 @@ class GatedParam(FakeParam):
         pass
 
 
+class _RefusesRestore(FakeParam):
+    """Takes the first write and raises on the restore, as a re-locked conditional row did live."""
+
+    @FakeParam.expression.setter
+    def expression(self, value):
+        if getattr(self, "_written_once", False):
+            raise RuntimeError("3 : Invalid enumeration value.")
+        self._written_once = True
+        FakeParam.expression.fset(self, value)
+
+
+class _ModeGatedParam(FakeParam):
+    """stepover under roughingType 'adaptive': the row reads the validation error, and isEnabled
+    false when `disables`."""
+
+    def __init__(self, name, expression="", gate=None, disables=True, **kw):
+        super().__init__(name, expression, **kw)
+        self._gate, self._disables = gate, disables
+
+    def _adaptive(self):
+        return self._gate.expression == "'adaptive'"
+
+    @property
+    def error(self):
+        return "Maximum Stepover must be positive and non-zero!" if self._adaptive() else ""
+
+    @property
+    def isEnabled(self):
+        return not (self._disables and self._adaptive())
+
+    @isEnabled.setter
+    def isEnabled(self, value):
+        pass
+
+
 class TestASwitchInTheSameCall:
     """A row whose isEditable is gated by ANOTHER parameter of the same request: the locked rows go
     LAST and their flag is re-read once the switch has landed, so one call carrying both works."""
@@ -2021,8 +2088,325 @@ class TestASwitchInTheSameCall:
         res = ce.handler(operation="Adaptive1",
                          parameters={"tool_feedCutting": "3000", "numberOfStepovers": "3"})
         assert res["isError"] is True
-        assert "restored each one, but 1 did NOT come back" in res["message"]
-        assert "'tool_feedCutting' reads '3000', held '5210.23'" in res["message"]
-        assert "set each one back by hand" in res["message"]
+        assert ("restored 0 of 1; the restore of 1 is NOT confirmed: 'tool_feedCutting' reads "
+                "'3000', held '5210.23'. Read each with cam_get(include=['parameters'], "
+                "operation=<name>) before relying on it.") in res["message"]
         # and NOT the clean-restore sentence, which would contradict the line beside it
         assert "every restored expression reads back what it held" not in res["message"]
+
+    def test_a_restore_that_raises_is_named_and_the_later_rows_are_still_restored(self, monkeypatch):
+        op = _install(monkeypatch, params={
+            "toolAxisMode": _RefusesRestore("toolAxisMode", "'vertical'"),
+            "tolerance": FakeParam("tolerance", "0.01mm",
+                                   error="Failed to evaluate expression.")})
+        res = ce.handler(operation="Adaptive1",
+                         parameters={"toolAxisMode": "'lead_lean'", "tolerance": "0.02 mm"})
+        assert res["isError"] is True
+        assert "Restored 1 of 2 parameter(s); the restore of 1 is NOT confirmed" in res["message"]
+        assert ("'toolAxisMode' refused its prior \"'vertical'\" (3 : Invalid enumeration "
+                "value.) and reads \"'lead_lean'\"") in res["message"]
+        assert res["message"].count("Restored and re-read: 'tolerance' reads '0.01mm'.") == 1
+        assert "Rolled back all" not in res["message"]
+        assert op.parameters.itemByName("tolerance").expression == "0.01mm"
+
+    @pytest.mark.parametrize("disables", [True, False])
+    def test_a_failed_row_the_mode_write_disabled_says_set_the_mode_first(self, monkeypatch,
+                                                                          disables):
+        gate = FakeParam("roughingType", "'offset'")
+        _install(monkeypatch, params={
+            "roughingType": gate,
+            "stepover": _ModeGatedParam("stepover", "tool_diameter * 0.5", gate=gate,
+                                        disables=disables)})
+        res = ce.handler(operation="Adaptive1",
+                         parameters={"roughingType": "'adaptive'", "stepover": "1.5 mm"})
+        assert res["isError"] is True
+        assert "Maximum Stepover must be positive and non-zero!" in res["message"]
+        assert "Rolled back all 2 parameter(s)" in res["message"]
+        assert ("reads isEnabled false after the call's other writes; set the mode first"
+                in res["message"]) is disables
+
+
+_DERIVED = "(multiAxisMachiningType == 'four_axis') ? 'tilt_to_rotary_axis' : 'vertical'"
+_ENUM = "3 : Invalid enumeration value."
+_FLAT = "The specified Primary Mode option cannot be used with the current tool."
+
+
+class _ChoiceValue:
+    """A choice parameter's value object: .value is the bare evaluated text, and a write to it
+    lands as a literal expression and clears the row's error."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    @property
+    def value(self):
+        if not self._owner.readable:
+            raise RuntimeError("value did not answer")
+        return self._owner.held
+
+    @value.setter
+    def value(self, v):
+        o = self._owner
+        o.value_writes.append(v)
+        if o.value_refusal:
+            raise RuntimeError(o.value_refusal)
+        if not o.swallows:
+            o.held, o._expression = v, f"'{v}'"
+            o.set_error("")
+
+
+class _DerivedChoiceParam(FakeCAMParameter):
+    """toolAxisMode on a flat cutter: the edit lands errored, and the derived default it held is
+    refused through .expression afterwards unless `takes_restore`."""
+
+    def __init__(self, name, expression, held, takes_restore=False, value_refusal=None,
+                 swallows=False, readable=True):
+        super().__init__(name, expression, error="")
+        self.held, self.takes_restore, self.value_refusal = held, takes_restore, value_refusal
+        self.swallows, self.readable = swallows, readable
+        self.value_writes, self.op, self._edited = [], None, False
+
+    def set_error(self, text):
+        self._error = text
+        if self.op is not None:
+            self.op.hasError = bool(text)
+
+    @property
+    def value(self):
+        return _ChoiceValue(self)
+
+    @value.setter
+    def value(self, v):
+        pass
+
+    @FakeCAMParameter.expression.setter
+    def expression(self, v):
+        if not self._edited:
+            self._edited = True
+            self._expression, self.held = v, v.strip("'")
+            self.set_error(_FLAT)
+        elif self.takes_restore:
+            self._expression, self.held = v, "vertical"
+            self.set_error("")
+        else:
+            raise RuntimeError(_ENUM)
+
+
+class TestParameterOperationError:
+    """Clean parameter reads do not permit a new operation error."""
+
+    def _flag(self, monkeypatch, op, mode):
+        p = op.parameters.itemByName("tiltTool")
+        def getter(_op):
+            if mode == "before_unread" or (mode == "after_unread" and p.expression == "true"):
+                raise RuntimeError("hasError did not answer")
+            return mode == "prior_error" or p.expression == "true"
+        monkeypatch.setattr(type(op), "hasError", property(getter), raising=False)
+
+    def test_a_new_operation_error_refuses_and_restores_clean_parameters(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": FakeParam("tiltTool", "false")})
+        self._flag(monkeypatch, op, "new_error")
+        res = ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"})
+        assert res["isError"] is True
+        assert "Operation.hasError changed from False to True" in res["message"]
+        assert "Operation.hasError reads False after restore" in res["message"]
+        assert op.parameters.itemByName("tiltTool").expression == "false"
+        assert op.hasError is False
+
+    def test_an_existing_operation_error_does_not_block_a_parameter_edit(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": FakeParam("tiltTool", "false")})
+        self._flag(monkeypatch, op, "prior_error")
+        out = _payload(ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"}))
+        assert out["updated_count"] == 1 and op.hasError is True
+        assert op.parameters.itemByName("tiltTool").expression == "true"
+
+    def test_an_unread_prior_operation_flag_refuses_before_writing(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": FakeParam("tiltTool", "false")})
+        self._flag(monkeypatch, op, "before_unread")
+        res = ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"})
+        assert res["isError"] is True and "no write was attempted" in res["message"]
+        assert op.parameters.itemByName("tiltTool").expression == "false"
+
+    def test_an_unread_after_flag_is_unconfirmed_and_rolls_back(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": FakeParam("tiltTool", "false")})
+        self._flag(monkeypatch, op, "after_unread")
+        res = ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"})
+        assert res["isError"] is True and "UNCONFIRMED" in res["message"]
+        assert "Operation.hasError reads False after restore" in res["message"]
+        assert op.parameters.itemByName("tiltTool").expression == "false"
+
+    def test_a_failed_restore_does_not_claim_the_operation_is_error_free(self, monkeypatch):
+        op = _install(monkeypatch, params={"tiltTool": _StuckAfterFirstWrite("tiltTool", "false")})
+        self._flag(monkeypatch, op, "new_error")
+        res = ce.handler(operation="Adaptive1", parameters={"tiltTool": "true"})
+        assert res["isError"] is True and "NOT confirmed" in res["message"]
+        assert "Operation.hasError reads True after restore" in res["message"]
+        assert op.parameters.itemByName("tiltTool").expression == "true"
+
+    def test_parameter_rollback_preserves_and_discloses_an_applied_preset(self, monkeypatch):
+        op = _preset_op()
+        monkeypatch.setattr(op, "parameters", FakeParams({"tiltTool": FakeParam("tiltTool", "false")}))
+        _install_op(monkeypatch, op)
+        self._flag(monkeypatch, op, "new_error")
+        res = ce.handler(operation="Adaptive1", preset="Probe Alu", parameters={"tiltTool": "true"})
+        assert res["isError"] is True
+        assert "toolPreset already set to 'Probe Alu'" in res["message"]
+        assert op.toolPreset.name == "Probe Alu" and op.hasError is False
+        assert op.parameters.itemByName("tiltTool").expression == "false"
+
+
+class TestRestoreByValue:
+    """A refused edit whose prior expression Fusion will not take back: the prior VALUE is written
+    to the value object, and the reply says the value came back and the expression did not."""
+
+    def _edit(self, monkeypatch, held="vertical", **kw):
+        p = _DerivedChoiceParam("toolAxisMode", _DERIVED, held, **kw)
+        p.op = _install(monkeypatch, params={"toolAxisMode": p})
+        return p, ce.handler(operation="Adaptive1", parameters={"toolAxisMode": "'lead_lean'"})
+
+    def test_the_value_comes_back_and_the_lost_expression_is_named(self, monkeypatch):
+        p, res = self._edit(monkeypatch)
+        assert res["isError"] is True and p.value_writes == ["vertical"]
+        assert ("Restored the expression of 0 of 1 parameter(s); 1 came back by VALUE only, the "
+                "expression now a literal: 'toolAxisMode' reads value 'vertical' and expression "
+                "\"'vertical'\"; CAMParameter.expression refused its prior expression "
+                f"{_DERIVED!r} ({_ENUM}), which was NOT restored. Operation.hasError reads False."
+                ) in res["message"]
+        assert "Rolled back all" not in res["message"]
+        assert "NOT confirmed" not in res["message"]
+
+    def test_both_write_backs_refused_names_both_refusals(self, monkeypatch):
+        p, res = self._edit(monkeypatch, value_refusal="3 : value refused")
+        assert res["isError"] is True and p.value_writes == ["vertical"]
+        assert ("Restored 0 of 1 parameter(s); the restore of 1 is NOT confirmed: 'toolAxisMode' "
+                f"refused its prior {_DERIVED!r} ({_ENUM}) and reads "
+                "\"'lead_lean'\", and value.value refused the prior value 'vertical' "
+                "(3 : value refused).") in res["message"]
+
+    def test_a_swallowed_value_write_is_not_counted_as_back(self, monkeypatch):
+        _p, res = self._edit(monkeypatch, swallows=True)
+        assert "Restored 0 of 1 parameter(s); the restore of 1 is NOT confirmed" in res["message"]
+        assert ("value.value took the prior value 'vertical' and reads 'lead_lean'"
+                in res["message"])
+
+    def test_an_expression_that_restores_never_writes_the_value(self, monkeypatch):
+        p, res = self._edit(monkeypatch, takes_restore=True)
+        assert res["isError"] is True and p.value_writes == []
+        assert ("Rolled back all 1 parameter(s), each restored expression re-read: 'toolAxisMode' "
+                f"reads {ce.short_ref(_DERIVED)!r}.") in res["message"]
+        assert "Operation.hasError reads False after restore." in res["message"]
+        assert p.expression == _DERIVED
+
+    def test_an_unread_prior_value_is_never_written(self, monkeypatch):
+        p, res = self._edit(monkeypatch, readable=False)
+        assert p.value_writes == []
+        assert (f"the restore of 1 is NOT confirmed: 'toolAxisMode' "
+                f"refused its prior {_DERIVED!r} ({_ENUM}) and reads \"'lead_lean'\"."
+                ) in res["message"]
+
+    def test_an_empty_prior_value_is_a_value_and_is_written_back(self, monkeypatch):
+        p, res = self._edit(monkeypatch, held="")
+        assert p.value_writes == [""]
+        assert "1 came back by VALUE only" in res["message"]
+
+    def test_the_locked_row_refusal_does_not_claim_each_row_restored(self, monkeypatch):
+        gate = FakeParam("doMultiplePasses", "false")
+        p = _DerivedChoiceParam("toolAxisMode", _DERIVED, "vertical")
+        p.op = _install(monkeypatch, params={
+            "toolAxisMode": p, "doMultiplePasses": gate,
+            "numberOfStepovers": GatedParam("numberOfStepovers", "1", gate=gate)})
+        res = ce.handler(operation="Adaptive1",
+                         parameters={"toolAxisMode": "'lead_lean'", "numberOfStepovers": "3"})
+        assert res["isError"] is True
+        assert ("This call WROTE 1 parameter(s) on the operation. Restored the expression of 0 of "
+                "1 parameter(s); 1 came back by VALUE only") in res["message"]
+        assert "restored each one" not in res["message"]
+
+
+class TestRestoredRowsAreNamed:
+    """A refusal after a multi-row write names each row it restored with the expression re-read."""
+
+    def _locked(self, monkeypatch, written):
+        params = {n: FakeParam(n, "0deg") for n in written}
+        params["tiltToolMode"] = FakeParam("tiltToolMode", "'from_point'", editable=False)
+        _install(monkeypatch, params=params)
+        asked = {n: "10 deg" for n in written}
+        asked["tiltToolMode"] = "'automatic'"
+        return ce.handler(operation="Adaptive1", parameters=asked)["message"]
+
+    def test_the_two_rows_written_around_a_locked_one_are_named_with_their_reading(self,
+                                                                                   monkeypatch):
+        msg = self._locked(monkeypatch, ["leadAngle", "leanAngle"])
+        assert "does not accept a write to: tiltToolMode (" in msg
+        assert ("WROTE 2 parameter(s) on the operation and then restored each one - every restored "
+                "expression reads back what it held: 'leadAngle' reads '0deg', 'leanAngle' reads "
+                "'0deg'. No other state was read") in msg
+
+    @pytest.mark.parametrize("count, remainder", [(6, ""), (7, ", ... (+1 more not listed)")])
+    def test_the_named_rows_stop_at_six_and_the_rest_are_counted(self, monkeypatch, count,
+                                                                 remainder):
+        msg = self._locked(monkeypatch, [f"row{i}" for i in range(count)])
+        assert f"WROTE {count} parameter(s)" in msg
+        assert f"'row5' reads '0deg'{remainder}. No other state was read" in msg
+        assert "'row6'" not in msg
+
+    def test_a_row_that_stuck_is_kept_out_of_the_restored_names(self, monkeypatch):
+        gate = FakeParam("doMultiplePasses", "false")
+        _install(monkeypatch, params={
+            "tool_feedCutting": _StuckAfterFirstWrite("tool_feedCutting", "5210.23"),
+            "tolerance": FakeParam("tolerance", "0.01"),
+            "doMultiplePasses": gate,
+            "numberOfStepovers": GatedParam("numberOfStepovers", "1", gate=gate)})
+        msg = ce.handler(operation="Adaptive1",
+                         parameters={"tool_feedCutting": "3000", "tolerance": "0.02",
+                                     "numberOfStepovers": "3"})["message"]
+        assert ("restored 1 of 2; the restore of 1 is NOT confirmed: 'tool_feedCutting' reads "
+                "'3000', held '5210.23'. Read each with") in msg
+        assert "before relying on it. Restored and re-read: 'tolerance' reads '0.01'." in msg
+
+
+class TestAdditiveInputs:
+    """The arm's routing; what an assignment and a choice verify is tested on the helper itself."""
+
+    def _rig(self, monkeypatch, assign=None, choose=None):
+        op = _install(monkeypatch, op_name="Support1")
+        calls = []
+        monkeypatch.setattr(ce._PARTS, "resolve", lambda raw: (["occ:" + str(r) for r in raw], None))
+        monkeypatch.setattr(ce._cam_additive, "assign_parts", lambda cam, target, occs: (
+            calls.append(("parts", target.name, occs)) or assign
+            or ({"parameter": "supportTarget", "parts_before": [], "parts": ["PartA:1"]}, None)))
+        monkeypatch.setattr(ce._cam_additive, "choose_orientation", lambda cam, target, index: (
+            calls.append(("candidate", target.name, index)) or choose
+            or ({"index": index, "candidate": {}, "part": "PartA:1", "pose": [1.0] * 16}, None)))
+        return op, calls
+
+    def test_parts_are_resolved_and_assigned_and_the_read_back_is_published(self, monkeypatch):
+        _op, calls = self._rig(monkeypatch)
+        out = _payload(ce.handler(operation="Support1", parts=["PartA:1"]))
+        assert calls == [("parts", "Support1", ["occ:PartA:1"])]
+        assert out["parts"] == ["PartA:1"] and out["parameter"] == "supportTarget"
+        assert "cam_generate" in out["note"]
+
+    def test_an_assignment_the_helper_refuses_is_an_error(self, monkeypatch):
+        self._rig(monkeypatch, assign=(None, "does not read the parts asked for"))
+        res = ce.handler(operation="Support1", parts=["PartA:1"])
+        assert res["isError"] is True and "does not read the parts asked for" in res["message"]
+
+    def test_a_candidate_is_chosen_by_its_index(self, monkeypatch):
+        _op, calls = self._rig(monkeypatch)
+        out = _payload(ce.handler(operation="Support1", orientation_candidate=0))
+        assert calls == [("candidate", "Support1", 0)] and out["orientation_candidate"] == 0
+        assert out["part"] == "PartA:1" and len(out["pose"]) == 16
+
+    @pytest.mark.parametrize("extra", [{"parameters": {"tool_feedCutting": "1"}}, {"rename": "X"},
+                                       {"suppressed": True}, {"preset": "P"}])
+    def test_the_additive_inputs_do_not_ride_with_another_edit(self, monkeypatch, extra):
+        op, calls = self._rig(monkeypatch)
+        res = ce.handler(operation="Support1", parts=["PartA:1"], **extra)
+        assert res["isError"] is True and "a call of their own" in res["message"]
+        assert calls == [] and op.name == "Support1"
+
+    def test_parts_and_a_candidate_in_one_call_are_refused(self, monkeypatch):
+        _op, calls = self._rig(monkeypatch)
+        res = ce.handler(operation="Support1", parts=["PartA:1"], orientation_candidate=0)
+        assert res["isError"] is True and "separate steps" in res["message"] and calls == []

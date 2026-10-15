@@ -71,18 +71,70 @@ def _sides(face_ents):
     return sides, unreadable
 
 
-def _note(modeled):
-    """The result note - what the caller still has to check, which differs by thread kind. Fusion
-    accepts a designation that does not fit the cylinder (M30x3.5 on a 20 mm shaft computed with a
-    clean health state), so the fit is the caller's to confirm."""
+def _cylinder_frame(face):
+    """(radius cm, unit axis, origin) of a cylindrical face, or None where any of them does not read."""
+    g = safe(lambda: face.geometry)
+    if safe(lambda: g.surfaceType) != adsk.core.SurfaceTypes.CylinderSurfaceType:
+        return None
+    radius, axis = safe(lambda: g.radius), _geom.unit_vector(safe(lambda: g.axis), 9)
+    origin = [safe(lambda a=a: getattr(g.origin, a)) for a in "xyz"]
+    if axis is None or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                               for v in [radius] + origin):
+        return None
+    return float(radius), axis, [float(v) for v in origin]
+
+
+def _radius_after(body, before, internal):
+    """The one radius (cm) every same-side cylinder coaxial with `before` reads in `body` now, else None."""
+    radii = set()
+    for f in _common.iter_collection(safe(lambda: body.faces)):
+        kind = safe(lambda f=f: f.geometry.surfaceType)
+        if kind is None:
+            return None
+        if kind != adsk.core.SurfaceTypes.CylinderSurfaceType:
+            continue
+        frame = _cylinder_frame(f)
+        if frame is None:
+            return None
+        if not _geom.coaxial(before[2], before[1], frame[2], frame[1],
+                             axis_dot_tol=1e-7, offset_squared_tol=1e-10):
+            continue
+        side = _face_is_internal(f)
+        if side is None:
+            return None
+        if side == internal:
+            radii.add(round(frame[0], 9))
+    return radii.pop() if len(radii) == 1 else None
+
+
+def _cosmetic_radii(bodies, frames, internal, scale_factor):
+    """[{before, after, change}] per face in caller units, a None where that side did not read."""
+    rows = []
+    for body, before in zip(bodies, frames):
+        after = _radius_after(body, before, internal) if before and body is not None else None
+        b = round(before[0] / scale_factor, 6) if before else None
+        a = round(after / scale_factor, 6) if after is not None else None
+        rows.append({"before": b, "after": a,
+                     "change": round(a - b, 6) if a is not None and b is not None else None})
+    return rows
+
+
+def _note(modeled, radii=(), units="mm"):
+    """The result note: the modeled thread's remaining fit check, or the cosmetic resize as read."""
     if modeled:
         return ("Modeled thread cut into the existing cylinder(s). The cut is verified by volume, "
                 "which catches a designation too large for a shaft or too small for a bore; a "
                 "designation too large for a BORE also removes material and passes that check, so "
                 "confirm the call-out against the bore diameter.")
-    return ("Cosmetic thread added to the existing cylinder(s) - the call-out is recorded and the "
-            "geometry stays a plain cylinder; pass modeled=true when the helix itself must be in "
-            "the model. Fusion does not check a cosmetic call-out against the cylinder diameter.")
+    unmeasured = [i for i, r in enumerate(radii) if r["change"] is None]
+    if unmeasured:
+        return (f"Cosmetic thread added; the resize of face(s) {unmeasured} (0-based) was not "
+                "measured: no single radius read for it before and after the thread. Measure it "
+                "with find_geometry(kind='cylinder_face'). Pass modeled=true for a helix.")
+    read = ", ".join(f"face {i} {r['before']} -> {r['after']} ({r['change']:+g})"
+                     for i, r in enumerate(radii))
+    return (f"Cosmetic thread added; cylinder radius before -> after ({units}): {read}. "
+            "Pass modeled=true for a helix.")
 
 
 def handler(faces=None, designation: str = "", modeled: bool = False, left_handed: bool = False,
@@ -114,9 +166,9 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
     if cerr:
         return error(cerr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
     if not comp:
         return error("No target component.")
@@ -138,8 +190,8 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
     internal = bool(sides[0])
 
     thread_info, carried_by, terr = _threads.resolve_thread_info(
-        comp, designation, internal=internal, thread_type=thread_type,
-        thread_class=thread_class)
+        designation, internal=internal, thread_type=thread_type,
+        thread_class=thread_class, right_handed=not bool(left_handed))
     if terr:
         return error(terr)
 
@@ -156,6 +208,8 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
         return error("'faces' resolved to face(s) with no readable owning body, so a modeled "
                      "thread's cut cannot be verified. Re-run find_geometry for fresh handles.")
     vol_before = _geom.volumes(bodies)
+    face_bodies = [] if modeled else [safe(lambda f=f: f.body) for f in face_ents]
+    frames = [] if modeled else [_cylinder_frame(f) for f in face_ents]
 
     try:
         tin = threads.createInput(coll, thread_info)
@@ -166,7 +220,11 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
 
     try:
         tin.isModeled = bool(modeled)
-        tin.isRightHanded = not bool(left_handed)
+        if left_handed:
+            # RETIRED member, kept: a left-handed ThreadInfo still builds a right-handed thread,
+            # and this flag on the input is the one write that makes it left. A supported way is
+            # sought.
+            tin.isRightHanded = False
         if length_cm is not None:
             # isFullLength defaults to true, which leaves the partial-thread trio unused.
             tin.isFullLength = False
@@ -207,6 +265,13 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
                      f"thread, but the face(s) are "
                      f"{'bores' if internal else 'shafts'}. Remove it with design_delete_feature "
                      f"(feature '{safe(lambda: feature.name)}').")
+    # The hand is judged off the feature, whichever of the two writes above carried it.
+    got_right = safe(lambda: feature.isRightHanded)
+    if isinstance(got_right, bool) and got_right == bool(left_handed):
+        return error(f"The thread was created but reads back "
+                     f"{'right' if got_right else 'left'}-handed, not the requested "
+                     f"{'left' if left_handed else 'right'}-handed. Remove it with "
+                     f"design_delete_feature (feature '{safe(lambda: feature.name)}').")
 
     payload = {
         "threaded": True,
@@ -222,8 +287,12 @@ def handler(faces=None, designation: str = "", modeled: bool = False, left_hande
         "thread_type": safe(lambda: info.threadType) if info is not None else None,
         "thread_type_alternatives": carried_by if len(carried_by) > 1 else None,
         "thread_class": safe(lambda: info.threadClass) if info is not None else None,
-        "note": _note(modeled),
     }
+    radii = [] if modeled else _cosmetic_radii(face_bodies, frames, internal, scale_factor)
+    if radii:
+        payload["cylinder_radii"] = radii
+        payload["units"] = units
+    payload["note"] = _note(modeled, radii, units)
     unread = [k for k in ("modeled", "right_handed") if payload[k] is None]
     if unread:
         payload["note"] += (" " + " and ".join(unread) + " could NOT be read back off the feature, "

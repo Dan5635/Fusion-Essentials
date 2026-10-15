@@ -478,6 +478,51 @@ class TestStrictGeometryGuards:
         assert [kind for kind, _ in state.sketch._drawn] == ["rectangles", "ellipses"]
 
 
+class TestCurveWorkloadBound:
+    def test_sixteen_separate_line_entities_land_at_the_limit(self, wire):
+        state = wire()
+        geometry = [{"kind": "line", "points": [[i * 2, 0], [i * 2 + 1, 1]]}
+                    for i in range(16)]
+        out = payload(dw.handler(geometry=geometry))
+        assert out["curves_requested"] == out["curves_landed"] == 16
+        assert len(state.sketch._drawn) == 16
+
+    def test_sixteen_segment_chain_lands_at_the_limit(self, wire):
+        state = wire()
+        chain = {"kind": "line", "points": [[i, i % 2] for i in range(17)]}
+        out = payload(dw.handler(geometry=[chain]))
+        assert out["curves_requested"] == out["curves_landed"] == 16
+        assert len(state.sketch._drawn) == 1
+
+    def test_seventeen_separate_entities_are_refused_before_sketch_creation(self, wire):
+        state = wire()
+        geometry = [{"kind": "line", "points": [[i * 2, 0], [i * 2 + 1, 1]]}
+                    for i in range(17)]
+        msg = error_message(dw.handler(geometry=geometry))
+        assert "brings this request to 17 curves" in msg and "N-1 segments" in msg
+        assert state.sheets[0].sketches._requested == []
+        assert state.sketch._drawn == []
+
+    def test_seventeen_segment_chain_is_refused_before_point_normalization(self, wire, monkeypatch):
+        state = wire()
+        monkeypatch.setattr(dw, "_point", lambda raw: pytest.fail("points were normalized"))
+        chain = {"kind": "line", "points": [[i, i % 2] for i in range(18)]}
+        msg = error_message(dw.handler(geometry=[chain]))
+        assert "brings this request to 17 curves" in msg
+        assert state.sheets[0].sketches._requested == []
+        assert state.sketch._drawn == []
+
+    def test_mixed_entities_share_the_same_curve_limit(self, wire):
+        state = wire()
+        chain = {"kind": "line", "points": [[i, 0] for i in range(10)]}
+        circles = [{"kind": "circle", "points": [[30 + i, 30]], "radius": 1}
+                   for i in range(8)]
+        msg = error_message(dw.handler(geometry=[chain, *circles]))
+        assert "brings this request to 17 curves" in msg
+        assert state.sheets[0].sketches._requested == []
+        assert state.sketch._drawn == []
+
+
 class TestSchema:
     def test_points_entries_are_typed_number_pairs_not_untyped_arrays(self):
         # An untyped inner array renders Array<Array<string>> to a client, which then sends

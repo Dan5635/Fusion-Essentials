@@ -35,6 +35,126 @@ _VEC_TO_KEY = {(1, 0, 0): "x", (0, 1, 0): "y", (0, 0, 1): "z"}
 # x=30 would revolve about the world axis through the origin.
 _AXIS = _inputs.AxisRef("axis", face_entity=True, default="z")
 _TARGET_BODIES = _inputs.BodyRefList("target_bodies", required=False)
+_TO_OBJECT = _inputs.PlaneRef("to_object", required=False)
+_TO_OBJECT_TWO = _inputs.PlaneRef("to_object_two", required=False)
+
+
+def _unit(v):
+    """Normalize a coordinate sequence through the shared geometry vector reader."""
+    if len(v) != 3 or not all(math.isfinite(x) for x in v):
+        return None
+    return _geom.unit_vector(adsk.core.Vector3D.create(*v), decimals=12)
+
+
+def _stop_direction_hint(sketch, profile, axis_entity, stop_plane, design):
+    """Build the measured one-side tangent hint from the actual profile, axis and stop plane."""
+    root = safe(lambda: design.rootComponent)
+    sketch_owner = safe(lambda: sketch.parentComponent)
+    plane_owner = _inputs.entity_component(stop_plane)
+    axis_owner = _inputs.entity_component(axis_entity)
+    if (root is None or _common.same_component(sketch_owner, root) is not True
+            or _common.same_component(plane_owner, root) is not True
+            or _common.same_component(axis_owner, root) is not True
+            or safe(lambda: sketch.assemblyContext) is not None
+            or safe(lambda: stop_plane.assemblyContext) is not None
+            or safe(lambda: axis_entity.assemblyContext) is not None):
+        return None, "Construction-plane stops require native root-component geometry; use angle extents for placed component geometry."
+    axis_line, axis_error = _inputs.axis_line_of("axis", axis_entity)
+    if axis_error or axis_line is None:
+        return None, axis_error or "The revolve axis direction could not be read."
+    axis_origin, axis_vector = axis_line
+    origin = _geom._coords(axis_origin)
+    axis = _unit(_geom._coords(axis_vector) or ())
+    if origin is None or axis is None:
+        return None, "The revolve axis origin or direction could not be read."
+    loops = safe(lambda: profile.profileLoops)
+    loop_count = safe(lambda: loops.count) if loops else None
+    if loop_count is None:
+        return None, "The selected profile loops could not be read for a stop hint."
+    points = []
+    for i in range(loop_count):
+        curves = safe(lambda i=i: loops.item(i).profileCurves)
+        curve_count = safe(lambda curves=curves: curves.count) if curves else None
+        if curve_count is None:
+            return None, "The selected profile curve collection could not be read for a stop hint."
+        for j in range(curve_count):
+            entity = safe(lambda curves=curves, j=j: curves.item(j).sketchEntity)
+            for endpoint in ("startSketchPoint", "endSketchPoint"):
+                point = safe(lambda entity=entity, endpoint=endpoint:
+                             getattr(entity, endpoint).worldGeometry)
+                xyz = _geom._coords(point)
+                if xyz is not None:
+                    points.append(xyz)
+    if len(points) < 2:
+        return None, "The profile's actual sketch-line world corners could not be read for a stop hint."
+    radial_points = []
+    for point in points:
+        offset = tuple(point[i] - origin[i] for i in range(3))
+        radial = tuple(offset[i] - _geom.dot(offset, axis) * axis[i] for i in range(3))
+        unit_radial = _unit(radial)
+        if unit_radial is not None:
+            radial_points.append((math.sqrt(_geom.dot(radial, radial)), unit_radial))
+    if not radial_points:
+        return None, "The profile does not establish a radial side around the selected axis."
+    source_radial = min(radial_points, key=lambda item: item[0])[1]
+    geometry = safe(lambda: stop_plane.geometry)
+    plane_origin, normal = _geom._coords(safe(lambda: geometry.origin)), _unit(_geom._coords(safe(lambda: geometry.normal)) or ())
+    if plane_origin is None or normal is None:
+        return None, "The stop construction plane's origin or normal could not be read."
+    if abs(_geom.dot(normal, axis)) > 1e-6 or abs(_geom.dot(tuple(origin[i] - plane_origin[i] for i in range(3)), normal)) > 1e-6:
+        return None, "The stop plane must contain the selected revolve axis to establish a radial stop direction."
+    target_ray = _unit(_geom.cross(normal, axis))
+    if target_ray is None:
+        return None, "The stop plane does not establish a radial ray around the selected axis."
+    if _geom.dot(target_ray, source_radial) < 0:
+        target_ray = tuple(-v for v in target_ray)
+    tangent = _unit(_geom.cross(axis, source_radial))
+    if tangent is None:
+        return None, "The selected profile point is on the revolve axis and has no tangent direction."
+    alignment = _geom.dot(tangent, target_ray)
+    if abs(alignment) <= 1e-9:
+        return None, "The stop plane does not distinguish a travel direction from the profile's radial side."
+    direction = tangent if alignment > 0 else tuple(-v for v in tangent)
+    return adsk.core.Vector3D.create(*direction), None
+
+
+def _stop_plane_face_count(bodies, stop_plane):
+    """Count planar result faces whose readable vertices lie on a construction-plane stop."""
+    geometry = safe(lambda: stop_plane.geometry)
+    origin, normal = _geom._coords(safe(lambda: geometry.origin)), _unit(_geom._coords(safe(lambda: geometry.normal)) or ())
+    if origin is None or normal is None:
+        return None
+    found = 0
+    for body in bodies:
+        faces = safe(lambda body=body: body.faces)
+        count = safe(lambda faces=faces: faces.count) if faces else None
+        if count is None:
+            return None
+        for i in range(count):
+            face = safe(lambda faces=faces, i=i: faces.item(i))
+            if face is None:
+                return None
+            surface = safe(lambda face=face: face.geometry)
+            if surface is None:
+                return None
+            if safe(lambda surface=surface: surface.surfaceType) != adsk.core.SurfaceTypes.PlaneSurfaceType:
+                continue
+            vertices = safe(lambda face=face: face.vertices)
+            n_vertices = safe(lambda vertices=vertices: vertices.count) if vertices else None
+            if n_vertices is None:
+                return None
+            if n_vertices < 3:
+                continue
+            residuals = []
+            for j in range(n_vertices):
+                point = _geom._coords(safe(lambda vertices=vertices, j=j: vertices.item(j).geometry))
+                if point is None:
+                    residuals = []
+                    break
+                residuals.append(abs(_geom.dot(tuple(point[k] - origin[k] for k in range(3)), normal)))
+            if len(residuals) == n_vertices and max(residuals) <= 1e-6:
+                found += 1
+    return found
 
 
 def _in_context(ent, comp, design):
@@ -96,7 +216,8 @@ def _axis_entity(design, comp, sketch, axis):
 
 def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
             angle_deg: float = 360.0, operation: str = "new", symmetric: bool = False,
-            second_angle_deg: float = 0.0, component: str = "", target_bodies=None) -> dict:
+            second_angle_deg: float = 0.0, component: str = "", target_bodies=None,
+            to_object: str = "", to_object_two: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
     op_key = (operation or "new").strip().lower()
     if op_key not in _common.OPERATIONS:
@@ -105,12 +226,27 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
         ang = float(angle_deg)
     except Exception:
         return error("angle_deg must be a number (degrees).")
-    if ang == 0:
+    if not math.isfinite(ang) or ang == 0:
         return error("Provide a non-zero 'angle_deg' to revolve (e.g. 360 for a full revolve).")
+    try:
+        second = float(second_angle_deg or 0.0)
+    except Exception:
+        return error("second_angle_deg must be a number (degrees).")
+    if not math.isfinite(second):
+        return error("second_angle_deg must be finite.")
+    has_stop = bool((to_object or "").strip())
+    has_stop_two = bool((to_object_two or "").strip())
+    if has_stop_two and not has_stop:
+        return error("'to_object_two' requires the first-side 'to_object' construction-plane stop.")
+    if has_stop and (symmetric or second):
+        return error("Construction-plane stops cannot be combined with symmetric or second_angle_deg.")
+    if has_stop and op_key != "new":
+        return error("Construction-plane stops currently require operation='new'; "
+                     "use angle_deg without a stop for join, cut or intersect.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     sketch, requested, ambiguous = _sketch_detail.scoped_or_recent_sketch(
@@ -142,9 +278,12 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
         if pcount == 0:
             return error(f"Sketch '{safe(lambda: sketch.name)}' has no closed profile to revolve.")
         try:
+            if type(profile_index) is not int and not isinstance(profile_index, str):
+                raise ValueError
             idx = int(profile_index)
-        except Exception:
-            idx = 0
+        except (TypeError, ValueError):
+            return error(f"profile_index {profile_index!r} is not an integer index. Use an index "
+                         "from sketch_get or a profile handle.")
         if idx < 0 or idx >= pcount:
             return error(f"profile_index {idx} out of range - sketch has {pcount} profile(s).")
         profile = profiles.item(idx)
@@ -155,6 +294,42 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
     axis_entity, axis_label = _axis_entity(design, host, sketch, axis)
     if not axis_entity:
         return error(f"Could not resolve axis '{axis}': {axis_label or 'use x | y | z, a straight-edge/sketch handle, or line:<index>.'}")
+
+    stop_planes = []
+    direction_hint = None
+    if has_stop:
+        plane_one, perr = _TO_OBJECT.resolve(to_object, host)
+        if perr:
+            return error(perr)
+        if not isinstance(plane_one, adsk.fusion.ConstructionPlane):
+            return error("'to_object' must resolve to a ConstructionPlane handle/name for revolve extent.")
+        stop_planes.append(plane_one)
+        if has_stop_two:
+            plane_two, perr = _TO_OBJECT_TWO.resolve(to_object_two, host)
+            if perr:
+                return error(perr)
+            if not isinstance(plane_two, adsk.fusion.ConstructionPlane):
+                return error("'to_object_two' must resolve to a ConstructionPlane handle/name for revolve extent.")
+            if plane_one == plane_two:
+                return error("'to_object' and 'to_object_two' resolve to the same construction plane; provide two distinct stops.")
+            stop_planes.append(plane_two)
+            root = safe(lambda: design.rootComponent)
+            operands = [axis_entity] + stop_planes
+            if (root is None
+                    or _common.same_component(safe(lambda: sketch.parentComponent), root) is not True
+                    or safe(lambda: sketch.assemblyContext) is not None or any(
+                    _common.same_component(_inputs.entity_component(entity), root) is not True
+                    or safe(lambda entity=entity: entity.assemblyContext) is not None
+                    for entity in operands)):
+                return error("Construction-plane stops require native root-component geometry; "
+                             "use angle extents for placed component geometry.")
+        else:
+            direction_hint, herr = _stop_direction_hint(sketch, profile, axis_entity, plane_one, design)
+            if herr:
+                return error(f"Could not establish the one-sided revolve direction hint: {herr}")
+            if ang < 0:
+                direction_hint = adsk.core.Vector3D.create(
+                    -direction_hint.x, -direction_hint.y, -direction_hint.z)
 
     scoped_bodies = None
     if target_bodies not in (None, "", []):
@@ -173,8 +348,15 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
 
     angle_val = adsk.core.ValueInput.createByReal(math.radians(ang))
     try:
-        second = float(second_angle_deg or 0.0)
-        if second and not symmetric:
+        if has_stop_two:
+            extent_result = rev_input.setTwoSideToExtent(stop_planes[0], stop_planes[1])
+            if extent_result is not True:
+                return error("Fusion refused the two construction-plane revolve stops; setTwoSideToExtent did not return true.")
+        elif has_stop:
+            extent_result = rev_input.setOneSideToExtent(stop_planes[0], direction_hint)
+            if extent_result is not True:
+                return error("Fusion refused the construction-plane revolve stop; setOneSideToExtent did not return true.")
+        elif second and not symmetric:
             # asymmetric two-sided revolve: 'ang' one way, 'second' the other.
             second_val = adsk.core.ValueInput.createByReal(math.radians(second))
             if not rev_input.setTwoSideAngleExtent(angle_val, second_val):
@@ -215,6 +397,23 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
     "that CROSSES the axis is refused.)")
     if not feature:
         return error(_common.no_feature_error(design, "Revolve"))
+    feature_name = safe(lambda: feature.name)
+    stop_face_counts = []
+    if has_stop:
+        result_bodies = _common.result_bodies(feature)
+        if not result_bodies:
+            return error(f"Revolve '{feature_name}' was created, but its result bodies could not be read; "
+                         "the construction-plane stop effect is UNVERIFIED. "
+                         + _common.failed_effect_remedy(design, feature))
+        for stop_plane in stop_planes:
+            face_count = _stop_plane_face_count(result_bodies, stop_plane)
+            if face_count is None:
+                return error(f"Revolve '{feature_name}' was created, but planar result faces could not be "
+                             f"read against stop '{safe(lambda: stop_plane.name)}'; the stop-plane face "
+                             "check is UNVERIFIED. " + _common.failed_effect_remedy(design, feature))
+            if face_count == 0:
+                return error(f"Revolve '{feature_name}' was created, but no planar result face lies on stop '{safe(lambda: stop_plane.name)}'; the requested stop effect is unverified. Retire it with design_delete_feature.")
+            stop_face_counts.append(face_count)
 
     volume_delta_cm3 = None
     body_count_changed = False
@@ -258,20 +457,36 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
     if join_clause:
         note += " " + join_clause
 
+    # A symmetric angle extent spans its angle on EACH side (measured: a symmetric 89.4 deg
+    # revolve adds the area of a one-sided 178.8 deg one). A two-sided extent has no single angle.
+    one_extent = not has_stop and (symmetric or not second)
+    extent = safe(lambda: feature.extentDefinition) if one_extent else None
+    landed = _common.measured(lambda: extent.angle.value, 180.0 / math.pi) if one_extent else None
+    landed_sym = _common.read_flag(lambda: extent.isSymmetric) if one_extent else None
     payload = {
         "revolved": True,
-        "feature": safe(lambda: feature.name),
+        "feature": feature_name,
         "operation": op_key,
         "sketch": safe(lambda: sketch.name),
         "component": safe(lambda: feature.parentComponent.name),
         "profile_index": idx,
         "axis": axis_label,
-        "angle_deg": round(ang, 6),
-        "second_angle_deg": round(float(second_angle_deg or 0.0), 6),
-        "symmetric": bool(symmetric),
         "result_bodies": body_names,
         "note": note,
     }
+    if not has_stop:
+        payload["angle_deg"] = landed if landed is not None else round(ang, 6)
+        payload["second_angle_deg"] = round(float(second_angle_deg or 0.0), 6)
+        payload["symmetric"] = landed_sym if landed_sym is not None else bool(symmetric)
+    else:
+        payload["extent"] = "two_side_to_object" if has_stop_two else "to_object"
+        payload["stops"] = [safe(lambda p=p: p.name) for p in stop_planes]
+        payload["stop_plane_result_face_counts"] = stop_face_counts
+    if landed_sym and landed is not None:
+        payload["total_angle_deg"] = round(2 * landed, 6)
+    unread = [k for k, v in (("angle_deg", landed), ("symmetric", landed_sym)) if one_extent and v is None]
+    if unread:
+        payload["unverified"] = unread
     if scoped_bodies is not None:
         payload["scoped_to_bodies"] = [_inputs.qualified_body_name(b) for b in scoped_bodies]
     # Absent, never null: a null would read as "no material moved".
@@ -281,7 +496,7 @@ def handler(sketch_name: str = "", profile_index=0, axis: str = "z",
 
 
 TOOL_DESCRIPTION = (
-"Revolve a sketch profile about an axis; sketch one half - the profile must not cross the axis."
+"Revolve a sketch profile about an axis; it must not cross the axis."
 )
 
 revolve_tool = (
@@ -292,12 +507,17 @@ revolve_tool = (
     .add_input_property("axis", {"type": "string",
             "description": _AXIS.schema()["description"] + " Or 'line:<i>' for a line in the "
             "profile's sketch."})
-    .add_input_property("angle_deg", {"type": "number"})
+    .add_input_property("angle_deg", {"type": "number", "default": 360.0,
+            "description": "With a stop, only angle_deg's sign chooses travel direction."})
     .add_input_property("second_angle_deg", {"type": "number"})
     .add_input_property("target_bodies", _TARGET_BODIES.schema())
-    .add_input_property(*_inputs.boolean_op(default="new").as_property())
+    .add_input_property(*_inputs.boolean_op(default="new", description="").as_property())
     .add_input_property(*_sketch_detail.COMPONENT_SCOPE)
-    .add_input_property("symmetric", {"type": "boolean"})
+    .add_input_property("symmetric", {"type": "boolean", "description": "angle_deg is per side."})
+    .add_input_property("to_object", {"type": "string",
+            "description": "Root new-body stop: construction-plane handle."})
+    .add_input_property("to_object_two", {"type": "string",
+            "description": "Side-two construction-plane stop handle; two-sided only."})
     .strict_schema()
 )
 revolve_item = Item.create_tool_item(tool=revolve_tool, write="write", handler=handler, run_on_main_thread=True,

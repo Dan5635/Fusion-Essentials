@@ -316,9 +316,9 @@ def handler(name: str = "", include_model_parameters: bool = False,
             trace: bool = False, trace_depth: int = _TRACE_DEPTH_DEFAULT,
             max_results: int = _TRACE_ROWS_DEFAULT) -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     want = (name or "").strip()
     if trace and not want:

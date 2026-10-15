@@ -2,7 +2,7 @@
 handlers behind cam_get, which reach the substrate through it). ``cc`` is the substrate, ``cr`` the
 read cores.
 
-Covers the bounded-read caps (CLAUDE.md "Bound it"): setups_handler's top-level 'truncated'
+Covers the bounded-read caps (AGENTS.md "Bound it"): setups_handler's top-level 'truncated'
 and per-setup 'model_lists_truncated', operations_handler's per-setup 'operations_truncated', and
 get_setup_references_handler's per-setup 'references_truncated' - plus the third incompleteness
 those flags carry, a model/fixture/stock PROPERTY that raises instead of reading a collection (the
@@ -13,7 +13,7 @@ machine-changed flag), ``op_primary_state`` (the one-bucket-per-op priority orde
 -> h:m:s), and the machining-time estimate's feed_scale/rapid_feed/tool_change constants.
 
 Plus the shared CAM tree walk + resolvers - walk_cam_tree / resolve_cam_node / operations_under and
-the find_setup / find_operation / setup_names wrappers. This is the ONE traversal + by-name
+the find_setup / setup_names wrappers. This is the ONE traversal + by-name
 resolution every CAM tool shares: case-insensitive EXACT, a miss lists the available names, and a
 DUPLICATED name is REFUSED naming each hit's setup path (operation names legitimately collide
 across setups).
@@ -24,6 +24,7 @@ import math
 from types import SimpleNamespace
 
 import adsk.cam
+import adsk.fusion
 import pytest
 
 from conftest import (_AdditiveContainer, _BaseNode, _FakeObjectCollection, _NamedCollection,
@@ -37,9 +38,7 @@ cc = load_tool("_cam_common")
 cr = load_tool("_cam_read")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def FakeCAM(setups, machining_times=None):
@@ -136,7 +135,7 @@ class _RaisingSetup(FakeSetup):
     doc_insert_occurrence(remove_existing=...)."""
 
     def __init__(self, raising=("models",), models=(), fixtures=(), stock=(), name="Setup1"):
-        super().__init__(name)
+        super().__init__(name, models=FakeSetup._UNSET)
         self._raising = set(raising)
         self._lists = {"models": list(models), "fixtures": list(fixtures),
                        "stockSolids": list(stock)}
@@ -307,6 +306,23 @@ class TestOperationsCap:
         rec = out["setups"][0]
         assert rec["operations_truncated"] is True
         assert len(rec["operations"]) == cr._MAX_ITEMS
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_an_incomplete_source_scan_withholds_the_setup_verdict(self, install, monkeypatch):
+        row = {"name": "Face1", "state": "valid", "toolpath_valid": True,
+               "has_error": False, "blocked_by": []}
+        monkeypatch.setattr(cr, "_operations_in", lambda *_args: ([row], True, []))
+        monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
+        setup = FakeSetup("S1")
+        install(FakeCAM([setup]))
+        summary = _payload(cr.get_cam_operations_handler())["setups"][0]["summary"]
+        assert summary["scan_complete"] is False
+        assert summary["observed_operation_count"] == 1 and summary["active_count"] == 1
+        assert summary["setups_blocked"] == [
+            {"name": "S1", "blocked_by": ["no_machine_selected"]}]
+        assert summary["readiness"].startswith("Readiness not established: operation scan incomplete")
+        assert "cam_get_status(target=<setup>)" in summary["readiness"]
 
 
 class TestOperationsFilterNamedBranch:
@@ -1196,16 +1212,13 @@ class TestOperationsSummaryErrorGate:
         assert "operation_error" in drill["blocked_by"]
 
     def test_the_errored_op_is_not_counted_among_the_valid_toolpaths(self, monkeypatch):
-        # The COUNT the verdict quotes, not just its wording. The errored op reads toolpath_valid
-        # True, so a tally taken off that flag alone says "2 of 2 active ops have valid toolpaths"
-        # in the very sentence that sends the reader to resolve an exception - the two halves of
-        # one string disagreeing about the same job. Pinned as the whole sentence: the demoted
-        # wording is identical either way, so only the number separates them.
+        # A raw toolpath_valid tally includes errored rows, but the validity-check count excludes them.
+        # Pin the whole sentence and active count so wording and counts agree.
         monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
         summary = cr._operations_summary([self._rec("Face1"),
                                           self._rec("Drill1", has_error=True)])
         assert summary["readiness"] == (
-            "1 of 2 active ops have valid toolpaths - resolve the exceptions "
+            "1 of 2 active operations pass the validity check - resolve the exceptions "
             "(cam_get(include=['operations']) has the error text) before posting.")
         assert summary["active_count"] == 2          # the errored op is still ACTIVE, just not valid
 
@@ -1214,7 +1227,8 @@ class TestOperationsSummaryErrorGate:
         summary = cr._operations_summary([self._rec("Face1"), self._rec("Adaptive1")])
         # the whole sentence, not a substring: every demoted verdict CONTAINS "ready to post"
         # inside "'ready to post' is NOT established", so a substring check asserts nothing.
-        assert summary["readiness"] == "2 of 2 active ops have valid toolpaths - ready to post."
+        assert summary["readiness"] == "2 of 2 active operations pass the validity check - ready to post."
+        assert summary["scan_complete"] is True and summary["observed_operation_count"] == 2
         assert summary["exceptions"] == []
 
     def test_a_nonfinite_row_is_neither_valid_nor_ready(self, monkeypatch):
@@ -1224,7 +1238,7 @@ class TestOperationsSummaryErrorGate:
         summary = cr._operations_summary([self._rec("Face1"),
                                           self._rec("Groove1", state="nonfinite",
                                                     blocked_by=["toolpath_nonfinite"])])
-        assert summary["readiness"].startswith("1 of 2 active ops have valid toolpaths")
+        assert summary["readiness"].startswith("1 of 2 active operations pass the validity check")
         assert "will not post" in summary["readiness"]
         assert summary["states"] == {"valid": 1, "nonfinite": 1}
 
@@ -1280,7 +1294,7 @@ class TestReadinessRemedyIsWordedFromTheExceptionKinds:
         # a remedy nobody measured is not invented: the sentence still names the exceptions.
         line = self._readiness(monkeypatch, [
             self._rec("Odd", toolpath_valid=False, blocked_by=["something_new"])])
-        assert line == "0 of 1 active ops have valid toolpaths - resolve the exceptions before posting."
+        assert line == "0 of 1 active operations pass the validity check - resolve the exceptions before posting."
 
 
 # ── _hms: seconds -> h:m:s ─────────────────────────────────────────────────────────────────────
@@ -1317,6 +1331,20 @@ def _MTOp(name="Op", valid=True, suppressed=False, has_toolpath=True):
         name, has_toolpath=has_toolpath, valid=valid, suppressed=suppressed,
         operation_state=(adsk.cam.OperationStates.SuppressedOperationState if suppressed
                          else adsk.cam.OperationStates.IsValidOperationState))
+
+
+class TestErroredOpNamesReadsSuppressionFirst:
+    def test_a_suppressed_faulted_op_is_excluded(self):
+        # MEASURED on 2706: suppressing a faulted op keeps hasError True - the errors list must
+        # not fold it in just because the flag is still set.
+        op = _MTOp("Off1", suppressed=True)
+        op.hasError = True
+        assert cr._errored_op_names([op]) == []
+
+    def test_an_unsuppressed_faulted_op_is_still_named(self):
+        op = _MTOp("Bad")
+        op.hasError = True
+        assert cr._errored_op_names([op]) == ["Bad"]
 
 
 def _MTSetup(name, has_valid_toolpath=True, ops=None):
@@ -1567,7 +1595,7 @@ class TestTurningDimensions:
         assert out["diameter"] == 10.0 and "insert_type" not in out
 
 
-# ── find_setup (setup, available_names, error) / find_operation (obj, available_names) / setup_names ──
+# ── find_setup (setup, available_names, error) / setup_names ──
 
 
 class TestFindSetup:
@@ -1638,30 +1666,6 @@ class TestWalkOperations:
 
     def test_empty_setup_walks_to_nothing(self):
         assert cc.walk_operations(make_cam(FakeSetup("S1"))) == []
-
-
-class TestFindOperation:
-    def test_found_case_insensitive_across_setups(self):
-        cam = make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")]),
-                       FakeSetup("S2", ops=[FakeOperation("Drill1")]))
-        op, avail = cc.find_operation(cam, "drill1")     # lowercase input resolves 'Drill1'
-        assert op is not None and op.name == "Drill1"
-        assert avail == ["Face1", "Drill1"]
-
-    def test_not_found_returns_available(self):
-        cam = make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")]))
-        op, avail = cc.find_operation(cam, "Ghost")
-        assert op is None and avail == ["Face1"]
-
-    def test_duplicate_name_is_refused_with_setup_paths(self):
-        # a name duplicated across setups returns NO op (refusal, never first-match) and each
-        # duplicate's 'Setup / op' path as the available list, so even a plain not-found error
-        # surfaces the collision.
-        cam = make_cam(FakeSetup("S1", ops=[FakeOperation("Drill1")]),
-                       FakeSetup("S2", ops=[FakeOperation("Drill1")]))
-        op, avail = cc.find_operation(cam, "Drill1")
-        assert op is None
-        assert avail == ["S1 / Drill1", "S2 / Drill1"]
 
 
 # ── walk_cam_tree / resolve_cam_node / operations_under: the shared traversal + refusal resolver ──
@@ -1839,6 +1843,46 @@ class TestContainerRowsAndOtherNodes:
         rec = self._rows(install, setup)
         assert [r["name"] for r in rec["operations"]] == ["Arrange1"]
         assert rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_a_walk_above_the_flat_operation_count_is_incomplete(self, install,
+                                                                 operation_cast_passthrough):
+        class UnderReportedSetup(FakeSetup):
+            @property
+            def allOperations(self):
+                return SimpleNamespace(count=0)
+
+        rec = self._rows(install, UnderReportedSetup("Build", ops=[FakeOperation("Arrange1")]))
+        assert [r["name"] for r in rec["operations"]] == ["Arrange1"]
+        assert rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_an_unread_flat_operation_count_is_incomplete(self, install, monkeypatch,
+                                                          operation_cast_passthrough):
+        monkeypatch.setattr(cr, "counted", lambda _getter: None)
+        setup = FakeSetup("Build", ops=[FakeOperation("Arrange1")])
+        rec = self._rows(install, setup)
+        assert [r["name"] for r in rec["operations"]] == ["Arrange1"]
+        assert rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_a_recast_that_no_longer_reads_an_operation_is_incomplete(self, install, monkeypatch):
+        operation = FakeOperation("Arrange1")
+        setup = FakeSetup("Build", ops=[operation])
+        calls = [0]
+
+        def cast(obj):
+            calls[0] += 1
+            return obj if calls[0] == 1 else None
+
+        monkeypatch.setattr(adsk.cam.Operation, "cast", cast)
+        rec = self._rows(install, setup)
+        assert rec["operations"] == [] and rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
 
 
 class _UnreadableNameFolder(FakeCAMFolder):
@@ -2337,17 +2381,17 @@ class TestResolveOperationOnePool:
                                   folders=[FakeCAMFolder("Holes", ops=[FakeOperation("Face1")])]),
                         FakeSetup("S2", ops=[FakeOperation("Drill1")]))
 
-    def test_a_duplicate_lists_exactly_what_find_operation_lists(self):
+    def test_a_duplicate_lists_each_duplicates_setup_path(self):
         cam = self._cam()
         node, err, avail = cc.resolve_operation(cam, "Drill1")
         assert node is None and "ambiguous" in err
-        assert avail == ["S1 / Drill1", "S2 / Drill1"] == cc.find_operation(cam, "Drill1")[1]
+        assert avail == ["S1 / Drill1", "S2 / Drill1"]
 
-    def test_a_miss_lists_exactly_what_find_operation_lists(self):
+    def test_a_miss_lists_every_operation_name(self):
         cam = self._cam()
         node, err, avail = cc.resolve_operation(cam, "Ghost")
         assert node is None and "No operation named 'Ghost'" in err
-        assert avail == ["Drill1", "Face1", "Drill1"] == cc.find_operation(cam, "Ghost")[1]
+        assert avail == ["Drill1", "Face1", "Drill1"]
 
     def test_a_unique_name_resolves_and_still_lists_every_operation(self):
         cam = self._cam()
@@ -2802,10 +2846,100 @@ class TestValiditySync:
         assert "Validity not synced this call." in summary["readiness"]
         assert "checkValidity raised" in summary["validity_not_synced"]
 
+    def test_a_synced_manufacture_read_reports_checked(self, monkeypatch):
+        monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
+        monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
+        summary = cr._operations_summary([])
+        assert summary["validity_synced"] is True
+        assert summary["validity_basis"] == "checked"
+
+    def test_an_unsynced_manufacture_read_keeps_the_bare_basis_name(self, monkeypatch):
+        monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [False])
+        monkeypatch.setattr(cr, "validity_basis", lambda: "manufacture_verified")
+        summary = cr._operations_summary([])
+        assert summary["validity_synced"] is False
+        assert summary["validity_basis"] == "manufacture_verified"
+
+    def test_a_synced_design_read_remains_unverified(self, monkeypatch):
+        monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
+        monkeypatch.setattr(cr, "validity_basis", lambda: "unverified_design_workspace")
+        summary = cr._operations_summary([])
+        assert summary["validity_synced"] is True
+        assert summary["validity_basis"] == "unverified_design_workspace"
+        assert "only trustworthy after entering the Manufacture workspace" in summary["readiness"]
+        assert "run cam_generate only for operations that read out_of_date or no_toolpath" in summary["readiness"]
+
+    def test_setups_and_time_slices_report_validity_synced(self, monkeypatch,
+                                                           operation_cast_passthrough):
+        self._wire(monkeypatch, make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")])))
+        setups_payload = _payload(cr.get_cam_setups_handler())
+        assert setups_payload["validity_synced"] is True
+        assert setups_payload["validity_basis"] == "unverified_design_workspace"
+        assert _payload(cr.get_machining_time_handler())["validity_synced"] is True
+
+    def test_setups_and_time_slices_report_validity_synced_false_on_a_raising_sync(
+            self, monkeypatch, operation_cast_passthrough):
+        # a constant True would pass the test above unchanged - only a REAL raising sync proves
+        # each slice reads its own call's flag rather than publishing a fixed value.
+        def _boom():
+            raise RuntimeError("checkValidity is not available on this build")
+        self._wire(monkeypatch, make_cam(FakeSetup("S1", ops=[FakeOperation("Face1")]),
+                                         check_validity=_boom))
+        assert _payload(cr.get_cam_setups_handler())["validity_synced"] is False
+        assert _payload(cr.get_machining_time_handler())["validity_synced"] is False
+
     def test_sync_validity_answers_whether_the_call_ran(self, monkeypatch):
         monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
         assert cc.sync_validity(make_cam(FakeSetup("S1"))) is True
         assert cc.sync_validity(SimpleNamespace()) is False      # no such member on this product
+
+
+class _FlatCollection:
+    """A minimal Design.allComponents stand-in: count + item(i) over a fixed list."""
+
+    def __init__(self, items):
+        self._items = items
+
+    @property
+    def count(self):
+        return len(self._items)
+
+    def item(self, i):
+        return self._items[i]
+
+
+class TestFlatTouchBeforeCheckValidity:
+    """get_cam(sync=True) reads every flat pattern's CURRENT flat body before checkValidity - a flat
+    pattern recomputes LAZILY, so checkValidity() alone can validate against a stale one."""
+
+    def _wire(self, monkeypatch, cam, design):
+        monkeypatch.setattr(cc, "_VALIDITY_SYNCED", [True])
+        monkeypatch.setattr(cc, "app", FakeApplication(
+            active_document=FakeFusionDocument(products=FakeProducts(cam=cam, design=design))))
+        monkeypatch.setattr(adsk.cam.CAM, "cast", lambda x: x if x is cam else None)
+        monkeypatch.setattr(adsk.fusion.Design, "cast", lambda x: x if x is design else None)
+
+    def test_the_flat_body_is_read_before_the_check_and_a_flatless_component_is_skipped(
+            self, monkeypatch):
+        order = []
+
+        class _FlatBody:
+            @property
+            def revisionId(self_inner):
+                order.append("flat_read")
+                return "rev-2"
+
+        class _Comp:
+            def __init__(self, has_flat):
+                self.flatPattern = SimpleNamespace(flatBody=_FlatBody()) if has_flat else None
+
+        comps = [_Comp(has_flat=False), _Comp(has_flat=True)]     # the flatless one costs no crash
+        design = SimpleNamespace(rootComponent=comps[0], allComponents=_FlatCollection(comps))
+        cam = make_cam(FakeSetup("S1"), check_validity=lambda: order.append("check"))
+        self._wire(monkeypatch, cam, design)
+        got, err = cc.get_cam(sync=True)
+        assert err is None and got is cam
+        assert order == ["flat_read", "check"]
 
 
 # The exception codes an ordinary broken job carries at once - each one contributing its own remedy
@@ -2970,6 +3104,12 @@ class TestWarningOverlayTally:
         # so its warning demotes nothing in this tally.
         t = cc.op_state_tally([_tally_op("Off1", state=2, suppressed=True, warning=True)])
         assert t["suppressed"] == 1 and t["warnings"] == 0 and t["warning_sample"] is None
+
+    def test_a_suppressed_ops_error_flag_keeps_it_suppressed(self, operation_cast_passthrough):
+        # MEASURED on 2706: suppressing a faulted op does NOT clear hasError - it stays True beside
+        # isSuppressed True. The bucket must read isSuppressed first, not fold hasError into errored.
+        t = cc.op_state_tally([_tally_op("Face1", state=2, suppressed=True, error=True)])
+        assert t["suppressed"] == 1 and t["errored"] == 0
 
     def test_the_sample_is_the_FIRST_counted_warning_not_a_later_one(self, operation_cast_passthrough):
         t = cc.op_state_tally([_tally_op("Off1", state=2, suppressed=True, warning=True),
@@ -3330,7 +3470,7 @@ class TestOperationsSummaryWarningVerdict:
 
     def test_zero_warnings_keeps_the_plain_ready_verdict(self):
         summary = cr._operations_summary([self._rec("Face1"), self._rec("Adaptive1")])
-        assert summary["readiness"] == "2 of 2 active ops have valid toolpaths - ready to post."
+        assert summary["readiness"] == "2 of 2 active operations pass the validity check - ready to post."
 
     def test_one_warning_demotes_the_verdict_and_names_the_op_and_its_first_line(self):
         # the exact boundary: 1 counted warning, everything else valid and unblocked.
@@ -3354,7 +3494,7 @@ class TestOperationsSummaryWarningVerdict:
             self._rec("Face1"),
             self._rec("Off1", state="suppressed", is_suppressed=True, toolpath_valid=False,
                       has_warning=True, warning="empty toolpath")])
-        assert summary["readiness"] == "1 of 1 active ops have valid toolpaths - ready to post."
+        assert summary["readiness"] == "1 of 1 active operations pass the validity check - ready to post."
 
     def test_an_errored_ops_warning_does_not_displace_the_exception_verdict(self):
         summary = cr._operations_summary([
@@ -3597,7 +3737,7 @@ class TestOperationsSummaryConsumesSetupBlockers:
 
     def test_no_blockers_keeps_the_plain_summary_verdict(self):
         summary = cr._operations_summary([self._rec("Face1")], [])
-        assert summary["readiness"] == "1 of 1 active ops have valid toolpaths - ready to post."
+        assert summary["readiness"] == "1 of 1 active operations pass the validity check - ready to post."
 
     def _postable_op(self, name):
         """An op row the summary counts as good to post - tool selected, toolpath valid, no fault -
@@ -3618,7 +3758,7 @@ class TestOperationsSummaryConsumesSetupBlockers:
         install(FakeCAM([machined, blocked]))
         out = _payload(cr.get_cam_operations_handler())
         by_name = {s["setup"]: s["summary"]["readiness"] for s in out["setups"]}
-        assert by_name["Top"] == "1 of 1 active ops have valid toolpaths - ready to post."
+        assert by_name["Top"] == "1 of 1 active operations pass the validity check - ready to post."
         assert "- ready to post." not in by_name["Bottom"]
         assert "no_machine_selected" in by_name["Bottom"]
 
@@ -3870,7 +4010,7 @@ class TestOperationsSummarySuppressed:
         assert summary["states"] == {"valid": 1, "suppressed": 1}
         assert summary["active_count"] == 1          # the suppressed op is excluded from posting
         assert summary["exceptions"] == []
-        assert summary["readiness"] == ("1 of 1 active ops have valid toolpaths - ready to post.")
+        assert summary["readiness"] == ("1 of 1 active operations pass the validity check - ready to post.")
 
 
 class TestOperationsPayloadAgreesOnOneParkedOp:
@@ -4295,6 +4435,8 @@ class TestSpindleScopedToActiveOps:
         rec = self._rows(install, setup)
         assert [r["name"] for r in rec["operations"]] == ["Rough"]
         assert rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
 
     def test_a_row_read_that_raises_flags_the_list_incomplete(self, install, monkeypatch,
                                                               operation_cast_passthrough):
@@ -4304,6 +4446,27 @@ class TestSpindleScopedToActiveOps:
         setup = FakeSetup("Op1", ops=[_row_op("Rough")])
         rec = self._rows(install, setup)
         assert rec["operations"] == [] and rec["operations_truncated"] is True
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
+
+    def test_a_row_read_failure_after_a_valid_prefix_keeps_only_observed_counts(
+            self, install, monkeypatch, operation_cast_passthrough):
+        first = {"name": "First", "state": "valid", "toolpath_valid": True,
+                 "has_error": False, "blocked_by": []}
+
+        def read_row(op, *_args):
+            if op.name == "Second":
+                raise RuntimeError("operation read failed")
+            return first
+
+        monkeypatch.setattr(cr, "_operation_summary", read_row)
+        setup = FakeSetup("Op1", ops=[_row_op("First"), _row_op("Second")])
+        rec = self._rows(install, setup)
+        assert [r["name"] for r in rec["operations"]] == ["First"]
+        assert rec["operations_truncated"] is True
+        assert rec["summary"]["observed_operation_count"] == 1
+        assert rec["summary"]["scan_complete"] is False
+        assert rec["summary"]["readiness"].startswith("Readiness not established:")
 
 
 # --- get_setup_references_handler / _references_in: X-ref occurrences -> their source docs ---
@@ -4596,6 +4759,15 @@ class TestNcProgramPostedOperations:
         errored = _row_op("Bad1")
         errored.hasError = True
         held = [_row_op("Cut"), errored]
+        install(SimpleNamespace(ncPrograms=_NamedCollection([self._program(held)])))
+        entry = _payload(cr.get_nc_programs_handler())["nc_programs"][0]
+        assert entry["operation_count"] == 2 and entry["posted_operations"] == 1
+
+    def test_a_suppressed_held_row_is_never_counted_as_posted(
+            self, install, operation_cast_passthrough):
+        # the tally reads isSuppressed before it trusts hasToolpath/hasError - a suppressed row is
+        # excluded whatever the other two flags say.
+        held = [_row_op("Cut"), _row_op("Off1", suppressed=True)]
         install(SimpleNamespace(ncPrograms=_NamedCollection([self._program(held)])))
         entry = _payload(cr.get_nc_programs_handler())["nc_programs"][0]
         assert entry["operation_count"] == 2 and entry["posted_operations"] == 1
@@ -6975,3 +7147,26 @@ class TestFuturesCount:
 
     def test_a_single_future_still_reads_its_own_count(self):
         assert cc.futures_count([self._future(4, 2)], "numberOfOperations") == 4
+
+
+def test_flat_refresh_uses_selected_model_in_milling_setup(monkeypatch):
+    developed = SimpleNamespace(name="current flat", entityToken="fresh")
+    flat_product = SimpleNamespace(objectType="adsk::fusion::FlatPatternProduct",
+                                   flatPattern=SimpleNamespace(flatBody=developed))
+    cached = SimpleNamespace(name="cached flat", entityToken="old",
+                             parentComponent=SimpleNamespace(parentDesign=flat_product))
+    setup = FakeSetup("Flat Mill", models=[cached])
+    monkeypatch.setattr(cc, "native_identity", lambda body: body.entityToken)
+    monkeypatch.setattr(cc.adsk.core.ObjectCollection, "create",
+                        staticmethod(_make_object_collection))
+    count, reason = cc.refresh_flat_setup_models(setup)
+    assert reason is None and count == 1
+    assert list(setup.models) == [developed]
+
+    ordinary = SimpleNamespace(name="ordinary",
+                               parentComponent=SimpleNamespace(parentDesign=SimpleNamespace(
+                                   objectType="adsk::fusion::Design")))
+    plain_setup = FakeSetup("Ordinary Mill", models=[ordinary])
+    count, reason = cc.refresh_flat_setup_models(plain_setup)
+    assert reason is None and count == 0
+    assert plain_setup.models == [ordinary]

@@ -9,9 +9,13 @@ target sits reading as absence, a local cache path standing in for a lineage URN
 claimed off a call that cannot produce one of its buckets.
 """
 
+import ast
 import json
 import os
+from pathlib import Path
+import re
 import sys
+from copy import deepcopy
 
 import pytest
 
@@ -19,6 +23,160 @@ TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(TESTS_DIR, "live"))
 import tool_verify  # noqa: E402
 import verify_acts_cloud as acts  # noqa: E402
+import verify_acts_sheet as sheet  # noqa: E402
+import verify_acts_census as census  # noqa: E402
+
+
+@pytest.mark.parametrize("fault", [None, "old_cell", "new_value", "missing_cell", "row_identity"])
+def test_configuration_column_witness_checks_growth_and_retained_cells(monkeypatch, fault):
+    rows = [{"name": "Configuration 1", "id": "first", "index": 1, "is_active": False},
+            {"name": "B", "id": "second", "index": 2, "is_active": True}]
+    old = {"table_id": "table", "active_configuration": "B", "configuration_count": 2,
+           "configurations": rows,
+           "columns": [{"title": "Part Number", "id": "old", "type": "ConfigurationPropertyColumn"}],
+           "cell_count": 2, "cells": [
+               {"row_id": r["id"], "column_id": "old", "kind": "ConfigurationPropertyCell",
+                "value_unread": "no value field of this cell kind is read here"} for r in rows]}
+    now = deepcopy(old)
+    now["columns"].append({"title": "ProbeW", "id": "new", "type": "ConfigurationParameterColumn"})
+    now["cells"].extend({"row_id": r["id"], "column_id": "new", "kind": "ConfigurationParameterCell",
+                         "expression": "13 mm" if r["name"] == "B" else "10 mm"} for r in rows)
+    now["cell_count"] = 4
+    if fault == "old_cell":
+        now["cells"][0]["value_unread"] = "changed"
+    elif fault == "new_value":
+        now["cells"][-1]["expression"] = "10 mm"
+    elif fault == "missing_cell":
+        now["cells"].pop()
+        now["cell_count"] = 3
+    elif fault == "row_identity":
+        now["configurations"][0]["id"] = "other"
+    monkeypatch.setitem(acts._RECALL, "configure_table", old)
+    monkeypatch.setitem(acts._RECALL, "configure_legal_column", "new")
+    check = next(s[2] for s in acts._configure_column_rows() if getattr(s[2], "__name__", "") == "legal_table")
+    if fault:
+        with pytest.raises(AssertionError):
+            check({"configurations": now})
+    else:
+        assert check({"configurations": now}) is True
+
+
+@pytest.mark.parametrize("fault", [None, "initial_identity", "polled_identity", "incomplete"])
+def test_saved_derive_source_waits_for_its_exact_cloud_record(monkeypatch, fault):
+    pending = {"file": {"name": "OwnedSource", "id": "urn:owned"},
+               "location": {"parent_folder": {"path": acts.FOLDER}},
+               "state": {"is_complete": False}}
+    ready = deepcopy(pending)
+    ready["state"]["is_complete"] = fault != "incomplete"
+    if fault == "initial_identity":
+        pending["file"]["id"] = "urn:other"
+    elif fault == "polled_identity":
+        ready["file"]["name"] = "OtherSource"
+    monkeypatch.setitem(acts._RECALL, "source_ready", "urn:owned")
+    monkeypatch.setattr(acts.time, "sleep", lambda _seconds: None)
+    calls = []
+
+    def call(tool, arguments):
+        calls.append((tool, arguments))
+        return False, ready
+
+    monkeypatch.setattr(acts, "facade", lambda _name: call)
+    check = acts._file_settled(acts.FOLDER, polls=2, file_key="source_ready", file_name="OwnedSource")
+    if fault:
+        with pytest.raises(AssertionError):
+            check(pending)
+    else:
+        assert check(pending) is True
+    assert calls == ([] if fault == "initial_identity" else [("data_get", {"file": "urn:owned"})])
+
+
+@pytest.fixture
+def owned_cleanup(monkeypatch):
+    name = "SweepFitRefusal." + acts._STAMP
+    record = {"file": {"id": "urn:owned", "name": name},
+              "state": {"is_in_use": True, "is_complete": True}}
+    story = {"data_get": "read", "data_delete_file": "delete"}
+    calls = []
+    replies = [(True, f"Delete failed for '{name}': 2 : InternalValidationError : res"),
+               (False, deepcopy(record))]
+
+    def call(tool, args):
+        calls.append((tool, args))
+        return replies.pop(0)
+
+    monkeypatch.setattr(acts, "facade", lambda key: {"call": call, "STORY": story}[key])
+    monkeypatch.setitem(acts._RECALL, "closed_cloud_delete_limits", [])
+    row = acts._released_then_deleted(name, "fit")[-1]
+    row[1]({"fit_urn": "urn:owned", "fit_home": "session:home"})
+    return row, record, replies, calls, story
+
+
+def test_owned_in_use_refusal_requires_retained_file_and_qualifies_receipt(owned_cleanup):
+    row, record, _, calls, story = owned_cleanup
+    assert row[2](record) is True
+    assert calls == [("data_delete_file", {"document_id": "urn:owned", "confirm_name": record["file"]["name"],
+                                          "expect_document": "session:home"}),
+                     ("data_get", {"file": "urn:owned"})]
+    assert "Successful-delete path on this coupon was not demonstrated" in story["data_get"]
+    assert "urn:owned" in story["data_delete_file"]
+
+
+@pytest.mark.parametrize("fault", ["other_file", "released", "other_error", "after_missing", "after_not_in_use"])
+def test_owned_cleanup_does_not_excuse_other_failures(owned_cleanup, fault):
+    row, record, replies, calls, story = owned_cleanup
+    if fault == "other_file":
+        record["file"]["id"] = "urn:other"
+    elif fault == "released":
+        record["state"]["is_in_use"] = False
+    elif fault == "other_error":
+        replies[0] = (True, "permission denied")
+    elif fault == "after_missing":
+        replies[1] = (True, "not found")
+    else:
+        replies[1][1]["state"]["is_in_use"] = False
+    with pytest.raises(AssertionError):
+        row[2](record)
+    assert story == {"data_get": "read", "data_delete_file": "delete"}
+    assert len([c for c in calls if c[0] == "data_delete_file"]) <= 1
+
+
+def test_owned_cleanup_still_requires_verified_success_on_deleted_path(owned_cleanup):
+    row, record, replies, _, story = owned_cleanup
+    replies[:] = [(False, {"deleted": True, "name": record["file"]["name"], "document_id": "urn:owned",
+                          "forced": False, "absence_observed": True})]
+    assert row[2](record) is True
+    assert story == {"data_get": "read", "data_delete_file": "delete"}
+
+
+@pytest.fixture
+def morph_status(monkeypatch):
+    monkeypatch.setattr(census, "facade", lambda key: None)
+    return {"completed": True, "target": "operation 'MorphPair'",
+            "completion_basis": "operation 'MorphPair'", "elapsed_seconds": 2.3,
+            "live_states": {"valid": 1, "total": 1, "errored": 0, "out_of_date": 0,
+                            "generating": 0, "generating_settled": 0, "unread": 0, "nonfinite": 0},
+            "counts": {"empty_toolpaths": 0}}
+
+
+@pytest.mark.parametrize("fault", [None, "settled_flag", "unsettled_flag", "document_scope", "empty", "invalid", "unread_time"])
+def test_morph_completion_requires_scoped_valid_nonempty_evidence(morph_status, fault):
+    if fault == "settled_flag":
+        morph_status["live_states"].update(generating=1, generating_settled=1)
+    elif fault == "unsettled_flag":
+        morph_status["live_states"]["generating"] = 1
+    elif fault == "document_scope":
+        morph_status["completion_basis"] = "document"
+    elif fault == "empty":
+        morph_status["counts"]["empty_toolpaths"] = 1
+    elif fault == "invalid":
+        morph_status["live_states"].update(valid=0, out_of_date=1)
+    elif fault == "unread_time":
+        morph_status["elapsed_seconds"] = None
+    if fault in (None, "settled_flag"):
+        assert census._morph_completed(morph_status) is True
+    else:
+        with pytest.raises(AssertionError):
+            census._morph_completed(morph_status)
 
 
 def _step(narrative, tool, nth=0):
@@ -26,6 +184,145 @@ def _step(narrative, tool, nth=0):
     hits = [s for s in narrative if s[0] == tool]
     assert len(hits) > nth, f"{tool} has {len(hits)} step(s) in this act"
     return hits[nth]
+
+
+class TestCappedNameMoveProbe:
+    def test_generated_script_matches_python_run_contract_and_predicate_accepts_decoded_output(self):
+        ctx = {"cloud_file_name": "owned.png", "cloud_file": "urn:owned",
+               "data_root_summary": {"project_id": "project-id"}}
+        script = acts._capped_name_move_probe(ctx)["script"]
+        parsed = ast.parse(script)
+        runs = [node for node in parsed.body
+                if isinstance(node, ast.FunctionDef) and node.name == "run"]
+        assert len(runs) == 1 and len(runs[0].args.args) == 1
+
+        repo = Path(acts.__file__).parents[2]
+        execute_source = ast.parse(
+            (repo / "commands" / "mcpServer" / "tools" / "sys_execute_script.py")
+            .read_text(encoding="utf-8"))
+        handler = next(node for node in execute_source.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "handler")
+        patterns = [ast.literal_eval(call.args[0]) for call in ast.walk(handler)
+                    if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name) and call.func.value.id == "re"
+                    and call.func.attr == "search" and call.args]
+        assert len(patterns) == 1 and re.search(patterns[0], script)
+
+        result = {"file_name": "owned.png", "file_id": "urn:owned", "folder_id": "folder-id",
+                  "file_count": 1, "child_folder_count": 1,
+                  "before_parent_id": "folder-id", "after_refusal_parent_id": "folder-id",
+                  "after_project_error_parent_id": "folder-id",
+                  "after_exact_parent_id": "folder-id", "cap_restored": True,
+                  "project_finder_restored": True,
+                  "project_lookup_error_injected": True,
+                  "capped_by_name": {"is_error": True,
+                                     "payload": "name census is incomplete after the cap"},
+                  "injected_project_error": {"is_error": True,
+                      "payload": ("synthetic project lookup failure; "
+                                  "data_get(project_id=<id>), then pass that id as 'file'.")},
+                  "exact_urn": {"is_error": False, "payload": {"already_in_target": True}}}
+        assert acts._capped_name_move_result(result) is True
+
+
+@pytest.fixture
+def sheet_home(monkeypatch):
+    for key in ("sm_home", "sm_home_state", "sm_coupon", "sm_drawing_session"):
+        monkeypatch.setitem(sheet._RECALL, key, None)
+    return {"active": {"document_handle": "session:home", "name": "DrawSelection",
+                       "document_id": "urn:owned-source", "has_data_file": True,
+                       "is_saved": True, "is_modified": False},
+            "open_count": 2, "truncated": False,
+            "open_documents": [{"document_handle": "session:home", "name": "DrawSelection"},
+                               {"document_handle": "session:witness", "name": "Untouched"}]}
+
+
+class TestSheetOriginalHome:
+    @pytest.mark.parametrize("saved", [True, False])
+    def test_saved_or_unsaved_original_home_is_restored_exactly(self, sheet_home, saved):
+        if not saved:
+            sheet_home["active"].update(document_id=None, has_data_file=False, is_saved=False, is_modified=True)
+        start = sheet._SHEET_BUILD[0]
+        assert start[2](sheet_home) is True
+        assert start[3][1](sheet_home) == "session:home"
+        assert sheet._story_restored(deepcopy(sheet_home)) is True
+
+    @pytest.mark.parametrize("field,value", [
+        ("document_handle", "session:witness"), ("name", "Renamed"), ("document_id", "urn:other"),
+        ("has_data_file", False), ("is_saved", False), ("is_modified", True)])
+    def test_restore_rejects_changed_identity_or_save_state(self, sheet_home, field, value):
+        start = sheet._SHEET_BUILD[0]
+        start[2](sheet_home)
+        start[3][1](sheet_home)
+        restored = deepcopy(sheet_home)
+        restored["active"][field] = value
+        with pytest.raises(AssertionError, match="story session restored"):
+            sheet._story_restored(restored)
+
+    @pytest.mark.parametrize("value", [None, 0])
+    def test_unread_or_nonboolean_flags_fail_capture_and_restore(self, sheet_home, value):
+        start = sheet._SHEET_BUILD[0]
+        start[2](sheet_home)
+        start[3][1](sheet_home)
+        unread = deepcopy(sheet_home)
+        unread["active"]["is_modified"] = value
+        with pytest.raises(AssertionError, match="story session restored"):
+            sheet._story_restored(unread)
+        with pytest.raises(AssertionError, match="story session before sheet coupon"):
+            start[2](unread)
+
+    @pytest.mark.parametrize("fault", ["lost_witness", "missing_row", "truncated", "coupon", "drawing"])
+    def test_restore_requires_complete_census_and_closed_owned_documents(self, sheet_home, fault):
+        start = sheet._SHEET_BUILD[0]
+        start[2](sheet_home)
+        start[3][1](sheet_home)
+        restored = deepcopy(sheet_home)
+        if fault in ("lost_witness", "missing_row"):
+            restored["open_documents"].pop()
+            if fault == "lost_witness":
+                restored["open_count"] -= 1
+        elif fault == "truncated":
+            restored["truncated"] = True
+        else:
+            key = "sm_coupon" if fault == "coupon" else "sm_drawing_session"
+            sheet._RECALL[key] = "session:" + fault
+            restored["open_documents"].append({"document_handle": "session:" + fault, "name": fault})
+            restored["open_count"] += 1
+        with pytest.raises(AssertionError, match="story session restored"):
+            sheet._story_restored(restored)
+
+
+class TestMovedFileListingSettle:
+    def test_parent_listing_lags_beyond_twelve_reads_then_excludes_child(self, monkeypatch):
+        lineage = "urn:moved-file"
+        monkeypatch.setitem(acts._RECALL, "cloud_file", lineage)
+        stale = {"folder": acts.RUN_PATH, "recursive": False,
+                 "files": [{"id": lineage}], "file_count": 1,
+                 "truncated": False, "time_truncated": False, "folders_unreadable": False}
+        empty = dict(stale, files=[], file_count=0)
+        calls = []
+
+        def reread(tool, arguments):
+            calls.append((tool, arguments))
+            return False, stale if len(calls) <= 13 else empty
+
+        monkeypatch.setattr(acts, "facade", lambda name: reread)
+        monkeypatch.setattr(acts.time, "sleep", lambda _: None)
+        assert acts._known_child_excluded(stale) is True
+        assert len(calls) == 14
+        assert all(tool == "data_get" and args == {
+            "project": acts.PROJECT, "folder": acts.RUN_PATH, "recursive": False}
+            for tool, args in calls)
+
+    def test_parent_listing_still_present_at_bound_fails(self, monkeypatch):
+        lineage = "urn:moved-file"
+        monkeypatch.setitem(acts._RECALL, "cloud_file", lineage)
+        stale = {"folder": acts.RUN_PATH, "recursive": False,
+                 "files": [{"id": lineage}], "file_count": 1,
+                 "truncated": False, "time_truncated": False, "folders_unreadable": False}
+        monkeypatch.setattr(acts, "facade", lambda name: lambda *args: (False, stale))
+        monkeypatch.setattr(acts.time, "sleep", lambda _: None)
+        with pytest.raises(AssertionError, match="run folder excludes"):
+            acts._known_child_excluded(stale, polls=3)
 
 
 class TestTheDeleteReceipt:
@@ -186,52 +483,6 @@ class TestTheSourceTipGate:
             acts._tip_advanced("source_tip_before")({"versions": {"available": True}})
 
 
-class TestFilesGone:
-    """The file listing's THIRD way of not looking: a folder whose enumeration raised is counted,
-    and 'truncated' stays false."""
-
-    NAMES = ("SweepCloudSource x", "SweepCloudCopy x", "SweepCloudHost x",
-             "SweepCloudDerive x", "SweepCloudLink x")
-
-    def _payload(self, **over):
-        base = {"file_count": 0, "files": [], "truncated": False, "time_truncated": False}
-        base.update(over)
-        return base
-
-    def test_an_empty_listing_fully_read_is_the_files_gone(self):
-        assert acts._files_gone(*self.NAMES)(self._payload()) is True
-
-    def test_a_file_still_listed_fails(self):
-        with pytest.raises(AssertionError, match="still_there"):
-            acts._files_gone(*self.NAMES)(
-                self._payload(file_count=1, files=[{"name": self.NAMES[0]}]))
-
-    def test_a_folder_whose_enumeration_raised_fails_with_truncated_false(self):
-        # the exact shape: the walk never opened one folder, published the count and WHERE, and left
-        # 'truncated' false - a file of these names could be sitting in precisely that folder.
-        with pytest.raises(AssertionError, match="folders_unreadable"):
-            acts._files_gone(*self.NAMES)(
-                self._payload(folders_unreadable=1, folders_unreadable_at=["Somewhere/Locked"]))
-
-    def test_the_size_and_time_caps_still_fail(self):
-        for flag in ("truncated", "time_truncated"):
-            with pytest.raises(AssertionError, match=flag):
-                acts._files_gone(*self.NAMES)(self._payload(**{flag: True}))
-
-    def _witness(self):
-        """The tier's closing folder read - the delete receipt standing apart from the deletes."""
-        reads = [s for s in acts._CLOUD_DRAWING if s[0] == "data_get"
-                 and isinstance(s[1], dict) and s[1].get("folder") == acts.FOLDER]
-        assert len(reads) == 1
-        return reads[0]
-
-    def test_the_step_reads_the_configured_folder_ITSELF(self):
-        # MEASURED: recursive over a working folder walks every run that ever used it - 49 files
-        # across 30-odd subfolders, past the 20 s budget, which reds this row for the folder's size
-        # rather than for a file left behind. The tier's documents sit in the folder itself.
-        assert self._witness()[1].get("recursive") is False
-
-
 class TestTheSavedDocumentUrn:
     """A saveAs holds a LOCAL cache path under document_id until the cloud id arrives, and the read
     that must refuse it is this one."""
@@ -376,3 +627,92 @@ class TestTheSharedRasterFixture:
             head = fh.read(8)
         assert head == b"\x89PNG\r\n\x1a\n"
         assert os.path.getsize(path) > 0
+
+
+@pytest.mark.parametrize("active", ["Configuration 1", "B"])
+def test_reopened_lineage_table_accepts_either_active_row_but_requires_its_identities(active):
+    table = {"table_id": "table-id", "configuration_count": 2, "active_configuration": active,
+             "configurations": [{"name": name, "id": name + "-id", "is_active": name == active}
+                                for name in ("Configuration 1", "B")],
+             "columns": [{"id": "width-id", "title": "ProbeW", "type": "parameter"}], "truncated": False}
+    step = next(row for row in acts._lineage_open_rows() if row[0] == "design_get")
+    assert step[2]({"configurations": table}) is True
+    missing_column = deepcopy(table)
+    missing_column["columns"][0]["title"] = "Other"
+    with pytest.raises(AssertionError):
+        step[2]({"configurations": missing_column})
+    missing_row = deepcopy(table)
+    missing_row["configurations"].pop()
+    with pytest.raises(AssertionError):
+        step[2]({"configurations": missing_row})
+
+
+@pytest.mark.parametrize("fault", [None, "wrong_record", "other_error", "timeout"])
+def test_lineage_save_as_is_published_before_close_and_reopen(monkeypatch, fault):
+    rows = acts._lineage_open_rows()
+    publication = next(i for i, row in enumerate(rows) if getattr(row[2], "__name__", "") == "published")
+    assert [row[0] for row in rows[publication - 2:publication]] == ["doc_save_as", "data_get"]
+    assert rows[publication - 1][1]({"lin_inplace": "urn:source"}) == {"file": "urn:source"}
+    assert [row[0] for row in rows[publication + 1:publication + 4]] == ["doc_activate", "doc_close", "doc_open"]
+    name = "SweepLineageSaveAs." + acts._STAMP
+    complete = {"file": {"id": "urn:owned", "name": name},
+                "location": {"parent_folder": {"path": acts.FOLDER}}, "state": {"is_complete": True}}
+    missing = ("No cloud file resolves from 'urn:owned'. Tried: urn:owned. "
+               "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+    replies = [(True, missing), (False, complete)]
+    if fault == "wrong_record":
+        complete["file"]["id"] = "urn:other"
+    elif fault == "other_error":
+        replies[0] = (True, "permission denied")
+    elif fault == "timeout":
+        replies[:] = [(True, missing)] * 3
+    calls = []
+    def call(tool, args):
+        calls.append((tool, args))
+        return replies.pop(0)
+    monkeypatch.setitem(acts._RECALL, "lin_saveas", "urn:owned")
+    monkeypatch.setattr(acts, "facade", lambda key: call)
+    monkeypatch.setattr(acts.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(acts, "_SETTLE_POLLS", 3)
+    start = {"active": {"name": name, "document_id": "urn:owned"}}
+    if fault is None:
+        assert rows[publication][2](start) is True
+    else:
+        with pytest.raises(AssertionError):
+            rows[publication][2](start)
+    assert len(calls) == (1 if fault == "other_error" else 3 if fault == "timeout" else 2)
+    assert all(call == ("data_get", {"file": "urn:owned"}) for call in calls)
+
+
+@pytest.mark.parametrize("fault", [None, "permission", "wrong_record", "timeout"])
+def test_configured_source_wait_retries_only_the_exact_pending_lineage(monkeypatch, fault):
+    rows = acts._lineage_open_rows()
+    step = next(row for row in rows if getattr(row[2], "__name__", "") == "prior_backing")
+    urn = "urn:source"
+    missing = (f"No cloud file resolves from '{urn}'. Tried: {urn}. "
+               "Get a lineage URN from data_get(project=<name>) ('id' on each file).")
+    record = {"file": {"id": urn, "name": "Configuration 1"},
+              "location": {"project": {"id": "config", "name": "System Project - CONFIG"},
+                           "parent_folder": {"name": "Backing"}},
+              "state": {"is_complete": False}}
+    replies = [(True, missing), (False, record)]
+    if fault == "permission":
+        replies[0] = (True, "permission denied")
+    elif fault == "wrong_record":
+        record["file"]["id"] = "urn:other"
+    elif fault == "timeout":
+        replies[:] = [(True, missing)] * 3
+    calls = []
+    def call(tool, args):
+        calls.append((tool, args))
+        return replies.pop(0)
+    monkeypatch.setattr(acts, "facade", lambda key: call)
+    monkeypatch.setattr(acts.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(acts, "_SETTLE_POLLS", 3)
+    if fault is None:
+        assert step[1]({"lin_first": urn}) == {"file": urn}
+    else:
+        with pytest.raises(AssertionError):
+            step[1]({"lin_first": urn})
+    assert len(calls) == (1 if fault == "permission" else 3 if fault == "timeout" else 2)
+    assert all(call == ("data_get", {"file": urn}) for call in calls)

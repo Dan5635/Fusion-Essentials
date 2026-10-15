@@ -11,7 +11,8 @@ def _rebox(curve):
     """Re-derive the bounding box from the endpoints, the way Fusion's is derived."""
     a, b = curve.startSketchPoint.geometry, curve.endSketchPoint.geometry
     curve.boundingBox = FakeBoundingBox3D(
-        FakePoint(min(a.x, b.x), min(a.y, b.y), 0.0), FakePoint(max(a.x, b.x), max(a.y, b.y), 0.0))
+        FakePoint(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z)),
+        FakePoint(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z)))
 
 
 def _boxed(token, x, y, dx=1.0, dy=0.0, length=10.0):
@@ -32,8 +33,13 @@ def _matrix():
 
     def set_to_rotation(angle, axis, origin):
         m.angle = angle
-        cells[0][0], cells[0][1] = math.cos(angle), -math.sin(angle)
-        cells[1][0], cells[1][1] = math.sin(angle), math.cos(angle)
+        x, y, z = axis.x, axis.y, axis.z
+        co, si = math.cos(angle), math.sin(angle)
+        cross = ((0, -z, y), (z, 0, -x), (-y, x, 0))
+        for r in range(3):
+            for c in range(3):
+                cells[r][c] = (co * (r == c) + (1 - co) * (x, y, z)[r] * (x, y, z)[c]
+                               + si * cross[r][c])
         return True
 
     def set_cell(row, col, value):
@@ -136,6 +142,74 @@ def shared_name(mod, monkeypatch):
 
 
 class TestCopy:
+
+    def test_axis_copy_to_different_sketch_refuses_before_native_copy(self, mod, sketches):
+        plate, _other = sketches
+        called = []
+        plate.copy = lambda *args: called.append(args)
+        msg = error_message(mod.handler(entities="line:0", target_sketch="Other",
+                                        rotation_deg=45, rotation_axis=[1, 0, 0]))
+        assert "different target sketch has its own local frame" in msg
+        assert called == []
+
+    def test_mirror_refuses_axis_and_z_pivot_instead_of_ignoring_them(self, mod, sketches):
+        for extra in ({"rotation_axis": [1, 0, 0]}, {"center_z": 5}):
+            msg = error_message(mod.handler(entities="line:0", mirror_line="line:1", **extra))
+            assert "Drop:" in msg and next(iter(extra)) in msg
+
+    @pytest.mark.parametrize("wrong", [False, True])
+    def test_local_x_copy_verifies_xyz_and_keeps_source(self, mod, sketches, wrong):
+        plate, _ = sketches
+        source = _lines(plate).item(0)
+        source.endSketchPoint.geometry = FakePoint(0.0, 1.0, 0.0)
+        _rebox(source)
+
+        def copy(collection, matrix):
+            made = _boxed("XC", 0.0, 0.0, dx=0.0, dy=1.0)
+            for point in (made.startSketchPoint.geometry, made.endSketchPoint.geometry):
+                coords = (point.x, point.y, point.z)
+                shifted = tuple(sum(matrix.getCell(r, c) * coords[c] for c in range(3))
+                                + (matrix.translation.x, matrix.translation.y,
+                                   matrix.translation.z)[r] for r in range(3))
+                point.x, point.y, point.z = shifted
+            if wrong:
+                made.endSketchPoint.geometry.z += 0.1
+            _rebox(made)
+            plate.sketchCurves._items.append(made)
+            plate.sketchCurves.sketchLines._items.append(made)
+            returned = adsk.core.ObjectCollection.create()
+            returned.add(made)
+            return returned
+
+        plate.copy = copy
+        result = mod.handler(entities="line:0", rotation_deg=45,
+                             rotation_axis=[1, 0, 0])
+        if wrong:
+            assert "endpoint XYZ coordinates did not verify" in error_message(result)
+        else:
+            out = payload(result)
+            end = _lines(plate).item(2).endSketchPoint.geometry
+            assert (end.x, end.y, end.z) == pytest.approx((0, 2 ** -0.5, 2 ** -0.5))
+            assert out["coordinates_verified"] is True
+            assert "curve interiors were not checked" in out["note"]
+            assert source.endSketchPoint.geometry.z == 0.0
+
+    def test_disappearing_copied_endpoint_cannot_verify_from_start_alone(self, mod, sketches):
+        plate, _ = sketches
+        made = _boxed("UnreadCopy", 0.0, 0.0)
+        made.endSketchPoint.geometry = None
+        plate.copy = _copier([], plate, made=[made])
+
+        msg = error_message(mod.handler(entities="line:0", rotation_deg=45,
+                                        rotation_axis=[1, 0, 0]))
+        assert "endpoint XYZ coordinates did not verify" in msg
+
+    def test_partial_xyz_copy_names_the_requested_curve_count(self, mod, sketches):
+        plate, _ = sketches
+        plate.copy = _copier([], plate, made=[_boxed("OnlyOne", 0.0, 0.0)])
+        msg = error_message(mod.handler(entities="line:0,line:1", rotation_deg=45,
+                                        rotation_axis=[1, 0, 0]))
+        assert "with 2 source curve(s)" in msg and "{len(refs)}" not in msg
 
     def test_copy_returns_the_new_curve_refs_and_the_append_note(self, mod, sketches):
         plate, _ = sketches
@@ -486,3 +560,247 @@ class TestPostconditionKeysAreChecked:
         wrapped = _assert.wrap(mod.handler,
                                [_assert.SketchCurvesChanged(keys=("target_sketch", "sketch_name"))])
         assert wrapped.__wrapped__ is mod.handler
+
+
+@pytest.fixture
+def mirror_sketch(mod):
+    """'Plate': line:0 (0,0)->(1,0), line:1 (5,0)->(6,0) and the axis line:2, x = 3 from y -1 to 1."""
+    plate = make_sketch("Plate", lines=[_boxed("L0", 0.0, 0.0), _boxed("L1", 5.0, 0.0),
+                                        _boxed("AX", 3.0, -1.0, dx=0.0, dy=2.0)])
+    install(mod, make_design(sketches=[plate]))
+    return plate
+
+
+def _mirrorer(store, sketch, images, extra_points=2, move_source=False):
+    """A Sketch.mirror landing one line per (x, y, dx, dy) in `images` and answering with them
+    first, then `extra_points` auxiliary points - the measured vector order."""
+    def _mirror(entities, axis):
+        store.append((entities, axis))
+        made = []
+        for i, (x, y, dx, dy) in enumerate(images):
+            curve = _boxed(f"M{i}", x, y, dx=dx, dy=dy)
+            curve.nativeObject = None
+            sketch.sketchCurves._items.append(curve)
+            sketch.sketchCurves.sketchLines._items.append(curve)
+            made.append(curve)
+        if move_source:
+            entities[0].startSketchPoint.geometry = FakePoint(0.0, 9.0, 0.0)
+        return made + [make_sketch_curve(f"PT{i}") for i in range(extra_points)]
+    return _mirror
+
+
+class TestMirror:
+
+    def test_a_mirror_passes_a_list_and_names_the_copy(self, mod, mirror_sketch):
+        calls = []
+        mirror_sketch.mirror = _mirrorer(calls, mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
+        out = payload(mod.handler(entities="line:0", mirror_line="line:2"))
+        entities, axis = calls[0]
+        assert type(entities) is list and axis is _lines(mirror_sketch).item(2)
+        assert out["mirrored"] is True and out["new_curves"] == ["line:3"]
+        assert (out["curve_count_before"], out["curve_count_after"]) == (3, 4)
+        assert "symmetry constraints" in out["note"]
+
+    def test_a_copy_that_is_not_the_reflection_is_an_error(self, mod, mirror_sketch):
+        # a translated copy, not a mirrored one: the right count, the wrong place
+        mirror_sketch.mirror = _mirrorer([], mirror_sketch, [(4.0, 0.0, 1.0, 0.0)])
+        message = error_message(mod.handler(entities="line:0", mirror_line="line:2"))
+        assert "'line:0' is not its reflection about 'line:2'" in message
+        assert "sketch_delete_entity" in message
+
+    def test_a_mirror_that_moves_its_source_is_an_error(self, mod, mirror_sketch):
+        mirror_sketch.mirror = _mirrorer([], mirror_sketch, [(6.0, 0.0, -1.0, 0.0)],
+                                         move_source=True)
+        assert "mirror moved its source 'line:0'" in error_message(
+            mod.handler(entities="line:0", mirror_line="line:2"))
+
+    def test_fewer_curves_than_asked_is_an_error(self, mod, mirror_sketch):
+        mirror_sketch.mirror = _mirrorer([], mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
+        message = error_message(mod.handler(entities="line:0,line:1", mirror_line="line:2"))
+        assert "from 3 to 4 curve(s) for 2 asked" in message
+
+    @pytest.mark.parametrize("extra, text", [
+        ({"dx": 5}, "Drop: dx."),
+        ({"target_sketch": "Other", "rotation_deg": 0}, "Drop: rotation_deg, target_sketch."),
+        ({"entities": "line:0,line:2"}, "'line:2' is also in 'entities'"),
+        ({"entities": "point:0"}, "point:0 is none of them"),
+        ({"mirror_line": "arc:0"}, "must be a 'line:<index>' of sketch 'Plate'. Got 'arc:0'"),
+        ({"mirror_line": "line:9"}, "Got 'line:9'")])
+    def test_refusals_come_before_the_mirror_call(self, mod, mirror_sketch, extra, text):
+        calls = []
+        mirror_sketch.mirror = _mirrorer(calls, mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
+        mirror_sketch.sketchPoints = types.SimpleNamespace(
+            count=1, item=lambda i: types.SimpleNamespace(geometry=FakePoint(0.0, 0.0, 0.0)))
+        args = {"entities": "line:0", "mirror_line": "line:2", **extra}
+        assert text in error_message(mod.handler(**args))
+        assert calls == []
+
+
+class TestCopyOffThePlane:
+
+    def test_dz_reaches_the_copy_matrix_and_is_echoed(self, mod, sketches):
+        plate, _ = sketches
+        calls = []
+        plate.copy = _copier(calls, plate, made=[_boxed("L2", 0.0, 0.0)])
+        out = payload(mod.handler(entities="line:0", dz=5, units="mm"))
+        assert round(calls[0][1].translation.z, 6) == 0.5 and out["requested"]["dz"] == 5.0
+
+    def test_dz_with_a_mirror_line_is_refused(self, mod, mirror_sketch):
+        assert "Drop: dz." in error_message(
+            mod.handler(entities="line:0", mirror_line="line:2", dz=5))
+
+
+def _arc_curve(token, centre, start, end):
+    """A sketch arc stored counter-clockwise from `start` to `end` about `centre` (cm)."""
+    arc = make_sketch_curve(token)
+    arc.startSketchPoint = types.SimpleNamespace(geometry=FakePoint(*start, 0.0))
+    arc.endSketchPoint = types.SimpleNamespace(geometry=FakePoint(*end, 0.0))
+    arc.centerSketchPoint = types.SimpleNamespace(geometry=FakePoint(*centre, 0.0))
+    arc.nativeObject = None
+    return arc
+
+
+@pytest.fixture
+def arc_sketch(mod):
+    """'Plate': arc:0 the upper half circle about (1,0) from (2,0) to (0,0); line:0 the axis x = 3."""
+    plate = make_sketch("Plate", lines=[_boxed("AX", 3.0, -1.0, dx=0.0, dy=2.0)],
+                        arcs=[_arc_curve("A0", (1.0, 0.0), (2.0, 0.0), (0.0, 0.0))])
+    install(mod, make_design(sketches=[plate]))
+    return plate
+
+
+def _arc_mirrorer(sketch, image):
+    def _mirror(entities, axis):
+        sketch.sketchCurves._items.append(image)
+        sketch.sketchCurves.sketchArcs._items.append(image)
+        return [image]
+    return _mirror
+
+
+class TestMirrorChecksTheCurveNotOnlyItsEnds:
+    def test_the_reflected_upper_half_passes(self, mod, arc_sketch):
+        # about x = 3 the arc lands about (5,0); counter-clockwise it runs from (6,0) to (4,0)
+        arc_sketch.mirror = _arc_mirrorer(
+            arc_sketch, _arc_curve("M0", (5.0, 0.0), (6.0, 0.0), (4.0, 0.0)))
+        out = payload(mod.handler(entities="arc:0", mirror_line="line:0"))
+        assert out["new_curves"] == ["arc:1"]
+
+    def test_the_complement_with_the_same_centre_and_ends_is_an_error(self, mod, arc_sketch):
+        arc_sketch.mirror = _arc_mirrorer(
+            arc_sketch, _arc_curve("M0", (5.0, 0.0), (4.0, 0.0), (6.0, 0.0)))
+        assert "'arc:0' is not its reflection about 'line:0'" in error_message(
+            mod.handler(entities="arc:0", mirror_line="line:0"))
+
+    def test_a_source_with_an_end_off_the_plane_is_refused_before_the_call(self, mod, mirror_sketch):
+        calls = []
+        mirror_sketch.mirror = _mirrorer(calls, mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
+        _lines(mirror_sketch).item(0).endSketchPoint.geometry.z = 0.5
+        message = error_message(mod.handler(entities="line:0", mirror_line="line:2"))
+        assert "'line:0' has an end off it (z is not 0)" in message and calls == []
+
+    def test_a_kind_the_check_cannot_judge_is_refused(self, mod, mirror_sketch):
+        calls = []
+        mirror_sketch.mirror = _mirrorer(calls, mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
+        message = error_message(mod.handler(entities="ellipse:0", mirror_line="line:2"))
+        assert "mirrors lines, arcs and circles; ellipse:0 is none of them" in message
+        assert calls == []
+
+    def test_a_circle_the_sketch_does_not_hold_is_refused_as_missing(self, mod, mirror_sketch):
+        calls = []
+        mirror_sketch.mirror = _mirrorer(calls, mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
+        message = error_message(mod.handler(entities="circle:0", mirror_line="line:2"))
+        assert "circle:0" in message and "mirrors lines" not in message and calls == []
+
+
+def _circle_curve(token, centre, radius, z=0.0):
+    circle = make_sketch_curve(token)
+    circle.centerSketchPoint = types.SimpleNamespace(geometry=FakePoint(*centre, z))
+    circle.radius = radius
+    circle.nativeObject = None
+    return circle
+
+
+@pytest.fixture
+def circle_sketch(mod):
+    """'Plate': circle:0 of radius 0.5 about (1,2); line:0 the axis x = 3."""
+    plate = make_sketch("Plate", lines=[_boxed("AX", 3.0, -1.0, dx=0.0, dy=2.0)],
+                        circles=[_circle_curve("C0", (1.0, 2.0), 0.5)])
+    install(mod, make_design(sketches=[plate]))
+    return plate
+
+
+def _circle_mirrorer(sketch, image, calls=None):
+    def _mirror(entities, axis):
+        if calls is not None:
+            calls.append(entities)
+        sketch.sketchCurves._items.append(image)
+        sketch.sketchCurves.sketchCircles._items.append(image)
+        return [image, make_sketch_curve("PT0")]
+    return _mirror
+
+
+class TestMirrorACircle:
+    def test_the_reflected_centre_with_the_same_radius_passes(self, mod, circle_sketch):
+        circle_sketch.mirror = _circle_mirrorer(circle_sketch, _circle_curve("M0", (5.0, 2.0), 0.5))
+        out = payload(mod.handler(entities="circle:0", mirror_line="line:0"))
+        assert out["mirrored"] is True and out["new_curves"] == ["circle:1"]
+
+    @pytest.mark.parametrize("centre,radius", [((5.0, 2.0), 0.6), ((1.0, 2.0), 0.5),
+                                               ((5.0, -2.0), 0.5)])
+    def test_another_radius_or_centre_is_an_error(self, mod, circle_sketch, centre, radius):
+        circle_sketch.mirror = _circle_mirrorer(circle_sketch, _circle_curve("M0", centre, radius))
+        assert "'circle:0' is not its reflection about 'line:0'" in error_message(
+            mod.handler(entities="circle:0", mirror_line="line:0"))
+
+    def test_a_copy_lifted_off_the_plane_is_an_error(self, mod, circle_sketch):
+        circle_sketch.mirror = _circle_mirrorer(
+            circle_sketch, _circle_curve("M0", (5.0, 2.0), 0.5, z=0.3))
+        assert "is not its reflection" in error_message(
+            mod.handler(entities="circle:0", mirror_line="line:0"))
+
+    def test_a_source_circle_off_the_plane_is_refused_before_the_call(self, mod, circle_sketch):
+        calls = []
+        circle_sketch.mirror = _circle_mirrorer(circle_sketch, _circle_curve("M0", (5.0, 2.0), 0.5),
+                                                calls)
+        circle_sketch.sketchCurves.sketchCircles.item(0).centerSketchPoint.geometry.z = 0.5
+        message = error_message(mod.handler(entities="circle:0", mirror_line="line:0"))
+        assert "'circle:0' has its centre off it" in message and calls == []
+
+    def test_a_mirror_that_resizes_its_source_is_an_error(self, mod, circle_sketch):
+        source = circle_sketch.sketchCurves.sketchCircles.item(0)
+        inner = _circle_mirrorer(circle_sketch, _circle_curve("M0", (5.0, 2.0), 0.5))
+
+        def mirror(entities, axis):
+            made = inner(entities, axis)
+            source.radius = 0.7
+            return made
+        circle_sketch.mirror = mirror
+        assert "is not its reflection" in error_message(
+            mod.handler(entities="circle:0", mirror_line="line:0"))
+
+
+class TestMirrorPlaneAndCentre:
+    def test_a_line_copy_with_the_right_xy_and_a_wrong_z_is_an_error(self, mod, mirror_sketch):
+        lift = _mirrorer([], mirror_sketch, [(6.0, 0.0, -1.0, 0.0)])
+
+        def mirror(entities, axis):
+            made = lift(entities, axis)
+            made[0].endSketchPoint.geometry.z = 0.5
+            return made
+        mirror_sketch.mirror = mirror
+        assert "'line:0' is not its reflection about 'line:2'" in error_message(
+            mod.handler(entities="line:0", mirror_line="line:2"))
+
+    def test_an_arc_whose_centre_does_not_read_is_refused_before_the_call(self, mod, arc_sketch):
+        calls = []
+        arc_sketch.mirror = lambda entities, axis: calls.append(entities) or []
+        del arc_sketch.sketchCurves.sketchArcs.item(0).centerSketchPoint
+        message = error_message(mod.handler(entities="arc:0", mirror_line="line:0"))
+        assert "The centre of 'arc:0' did not read" in message and calls == []
+
+    def test_an_arc_copy_whose_centre_does_not_read_is_an_error(self, mod, arc_sketch):
+        image = _arc_curve("M0", (5.0, 0.0), (6.0, 0.0), (4.0, 0.0))
+        del image.centerSketchPoint
+        arc_sketch.mirror = _arc_mirrorer(arc_sketch, image)
+        assert "'arc:0' is not its reflection" in error_message(
+            mod.handler(entities="arc:0", mirror_line="line:0"))

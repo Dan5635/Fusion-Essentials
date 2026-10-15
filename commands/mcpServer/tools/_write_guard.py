@@ -188,9 +188,17 @@ def _refusal(expect, name, urn):
                  "writing. Switch with doc_activate, then retry. (Omit expect_document to write the "
                  "current active doc regardless.)"),
     }
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True, "message": "active_document_changed: expected %r, active is %r"
-            % (expect, name)}
+    wanted = (expect or "").strip()
+    # doc_activate ignores letter case in a name, so it cannot clear a case-only mismatch.
+    if isinstance(name, str) and wanted != name and wanted.lower() == name.lower():
+        payload["requires"] = {"tool": "doc_get", "result": "open_documents[].document_handle"}
+        payload["note"] = (
+            f"expect_document '{wanted}' differs from the active document's name '{name}' only in "
+            "letter case; a name must match exactly. Refused WITHOUT writing. Call doc_get and "
+            "retry with the target row's document_handle, activating that handle first if it is "
+            "not the active document.")
+    return _common.error(payload["note"], payload,
+        message="active_document_changed: expected %r, active is %r" % (expect, name))
 
 
 def _unknown_handle_refusal(expect, name, urn):
@@ -205,9 +213,8 @@ def _unknown_handle_refusal(expect, name, urn):
                  "reload. Refused WITHOUT writing. Call doc_get and retry with the target row's "
                  "current document_handle."),
     }
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True,
-            "message": "unknown_document_handle: %r cannot be resolved; call doc_get" % expect}
+    return _common.error(payload["note"], payload,
+        message="unknown_document_handle: %r cannot be resolved; call doc_get" % expect)
 
 
 def _open_documents():
@@ -264,9 +271,8 @@ def _scan_refusal(expect, name, urn):
         "note": ("Open-document names did not establish a unique target for expect_document %r. "
                  "Refused WITHOUT writing. Call doc_get and retry with the exact document_handle." % expect),
     }
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True,
-            "message": "document_collection_unreadable: pass expect_document as an exact handle"}
+    return _common.error(payload["note"], payload,
+        message="document_collection_unreadable: pass expect_document as an exact handle")
 
 
 def _collision_refusal(expect, candidates):
@@ -294,9 +300,9 @@ def _collision_refusal(expect, candidates):
                  "document_handle from doc_get or the lineage URN. Activate that same address first. "
                  "Session handles expire on close/add-in reload; open_index is positional."),
     }
-    return {"content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
-            "isError": True, "message": "ambiguous_document_name: %d open docs named '%s' - pass the URN"
-            % (len(candidates), expect)}
+    return _common.error(payload["note"], payload,
+        message="ambiguous_document_name: %d open docs named '%s' - pass the URN"
+                % (len(candidates), expect))
 
 
 def one_open_document(document_ids):
@@ -385,11 +391,27 @@ def wrap_read(handler):
     return stamped
 
 
+def _auto_dimension_command_refusal():
+    """Refuse writes while Fusion's drawing Auto Dimension editor is active."""
+    command = "FusionDrawingAutoDimensionEditCommand"
+    payload = {
+        "blocked_by": ["active_drawing_auto_dimension_command"],
+        "active_command": command,
+        "note": ("Finish or cancel the active Auto Dimension command in Fusion, then retry. "
+                 "For future drawing_create calls, use auto_dimension='off'. "
+                 "Refused WITHOUT writing."),
+    }
+    return _common.error(payload["note"], payload,
+        message=f"active_command: {command}; finish or cancel it in Fusion")
+
+
 def wrap(handler):
     """Wrap a WRITE handler with the expect_document guard + acted_on stamp. Returns a new callable with
     the same call shape. expect_document is consumed here (popped from kwargs) - the handler never sees
     it."""
     def guarded(**kwargs):
+        if _common.safe(lambda: app.userInterface.activeCommand) == "FusionDrawingAutoDimensionEditCommand":
+            return _auto_dimension_command_refusal()
         expect = kwargs.pop("expect_document", None)
         name, urn = _active_identity()
         if expect:
@@ -410,5 +432,4 @@ def wrap(handler):
 # The input property advertised on every write tool (so an agent knows it can target a document).
 EXPECT_DOCUMENT_PROP = ("expect_document", {
     "type": "string",
-    "description": "This doc must be active.",
 })

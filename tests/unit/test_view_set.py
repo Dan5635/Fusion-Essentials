@@ -12,6 +12,7 @@ reports built-ins), and the snapshot -> mutate -> restore round-trip that puts
 bulbs/isolation/style back. Fakes expose the real attributes the tool sets so we
 can assert on them.
 """
+from conftest import install as _install_design
 
 import json
 import types
@@ -20,7 +21,7 @@ import pytest
 
 from conftest import (load_tool, make_source_document, make_bbox, BRepBody, Camera,
                       FakeApplication, FakeDataFile, FakeFusionDocument, FakeOccurrence, FakePoint,
-                      FakeVector3D, MakeComp, MakeDesign, Viewport)
+                      FakeVector3D, MakeComp, MakeDesign, Viewport, _NamedCollection)
 
 iv = load_tool("view_set")
 
@@ -171,7 +172,7 @@ class _WholeModelFitViewport(Viewport):
         if value.isFitView:
             self._cam.target = FakePoint(50, 50, 50)
             self._cam.eye = FakePoint(50, 50, 150)
-            self._cam.viewExtents = 100.0
+            self._cam.setExtents(100.0, 100.0)
             self._cam.isFitView = False
 
 
@@ -381,9 +382,7 @@ def _isolated_snapshot_state():
     _clear_snapshot_state()
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────
@@ -513,6 +512,19 @@ class _BlindAfterClear(FakeOccurrence):
         self._raises_on["isIsolated"] = "2 : InternalValidationError : isIsolated"
 
 
+class _IsolationLog(FakeOccurrence):
+    """An occurrence recording every isIsolated write, in order."""
+
+    def __init__(self, name, **kw):
+        super().__init__(**_occ_args(name, **kw))
+        self.writes = []
+
+    @FakeOccurrence.isIsolated.setter
+    def isIsolated(self, value):
+        self.writes.append(value)
+        FakeOccurrence.isIsolated.fset(self, value)
+
+
 class TestVisibilityReadBack:
     """Every occurrence write is read BACK: a swallowed hide/isolate/show is an error, and a
     mid-list failure names the targets it already changed."""
@@ -531,6 +543,22 @@ class TestVisibilityReadBack:
         res = iv.handler(action="isolate", target="Bracket")
         assert res["isError"] is True
         assert "isIsolated reads back False" in res["message"]
+
+    @pytest.mark.parametrize("already,sibling_visible,refused", [
+        (True, True, True), (True, False, False), (False, True, False)])
+    def test_a_repeat_isolate_reapplies_and_names_a_sibling_still_visible(
+            self, monkeypatch, already, sibling_visible, refused):
+        tray = _IsolationLog("Tray:1", isolated=already)
+        chassis = FakeOcc("Chassis:1")
+        tray.isVisible, chassis.isVisible = True, sibling_visible
+        design = _install(monkeypatch, [tray, chassis])
+        design.rootComponent.occurrences = _NamedCollection([tray, chassis])
+        res = iv.handler(action="isolate", target="Tray:1")
+        assert tray.writes == ([False, True] if already else [True]) and tray.isIsolated is True
+        assert res["isError"] is refused
+        if refused:
+            assert res["message"] == ("Isolated 'Tray:1', but 'Chassis:1' still reads visible. Hide it "
+                                      "with view_set(action='hide', target=['Chassis:1']).")
 
     def test_a_show_whose_ancestor_bulb_will_not_light_is_an_error(self, monkeypatch):
         # The leaf lights but the parent stays dark, so the target is STILL invisible - reporting
@@ -581,6 +609,44 @@ class TestVisibilityReadBack:
         assert out["not_confirmed"] == ["A"]
         assert "stuck" not in out
         assert "did not read back" in out["note"]
+
+
+class TestDocumentModified:
+    """A call whose visibility write turned a clean document modified says so; none other does."""
+
+    def _run(self, monkeypatch, action, is_modified, isolated=False, hooked=True, **kw):
+        doc = FakeFusionDocument(is_modified=is_modified)
+        occ = FakeOccurrence(**_occ_args("Bracket", isolated=isolated),
+                             document=doc if hooked else None)
+        _install(monkeypatch, [occ])
+        monkeypatch.setattr(iv.app, "activeDocument", doc)
+        if action == "restore":
+            _payload(iv.handler(action="snapshot"))
+        return _payload(iv.handler(action=action, **kw))
+
+    def test_an_isolate_that_modified_a_clean_document_says_so(self, monkeypatch):
+        out = self._run(monkeypatch, "isolate", is_modified=False, target="Bracket")
+        assert out["document_modified"] is True and out["modified_by_this_call"] is True
+        assert "doc_save clears the flag" in out["note"]
+
+    def test_an_already_modified_document_is_not_claimed_by_this_call(self, monkeypatch):
+        out = self._run(monkeypatch, "isolate", is_modified=True, target="Bracket")
+        assert out["document_modified"] is True and "modified_by_this_call" not in out
+        assert "doc_save" not in out["note"]
+
+    def test_a_before_read_that_declines_claims_no_flip(self, monkeypatch):
+        out = self._run(monkeypatch, "isolate", is_modified=None, target="Bracket")
+        assert out["document_modified"] is True and "modified_by_this_call" not in out
+        assert "doc_save" not in out["note"]
+
+    def test_an_after_read_that_declines_is_published_as_null(self, monkeypatch):
+        out = self._run(monkeypatch, "isolate", is_modified=None, hooked=False, target="Bracket")
+        assert out["document_modified"] is None and "modified_by_this_call" not in out
+
+    @pytest.mark.parametrize("action", ["clear_isolation", "restore"])
+    def test_each_isolation_writer_reads_the_flag_around_its_writes(self, monkeypatch, action):
+        out = self._run(monkeypatch, action, is_modified=False, isolated=True)
+        assert out["document_modified"] is True and out["modified_by_this_call"] is True
 
 
 class TestBodyVisibility:
@@ -793,7 +859,7 @@ class TestFocusFraming:
         _install(monkeypatch, [near, far])
         out = _payload(iv.handler(action="orient", orientation="front", focus="Part"))
         assert out["applied"]["frame_ratio"] == pytest.approx(0.02 * iv._FRAME_MARGIN)
-        assert iv.app.activeViewport.camera.viewExtents == pytest.approx(100.0 * 0.02 * iv._FRAME_MARGIN)
+        assert max(iv.app.activeViewport.camera.getExtents()[1:]) == pytest.approx(100.0 * 0.02 * iv._FRAME_MARGIN)
         assert "framed on 'Part'" in out["note"]
 
     def test_framing_touches_no_visibility_at_all(self, monkeypatch):
@@ -806,6 +872,16 @@ class TestFocusFraming:
         assert near.isLightBulbOn is True and far.isLightBulbOn is True
         assert far.isIsolated is False
         assert "visibility_not_restored" not in out["applied"]
+
+    def test_a_false_extent_setter_never_certifies_the_requested_focus_frame(self, monkeypatch):
+        part = FakeOcc("Part", bbox=make_bbox((0, 0, 0), (2, 2, 2)))
+        _install(monkeypatch, [part])
+        monkeypatch.setattr(Camera, "setExtents", lambda *_args: False)
+        result = iv.handler(action="orient", orientation="front", focus="Part")
+        assert result["isError"] is True
+        assert "did not take the extents" in result["message"]
+        assert "NOT framed" in result["message"]
+        assert "fit=false" in result["message"]
 
     def test_the_taller_axis_wins_so_the_focus_is_never_cropped(self, monkeypatch):
         # A focus that is a small fraction ACROSS but a large one DOWN must be framed on the down
@@ -839,11 +915,11 @@ class TestFocusFraming:
         report ok for it. So it refuses, and leaves the camera alone."""
         part = FakeOcc("Part", bbox=make_bbox((0, 0, 0), (2, 2, 2)))
         _install(monkeypatch, [part])
-        before = iv.app.activeViewport.camera.viewExtents
+        before = max(iv.app.activeViewport.camera.getExtents()[1:])
         monkeypatch.setattr(iv.app.activeViewport, "width", 0)
         res = iv.handler(action="orient", orientation="front", focus="Part")
         assert res["isError"] is True and "NOT moved" in res["message"]
-        assert iv.app.activeViewport.camera.viewExtents == before
+        assert max(iv.app.activeViewport.camera.getExtents()[1:]) == before
         assert iv.app.activeViewport._fit_calls == 0
 
     def test_framing_zooms_OUT_when_the_focus_is_bigger_than_the_current_frame(self, monkeypatch):
@@ -855,7 +931,7 @@ class TestFocusFraming:
         out = _payload(iv.handler(action="orient", orientation="front", focus="Big"))
         # 400 across a 200-wide frame, 400 down a 100-tall one -> the DOWN axis needs 4x
         assert out["applied"]["frame_ratio"] == pytest.approx(4.0 * iv._FRAME_MARGIN)
-        assert iv.app.activeViewport.camera.viewExtents == pytest.approx(100.0 * 4.0 * iv._FRAME_MARGIN)
+        assert max(iv.app.activeViewport.camera.getExtents()[1:]) == pytest.approx(100.0 * 4.0 * iv._FRAME_MARGIN)
 
     def test_a_sketch_name_frames_the_sketch(self, monkeypatch):
         """Sketch work owns no occurrence, so an occurrence-only focus can never aim at it - and a
@@ -967,18 +1043,25 @@ class TestFocusFraming:
         is a different behaviour, not a tuning."""
         assert iv._FRAME_MARGIN > 1.0
 
-    def test_a_focus_with_no_measurable_size_is_re_aimed_not_refused(self, monkeypatch):
+    @pytest.mark.parametrize("fit", [True, False])
+    def test_a_focus_with_no_measurable_size_is_re_aimed_not_refused(self, monkeypatch, fit):
         """A point sketch spans nothing on either screen axis. There is no size to scale to, but
         aiming at it is still exactly what was asked for - so the zoom is left alone and the payload
         says so, rather than failing a framing the caller was right to request."""
         point = types.SimpleNamespace(name="W3Pt", boundingBox=make_bbox((5, 5, 0), (5, 5, 0)))
         _install(monkeypatch, [FakeOcc("Part", bbox=make_bbox((0, 0, 0), (2, 2, 2)))])
         monkeypatch.setattr(iv._common, "find_sketch", lambda d, n, remedy=None: (point, None))
-        before = iv.app.activeViewport.camera.viewExtents
-        out = _payload(iv.handler(action="orient", orientation="top", focus="W3Pt"))
-        assert out["applied"]["no_measurable_size"] is True
-        assert out["applied"]["frame_ratio"] is None
-        assert iv.app.activeViewport.camera.viewExtents == before   # zoom untouched
+        before = max(iv.app.activeViewport.camera.getExtents()[1:])
+        out = _payload(iv.handler(action="orient", orientation="top", focus="W3Pt", fit=fit))
+        assert max(iv.app.activeViewport.camera.getExtents()[1:]) == before   # zoom untouched
+        assert "re-aimed" in out["note"] and "framed on" not in out["note"]
+        if fit:
+            assert out["applied"]["no_measurable_size"] is True
+            assert out["applied"]["frame_ratio"] is None
+            assert "no measurable size" in out["note"] and "framing is not established" in out["note"]
+        else:
+            assert "WITHOUT zooming" in out["note"]
+            assert "attempt framing when the focus has measurable size" in out["note"]
 
     def test_a_zero_size_perspective_focus_is_re_aimed_without_scale(self, monkeypatch):
         import adsk.core
@@ -1587,6 +1670,15 @@ class TestNamedViews:
         assert row["projection"] == "orthographic"
         assert row["extents_cm"] == 55.0
 
+    def test_a_perspective_view_reports_no_extents(self, monkeypatch):
+        # a perspective camera has no window size to report; its eye and target carry the framing
+        import adsk.core
+        cam = Camera(eye=(1, 2, 3), target=(4, 5, 6), up=(0, 0, 1), perspective_angle=0.4,
+                     camera_type=adsk.core.CameraTypes.PerspectiveCameraType, view_extents=55.0)
+        _install(monkeypatch, [], named_views=FakeNamedViews([FakeNamedView("Angle", camera=cam)]))
+        row = _payload(iv.handler(action="list_views"))["named_views"][0]["camera"]
+        assert row["projection"] == "perspective" and row["extents_cm"] is None
+
     def test_list_views_camera_fields_are_independently_null(self, monkeypatch):
         # A camera whose eye will not read must not sink the row - target/up/projection/extents
         # still publish, and eye reads null rather than a fabricated point.
@@ -1789,6 +1881,27 @@ class TestSnapshotRestore:
         assert out["snapshot_kept"] is False and "failed_restores" not in out
         assert out["visual_style_restored"] is True and out["camera_restored"] is True
         assert key not in iv._SNAPSHOTS
+
+    def test_a_dropped_extent_restore_keeps_the_public_snapshot(self, monkeypatch):
+        _install(monkeypatch, [FakeOcc("A", full_path="A")], doc_name="ExtentRestore")
+        iv._SNAPSHOTS.clear()
+        vp = iv.app.activeViewport
+        vp._cam.setExtents(3.8, 3.2)
+        key = _payload(iv.handler(action="snapshot"))["saved_for"]
+        vp._cam.setExtents(100, 100)
+        normal_set = Viewport.camera.fset
+
+        def drop_sides(self, value):
+            sides = self._cam._sides
+            normal_set(self, value)
+            self._cam._sides = sides  # Injected restore assignment drops the extent pair.
+
+        monkeypatch.setattr(Viewport, "camera", property(Viewport.camera.fget, drop_sides))
+        out = _payload(iv.handler(action="restore"))
+        assert out["camera_restored"] is False and out["snapshot_kept"] is True
+        assert out["failed_restores"] == ["camera"] and key in iv._SNAPSHOTS
+        assert "camera framing does not match" in out["note"]
+        assert vp.camera.getExtents() == [True, 100, 100]
 
     def test_a_camera_the_viewport_refuses_is_reported_and_keeps_the_snapshot(self, monkeypatch):
         a = FakeOcc("A", full_path="A", bulb=True)
@@ -2086,7 +2199,7 @@ class TestRequestTracer:
 
     def test_handler_stamps_the_echo(self, monkeypatch):
         # end-to-end: a successful view_set call carries request_echo reflecting its action
-        monkeypatch.setattr(iv._common, "design", lambda: object())
+        _install_design(iv, object())
         monkeypatch.setattr(iv, "_do_list_views", lambda design: iv.ok({"action": "list_views"}))
         out = json.loads(iv.handler(action="list_views")["content"][0]["text"])
         assert out["request_echo"]["received"]["action"] == "list_views"

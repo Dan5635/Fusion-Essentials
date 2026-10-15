@@ -518,9 +518,7 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
         bb = _geom.union_box(boxes)
         focus_bb = bb
         o = types.SimpleNamespace(name=", ".join(labels), boundingBox=bb)
-        target = adsk.core.Point3D.create((bb.minPoint.x + bb.maxPoint.x) / 2,
-                                          (bb.minPoint.y + bb.maxPoint.y) / 2,
-                                          (bb.minPoint.z + bb.maxPoint.z) / 2)
+        target = adsk.core.Point3D.create(*_common.box_center(bb))
         applied["focus"] = safe(lambda: o.name)
         applied["extents"] = "solids" if all(k == "solids" for k in kinds) else "all_geometry"
         if sketch_frames:
@@ -624,7 +622,7 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
                          f"be framed on '{applied.get('focus')}' and the camera was NOT moved. Re-run "
                          "with fit=false to re-aim only.")
         ratio = _frame_ratio(cam, focus_bb, *frame)
-        extents = safe(lambda: cam.viewExtents)
+        extents = _view_common.view_extent(cam)
         if ratio == 0.0:
             applied["frame_ratio"] = None
             applied["no_measurable_size"] = True
@@ -633,8 +631,9 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
             return error(f"Could not measure '{applied.get('focus')}' against the current view (a "
                          "bounding box, the camera's axes, or its extents would not read), so the "
                          "view is NOT framed on it. Re-run with fit=false to re-aim only.")
-        if ratio is not None:
-            cam.viewExtents = extents * ratio
+        if ratio is not None and not _view_common.set_view_extent(cam, extents * ratio):
+            return error(f"The camera did not take the extents that frame '{applied.get('focus')}', "
+                         "so the view is NOT framed on it. Re-run with fit=false to re-aim only.")
     elif fit or (want_key and not projection_staged):
         cam.isFitView = True
 
@@ -646,12 +645,16 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
     note = "Camera aimed. Call view_screenshot to capture."
     if focus:
         if fit:
-            note = (f"Camera aimed and framed on '{applied.get('focus')}'. Call view_screenshot "
-                    "to capture.")
+            if applied.get("no_measurable_size"):
+                note = (f"Camera re-aimed at '{applied.get('focus')}'; the focus has no measurable "
+                        "size, so size-based framing is not established. Call view_screenshot to capture.")
+            else:
+                note = (f"Camera aimed and framed on '{applied.get('focus')}'. Call view_screenshot "
+                        "to capture.")
         else:
             note = (f"Camera re-aimed at '{applied.get('focus')}' WITHOUT zooming to it - "
-                    "fit=false keeps the current eye-to-target distance. Pass fit=true (the "
-                    "default) to frame it.")
+                    "fit=false keeps the current eye-to-target distance. Pass fit=true to attempt "
+                    "framing when the focus has measurable size.")
     if standoff_fallback is not None:
         cm = f"{standoff_fallback:g}"
         applied["standoff_fallback_cm"] = standoff_fallback
@@ -695,8 +698,8 @@ def _do_orient(design, orientation, focus, fit, projection="", perspective_angle
                      "'perspective_angle_deg' is what it reads back.")
 
     if ratio is not None:
-        want = safe(lambda: cam.viewExtents)
-        got = safe(lambda: vp.camera.viewExtents)
+        want = _view_common.view_extent(cam)
+        got = _view_common.view_extent(safe(lambda: vp.camera))
         if want is None or got is None or abs(got - want) > max(1e-6, abs(want) * 0.02):
             target_state = ("target reads the requested focus" if _same_point(
                 safe(lambda: vp.camera.target), target) else "target does not read the requested focus")
@@ -727,8 +730,29 @@ def _partial_suffix(done):
             + (f" (+{len(names) - 10} more)" if len(names) > 10 else "") + ".")
 
 
+def _with_modified(out, before):
+    """ok(out) with the after-read of the modified flag, marking a False -> True flip in this call."""
+    after = _view_common.document_modified()
+    out["document_modified"] = after
+    if before is False and after is True:
+        out["modified_by_this_call"] = True
+        out["note"] = (out.get("note", "") + " The document read unmodified before this call "
+                       "and reads modified now; doc_save clears the flag.").strip()
+    return ok(out)
+
+
+def _visible_root_siblings(design, occ):
+    """The names of root occurrences other than `occ`'s own top-level one that read isVisible true."""
+    top = (safe(lambda: occ.fullPathName) or safe(lambda: occ.name) or "").split("+")[0]
+    root = safe(lambda: design.rootComponent)
+    return [n for o in _common.iter_collection(safe(lambda: root.occurrences))
+            if (n := safe(lambda o=o: o.name)) and n != top
+            and _common.read_flag(lambda o=o: o.isVisible) is True]
+
+
 def _do_visibility(design, action, target):
     if action == "clear_isolation":
+        before = _view_common.document_modified()
         cleared = 0
         stuck = []
         unconfirmed = []
@@ -767,7 +791,7 @@ def _do_visibility(design, action, target):
                      "so the clear is unconfirmed there - see 'not_confirmed'.")
         if note:
             out["note"] = note.strip()
-        return ok(out)
+        return _with_modified(out, before)
     if not target:
         return error(f"Provide 'target' for {action}.")
     if action == "isolate":
@@ -788,6 +812,7 @@ def _do_visibility(design, action, target):
         pairs, target_err = _VIS_TARGET.resolve(target)
         if target_err:
             return error(target_err)
+    before = _view_common.document_modified()
     affected = []
     ancestors_lit = []
     body_states = []
@@ -798,11 +823,22 @@ def _do_visibility(design, action, target):
             # a bulb/isolation assignment and can leave the state where it was.
             try:
                 if action == "isolate":
+                    repeat = _common.read_flag(lambda ent=ent: ent.isIsolated) is True
+                    if repeat:
+                        # A sibling shown after an isolation stays drawn while the target still reads
+                        # isIsolated true (measured), so the isolation is cleared and set again.
+                        ent.isIsolated = False
                     ent.isIsolated = True
                     got = _common.read_flag(lambda ent=ent: ent.isIsolated)
                     if got is not True:
                         return error(f"Set isolate on '{nm}' but isIsolated reads back {got} - the "
                                      "change did not take." + _partial_suffix(affected))
+                    lit = _visible_root_siblings(design, ent) if repeat else []
+                    if lit:
+                        names, one = ", ".join(f"'{n}'" for n in lit), len(lit) == 1
+                        return error(f"Isolated '{nm}', but {names} still read{'s' if one else ''} "
+                                     f"visible. Hide {'it' if one else 'them'} with "
+                                     f"view_set(action='hide', target=[{names}]).")
                 elif action == "show":
                     # An occurrence stays hidden if any ANCESTOR occurrence's bulb is off - so turning
                     # on a nested child alone does nothing visible. Light up the whole ancestor chain.
@@ -858,7 +894,7 @@ def _do_visibility(design, action, target):
                             "is hidden; show that occurrence too.")
     if ancestors_lit:
         out["ancestors_also_shown"] = sorted(set(a for a in ancestors_lit if a))
-    return ok(out)
+    return _with_modified(out, before)
 
 
 def _do_style(style):
@@ -947,6 +983,7 @@ def _do_restore(design):
     "(Snapshots are held in memory for this session only - reloading the add-in "
     "clears them. To recover a clean state without a snapshot, use "
     "clear_isolation then show the components you want.)")
+    before = _view_common.document_modified()
     vp = app.activeViewport
     restored_occ = 0
     missing = 0
@@ -1005,7 +1042,7 @@ def _do_restore(design):
     try:
         read_back, smooth_error = _view_common.restore_camera(vp, snap["camera"])
         if not _view_common.camera_restored(read_back, snap["camera"]):
-            camera_error = "read-back eye/target do not match the saved camera"
+            camera_error = "read-back camera framing does not match the saved camera"
             failed.append("camera")
     except Exception as e:
         camera_error = str(e)
@@ -1037,7 +1074,7 @@ def _do_restore(design):
                        + ". The snapshot was KEPT so view_set(restore) can be retried.")
     if smooth_error:
         out["note"] += f" isSmoothTransition could not be set: {smooth_error}."
-    return ok(out)
+    return _with_modified(out, before)
 
 
 def _named_views(design):
@@ -1114,9 +1151,7 @@ def _camera_row(cam):
         v = _point_values(p)
         return None if v is None else {"x": round(v[0], 6), "y": round(v[1], 6), "z": round(v[2], 6)}
     ct = safe(lambda: cam.cameraType)
-    ext = safe(lambda: cam.viewExtents)
-    if not isinstance(ext, (int, float)) or isinstance(ext, bool) or not math.isfinite(ext):
-        ext = None
+    ext = _view_common.view_extent(cam)
     return {
         "eye_cm": pt(safe(lambda: cam.eye)),
         "target_cm": pt(safe(lambda: cam.target)),
@@ -1180,9 +1215,9 @@ def handler(action: str = "", target=None, orientation: str = "", focus: str = "
     if action != "orient" and (projection or perspective_angle_deg is not None):
         return error("'projection'/'perspective_angle_deg' apply to action='orient', not "
                      f"action='{action}'.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open a document with design geometry first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     trace = _trace(action, target, orientation, focus, style, view_name, projection,
                    perspective_angle_deg, categories, visible)
     try:

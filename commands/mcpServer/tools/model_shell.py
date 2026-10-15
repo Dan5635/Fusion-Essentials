@@ -45,9 +45,9 @@ def handler(body_name: str = "", thickness: float = 1.0, units: str = "mm",
     if derr:
         return error(derr)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     # Build the input collection: faces to remove imply their owning body (do NOT add the body too);

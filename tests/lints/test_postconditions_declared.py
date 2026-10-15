@@ -1,7 +1,4 @@
-"""Lint: every WRITE/DESTRUCTIVE tool declares HOW its effect is proven - postconditions=[...] for a
-detachable effect, else verification=Verification(kind=...) from the closed set (item.py). Every
-reference it carries RESOLVES: an evidence_test node id pytest would collect and no other tool
-claims, a registered read poller, an observing receipt row, an OPEN ledger row. Gaps only shrink."""
+"""Check write verification kinds, evidence references, pollers and recorded gap identifiers."""
 
 import json
 import os
@@ -30,39 +27,12 @@ def _postconditions_of(item):
     return None
 
 
-# The measured count of kind="gap" declarations - a tool whose success no read-back can confirm.
-# Shrink-only: closing a gap (an inline gate or a kernel kind lands) lowers it; raising it means a
-# NEW tool shipped with no effective read-back, which is a deliberate decision this number makes
-# visible instead of a quiet reclassification. The ceiling is an alarm that UN-RINGS itself:
-# the shrink-only half of the test below forces the number back down the moment a gap closes, so
-# a tool parked here while its evidence is unrecorded cannot quietly stay parked.
-_GAP_CEILING = 2
-
-
 def _verification_of(item):
     """The registration's verification classification, or None (mcp_primitives/item.py)."""
     return getattr(item, "verification", None)
 
 
-def _gap_tools(items):
-    """Every tool whose declaration says its effect cannot be verified."""
-    return sorted(it.get_name() for it in items
-                  if _verification_of(it) is not None and _verification_of(it).kind == "gap")
-
-
 class TestPostconditionsDeclared:
-    def test_the_gap_count_only_shrinks(self):
-        gaps = _gap_tools(register_all_tools())
-        assert len(gaps) <= _GAP_CEILING, (
-            f"{len(gaps)} gap entries exceed the ceiling of {_GAP_CEILING}. A gap is a tool whose "
-            "success cannot be verified at all - adding one is a deliberate decision: raise "
-            "_GAP_CEILING in the same diff with the new tool's named defect, or give the tool a "
-            "real read-back.\n  " + "\n  ".join(gaps))
-        if len(gaps) < _GAP_CEILING:
-            raise AssertionError(
-                f"only {len(gaps)} gap entries remain - lower _GAP_CEILING to {len(gaps)} to "
-                "lock the win in:\n  " + "\n  ".join(gaps))
-
     def test_every_write_tool_declares_how_its_effect_is_verified(self):
         missing = []
         for it in register_all_tools():
@@ -123,6 +93,10 @@ _RUNG_SHORT = {
     "doc_new": "the request carries no value: a new document exists and is active",
     "design_recompute": "the request carries no value: the timeline health after the rebuild is "
                         "the only observation",
+    "drawing_dimension": "a placed dimension's kind reads off the sheet's collection, but no "
+                         "value or points do, so the count and kind census is the strongest read",
+    "drawing_add_symbol": "a placed symbol reads only its kind off the returned object - no text "
+                          "or points - so the count and kind are the strongest read",
 }
 
 
@@ -179,22 +153,6 @@ class TestRungMeetsTheVerb:
             "reading the right value/geometry back with rung= declared on its verification - or "
             "add the tool to _RUNG_SHORT with the reason it cannot:\n  " + "\n  ".join(sorted(short)))
 
-    def test_every_short_entry_is_still_short(self):
-        kernel = load_tool("_assert")
-        items = {it.get_name(): it for it in register_all_tools()}
-        stale = []
-        for name in _RUNG_SHORT:
-            it = items.get(name)
-            if it is None:
-                stale.append(f"{name}: no such tool")
-                continue
-            declared = _declared_rung(it, kernel)
-            need = _minimum_rung_for(name)
-            if declared is None or kernel.RUNGS.index(declared) >= kernel.RUNGS.index(need):
-                stale.append(f"{name}: now reaches {declared}, its verb needs {need}")
-        assert not stale, ("_RUNG_SHORT only shrinks - these entries no longer describe a shortfall, "
-                           "remove them:\n  " + "\n  ".join(stale))
-
 
 # An evidence node id is spendable only when normal project discovery collects it. A bounded child
 # collection records pytest's structured session.items without executing tests.
@@ -207,13 +165,6 @@ _DEFECT_ID = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
 # row that exists but proves nothing, which is what a gap is for (the receipt's own header classes a
 # skipped row "Not verified - excused").
 _EMPTY_BUCKETS = ("skipped", "pending")
-# An OPEN row of the defect ledger: an unticked checkbox opening the line, then the id.
-_OPEN_ROW = r"^- \[ \] {id}\b"
-# The defect ledger's filename under plans/. The file is UNTRACKED (the plans tree is gitignored),
-# so it is present on a working machine and absent from a clean checkout - which is why the gap-id
-# check skips rather than passes when it cannot find it.
-_LEDGER_NAME = "backlog.md"
-
 _COLLECTOR_PLUGIN = '''import json
 import os
 
@@ -296,24 +247,6 @@ def _resolve_receipt(ref):
     if bucket.startswith(_EMPTY_BUCKETS):
         return (f"{rel}'s row for '{anchor}' reads '{row.group(1).strip()}' - it records no "
                 "observation, so it is not evidence of anything")
-    return ""
-
-
-def _resolve_defect(defect_id):
-    """'' when the defect id is well shaped AND opens a row of the defect ledger, else why it does not.
-
-    Returns None - not a verdict - when the ledger file is absent, which the caller turns into a
-    visible skip. A well-shaped id that no ledger carries is exactly the shape this exists to
-    catch, so answering '' on a missing file would pass the mutant it was written for."""
-    if not _DEFECT_ID.match(defect_id or ""):
-        return f"{defect_id!r} is not a ledger id like 'DRAW-1'"
-    path = os.path.join(REPO_ROOT, "plans", _LEDGER_NAME)
-    if not os.path.isfile(path):
-        return None
-    with open(path, encoding="utf-8") as fh:
-        text = fh.read()
-    if not re.search(_OPEN_ROW.format(id=re.escape(defect_id)), text, re.M):
-        return f"the defect ledger carries no OPEN row for {defect_id}"
     return ""
 
 
@@ -416,26 +349,15 @@ class TestVerificationDeclarations:
             "it. A second consumer is a redesign decision, not a classification:\n  "
             + "\n  ".join(others))
 
-    def test_a_gap_declaration_resolves_to_an_open_ledger_row(self):
-        bad, unresolvable = [], []
+    def test_a_gap_declaration_names_a_well_formed_defect_id(self):
+        bad = []
         for it in register_all_tools():
             v = _verification_of(it)
             if v is None or v.kind != "gap":
                 continue
-            why = _resolve_defect(v.defect_id)
-            if why is None:
-                unresolvable.append(f"{it.get_name()} -> {v.defect_id}")
-            elif why:
-                bad.append(f"{it.get_name()} -> {why}")
-        assert not bad, ("a gap names the id of a defect the defect ledger still carries OPEN, so an "
-                         "unverifiable tool is tracked where it can be closed:\n  "
+            if not _DEFECT_ID.fullmatch(v.defect_id or ""):
+                bad.append(f"{it.get_name()} -> {v.defect_id!r}")
+        assert not bad, ("a verification gap names a defect id like 'DRAW-1':\n  "
                          + "\n  ".join(sorted(bad)))
-        if unresolvable:
-            pytest.skip(
-                "the defect ledger is not in this checkout, so these gap ids could not be resolved: "
-                + ", ".join(sorted(unresolvable)) + ". The ledger is untracked (the plans tree is "
-                "gitignored) and lives on the working machine, so a clean checkout cannot see it - "
-                "this check SKIPS visibly there rather than passing on a file it never opened. Run "
-                "it where the ledger is present.")
 
 

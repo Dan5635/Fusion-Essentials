@@ -54,7 +54,8 @@ class _Setup(FakeSetup):
     _CAD_PARAMS = ("wcs_origin_point", "wcs_orientation_axisZ", "wcs_orientation_axisX")
 
     def __init__(self, name, params, machine_sticks=True, require_enable=True):
-        super().__init__(name, parameters=_params(params, cad_params=self._CAD_PARAMS))
+        super().__init__(name, parameters=_params(params, cad_params=self._CAD_PARAMS),
+                         models=FakeSetup._UNSET)
         self._models = _make_object_collection()
         self._fixtures = _make_object_collection()
         self._stock = _make_object_collection()
@@ -153,14 +154,36 @@ def _install(monkeypatch, setups=("Setup1",), require_enable=True):
     return cam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────
 
 class TestGuards:
+    @pytest.mark.parametrize("extra,offender", [
+        ({"rename": "SetupB"}, "SetupB"),
+        ({"parameters": {"NoSuchProbeParameter": "1 mm"}}, "NoSuchProbeParameter"),
+        ({"models": ["MissingProbeBody"]}, "MissingProbeBody"),
+        ({"wcs": {"bogus": True}}, "bogus"),
+    ])
+    def test_mode_independent_refusal_preserves_stock_mode_and_setup(self, monkeypatch, extra, offender):
+        cam = _install(monkeypatch, setups=("SetupA", "SetupB"))
+        target = cam.setups.item(0)
+        target.stockMode = _STOCK_MODES["FixedBoxStock"]
+        def state():
+            return [(s.name, s.stockMode, s.fixtureEnabled, s.machine,
+                     tuple(s.models), tuple(s.fixtures), tuple(s.stockSolids),
+                     [(p.name, p.expression, p.value.value) for p in s.parameters._coll._items]) for s in cam.setups]
+        before = state()
+        result = ces.handler(setup="SetupA", stock_mode="fixed_cylinder", **extra)
+        assert result["isError"] is True and offender in result["message"]
+        assert state() == before
+        control = _payload(ces.handler(setup="SetupA", stock_mode="fixed_cylinder"))
+        assert control["stock_mode_set"] == "fixed_cylinder"
+        assert target.stockMode == _STOCK_MODES["FixedCylinderStock"]
+        _payload(ces.handler(setup="SetupA", stock_mode="fixed_box"))
+        assert state() == before
+
     def test_no_cam(self, monkeypatch):
         monkeypatch.setattr(ces, "get_cam", lambda: (None, "no CAM data"))
         res = ces.handler(setup="Setup1", parameters={"stockZHigh": "1"})
@@ -192,6 +215,83 @@ class TestGuards:
 
 
 # ── set parameters (WCS / stock / anything) ─────────────────────────────────
+
+_JOB_STOCK_DEFAULT = "(job_type == 'turning') ? 'fixedcylinder' : 'default'"
+
+
+def _write_mode(setup, mode):
+    """Setup.stockMode's setter: the mode lands and job_stockMode reads that mode's literal."""
+    setup.__dict__["stockMode"] = mode
+    literal = "'fixedcylinder'" if mode == _STOCK_MODES["FixedCylinderStock"] else "'default'"
+    setup.parameters.itemByName("job_stockMode").expression = literal
+
+
+_MODE_REWRITES_JOB_STOCK = property(lambda setup: setup.__dict__["stockMode"], _write_mode)
+
+
+@pytest.fixture
+def setup_retention(monkeypatch):
+    def prepare(case="machine"):
+        target = _install(monkeypatch).setups.item(0)
+        if case == "setter":
+            _replace(target.parameters, _EnumRefusingSetupParam("wcs_origin_boxPoint", "'top center'"))
+            _replace(target.parameters, FakeCAMParameter("job_stockMode", _JOB_STOCK_DEFAULT))
+            monkeypatch.setattr(_Setup, "stockMode", _MODE_REWRITES_JOB_STOCK, raising=False)
+        elif case == "collection":
+            monkeypatch.setattr(target, "models_stick", False)
+        elif case == "restore":
+            _replace(target.parameters, _ThirdValueSetupParam("stockZHigh", "0.0"))
+        return target
+    return prepare
+
+
+def _observed_setup(result):
+    assert result["isError"] is True
+    return json.loads(result["message"].split("Observed setup state: ", 1)[1].split(". Null fields", 1)[0])
+
+
+class TestRetainedSetupState:
+    def test_machine_resolution_refuses_before_changing_stock_mode(self, setup_retention):
+        target = setup_retention()
+        before = target.stockMode
+        result = ces.handler(setup="Setup1", stock_mode="fixed_cylinder", machine="Nope|X")
+        assert result["isError"] is True and "Nope|X" in result["message"]
+        assert target.stockMode == before
+
+    def test_setter_refusal_names_retained_stock_mode_and_completed_parameter(self, setup_retention):
+        setup_retention("setter")
+        result = ces.handler(setup="Setup1", stock_mode="fixed_cylinder",
+                             parameters={"stockZHigh": "1 mm", "wcs_origin_boxPoint": "invalid"})
+        state = _observed_setup(result)
+        assert state["before"]["stock_mode"] == "relative_box"
+        assert state["now"]["stock_mode"] == "fixed_cylinder"
+        assert state["now"]["parameters"] == {"stockZHigh": "1 mm",
+                                              "wcs_origin_boxPoint": "'top center'",
+                                              "job_stockMode": "'fixedcylinder'"}
+        assert "Already applied: none" not in result["message"]
+        msg = result["message"]
+        assert ("Still changed after this failure: stock_mode reads 'fixed_cylinder' "
+                "(was 'relative_box')") in msg
+        assert "stockZHigh reads '1 mm'" in msg
+        assert "job_stockMode reads \"'fixedcylinder'\"" in msg
+        assert "wcs_origin_boxPoint reads" not in msg      # the unmoved row is not listed
+
+    def test_collection_refusal_keeps_parameter_and_mode_evidence(self, setup_retention):
+        setup_retention("collection")
+        result = ces.handler(setup="Setup1", stock_mode="fixed_cylinder",
+                             parameters={"stockZHigh": "1 mm"}, models=["Plate"])
+        state = _observed_setup(result)
+        assert state["now"]["stock_mode"] == "fixed_cylinder"
+        assert state["now"]["parameters"]["stockZHigh"] == "1 mm"
+        assert state["now"]["models_count"] == 0
+
+    def test_failed_restoration_is_not_reported_as_rolled_back(self, setup_retention):
+        setup_retention("restore")
+        result = ces.handler(setup="Setup1", parameters={"stockZHigh": "1 mm"})
+        assert "Parameter restoration is UNCONFIRMED for: stockZHigh" in result["message"]
+        assert "Rolled back all" not in result["message"]
+        assert _observed_setup(result)["now"]["parameters"]["stockZHigh"] == "999"
+
 
 class TestParameters:
     def test_sets_wcs_and_stock_params(self, monkeypatch):
@@ -398,6 +498,7 @@ class TestParameterNoTake:
         res = ces.handler(setup="Setup1", parameters={"stockZHigh": "2.5"})
         assert res["isError"] is True
         assert "UNCONFIRMED" in res["message"] and "stockZHigh" in res["message"]
+        assert "Unread after this failure: stockZHigh." in res["message"]
         # and NOT worded as a no-take: no expression was read to say what it still holds
         assert "reads back" not in res["message"]
 
@@ -421,6 +522,8 @@ class TestParameterNoTake:
         assert res["isError"] is True
         assert sp.itemByName("wcs_origin_boxPoint").expression == "'top center'"   # rolled back
         assert "Rolled back all 2 parameter(s)" in res["message"]
+        assert "Observed setup fields match their pre-call values." in res["message"]
+        assert "after this failure" not in res["message"]
 
     def test_a_store_that_quotes_the_request_is_not_a_no_take(self, monkeypatch):
         # What the receipt measured is two-sided: a numeric parameter's expression reads back the
@@ -713,6 +816,80 @@ class TestMachine:
         # machine-only edit is NOT 'nothing to do'
         out = _payload(ces.handler(setup="Setup1", machine="Haas|VF-2"))
         assert out["machine_set"] == "Haas VF-2"
+
+
+class _PrintingSetup(_Setup):
+    """A setup holding a print setting; `sticks` False models an assignment that does not take."""
+    sticks = True
+
+    @property
+    def printSetting(self):
+        return self._setting
+
+    @printSetting.setter
+    def printSetting(self, value):
+        if self.sticks:
+            self._setting = value
+
+
+def _printing(monkeypatch, setting, additive=True, sticks=True):
+    """One setup, additive unless told otherwise, holding an FFF machine and a 'PLA' setting."""
+    from conftest import FakePrintSetting
+    setup = _PrintingSetup("Setup1", dict(_DEFAULT_PARAMS))
+    setup._setting, setup.sticks = FakePrintSetting("PLA", "FFF"), sticks
+    setup.operationType = (ces.adsk.cam.OperationTypes.AdditiveOperation if additive
+                           else ces.adsk.cam.OperationTypes.MillingOperation)
+    setup._machine = FakeMachine(description="Generic FFF Machine")
+    monkeypatch.setattr(ces, "get_cam", lambda: (make_cam(setup), None))
+    monkeypatch.setattr(ces, "resolve_machine",
+                        lambda name: (FakeMachine(description="Haas VF-2"), "Haas VF-2", None))
+    monkeypatch.setattr(ces, "resolve_print_setting", lambda name, desc="": (setting, setting.name, None))
+    return setup
+
+
+class TestPrintSetting:
+    def test_a_compatible_setting_is_assigned_and_read_back(self, monkeypatch):
+        from conftest import FakePrintSetting
+        wanted = FakePrintSetting("ABS", "FFF", "tough")
+        setup = _printing(monkeypatch, wanted)
+        out = _payload(ces.handler(setup="Setup1", print_setting="ABS"))
+        assert setup.printSetting is wanted
+        assert (out["print_setting_set"], out["print_setting_technology"]) == ("ABS", "FFF")
+
+    @pytest.mark.parametrize("fits", [False, None])
+    def test_a_setting_the_machine_cannot_use_is_refused_and_nothing_is_assigned(self, monkeypatch, fits):
+        from conftest import FakePrintSetting
+        setup = _printing(monkeypatch, FakePrintSetting("316L", "SLM", fits=fits))
+        res = ces.handler(setup="Setup1", print_setting="316L", rename="Renamed")
+        assert res["isError"] is True
+        assert ("not compatible with machine" if fits is False else "did not read") in res["message"]
+        assert setup.printSetting.name == "PLA" and setup.name == "Setup1"
+
+    def test_the_setting_is_judged_against_the_machine_this_call_assigns(self, monkeypatch):
+        from conftest import FakePrintSetting
+        seen = []
+        wanted = FakePrintSetting("316L", "SLM")
+        wanted.isCompatibleWithMachine = lambda machine: seen.append(machine.description) or True
+        _printing(monkeypatch, wanted)
+        _payload(ces.handler(setup="Setup1", print_setting="316L", machine="Haas|VF-2"))
+        assert seen == ["Haas VF-2"]
+
+    def test_an_assignment_that_does_not_take_is_an_error(self, monkeypatch):
+        from conftest import FakePrintSetting
+        _printing(monkeypatch, FakePrintSetting("ABS", "FFF"), sticks=False)
+        res = ces.handler(setup="Setup1", print_setting="ABS")
+        assert res["isError"] is True and "did not take" in res["message"]
+
+    def test_a_setup_that_is_not_additive_refuses_a_print_setting(self, monkeypatch):
+        from conftest import FakePrintSetting
+        _printing(monkeypatch, FakePrintSetting("ABS", "FFF"), additive=False)
+        res = ces.handler(setup="Setup1", print_setting="ABS")
+        assert res["isError"] is True and "applies to an additive setup" in res["message"]
+
+    def test_a_description_without_a_setting_is_refused(self, monkeypatch):
+        _install(monkeypatch)
+        res = ces.handler(setup="Setup1", print_setting_description="tough")
+        assert res["isError"] is True and "pass both or neither" in res["message"]
 
 
 class _JobTypeParam(FakeCAMParameter):

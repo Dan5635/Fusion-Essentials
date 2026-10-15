@@ -6,14 +6,14 @@ model selection (handles / names / all-bodies default), naming, and the no-desig
 guards. No live Fusion - fakes mimic adsk.cam.CAM.setups.
 """
 
-import json
+import pytest
 from types import SimpleNamespace
 
 import adsk.cam
 import adsk.fusion
 
 from conftest import (ADDITIVE_SETUP_SEEDS, BRepBody, FakePrintSetting, FakeSetup, FakeSetups,
-                      MakeComp, install, load_tool, make_design)
+                      MakeComp, install, load_tool, make_design, payload as _payload)
 
 cs = load_tool("cam_create_setup")
 
@@ -42,11 +42,6 @@ def _install(monkeypatch, bodies=None, has_cam=True, setups=None):
     # models is a TargetRefList -> resolves through _common.design()/target_component()
     install(cs, design)
     return design, cam, comp
-
-
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
 
 
 # ── operation type ───────────────────────────────────────────────────────────
@@ -281,6 +276,15 @@ class TestAdditive:
         assert out["print_setting"] == "316L_040_FlexM291 1.00"
         assert out["print_setting_technology"] == "SLM"
 
+    @pytest.mark.parametrize("fits", [False, None])
+    def test_a_print_setting_the_machine_cannot_use_is_refused_before_the_add(self, monkeypatch, fits):
+        _, cam, _m, _s = _additive(monkeypatch, setting=FakePrintSetting("PLA", "FFF", fits=fits))
+        res = cs.handler(operation_type="additive", machine="EOS|M 290", print_setting="PLA")
+        assert res["isError"] is True and "EOS M 290" in res["message"]
+        assert ("not compatible" if fits is False else "did not read") in res["message"]
+        assert "was not assigned" in res["message"]
+        assert cam.setups.count == 0
+
     def test_additive_without_a_machine_is_refused_before_the_add(self, monkeypatch):
         # Measured: setups.add of a machineless additive input RAISES and no setup lands, so the
         # ask happens here rather than surfacing that raise.
@@ -345,7 +349,7 @@ class TestAdditive:
         # only the description can, which is why it is compared and not merely published.
         _, cam, machine, _s = _additive(
             monkeypatch, setting=FakePrintSetting("Formlabs SLS", "FORMLABS_SLS"))
-        landed = FakeSetup("Setup1", machine=machine)
+        landed = FakeSetup("Setup1", machine=machine, operation_type=adsk.cam.OperationTypes.AdditiveOperation)
         landed.printSetting = FakePrintSetting("Formlabs SLS", "FORMLABS_SLS")
         landed.printSetting.description = "Generic Print Setting for Formlabs Fuse 1 machines."
         _swallowing_add(cam, landed)
@@ -380,17 +384,30 @@ class TestAdditive:
         assert cam.setups._added[-1].printSetting is None
         assert out["machine"] == "EOS M 290" and "print_setting" not in out
 
+    def test_the_advertised_vendor_model_form_reaches_the_shared_resolver_whole(self, monkeypatch):
+        # The 'machine' input advertises 'vendor|model', and resolve_machine is what answers that
+        # form - a request split or re-cased on the way there is a different request.
+        asked = []
+        _, cam, machine, _s = _additive(monkeypatch)
+        inner = cs.resolve_machine
+        monkeypatch.setattr(cs, "resolve_machine", lambda req: asked.append(req) or inner(req))
+        out = _payload(cs.handler(operation_type="additive", machine="EOS|M 290"))
+        assert asked == ["EOS|M 290"]
+        assert cam.setups._added[-1].machine is machine and out["machine"] == "EOS M 290"
+        described = cs.tool.to_dict()["inputSchema"]["properties"]["machine"]["description"]
+        assert "'vendor|model'" in described
+
     def test_a_machine_that_does_not_read_back_is_an_error_not_a_note(self, monkeypatch):
         # A swallowed machine assignment must not report created=true: the setup would print on a
         # printer nothing asked for.
         _, cam, _m, _s = _additive(monkeypatch)
-        _swallowing_add(cam, FakeSetup("Setup1", machine=None))
+        _swallowing_add(cam, FakeSetup("Setup1", machine=None, operation_type=adsk.cam.OperationTypes.AdditiveOperation))
         res = cs.handler(operation_type="additive", machine="EOS|M 290")
         assert res["isError"] is True and "Setup.machine reads" in res["message"]
 
     def test_a_print_setting_that_reads_back_as_another_is_an_error(self, monkeypatch):
         _, cam, machine, _s = _additive(monkeypatch)
-        landed = FakeSetup("Setup1", machine=machine)
+        landed = FakeSetup("Setup1", machine=machine, operation_type=adsk.cam.OperationTypes.AdditiveOperation)
         landed.printSetting = FakePrintSetting("ABS (Direct Drive)", "FFF")
         _swallowing_add(cam, landed)
         res = cs.handler(operation_type="additive", machine="EOS|M 290",
@@ -424,3 +441,76 @@ class TestAdditive:
         out = _payload(cs.handler(operation_type="additive", machine="EOS|M 290"))
         assert out["operation_count"] == 0
         assert "It is not empty" not in out["note"]
+
+
+class TestFlatPatternCutting:
+    def test_cutting_uses_flat_body_and_verifies_setup_models(self, monkeypatch):
+        folded = BRepBody("Folded", entity_token="folded")
+        flat = BRepBody("Flat", entity_token="flat")
+        flat.isSolid = True
+        comp = MakeComp(name="Blank", bodies=[folded], entity_token="root")
+        design = make_design(comp=comp)
+        comp.parentDesign = design
+        folded.parentComponent = comp
+        folded.isSheetMetal = True
+        folded.isSolid = True
+        comp.flatPattern = SimpleNamespace(foldedBody=folded, flatBody=flat)
+        landed = FakeSetup("Setup1", operation_type=adsk.cam.OperationTypes.JetOperation,
+                           models=[flat])
+        cam = SimpleNamespace(setups=FakeSetups(new_setup=landed))
+        monkeypatch.setattr(adsk.fusion, "BRepBody", BRepBody, raising=False)
+        monkeypatch.setattr(cs, "get_cam", lambda: (cam, None))
+        install(cs, design)
+        out = _payload(cs.handler(operation_type="cutting", flat_patterns=["Folded"],
+                                  name="Flat cut"))
+        assert cam.setups._added[-1].models == [flat]
+        assert out["flat_models_verified"] is True
+        assert out["flat_sources"] == [{"component": "Blank", "folded_body": "Folded",
+                                        "flat_body": "Flat"}]
+        assert out["operation_type"] == "cutting"
+
+    def test_cutting_refuses_missing_flat_before_setup_add(self, monkeypatch):
+        folded = BRepBody("Folded", entity_token="folded")
+        comp = MakeComp(name="Blank", bodies=[folded], entity_token="root")
+        design = make_design(comp=comp)
+        comp.parentDesign = design
+        folded.parentComponent = comp
+        folded.isSheetMetal = True
+        folded.isSolid = True
+        cam = SimpleNamespace(setups=FakeSetups())
+        monkeypatch.setattr(adsk.fusion, "BRepBody", BRepBody, raising=False)
+        monkeypatch.setattr(cs, "get_cam", lambda: (cam, None))
+        install(cs, design)
+        result = cs.handler(operation_type="cutting", flat_patterns=["Folded"])
+        assert result["isError"] is True
+        assert "sheet_create_flat_pattern" in result["message"]
+        assert cam.setups.count == 0
+
+
+@pytest.fixture
+def flat_setup_refusal(monkeypatch):
+    _, cam, _ = _install(monkeypatch)
+    flat = BRepBody("Flat", entity_token="flat")
+    monkeypatch.setattr(cs, "_flat_models", lambda design, refs: ([flat], [], None))
+
+    def fail(message):
+        def create_input(_kind):
+            raise RuntimeError(message)
+        monkeypatch.setattr(cam.setups, "createInput", create_input)
+
+    return cam, fail
+
+
+@pytest.mark.parametrize("message,has_remedy", [
+    ("3 : Used entity could not be matched in manufacturing tree", True),
+    ("3 : Setup creation failed", False),
+])
+def test_flat_tree_refusal_names_workspace_recovery(flat_setup_refusal, message, has_remedy):
+    cam, fail = flat_setup_refusal
+    fail(message)
+    result = cs.handler(operation_type="cutting", flat_patterns=["Folded"])
+    assert result["isError"] is True
+    assert message in result["message"]
+    assert ("Design and back to Manufacture" in result["message"]) is has_remedy
+    assert ("view_switch_workspace" in result["message"]) is has_remedy
+    assert cam.setups.count == 0

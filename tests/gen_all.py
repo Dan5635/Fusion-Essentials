@@ -1,15 +1,11 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Run every doc generator (or every --check) in ONE process.
+"""Run all repository generators or their freshness checks in one process.
 
-Each generator pays a full mocked-registry load when run as its own process; importing them here
-means that load happens once, so the staleness check stays fast. Same contracts as running them
-individually: writes tests/generated/* (plus the CLAUDE.md spliced maps and the guidance-generated
-Claude skill), or with --check exits 1 naming what is stale.
-
-    py -3 tests/gen_all.py           # regenerate everything
-    py -3 tests/gen_all.py --check   # exit 1 if any generated artifact is stale
+Generators share one mocked-registry load. Outputs include generated maps, the API surface,
+and readable guidance; the guidance generator can also export an optional skill package.
+--check names stale outputs without rewriting them.
 """
 
 import argparse
@@ -56,7 +52,9 @@ def main():
             # The RETURN value is a verdict too. Discarding it - reading only SystemExit - means a
             # generator that reports failure by returning a non-zero code can never fail
             # `gen_all --check`, and the stale doc it found is aggregated as a pass.
-            code = exit_code(mod.main())
+            verdict = (mod.check_recorded_build() if args.check and name == "gen_api_surface"
+                       else mod.main())
+            code = exit_code(verdict)
         except SystemExit as e:
             code = exit_code(e.code)
         if code:

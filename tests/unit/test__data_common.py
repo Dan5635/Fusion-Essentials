@@ -72,6 +72,70 @@ class TestProjectIdPrecedence:
         got, _available = dm._find_project(data, name="requested name")
         assert got is wrong
 
+    def test_duplicate_exact_project_names_are_refused_naming_each_candidate_id(self):
+        data = FakeData(projects=[FakeDataProject("Twin", project_id="p1"),
+                                  FakeDataProject("Other", project_id="p3"),
+                                  FakeDataProject("twin", project_id="p2")])
+        with pytest.raises(ValueError, match="matches 2 projects") as refused:
+            dm._find_project(data, name="Twin")
+        text = str(refused.value)
+        assert "'Twin' (id p1); 'twin' (id p2)." in text and "Other" not in text
+        assert text.endswith("Refusing to guess which; pass an exact project_id.")
+
+    def test_exact_project_id_does_not_read_unrelated_names(self):
+        class BlindNameProject:
+            id = "p-hidden"
+
+            @property
+            def name(self):
+                raise RuntimeError("name unreadable")
+
+        target = FakeDataProject("Target", project_id="p-target")
+        data = FakeData(projects=[BlindNameProject(), target])
+        got, _available = dm._find_project(data, name="Anything", project_id="p-target")
+        assert got is target
+
+    def test_unreadable_name_census_refuses_even_when_a_hit_was_seen(self):
+        class BlindNameProject:
+            id = "p-hidden"
+
+            @property
+            def name(self):
+                raise RuntimeError("name unreadable")
+
+        data = FakeData(projects=[FakeDataProject("Twin", project_id="p1"),
+                                  BlindNameProject()])
+        with pytest.raises(RuntimeError, match="name listing is incomplete"):
+            dm._find_project(data, name="Twin")
+
+    @pytest.mark.parametrize("problem", ["duplicate", "incomplete"])
+    def test_project_lookup_failure_keeps_cause_and_offers_supported_file_id_route(
+            self, monkeypatch, problem):
+        file = _file("part.f3d", "urn:lineage")
+        root = FakeDataFolder("Root", files=[file], is_root=True)
+        project = FakeDataProject("Twin", project_id="p1", root_folder=root)
+        if problem == "duplicate":
+            projects = [project, FakeDataProject("twin", project_id="p2")]
+            cause = "matches 2 projects"
+        else:
+            class BlindNameProject:
+                id = "p-hidden"
+
+                @property
+                def name(self):
+                    raise RuntimeError("synthetic unread project name")
+
+            projects = [project, BlindNameProject()]
+            cause = "name listing is incomplete"
+        data = FakeData(projects=projects, files_by_id={"urn:lineage": file})
+        monkeypatch.setattr(dm, "app", FakeApplication(data=data))
+
+        got, meta, err = dm.resolve_file_reference("part.f3d", project="Twin")
+        assert got is None and meta is None
+        assert cause in err
+        assert ("Get the file's lineage URN with data_get(project_id=<id>), then pass it "
+                "as 'file'.") in err
+
 
 class TestImmediateFolderFileCensus:
     def test_an_unreadable_collection_is_not_an_empty_folder(self):
@@ -365,9 +429,8 @@ class TestResolveFileReference:
         got, _meta, err = dm.resolve_file_reference("notes.txt", project="Ghost")
         assert got is None and "Sample Project" in err
 
-    def test_a_match_inside_a_capped_listing_is_flagged_not_claimed_unique(self, cloud, monkeypatch):
-        # Uniqueness is only proven over what was actually walked - a capped listing never compared
-        # the rest, so the caller is told instead of being left to assume.
+    def test_a_match_inside_a_capped_listing_is_refused(self, cloud, monkeypatch):
+        # A capped prefix cannot establish that the one observed file name is unique.
         import mcpServer.tools._data_read as data_read
         df = _file("probe_note.txt", "urn:lin:AAA")
         docs = FakeDataFolder("Docs", files=[df, _file("other.txt", "urn:lin:BBB")])
@@ -375,8 +438,17 @@ class TestResolveFileReference:
         monkeypatch.setattr(data_read, "_MAX_FILES", 1)
         got, meta, err = dm.resolve_file_reference(
             "probe_note.txt", project="Sample Project")
-        assert err is None and got is df
-        assert meta["scope_truncated"] is True
+        assert got is None and meta is None
+        assert "name census is incomplete" in err and "reached its cap" in err
+
+    def test_a_readable_hit_with_an_unreadable_file_name_is_refused(self, cloud):
+        df = _file("probe_note.txt", "urn:lin:AAA")
+        docs = FakeDataFolder("Docs", files=[df], is_root=True)
+        docs._files.append(_BlindNameFile("hidden.txt", file_id="urn:lin:HIDDEN"))
+        cloud(docs, {"urn:lin:AAA": df})
+        got, meta, err = dm.resolve_file_reference("probe_note.txt", project="Sample Project")
+        assert got is None and meta is None
+        assert "name census is incomplete" in err and "1 file name(s) could not be read" in err
 
     def test_a_complete_listing_is_not_flagged(self, cloud):
         df = _file("probe_note.txt", "urn:lin:AAA")
@@ -459,10 +531,10 @@ class TestResolveFileReferenceWithUnreadableFolders:
         got, _meta, err = dm.resolve_file_reference(
             "ghost.txt", project="Sample Project")
         assert got is None
-        assert "No file named 'ghost.txt'" in err
-        assert "1 folder(s) could not be read and were not searched" in err
+        assert "name census is incomplete" in err
+        assert "1 folder(s) could not be read" in err
         assert "Archive" in err                       # WHICH hole
-        assert "pass the file's id" in err
+        assert "Pass the file's lineage id" in err
 
     def test_an_ambiguity_refusal_carries_the_same_caveat(self, cloud):
         # Two hits already refuse; the caveat still matters because a THIRD could be in the hole,
@@ -474,19 +546,18 @@ class TestResolveFileReferenceWithUnreadableFolders:
         cloud(root, {})
         got, _meta, err = dm.resolve_file_reference(
             "notes.txt", project="Sample Project")
-        assert got is None and "names 2 files" in err
-        assert "could not be read and were not searched" in err
+        assert got is None and "name census is incomplete" in err
+        assert "Matching files read so far" in err
         assert "Archive" in err
 
-    def test_a_unique_match_carries_the_hole_count_in_its_meta(self, cloud):
-        # The dangerous case: exactly one hit, so nothing LOOKS wrong - but the second file of that
-        # name could be sitting in the folder that never opened. The count travels with the result.
+    def test_a_unique_match_with_a_hole_is_refused(self, cloud):
+        # A second file of that name could be sitting in the folder that never opened.
         df = _file("probe_note.txt", "urn:lin:AAA")
         cloud(self._tree_with_a_dead_folder(), {"urn:lin:AAA": df})
         got, meta, err = dm.resolve_file_reference(
             "probe_note.txt", project="Sample Project")
-        assert err is None and got is df
-        assert meta["folders_unreadable"] == 1
+        assert got is None and meta is None
+        assert "name census is incomplete" in err and "Archive" in err
 
     def test_a_fully_readable_project_reports_no_hole(self, cloud):
         docs = FakeDataFolder("Docs", files=[_file("probe_note.txt", "urn:lin:AAA")])
@@ -520,3 +591,26 @@ class TestResolveFileReferenceWithUnreadableFolders:
         assert f"{cap + 1} folder(s) could not be read" in err        # the COUNT is complete
         assert err.count("Dead") == cap                              # the NAMES are capped
         assert "Dead%02d" % cap not in err
+
+
+@pytest.mark.parametrize("module_name", ["data_download_file", "data_move_file"])
+def test_file_tool_name_refusal_uses_only_supported_scope_inputs(module_name):
+    tool = load_tool(module_name)
+    args = ({"destination_folder": "C:/unused"} if module_name == "data_download_file"
+            else {"target_folder": "/"})
+    result = tool.handler(file="part.f3d", **args)
+    assert result["isError"] is True
+    assert "'project'" in result["message"] and "lineage URN as 'file'" in result["message"]
+    assert "project_id" not in result["message"]
+
+
+@pytest.mark.parametrize("id_input", [None, "project_id"])
+def test_duplicate_project_file_remedy_respects_caller_id_input(monkeypatch, id_input):
+    data = FakeData(projects=[FakeDataProject("Twin", project_id="p1"),
+                              FakeDataProject("Twin", project_id="p2")])
+    monkeypatch.setattr(dm, "app", FakeApplication(data=data))
+    got, meta, message = dm.resolve_file_reference("part.f3d", project="Twin", id_input=id_input)
+    assert got is None and meta is None
+    assert "p1" in message and "p2" in message
+    assert ("pass an exact project_id" in message) is (id_input is not None)
+    assert "then pass it as 'file'" in message

@@ -46,9 +46,9 @@ def handler(occurrence: str = "", dx: float = 0.0, dy: float = 0.0, dz: float = 
         return error("Provide a translation (dx/dy/dz), rotate_deg, or rotate_x/y/z - no movement specified.")
     if (rotate_deg or 0) and multi:
         return error("Use EITHER rotate_deg (single axis) OR rotate_x/y/z (multi-axis), not both.")
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     # The shared OccurrenceRef logic: an entityToken handle (the exact identity) or a
     # fullPathName/name, REFUSING an ambiguous one instead of grabbing the first instance.
     occ, occ_err = _inputs._resolve_occurrence(occurrence, occurrence)
@@ -183,6 +183,20 @@ def handler(occurrence: str = "", dx: float = 0.0, dy: float = 0.0, dz: float = 
             "to keep it, and assembly_get to confirm the joints stayed healthy (a move that fights "
             "the joints over-constrains the solve).")
         note = "Occurrence posed (jointed - see jointed_warning). Pair with view_screenshot to view."
+    root_occurrences = safe(lambda: design.rootComponent.occurrences)
+    root_count = safe(lambda: root_occurrences.count) if root_occurrences is not None else None
+    first = (safe(lambda: root_occurrences.item(0))
+             if isinstance(root_count, int) and root_count > 0 else None)
+    first_key = _common.native_identity(first) if first is not None else None
+    target_key = _common.native_identity(occ)
+    first_path = safe(lambda: first.fullPathName) if first is not None else None
+    # Capture can reset a pending free move of the first root occurrence while it is ground-to-parent.
+    if (first_key is not None and first_key == target_key and isinstance(first_path, str)
+            and first_path and safe(lambda: occ.isGroundToParent) is True):
+        note += (f" '{first_path}' is the first root occurrence and is ground-to-parent; capture "
+                 "can reset this pending move. Release with "
+                 f"assembly_ground(occurrence='{first_path}', ground_to_parent=false) "
+                 "before moving/capturing.")
     result["note"] = note
     return ok(result)
 

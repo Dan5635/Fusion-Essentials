@@ -43,7 +43,10 @@ def _version_age_seconds(version):
 def _wanted_number(version_number):
     """The version number the caller named as an int, or None when it is not one."""
     try:
-        return int(version_number)
+        if type(version_number) is not int and not isinstance(version_number, str):
+            return None
+        number = int(version_number)
+        return number if number > 0 else None
     except (TypeError, ValueError):
         return None
 
@@ -76,11 +79,10 @@ def _find_version(df, version_number, version_id):
         n = safe(lambda v=v: v.versionNumber)
         if n is not None:
             available.append(n)
-        if found is None:
-            if version_number is not None and n == int(version_number):
-                found = v
-            elif version_id and safe(lambda v=v: v.versionId) == version_id:
-                found = v
+        if (found is None and (version_number is not None or version_id)
+                and (version_number is None or n == version_number)
+                and (not version_id or safe(lambda v=v: v.versionId) == version_id)):
+            found = v
     return found, sorted(set(available), reverse=True)
 
 
@@ -118,10 +120,18 @@ def handler(version_number=None, version_id: str = "") -> dict:
     vid = (version_id or "").strip()
     if version_number is None and not vid:
         return error("Specify which version to restore: pass version_number (an integer) or version_id.")
+    if version_number is not None:
+        number = _wanted_number(version_number)
+        if number is None:
+            return error(f"version_number {version_number!r} is not a positive integer. Use a "
+                         "version number from doc_get(include=['versions']).")
+        version_number = number
 
     lineage = safe(lambda: df.id)
     latest_before = safe(lambda: df.latestVersionNumber)
     wanted = f"number {version_number}" if version_number is not None else f"id '{vid}'"
+    if version_number is not None and vid:
+        wanted += f" and id '{vid}'"
     refetched = False        # the window is paid at most ONCE per call, whichever branch spends it
     target, available = _find_version(df, version_number, vid)
     if target is None:
@@ -136,7 +146,8 @@ def handler(version_number=None, version_id: str = "") -> dict:
                 latest_before = latest_now
         if target is None:
             return error(f"No version matching {wanted} in this document's history. "
-                         f"Available version numbers (newest-first): {available}.")
+                         f"Available version numbers (newest-first): {available}. "
+                         "Use one selector, or matching number/id from doc_get(include=['versions']).")
 
     tnum = safe(lambda: target.versionNumber)
     if latest_before is not None and tnum == latest_before:

@@ -310,6 +310,12 @@ _PLATFORM_ACTIVE = (
     "design_activate_component('root'), then retry - or drop it from 'shapes'. Platform: {msg}")
 
 
+def _raised(text):
+    """The error for a raise around the add, qualified: whether it leaves a feature is unmeasured."""
+    return error(text + " Not measured whether this raise leaves an arrange feature; re-read "
+                 "with design_get(include=['timeline']).")
+
+
 def _active_shapes(design, names, occs):
     """The shapes whose component IS the design's active edit target - the component where new
     geometry lands. A comparison that could not be made names nothing."""
@@ -337,9 +343,9 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
     label = _SOLVER_LABEL[member]
     is_3d = label == "3d"
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     rot_key, rot_err = _ROTATION.resolve(rotation)
     if rot_err:
@@ -465,6 +471,7 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
         return (safe(lambda: t.x), safe(lambda: t.y), safe(lambda: t.z)) if t is not None else None
     before_pos = {nm: _translation(o) for nm, o in zip(resolved, occs)}
     before_paths = set(_common.occurrence_paths(design))
+    input_paths = [safe(lambda o=o: o.fullPathName) for o in occs]
 
     applied = {}
     try:
@@ -556,7 +563,7 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
     except Exception as e:
         msg = str(e)
         if any(t in msg.lower() for t in ("extension", "entitle", "license", "subscrib")):
-            return error(f"Arrange ({label}) hit an extension-only setting on this account: "
+            return _raised(f"Arrange ({label}) hit an extension-only setting on this account: "
                           f"{msg}. The solvers run on the base licence with a boundary or an "
                           "envelope and a spacing; drop the setting the call added (rotation, "
                           "margin, quantity, part_in_part) or enable the Manufacturing Extension.")
@@ -566,24 +573,24 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
         if _GROUNDED_CODE in msg or _PINNED_TEXT in msg:
             pinned = _grounded_shapes(resolved, occs)
             if pinned:
-                return error(_PLATFORM_PINNED.format(
+                return _raised(_PLATFORM_PINNED.format(
                     names=_common.named_with_remainder(pinned), msg=msg))
             # Name the code only when the raise actually carried it - the measured create-path
             # text ("3 : Pinned component cannot be arranged") never does.
             code_clause = f" with '{_GROUNDED_CODE}'" if _GROUNDED_CODE in msg else ""
-            return error(_PLATFORM_PINNED_UNNAMED.format(code_clause=code_clause, msg=msg))
+            return _raised(_PLATFORM_PINNED_UNNAMED.format(code_clause=code_clause, msg=msg))
         # The pre-flight above refuses on a comparison that ANSWERED; a component read that
         # declined there can answer here, and the platform's own message carries no cause at all.
         still_active = _active_shapes(design, resolved, occs)
         if still_active:
-            return error(_PLATFORM_ACTIVE.format(
+            return _raised(_PLATFORM_ACTIVE.format(
                 names=_common.named_with_remainder(still_active), msg=msg))
-        return error(f"Arrange failed: {msg}")
+        return _raised(f"Arrange failed: {msg}")
     if not feature:
         return error(_common.no_feature_error(design, "Arrange"))
 
     # Read the effect back: which inputs actually MOVED, and which occurrence paths the feature
-    # ADDED (the solver restructures parts under Envelope occurrences and can mint copies).
+    # ADDED (the feature adds Arrange/Envelope occurrences and can mint copies).
     moved = []
     for nm, o in zip(resolved, occs):
         now = _translation(o)
@@ -591,14 +598,13 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
         if now is not None and was is not None and any(
                 a is not None and b is not None and abs(a - b) > 1e-6 for a, b in zip(now, was)):
             moved.append(nm)
-    new_paths = sorted(set(_common.occurrence_paths(design)) - before_paths)
+    after_paths = set(_common.occurrence_paths(design))
+    new_paths = sorted(after_paths - before_paths)
+    lost_paths = [p for p in input_paths if p and p not in after_paths]
     if not moved and not new_paths:
-        rolled = bool(safe(lambda: feature.deleteMe(), False))
         return error("Arrange reported success but NOTHING happened - no input occurrence moved "
                      "and no occurrence was added. "
-                     + ("The empty arrange feature was rolled back." if rolled
-                        else "The empty arrange feature could not be rolled back - remove it with "
-                             "design_delete_feature.")
+                     + _common.delete_failed_feature(design, feature)[1]
                      + f" Check the {'envelope' if want_plane else 'boundary profile'} holds the "
                        "shapes at this spacing.")
 
@@ -607,10 +613,9 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
     if stat_unarranged and not partial:
         return error(
             f"Arrange left {stat_unarranged} component(s) UNPLACED - its statistics read arranged "
-            f"{stat_arranged}, unarranged {stat_unarranged}. The feature "
-            f"'{safe(lambda: feature.name)}' IS in the model with the rest placed: enlarge the "
-            "envelope, lower 'spacing', or pass partial=true, then retry - design_delete_feature "
-            "removes this one.")
+            f"{stat_arranged}, unarranged {stat_unarranged}, with the rest placed. Enlarge the "
+            "envelope, lower 'spacing', or pass partial=true, then retry. "
+            + _common.failed_effect_remedy(design, feature))
 
     rows = _envelope_rows(feature, out_factor)
     note = "Shapes arranged within the envelope. Pair with view_screenshot (top) to view the nest."
@@ -621,8 +626,11 @@ def handler(boundary_sketch: str = "", shapes: str = "", solver: str = "true_sha
     if new_paths and not moved:
         note += (" new_occurrences holds the copies; moved reads empty - re-arranging stacks "
                  "another set, design_delete_feature removes it.")
+    elif new_paths and lost_paths:
+        note += (f" Input path(s) no longer read: {_common.named_with_remainder(lost_paths, 3)}; "
+                 "new_occurrences lists the added paths.")
     elif new_paths:
-        note += " The solver restructured the arranged parts under new Envelope occurrences."
+        note += " Inputs moved on their own paths; new_occurrences lists the added occurrences."
     if not stats:
         note += (" The feature's arrangeStatistics did not read, so 'components_arranged' and "
                  "'components_unarranged' are null.")

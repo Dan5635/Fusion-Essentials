@@ -3,11 +3,12 @@
 Covers the creation flow: source-DataFile guard (unsaved design refused), the createDrawingInput/
 createDrawing dispatch, creation-mode selection (automatic by default; manual refused without a
 template), enum resolution (each map's member spellings, an absent family or member failing the call
-before the create transaction opens, and the center_line/center_mark refusal), the full
+before the create transaction opens), the full
 auto-generator config mapping (standard/units/content/size/orientation/scope, sheet types,
 auto-dimensioning, fastener omission, view style, isometric), the size<->standard and portrait
 guards, and that a created cloud drawing reports its file_id. No live Fusion.
 """
+from conftest import install as _install_design
 
 import types
 
@@ -121,8 +122,6 @@ _STRATEGY_FAMILY = live_api_facts.ENUMS["drawing.DimensionStrategyTypes"]
 _SIZE_FAMILY = live_api_facts.ENUMS["drawing.SheetSizes"]
 _CREATION_MODES = live_api_facts.ENUMS["drawing.DrawingCreationModes"]
 
-# No CenterLineDisplayTypes / CenterMarkDisplayTypes: adsk.drawing carries no such families, so the
-# stand-in namespace carries none either and a getattr for them raises, as the live one does.
 _UNMEASURED_FAMILIES = {
     "DrawingContentTypes": _CONTENT_FAMILY,
     "SheetCreationTypes": _SHEET_CREATION_FAMILY,
@@ -153,7 +152,7 @@ def install(monkeypatch):
         namespace = install_drawing(monkeypatch, **_UNMEASURED_FAMILIES)
         design = MakeDesign(parent_document=FakeFusionDocument(
             data_file=_datafile() if datafile else None))
-        monkeypatch.setattr(dc._common, "design", lambda: design)
+        _install_design(dc, design)
         monkeypatch.setattr(dc, "app", types.SimpleNamespace(activeDocument=object()))
         if result_df == "default":
             result_df = _datafile("Widget Drawing v1")
@@ -166,10 +165,7 @@ def install(monkeypatch):
     return _install
 
 
-def _payload(res):
-    import json
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _gp(dm):
@@ -226,7 +222,7 @@ class TestGuards:
 
     def test_no_active_design_errors(self, install, monkeypatch):
         install()
-        monkeypatch.setattr(dc._common, "design", lambda: None)
+        _install_design(dc, None)
         res = dc.handler()
         assert res["isError"] is True
         assert "design" in res["message"].lower()
@@ -337,6 +333,34 @@ class TestInputMapping:
         assert gp.isSubAssemblySheetGenerated is False
         assert gp.isFlatPatternSheetGenerated is False
         assert gp.isAnimationSheetGenerated is False
+
+    def test_default_disables_auto_dimension_and_explicit_default_remains_available(self, install):
+        dm = install()
+        out = _payload(dc.handler())
+        assert _gp(dm).isAutoDimensionEnabled is False
+        assert out["settings_requested"]["auto_dimension"] == "off"
+        assert dc.tool.input_schema["properties"]["auto_dimension"]["default"] == "off"
+        dm = install()
+        _payload(dc.handler(auto_dimension="default"))
+        assert _gp(dm).isAutoDimensionEnabled is True
+
+    def test_unreadable_auto_dimension_disable_refuses_before_create(self, install):
+        dm = install()
+
+        class IgnoredDisable:
+            @property
+            def isAutoDimensionEnabled(self):
+                return True
+
+            @isAutoDimensionEnabled.setter
+            def isAutoDimensionEnabled(self, value):
+                pass
+
+        dm._input.automationPreferences.globalPreferences = IgnoredDisable()
+        out = dc.handler()
+        assert out["isError"] is True
+        assert "auto_dimension='off'" in out["message"]
+        assert dm._created_with is None
 
     def test_auto_dimension_off_disables_it(self, install):
         dm = install()
@@ -691,11 +715,11 @@ class TestTheRouteToTheDrawing:
         # the open actually failing - not an instruction the agent follows before trying
         install()
         note = _payload(dc.handler())["note"]
-        head, _, tail = note.partition("If that open instead fails or hangs")
+        head, _, tail = note.partition("If open fails or hangs")
         assert tail, note
         assert "workaround" not in head            # nothing to work around until the open fails
-        assert "never reviewed in the Fusion UI opens and drives that way" in head
-        assert "opening the document once in the Fusion UI is the known workaround" in tail
+        assert "doc_open(file_id, force_api_open=true)" in head
+        assert "opening once in the Fusion UI is a workaround" in tail
 
 
 # ── parts list, template, custom size, hole annotations, per-view drafting display ──────────────────
@@ -788,13 +812,20 @@ class TestCustomSheetSize:
         assert out["settings_requested"]["sheet_size"] == "custom"
 
     def test_an_asme_custom_size_is_written_in_inches(self, install):
-        # the document unit follows the STANDARD: inches under ASME, so 508 mm is 20 in
         dm = install()
-        out = _payload(dc.handler(standard="asme", sheet_size="custom",
+        out = _payload(dc.handler(standard="asme", units="inch", sheet_size="custom",
                                   custom_width_mm=508, custom_height_mm=254))
         assert dm._input.customSize.width == pytest.approx(20.0)
         assert dm._input.customSize.height == pytest.approx(10.0)
         assert out["settings_requested"]["custom_size"]["unit"] == "in"
+
+    def test_an_asme_custom_size_in_mm_does_not_use_the_coordinate_unit(self, install):
+        dm = install()
+        out = _payload(dc.handler(standard="asme", units="mm", sheet_size="custom",
+                                  custom_width_mm=508, custom_height_mm=254))
+        assert dm._input.customSize.width == pytest.approx(508.0)
+        assert dm._input.customSize.height == pytest.approx(254.0)
+        assert out["settings_requested"]["custom_size"]["unit"] == "mm"
 
     def test_both_zone_counts_are_raised_to_the_minimum_the_api_takes(self, install):
         # a CustomSheetSize created with fewer than 2 zones each way is refused at creation, so an
@@ -859,7 +890,14 @@ class TestCustomSheetSize:
         out = _payload(dc.handler(sheet_size="custom", custom_width_mm=500, custom_height_mm=333))
         assert "500.0 x 333.0 mm" in out["note"]
         assert "2 x 2 zones" in out["note"]
-        assert "not readable from here" in out["note"]
+
+    def test_the_custom_note_names_the_unit_source_and_the_read_tool(self, install):
+        # drawing_edit_sheet has no read action, so the confirming read is drawing_get
+        install()
+        out = _payload(dc.handler(sheet_size="custom", custom_width_mm=500, custom_height_mm=333))
+        tail = out["note"].partition("Custom sheet size:")[2].partition("If a client call")[0]
+        assert "500.0 x 333.0 mm" in tail and "display unit" in tail
+        assert "drawing_get" in tail and "drawing_edit_sheet" not in tail
 
     def test_the_off_switch_refuses_custom_and_creates_nothing(self, install, monkeypatch):
         # the one constant to throw if a live create stops landing the requested extents: custom
@@ -952,54 +990,11 @@ class TestPerViewDraftingDisplay:
         assert node.isShowInterferenceEdges is None
         assert node.isShowThreadEdges is None
 
-    def test_unknown_center_line_is_refused(self, install):
-        install()
-        res = dc.handler(center_line="bogus")
-        assert res["isError"] is True
-        assert "center_line" in res["message"] and "bogus" in res["message"]
-
-    def test_unknown_center_mark_is_refused(self, install):
-        install()
-        res = dc.handler(center_mark="bogus")
-        assert res["isError"] is True
-        assert "center_mark" in res["message"] and "bogus" in res["message"]
-
     def test_unknown_tangent_edges_is_refused(self, install):
         install()
         res = dc.handler(tangent_edges="bogus")
         assert res["isError"] is True
         assert "tangent_edges" in res["message"] and "bogus" in res["message"]
-
-    def test_center_line_request_is_refused_naming_the_absent_family(self, install):
-        # adsk.drawing carries no CenterLineDisplayTypes, so the setting has no API to reach; a
-        # request must fail rather than pass through a best-effort setter that drops it.
-        dm = install()
-        res = dc.handler(center_line="holes")
-        assert res["isError"] is True
-        assert "center_line" in res["message"] and "CenterLineDisplayTypes" in res["message"]
-        assert dm._mode is None
-        assert dm._created_with is None
-
-    def test_center_mark_request_is_refused_naming_the_absent_family(self, install):
-        dm = install()
-        res = dc.handler(center_mark="fillets")
-        assert res["isError"] is True
-        assert "center_mark" in res["message"] and "CenterMarkDisplayTypes" in res["message"]
-        assert dm._mode is None
-        assert dm._created_with is None
-
-    def test_center_line_and_mark_at_default_do_not_block_creation(self, install):
-        install()
-        out = _payload(dc.handler(center_line="default", center_mark="default"))
-        assert out["created"] is True
-
-    def test_the_two_input_descriptions_state_the_refusal_their_resolver_enforces(self):
-        # the schema advertises values the handler refuses outright; a description that sells them
-        # as a capability is the only place an agent could learn otherwise before it calls
-        for kind in (dc._CENTER_LINE, dc._CENTER_MARK):
-            desc = kind.as_property()[1]["description"]
-            assert "Refused unless 'default'" in desc, kind.name
-            assert "no enum exists" in desc, kind.name
 
 
 class TestJustSavedLag:
@@ -1050,3 +1045,54 @@ class TestSchema:
         # the shared expect_document wording alone does not say.
         desc = dc.tool.input_schema["properties"]["expect_document"]["description"]
         assert "session:" in desc and "doc_get" in desc
+
+
+class TestFlatPreferences:
+    def test_flat_preferences_are_read_back(self, install):
+        dm = install()
+        out = _payload(dc.handler(sheet_types=["flat_pattern"], flat_isometric=True,
+                                  bend_table=False))
+        node = dm._input.automationPreferences.flatPatternPreferences.orthogonalViewSheetPreferences
+        assert node.isFoldedModelIsometricViewAdded is True
+        assert node.isBendTableIncluded is False
+        assert out["flat_settings_applied"] == {"isFoldedModelIsometricViewAdded": True,
+                                               "isBendTableIncluded": False}
+
+    def test_flat_options_refuse_without_flat_sheet(self, install):
+        install()
+        result = dc.handler(sheet_types=["component"], bend_table=True)
+        assert result["isError"] is True
+        assert "flat_pattern" in str(result)
+
+    def test_location_refuses_disabled_table(self, install):
+        install()
+        result = dc.handler(sheet_types=["flat_pattern"], bend_table=False, bend_table_location="bottom_right")
+        assert result["isError"] is True
+        assert "enable bend_table" in str(result)
+
+    def test_ignored_flat_assignment_refuses_create(self, install):
+        dm = install()
+        class IgnoredPreference:
+            """Unmeasured preference shape whose setter drops a requested change."""
+            @property
+            def isBendTableIncluded(self):
+                return False
+            @isBendTableIncluded.setter
+            def isBendTableIncluded(self, value):
+                pass
+        dm._input.automationPreferences.flatPatternPreferences.orthogonalViewSheetPreferences = IgnoredPreference()
+        result = dc.handler(sheet_types=["flat_pattern"], bend_table=True)
+        assert result["isError"] is True
+        assert "No drawing created" in str(result)
+
+    def test_flat_options_require_explicit_sheet_selection(self, install):
+        dm = install()
+        result = dc.handler(bend_table=True)
+        assert result["isError"] is True and "flat_pattern" in str(result)
+        assert dm._created_with is None
+
+    def test_location_requires_enabled_table(self, install):
+        dm = install()
+        result = dc.handler(sheet_types=["flat_pattern"], bend_table_location="bottom_right")
+        assert result["isError"] is True and "enable bend_table" in str(result)
+        assert dm._created_with is None

@@ -4,8 +4,8 @@ Pins: no-refs early-out, matched/skipped/error paths, and that getLatestVersion
 raises rather than being swallowed when the call fails. A STALE reference refuses both refresh
 routes by default (the measured derive-link state), so a row whose refresh lands says refreshes=True.
 """
+from conftest import install as _install_design
 
-import json
 
 import pytest
 
@@ -16,9 +16,7 @@ from conftest import (FakeApplication, FakeDataFile, FakeDocumentReference, Fake
 xr = load_tool("doc_update_xref")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def FakeRef(name, is_out_of_date=True, version=1, latest_returns=True, latest_raises=None,
@@ -315,3 +313,278 @@ class TestDeriveReferences:
         assert out["total_references"] == 1
         assert out["updated_count"] == 1
         assert out["updated"][0]["version_after"] == 3
+
+
+# -- replace and break_link: one occurrence's reference, followed through its own wrapper ------
+
+from types import SimpleNamespace
+
+
+def _solid_bodies(*volumes):
+    held = [SimpleNamespace(volume=v) for v in volumes]
+    return SimpleNamespace(count=len(held), item=lambda i: held[i])
+
+
+class _StuckName:
+    """A component that accepts a rename and keeps its name."""
+
+    def __init__(self, name, bRepBodies):
+        self._name, self.bRepBodies = name, bRepBodies
+
+    name = property(lambda self: self._name, lambda self, value: None)
+
+
+class _WorldOcc:
+    """One root occurrence. Its path is READ from its component's name and its number, so a rename
+    or a replace shows in the path the way it does live."""
+
+    def __init__(self, world, component, number, x, file_id=None):
+        self.world, self.component, self.number, self.x = world, component, number, x
+        self.file_id, self.isValid, self.isConfiguration = file_id, True, False
+
+    @property
+    def fullPathName(self):
+        return f"{self.component.name}:{self.number}"
+
+    @property
+    def isReferencedComponent(self):
+        return self.file_id is not None
+
+    @property
+    def documentReference(self):
+        return SimpleNamespace(dataFile=SimpleNamespace(id=self.file_id))
+
+    pose_unread = False
+
+    @property
+    def transform2(self):
+        if self.pose_unread:
+            raise RuntimeError("4 : An API Object refers to a deleted Object")
+        return SimpleNamespace(asArray=lambda: [1.0, 0, 0, self.x, 0, 1.0, 0, 0, 0, 0, 1.0, 0,
+                                                0, 0, 0, 1.0])
+
+    def replace(self, data_file, replace_all):
+        return self.world.replace(self, data_file, replace_all)
+
+    def breakLink(self):
+        return self.world.break_link(self)
+
+
+class _World:
+    """Host with PartA twice (at x 0 and 5 cm, file urn:a) and a local Bracket. `lies`: 'moves'
+    (a replaced occurrence lands 1 cm off), 'wrong_file' (it keeps the file it had), 'breaks' (a
+    timeline item reads an error afterwards), 'collides' (the broken occurrence keeps a path its
+    sibling has even after the rename), 'stays_external', 'no_rename'."""
+
+    def __init__(self, lies=()):
+        self.lies, self.errors, self.calls = lies, [], []
+        self.part_a = self._comp("PartA", 4.0)
+        self.part_b = self._comp("PartB", 2.0)
+        self.bracket = self._comp("Bracket", 1.0)
+        self.occs = [_WorldOcc(self, self.part_a, 1, 0.0, "urn:a"),
+                     _WorldOcc(self, self.part_a, 2, 5.0, "urn:a"),
+                     _WorldOcc(self, self.bracket, 1, 9.0)]
+        self.rootComponent = SimpleNamespace(
+            allOccurrences=_NamedCollection(self.occs),
+            allOccurrencesByComponent=lambda comp: _NamedCollection(
+                [o for o in self.occs if o.component is comp]))
+
+    @staticmethod
+    def _comp(name, volume):
+        return SimpleNamespace(name=name, bRepBodies=_solid_bodies(volume))
+
+    @property
+    def allComponents(self):
+        return _NamedCollection([self.part_a, self.part_b, self.bracket])
+
+    def replace(self, occ, data_file, replace_all):
+        self.calls.append(("replace", occ, data_file.id, replace_all))
+        for target in ([o for o in self.occs if o.component is self.part_a]
+                       if replace_all else [occ]):
+            target.component = self.part_b
+            if "wrong_file" not in self.lies:
+                target.file_id = data_file.id
+            if "moves" in self.lies:
+                target.x += 1.0
+        if "drags" in self.lies:
+            for mate in [o for o in self.occs if o.component is self.part_a]:
+                mate.file_id = "urn:z"
+        if "breaks" in self.lies:
+            self.errors.append("Joint1")
+        return True
+
+    def break_link(self, occ):
+        self.calls.append(("break_link", occ))
+        if "drags" in self.lies:
+            for mate in [o for o in self.occs if o.component is self.part_a and o is not occ]:
+                mate.file_id = "urn:z"
+        if "stays_external" not in self.lies:
+            occ.file_id = None
+            kind = _StuckName if "no_rename" in self.lies else SimpleNamespace
+            occ.component = kind(name=occ.component.name, bRepBodies=occ.component.bRepBodies)
+            occ.number = 1 if "collides" not in self.lies else occ.number
+            if "collides" in self.lies:
+                type(occ).fullPathName = property(lambda o: "PartA:1")
+        return True
+
+
+@pytest.fixture
+def world(monkeypatch):
+    def _make(lies=(), target=0):
+        w = _World(lies)
+        _install_design(xr, w)
+        monkeypatch.setattr(xr._OCCURRENCE, "resolve", lambda raw: (w.occs[target], None))
+        monkeypatch.setattr(xr._common, "timeline_health", lambda d: (list(w.errors), [], 0))
+        monkeypatch.setattr(xr._data_common, "_resolve_data_file",
+                            lambda raw: ((SimpleNamespace(id=raw), raw, [raw])
+                                         if raw.startswith("urn:") else (None, None, [raw])))
+        return w
+    yield _make
+    for attr in ("fullPathName",):
+        _WorldOcc.fullPathName = property(lambda self: f"{self.component.name}:{self.number}")
+
+
+class TestReplace:
+    def test_one_occurrence_is_replaced_and_followed_through_its_wrapper(self, world):
+        w = world()
+        out = _payload(xr.handler(action="replace", occurrence="PartA:1", file="urn:b"))
+        assert w.calls == [("replace", w.occs[0], "urn:b", False)]
+        assert out["occurrences"] == [{"path_before": "PartA:1", "path": "PartB:1",
+                                       "old_path_resolves": False}]
+        assert w.occs[1].fullPathName == "PartA:2" and "nothing is saved" in out["note"]
+
+    def test_replace_all_holds_every_occurrence_of_the_component(self, world):
+        world()
+        out = _payload(xr.handler(action="replace", occurrence="PartA:1", file="urn:b",
+                                  replace_all=True))
+        assert [r["path"] for r in out["occurrences"]] == ["PartB:1", "PartB:2"]
+
+    @pytest.mark.parametrize("lie, text", [
+        ("moves", "'PartB:1' did not keep its placement"),
+        ("wrong_file", "'PartB:1' does not reference the requested file"),
+        ("breaks", "these timeline items now read an error: Joint1")])
+    def test_a_replace_that_went_wrong_says_it_was_made(self, world, lie, text):
+        world(lies=(lie,))
+        res = xr.handler(action="replace", occurrence="PartA:1", file="urn:b")
+        assert res["isError"] is True and text in res["message"]
+        assert res["message"].startswith("The replace WAS made in the open document")
+
+    @pytest.mark.parametrize("args, text", [
+        ({"occurrence": "Bracket:1", "file": "urn:b", "_target": 2},
+         "is a local component, not an external reference"),
+        ({"occurrence": "PartA:1", "file": "urn:a"}, "already references that file"),
+        ({"occurrence": "PartA:1", "file": "nope"}, "Could not resolve 'nope'"),
+        ({"occurrence": "PartA:1"}, "needs 'file'"),
+        ({"file": "urn:b"}, "needs 'occurrence'"),
+        ({"occurrence": "PartA:1", "file": "urn:b", "new_name": "X"},
+         "'new_name' belongs to action='break_link', not 'replace'")])
+    def test_replace_guards_refuse_before_the_call(self, world, args, text):
+        w = world(target=args.pop("_target", 0))
+        res = xr.handler(action="replace", **args)
+        assert res["isError"] is True and text in res["message"]
+        assert w.calls == []
+
+
+class TestBreakLink:
+    def test_the_local_component_is_renamed_and_its_path_read_unique(self, world):
+        w = world(target=1)
+        out = _payload(xr.handler(action="break_link", occurrence="PartA:2", new_name="Loose"))
+        assert out["occurrence"] == "Loose:1" and out["path_before"] == "PartA:2"
+        assert out["component"] == "Loose" and out["reversible"] is False
+        assert w.occs[0].fullPathName == "PartA:1" and w.occs[0].isReferencedComponent is True
+
+    @pytest.mark.parametrize("lie, text", [
+        ("collides", "the path 'PartA:1' is not unique"),
+        ("no_rename", "its component reads 'PartA', not 'Loose'"),
+        ("stays_external", "could not be re-read as a local occurrence")])
+    def test_a_break_that_went_wrong_says_the_link_is_broken(self, world, lie, text):
+        world(lies=(lie,), target=1)
+        res = xr.handler(action="break_link", occurrence="PartA:2", new_name="Loose")
+        assert res["isError"] is True and text in res["message"]
+        assert "IS broken and this tool cannot restore it" in res["message"]
+
+    @pytest.mark.parametrize("args, text", [
+        ({"occurrence": "PartA:2"}, "needs 'new_name'"),
+        ({"occurrence": "PartA:2", "new_name": "Bracket"},
+         "A component named 'Bracket' already exists"),
+        ({"occurrence": "PartA:2", "new_name": "Loose", "file": "urn:b"},
+         "'file' belongs to action='replace', not 'break_link'")])
+    def test_break_link_guards_refuse_before_the_call(self, world, args, text):
+        w = world(target=1)
+        res = xr.handler(action="break_link", **args)
+        assert res["isError"] is True and text in res["message"]
+        assert w.calls == []
+
+    def test_a_configuration_row_is_refused(self, world):
+        w = world(target=1)
+        w.occs[1].isConfiguration = True
+        res = xr.handler(action="break_link", occurrence="PartA:2", new_name="Loose")
+        assert res["isError"] is True and "is a configuration" in res["message"]
+        assert w.calls == []
+
+
+class TestRefreshStaysTheDefault:
+    def test_an_action_input_on_a_refresh_is_refused(self, _install):
+        _install(refs=[FakeRef("Part")])
+        res = xr.handler(occurrence="PartA:1")
+        assert res["isError"] is True
+        assert "'occurrence' belongs to action='replace' / 'break_link', not 'refresh'" \
+            in res["message"]
+
+
+class TestUnreadCensus:
+    def test_a_replace_whose_occurrence_census_did_not_read_is_not_called_unique(self, world):
+        w = world()
+        occs = w.rootComponent.allOccurrences
+
+        def item(i, _real=occs.item):
+            if i == 2:
+                raise RuntimeError("4 : An API Object refers to a deleted Object")
+            return _real(i)
+        occs.item = item
+        res = xr.handler(action="replace", occurrence="PartA:1", file="urn:b")
+        assert res["isError"] is True
+        assert "the path 'PartB:1' could not be shown unique" in res["message"]
+
+
+class TestCohortBeforeAOneWayWrite:
+    """Every occurrence the change touches or must leave alone is read BEFORE the call; a census
+    that does not read, or a member that does not, refuses with nothing changed."""
+
+    @pytest.mark.parametrize("census", ["empty", "raises", "hole"])
+    @pytest.mark.parametrize("action, extra", [
+        ("replace", {"file": "urn:b", "replace_all": True}), ("break_link", {"new_name": "Loose"})])
+    def test_an_unread_cohort_refuses_before_the_call(self, world, census, action, extra):
+        w = world()
+        members = [w.occs[0], w.occs[1]]
+
+        def by_component(comp):
+            if census == "raises":
+                raise RuntimeError("2 : InternalValidationError")
+            coll = _NamedCollection([] if census == "empty" else members)
+            if census == "hole":
+                coll.item = lambda i: None if i == 1 else members[i]
+            return coll
+        w.rootComponent.allOccurrencesByComponent = by_component
+        res = xr.handler(action=action, occurrence="PartA:1", **extra)
+        assert res["isError"] is True and "nothing was changed" in res["message"]
+        assert w.calls == []
+
+    def test_a_member_whose_placement_does_not_read_refuses_before_the_call(self, world):
+        w = world()
+        w.occs[1].pose_unread = True
+        res = xr.handler(action="break_link", occurrence="PartA:1", new_name="Loose")
+        assert res["isError"] is True and "'PartA:2' could not be read completely" in res["message"]
+        assert w.calls == []
+
+    def test_a_sibling_moved_to_another_file_by_a_replace_of_one_is_a_fault(self, world):
+        world(lies=("drags",))
+        res = xr.handler(action="replace", occurrence="PartA:1", file="urn:b")
+        assert res["isError"] is True
+        assert "the sibling 'PartA:2' did not stay as it was" in res["message"]
+
+    def test_a_sibling_left_external_on_another_file_by_a_break_is_a_fault(self, world):
+        world(lies=("drags",), target=1)
+        res = xr.handler(action="break_link", occurrence="PartA:2", new_name="Loose")
+        assert res["isError"] is True
+        assert "the sibling 'PartA:1' did not stay as it was" in res["message"]

@@ -5,11 +5,16 @@ faces + pull plane reach DraftFeatures.createInput, that 'symmetric' flows into 
 drafted-face read-back, the no-active-design guard, resolution-error propagation, and the honesty
 verifier that a feature which computes with a health ERROR is reported as failure, not a false ok.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import types
+import pytest
 
 from conftest import (BRepBody, BRepFace, load_tool, make_design, install, MakeComp, payload,
-                      error_message, assert_no_active_design, _NamedCollection)
+                      error_message, assert_names_retained, assert_no_active_design,
+                      _NamedCollection)
 
 dr = load_tool("model_draft")
 
@@ -23,14 +28,19 @@ class FakeDraftInput:
         self.isTangentChain = tangent
         self.isDirectionFlipped = False
         self.single = None
+        self.two = None
 
     def setSingleAngle(self, symmetric, angle):
         self.single = (symmetric, angle)
         return True
 
+    def setTwoAngles(self, angle_one, angle_two):
+        self.two = (angle_one, angle_two)
+        return True
+
 
 class FakeDraftFeature:
-    def __init__(self, name="Draft1", n_faces=2, health=0, removable=True):
+    def __init__(self, name="Draft1", n_faces=2, health=_HEALTHY, removable=True):
         self.name = name
         # DraftFeature.faces - the faces the draft created or modified, which is the count the tool
         # reads back (its `inputFaces` raises on this platform).
@@ -105,6 +115,28 @@ class TestGuards:
 
 
 class TestDraft:
+    def test_unread_pull_plane_does_not_invent_a_world_side_frame(self, monkeypatch):
+        _wire(monkeypatch)
+        monkeypatch.setattr(dr._inputs, "placed_datum_frame", lambda *args: (None, None))
+        out = payload(dr.handler(faces=["a"], pull_direction="xy", angle_deg=15,
+                                 angle_two_deg=5, flip=True))
+        assert out["side_reference"]["normal_world"] is None
+        assert out["side_reference"]["frame"] is None
+        assert "angle-to-side mapping is unknown" in out["note"]
+        assert "angle_deg on its positive side" not in out["note"]
+
+    def test_two_angle_reply_uses_the_draft_operand_frame(self, monkeypatch):
+        _wire(monkeypatch)
+        calls = []
+        monkeypatch.setattr(dr._inputs, "placed_datum_frame", lambda plane, kind: (
+            calls.append((plane, kind)) or ((7, 3, 5), [0, 0, -1])))
+        out = payload(dr.handler(faces=["a"], pull_direction="face", angle_deg=15,
+                                 angle_two_deg=5))
+        assert calls == [(('plane', 'xy'), "draft_plane")]
+        assert out["side_reference"] == {"frame": "world", "origin_cm": [7, 3, 5],
+                                          "normal_world": [0, 0, -1], "operand": "face"}
+        assert "A face uses its outward normal" in out["note"]
+
     def test_happy_path_reports_read_back_count(self, monkeypatch):
         feats = _wire(monkeypatch, feature=FakeDraftFeature(n_faces=3),
                       faces=[object(), object()])
@@ -132,6 +164,17 @@ class TestDraft:
         payload(dr.handler(faces=["a"], pull_direction="xy", angle_deg=5))
         assert feats.last.single[0] is False
 
+    def test_two_angles_are_set_independently_in_radians(self, monkeypatch):
+        import adsk.core
+        feats = _wire(monkeypatch)
+        monkeypatch.setattr(adsk.core.ValueInput, "createByReal",
+                            staticmethod(lambda value: ("real", value)))
+        payload(dr.handler(faces=["a"], pull_direction="xy", angle_deg=15,
+                           angle_two_deg=5))
+        assert feats.last.two[0][0] == "real" and feats.last.two[1][0] == "real"
+        assert feats.last.two[0][1] == pytest.approx(15 * 3.141592653589793 / 180)
+        assert feats.last.two[1][1] == pytest.approx(5 * 3.141592653589793 / 180)
+
     def test_flip_sets_direction_flipped(self, monkeypatch):
         feats = _wire(monkeypatch)
         payload(dr.handler(faces=["a"], pull_direction="xy", angle_deg=5, flip=True))
@@ -139,7 +182,7 @@ class TestDraft:
 
     def test_health_error_reported_not_false_ok(self, monkeypatch):
         # The feature was ADDED but computes with a health ERROR (2) - honesty demands isError, not ok.
-        _wire(monkeypatch, feature=FakeDraftFeature(health=2))
+        _wire(monkeypatch, feature=FakeDraftFeature(health=_ERROR))
         res = dr.handler(faces=["a"], pull_direction="xy", angle_deg=5)
         assert res["isError"] is True
         assert "failed to compute" in res["message"] and "geometry undercut" in res["message"]
@@ -221,7 +264,8 @@ class TestTaperMovesMaterial:
         assert "tapered nothing" in res["message"] and "Bar" in res["message"]
         assert "1 face(s) compared" in res["message"]
         # the inert feature goes, so the refusal must NOT send the caller to delete one
-        assert "rolled back" in res["message"] and "design_delete_feature" not in res["message"]
+        assert ("Deleting it returned True." in res["message"]
+                and "design_delete_feature" not in res["message"])
 
     def test_draft_that_moved_material_publishes_the_delta(self, monkeypatch):
         bar = BRepBody("Bar", volume=20.0)
@@ -299,15 +343,14 @@ class TestTaperMovesMaterial:
         _wire(monkeypatch, feature=feature, faces=[_face_on(bar, area=6.0)])
         res = dr.handler(faces=["a"], pull_direction="xy", angle_deg=5)
         assert res["isError"] is True and feature.deleted is True
-        assert "rolled back" in res["message"]
+        assert "Deleting it returned True." in res["message"]
 
     def test_a_rollback_the_platform_refuses_is_disclosed(self, monkeypatch):
         bar = BRepBody("Bar", volume=20.0, face_count=6)
         feature = FakeDraftFeature(n_faces=1, removable=False)
         _wire(monkeypatch, feature=feature, faces=[_face_on(bar, area=6.0)])
         res = dr.handler(faces=["a"], pull_direction="xy", angle_deg=5)
-        assert res["isError"] is True and "could not be auto-removed" in res["message"]
-        assert "design_delete_feature" in res["message"]
+        assert "Deleting it returned False" in assert_names_retained(res, "Draft1")
 
     def test_faces_with_no_readable_body_neither_error_nor_publish_a_delta(self, monkeypatch):
         # Cannot measure is not "measured the same": no verdict, and no null delta that would read

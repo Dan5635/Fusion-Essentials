@@ -16,6 +16,14 @@ from conftest import (BRepBody, BRepFace, Cylinder, FakeBoundingBox3D, FakePoint
 geom = load_tool("_geom")
 
 
+def test_coaxial_holds_its_parallel_and_offset_bands_at_their_edges():
+    z = (0.0, 0.0, 1.0)
+    assert geom.coaxial((0, 0, 0), z, (0, 0, 7), (0.0, 1e-6, 1.0)) is True
+    assert geom.coaxial((0, 0, 0), z, (0, 0, 7), (0.0, 1.1e-6, 1.0)) is False
+    assert geom.coaxial((0, 0, 0), z, (0.99e-4, 0, 7), (0.0, 0.0, -1.0)) is True
+    assert geom.coaxial((0, 0, 0), z, (1e-4, 0, 7), z) is False
+
+
 # ── unit_vector: normalization + zero-vector guard ─────────────────────────
 
 class TestUnitVector:
@@ -1474,3 +1482,13 @@ class TestOccWorldFrameGuards:
         out = geom.occ_world_frame(occ, 10.0)
         assert out["bbox_center"] == [10.0, 20.0, 30.0]
         assert out["bbox_size"] == [20.0, 40.0, 60.0]
+
+
+def test_coaxial_preserves_thread_and_sheet_threshold_metrics():
+    zero, z = (0, 0, 0), (0, 0, 1)
+    tilt = (1e-5, 0, math.sqrt(1 - 1e-10))
+    thread = {"axis_dot_tol": 1e-7, "offset_squared_tol": 1e-10}
+    assert geom.coaxial(zero, z, zero, tilt, **thread)
+    assert not geom.coaxial(zero, z, zero, tilt)
+    assert geom.coaxial(zero, z, (5e-5, 0, 0), z)
+    assert not geom.coaxial(zero, z, (5e-5, 0, 0), z, **thread)

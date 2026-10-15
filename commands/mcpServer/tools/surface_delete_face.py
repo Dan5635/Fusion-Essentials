@@ -35,9 +35,9 @@ _FACES = _inputs.GeometryHandleList("faces", require="face", required=True)
 
 def delete_face_handler(faces=None, heal=False) -> dict:
     """Delete faces from their bodies - optionally healing the opening (heal=True) or leaving it open."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     face_ents, ferr = _FACES.resolve(faces)
@@ -139,6 +139,10 @@ def delete_face_handler(faces=None, heal=False) -> dict:
 
     bodies_before = len(bodies)
     bodies_after = len(result)
+    if _common.counted(lambda: feature.bodies.count) != bodies_after:
+        return error("Delete-face reported no error, but its result bodies did not all read back, so "
+                     "how many input bodies it consumed is unknown. Check the bodies with "
+                     "design_get(include=['tree']). " + _common.failed_effect_remedy(design, feature))
     bodies_consumed = max(0, bodies_before - bodies_after)
     unreadable_after = [r["name"] for r in result if r["faces"] is None]
     faces_after_total = None if unreadable_after else sum(r["faces"] for r in result)
@@ -159,9 +163,10 @@ def delete_face_handler(faces=None, heal=False) -> dict:
         return error("Delete-face reported no error, but the face count of %d result body(ies) (%s) "
                      "would not read back, so whether any face was deleted is UNVERIFIED - a count "
                      "that will not read is not a count of zero. Check the bodies with "
-                     "design_get(include=['tree']) / find_geometry before building on them."
+                     "design_get(include=['tree']) / find_geometry before building on them. "
                      % (len(unreadable_after),
-                        ", ".join(n or "unnamed" for n in unreadable_after)))
+                        ", ".join(n or "unnamed" for n in unreadable_after))
+                     + _common.failed_effect_remedy(design, feature))
 
     # A face count that did not move means nothing was deleted, whatever the feature object says.
     # Skipped when no input body's count could be read at all, where the delta is evidence of none.

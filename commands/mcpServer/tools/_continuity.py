@@ -79,12 +79,6 @@ def body_seams(body):
     return out
 
 
-def _xyz(p):
-    """(x, y, z) of a point or vector, or None when a component will not read as a number."""
-    v = (safe(lambda: p.x), safe(lambda: p.y), safe(lambda: p.z))
-    return v if all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in v) else None
-
-
 def _unit_of(t):
     """`t` scaled to length 1, or None when it is absent or has no length."""
     if t is None:
@@ -141,7 +135,7 @@ def _normal_curvature(read, i, n, t, sign):
     if d is None or not all(isinstance(k, (int, float)) and not isinstance(k, bool)
                             for k in (kmax, kmin)):
         return None
-    e1 = _unit_of(_xyz(read["dirs"][i]))
+    e1 = _unit_of(_geom._coords(read["dirs"][i]))
     e2 = _unit_of(_geom.cross(n, e1)) if e1 is not None else None
     if e2 is None:
         # Where both curvatures agree every direction is principal, so none has to read.
@@ -175,9 +169,9 @@ def seam(edge, face_a, face_b, samples, one_body=False):
         reads.append(read)
     rows = []
     for i in range(samples):
-        at, t = _xyz(pts[i]), _unit_of(_xyz(tans[i]))
-        na, nb = (_unit_of(_xyz(r["normals"][i])) for r in reads)
-        qa, qb = (_xyz(r["points"][i]) for r in reads)
+        at, t = _geom._coords(pts[i]), _unit_of(_geom._coords(tans[i]))
+        na, nb = (_unit_of(_geom._coords(r["normals"][i])) for r in reads)
+        qa, qb = (_geom._coords(r["points"][i]) for r in reads)
         if None in (at, t, na, nb, qa, qb):
             return None, f"sample {i} of {samples} did not read as points and vectors"
         dot = _geom.dot(na, nb)

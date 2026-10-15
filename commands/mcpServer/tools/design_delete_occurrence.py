@@ -38,9 +38,9 @@ def _joint_names(occ):
 def handler(occurrence: str = "") -> dict:
     """Delete one occurrence (component instance) - by handle, fullPathName, or name - naming the
     joints that went with it and the timeline health before/after. WRITES (destructive)."""
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     occ, occ_err = _inputs._resolve_occurrence("occurrence", occurrence)
     if not occ:

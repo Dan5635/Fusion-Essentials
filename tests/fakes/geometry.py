@@ -60,11 +60,22 @@ def make_bbox(minp, maxp):
 
 @fusion_fake(live_type="ValueInput", facts=("shape-dump-document-world",))
 class FakeValueInput:
-    """What ValueInput.createByReal answers, and the class stands in for the factory itself
-    (monkeypatch createByReal to it): realValue is the number that went in, read back off the
-    input a feature was built from. There is no `real` - the live type carries none."""
-    def __init__(self, real):
-        self.realValue = real
+    """ValueInput with mutually exclusive realValue or stringValue getters."""
+    def __init__(self, real=None, string=None):
+        self._real = real
+        self._string = string
+
+    @property
+    def realValue(self):
+        if self._string is not None:
+            raise RuntimeError("Value does not contain a real")
+        return self._real
+
+    @property
+    def stringValue(self):
+        if self._string is None:
+            raise RuntimeError("Value does not contain a string")
+        return self._string
 
 
 # -- vectors / surfaces / curves for selection.py classification -----------
@@ -219,6 +230,17 @@ class FakeMatrix3D:
                    (az * ax * k - ay * s, az * ay * k + ax * s, c + az * az * k))
         o = tuple(float(getattr(origin, a, 0.0) or 0.0) for a in ("x", "y", "z"))
         self._t = tuple(a - b for a, b in zip(o, self._apply_vector(*o)))
+        self._rotated = True
+        return True
+
+    def setWithArray(self, cells):
+        """Matrix3D.setWithArray(cells) -> bool: the sixteen cells taken whole, in the row-major
+        layout asArray answers. The rotation is general, as setToRotation leaves it."""
+        vals = [float(v) for v in cells]
+        if len(vals) != 16:
+            raise ValueError("setWithArray takes sixteen cells, got %d" % len(vals))
+        self._r = (tuple(vals[0:3]), tuple(vals[4:7]), tuple(vals[8:11]))
+        self._t = (vals[3], vals[7], vals[11])
         self._rotated = True
         return True
 
@@ -385,15 +407,16 @@ def camera_state(cam):
     """The field values one camera carries - what a restore is judged on, since a viewport read
     hands back a copy."""
     return (cam.eye, cam.target, cam.upVector, cam.cameraType, cam.isFitView,
-            cam.perspectiveAngle, cam.viewExtents)
+            cam.perspectiveAngle, cam._sides)
 
 @fusion_fake(live_type="Camera",
-             facts=("shape-dump-design-world", "camera-viewextents-is-linear-not-area"))
+             facts=("shape-dump-design-world", "camera-supported-orthographic-pair",
+                    "camera-supported-perspective-extents-outcome"))
 class Camera:
-    """A viewport camera: the eye/target/up an orient rewrites, the projection and perspective
-    angle an orient read-back gates on, and the LINEAR viewExtents a zoom scales. `eye`, `target`
-    and `up` take a FakePoint or an (x, y, z) tuple."""
-    def __init__(self, eye=(10.0, 10.0, 10.0), target=(0.0, 0.0, 0.0), up=None,
+    """Supported camera pair/refusal stand-in; stored pairs do not model viewport spans.
+    view_extents seeds both sides; pose arguments accept FakePoint or (x,y,z).
+    The default up vector is an injected unit-vector fixture."""
+    def __init__(self, eye=(10.0, 10.0, 10.0), target=(0.0, 0.0, 0.0), up=(0.0, 0.0, 1.0),
                  camera_type=None, is_fit_view=False, perspective_angle=0.0,
                  view_extents=100.0, is_smooth_transition=True):
         self.eye = FakePoint(*eye) if isinstance(eye, tuple) else eye
@@ -403,8 +426,21 @@ class Camera:
                            if camera_type is None else camera_type)
         self.isFitView = is_fit_view
         self.perspectiveAngle = perspective_angle
-        self.viewExtents = view_extents
+        self._sides = (float(view_extents), float(view_extents))
         self.isSmoothTransition = is_smooth_transition
+
+    def _orthographic(self):
+        if self.cameraType != _api_facts.ENUMS["core.CameraTypes"]["OrthographicCameraType"]:
+            raise RuntimeError("3 : Camera type must be orthographic for extents")
+
+    def getExtents(self):
+        self._orthographic()
+        return [True, self._sides[0], self._sides[1]]
+
+    def setExtents(self, width, height):
+        self._orthographic()
+        self._sides = (float(width), float(height))
+        return True
 
     def _copy(self):
         """A detached duplicate carrying the same field values - what a viewport read hands back

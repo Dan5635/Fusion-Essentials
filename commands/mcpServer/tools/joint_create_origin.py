@@ -21,6 +21,7 @@ from . import _joints
 _TARGETS = ("at", "origin")
 _ANCHORS = ("coordinates", "sketch_line", "sketch_point", "geometry", "bbox_center", "face_center")
 _KEYPOINTS = {"start": 0, "middle": 1, "end": 2, "center": 3}
+_HELPER_NAME = "JointOriginAnchor"
 
 _ANCHOR_CHOICE = _inputs.Choice("anchor", list(_ANCHORS), default="coordinates")
 _TARGET_CHOICE = _inputs.Choice("target", list(_TARGETS), default="at",
@@ -69,17 +70,14 @@ def _is_identity(matrix):
 
 
 def _sits_at_world_origin(occ):
-    """True when `occ` AND every occurrence it nests inside carry an identity transform - the one
+    """True when `occ` AND every occurrence it nests inside read an identity transform2 - the one
     case where a world coordinate and that component's own coordinate are the same numbers; None
-    when a transform could not be read. Occurrence.transform is relative to the PARENT component,
-    so only the whole chain answers this."""
+    when a transform2 does not read."""
     node = occ
     for _ in range(64):      # a path this deep is a cycle, not an assembly
         if node is None:
             return True
         m = safe(lambda n=node: n.transform2)
-        if m is None:
-            m = safe(lambda n=node: n.transform)
         verdict = _is_identity(m) if m is not None else None
         if verdict is not True:
             return verdict
@@ -146,23 +144,41 @@ def _axis_direction(raw_axis, flip):
 
 
 def _anchor_direction_line(comp, center_cm, dir_vec, length=1.0):
-    """Draw a hidden helper sketch line from center_cm (cm) along dir_vec; the JO anchors on its START,
-    so the frame sits AT center_cm with Z running along the line. Returns the SketchLine."""
+    """Draw a helper line from center_cm (cm) along dir_vec; returns (SketchLine, its helper sketch)."""
     sketch = comp.sketches.add(comp.xYConstructionPlane)
-    try:
-        sketch.name = "JointOriginAnchor"
-    except Exception:
-        pass
+    apply_rename(sketch, _HELPER_NAME)
     cx, cy, cz = center_cm
     dx, dy, dz = dir_vec
     P = adsk.core.Point3D.create
     line = sketch.sketchCurves.sketchLines.addByTwoPoints(
         P(cx, cy, cz), P(cx + dx * length, cy + dy * length, cz + dz * length))
+    # A hide that raises is judged like one that is swallowed: by the read-back.
     try:
         sketch.isVisible = False
     except Exception:
         pass
-    return line
+    return line, sketch
+
+
+def _helper_state(sketch):
+    """The helper sketch's {name, visible} as it reads NOW, None where a read fails; None for no helper."""
+    if sketch is None:
+        return None
+    return {"name": _common.read_optional(lambda: sketch.name)[0],
+            "visible": _common.read_flag(lambda: sketch.isVisible)}
+
+
+def _helper_note(helper):
+    """The sentence for a helper sketch that does not read named and hidden; "" when it does."""
+    # MEASURED: a second helper in one component adopts 'JointOriginAnchor (1)'.
+    named = (helper or {}).get("name") or ""
+    if helper is None or (named.startswith(_HELPER_NAME) and helper["visible"] is False):
+        return ""
+    name = "unread" if helper["name"] is None else f"'{helper['name']}'"
+    visible = "unread" if helper["visible"] is None else helper["visible"]
+    return (f" The helper sketch this call drew for the bbox_center anchor reads name={name}, "
+            f"visible={visible}; this call assigns name='{_HELPER_NAME}', visible=False. "
+            "sketch_get lists the sketches with is_visible; sketch_edit renames or hides one.")
 
 
 def _geometry_from_args(design, comp, anchor, target, x_cm, y_cm, z_cm,
@@ -187,11 +203,12 @@ def _geometry_from_args(design, comp, anchor, target, x_cm, y_cm, z_cm,
         if derr:
             return None, None, derr
         try:
-            line = _anchor_direction_line(comp, center, dvec)
+            line, helper = _anchor_direction_line(comp, center, dvec)
         except Exception as e:
             return None, None, f"bbox_center: could not build the orientation line: {e}"
         g = safe(lambda: JG.createByCurve(line, adsk.fusion.JointKeyPointTypes.StartKeyPoint))
         if meta is not None:
+            meta["helper_sketch"] = helper
             meta["anchor_cm"] = center
             meta["anchor_source"] = f"bbox center of {safe(lambda: tent.name) or tkind}"
         return g, f"bbox center of {safe(lambda: tent.name) or tkind} (Z along orient_axis)", \
@@ -296,15 +313,6 @@ def _kp_name(kp_value):
     return str(kp_value)
 
 
-
-def _roll_back(joint_origin):
-    """The rollback sentence for a rejected joint origin, true to whether deleteMe removed it."""
-    if safe(lambda: joint_origin.deleteMe()) is True:
-        return "Rolled it back; nothing changed."
-    label = safe(lambda: joint_origin.name) or "the new joint origin"
-    return (f"Its rollback did not confirm, so '{label}' may remain - remove it with "
-            "design_delete_feature.")
-
 def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
             x: float = 0.0, y: float = 0.0, z: float = 0.0,
             sketch_name: str = "", entity_index: int = 0, keypoint: str = "start",
@@ -312,9 +320,9 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
             bbox_target: str = "", orient_axis: str = "z", flip: bool = False,
             component: str = "", sketch_component: str = "") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     anchor = (anchor or "coordinates").strip().lower()
     if anchor not in _ANCHORS:
@@ -400,12 +408,23 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
     "third_axis_Y": _vec(safe(lambda: jo_input.thirdAxisVector)),
     }
 
+    def helper_left():
+        # Read when the failure is reported, after whatever cleanup ran before it.
+        state = _helper_state(meta.get("helper_sketch"))
+        note = _helper_note(state)
+        if note:
+            read = None not in (state["name"], state["visible"])
+            return note + (" It was not removed." if read else "")
+        return (" The hidden helper sketch this call drew for the bbox_center anchor was not "
+                "removed; design_get(include=['timeline']) lists it."
+                if anchor == "bbox_center" else "")
+
     try:
         joint_origin = comp.jointOrigins.add(jo_input)
     except Exception as e:
-        return error(f"Joint origin creation failed: {e}")
+        return error(f"Joint origin creation failed: {e}" + helper_left())
     if not joint_origin:
-        return error("jointOrigins.add returned nothing.")
+        return error("jointOrigins.add returned nothing." + helper_left())
 
     # Set-then-verify the LANDING: which component the origin actually belongs to is read back off the
     # created JO, never assumed from the collection it was added to. A JO on the wrong component cannot
@@ -420,7 +439,8 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
     if landed_here is False:
         got_name = landed_name or "?"
         return error(f"Joint origin landed on component '{got_name}', not the requested "
-                     f"'{want_name}'. {_roll_back(joint_origin)}")
+                     f"'{want_name}'. " + _common.delete_failed_feature(design, joint_origin)[1]
+                     + helper_left())
 
     jo_name_final, rename_warning = apply_rename(joint_origin, name)
 
@@ -437,7 +457,8 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
                 return error(
                     f"Coordinate offsets did not take: asked "
                     f"{[round(v, 4) for v in (ox, oy, oz)]} cm but the joint origin reports "
-                    f"{[round(v, 4) for v in got]} cm. {_roll_back(joint_origin)}")
+                    f"{[round(v, 4) for v in got]} cm. "
+                    + _common.delete_failed_feature(design, joint_origin)[1])
             inv = (1.0 / scale) if scale else 1.0
             offset_params = {"x": round(got[0] * inv, 6), "y": round(got[1] * inv, 6),
                              "z": round(got[2] * inv, 6), "units": units}
@@ -474,7 +495,8 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
                 if dist > 1e-3:   # > 0.001 cm (0.01 mm): the origin did NOT land on the computed anchor
                     return error(
                         f"Joint origin landed at {readback} but the computed anchor was {computed} "
-                        f"(off by {round(dist, 4)} cm). {_roll_back(joint_origin)}")
+                        f"(off by {round(dist, 4)} cm). "
+                        + _common.delete_failed_feature(design, joint_origin)[1] + helper_left())
 
     payload = {
     "created": True,
@@ -541,6 +563,11 @@ def handler(anchor: str = "coordinates", target: str = "at", units: str = "mm",
         payload["computed_anchor"] = computed
         if readback is not None:
             payload["origin_readback"] = readback
+    # The helper is read last, after every origin operation above, so the reply states what remains.
+    helper_now = _helper_state(meta.get("helper_sketch"))
+    if helper_now is not None:
+        payload["helper_sketch"] = helper_now
+        payload["note"] += _helper_note(helper_now)
     if rename_warning:
         payload["rename_warning"] = rename_warning
     return ok(payload)

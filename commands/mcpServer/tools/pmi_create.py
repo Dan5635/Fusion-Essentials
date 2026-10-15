@@ -64,12 +64,19 @@ def handler(kind=None, geometry=None, text="", name="", text_point=None, leader_
             plane="", plane_face="", align="", valign="", perpendicular=None,
             leader_extension=None, flags=None, values=None, display=None, units="mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    d = _common.design()
-    if not d:
-        return error("No active design. Create or open a document first (see doc_new).")
+    d, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     kind_v, kerr = _KIND.resolve(kind)
     if kerr:
         return error(kerr)
+    refusal = None
+    if kind_v == "hole_note":
+        refusal = ((_pmi.hole_flags_error(flags) if flags is not None else None)
+                   or (_pmi.hole_values_error(values) if values is not None else None)
+                   or (_pmi.display_error(display) if display is not None else None))
+    if refusal:
+        return error(refusal + " No annotation was created.")
     ents, gerr = _GEOMETRY.resolve(geometry)
     if gerr:
         return error(gerr)

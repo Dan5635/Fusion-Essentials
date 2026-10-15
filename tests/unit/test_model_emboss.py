@@ -6,6 +6,9 @@ refused, negative allowed and reported as an engrave), the volume-DIRECTION gate
 effect disagrees with the sign asked for is an error, not a false ok - the single-body refusal, the
 health-error gate, the direct-mode no-feature path, and the ModelParameter depth read-back.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import types
 
@@ -40,7 +43,7 @@ def make_value_input(value):
     return types.SimpleNamespace(value=value)
 
 
-def make_feature(name="Emboss1", health=0, depth_cm=0.3):
+def make_feature(name="Emboss1", health=_HEALTHY, depth_cm=0.3):
     """An EmbossFeature stand-in. `depth` is a ModelParameter, whose .value is the applied depth in
     internal cm - not the ValueInput that was handed in."""
     return types.SimpleNamespace(name=name, healthState=health,
@@ -54,7 +57,7 @@ class FakeEmbossFeatures:
 
     `return_feature` False models a direct-mode add() that hands nothing back while the emboss LANDS;
     `volume_unreadable` additionally drops the volume read, leaving no evidence at all."""
-    def __init__(self, bodies, volume_delta=3.36, return_feature=True, health=0,
+    def __init__(self, bodies, volume_delta=3.36, return_feature=True, health=_HEALTHY,
                  volume_unreadable=False, feature_depth_cm=0.3, input_none=False):
         self.bodies = list(bodies)
         self.volume_delta = volume_delta
@@ -469,7 +472,7 @@ class TestHonesty:
 
     def test_health_error_reported_not_false_ok(self, monkeypatch):
         body = make_body(volume=12.0)
-        feats = FakeEmbossFeatures([body], volume_delta=3.0, health=2)
+        feats = FakeEmbossFeatures([body], volume_delta=3.0, health=_ERROR)
         _wire(monkeypatch, feats, [make_face(body)])
         msg = error_message(em.handler(profiles=["p"], faces=["h"], depth=3, units="mm"))
         assert "failed to compute" in msg and "not fully on the target face" in msg

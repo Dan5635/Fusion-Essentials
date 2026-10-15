@@ -31,7 +31,7 @@ def handler(file: str = "", project: str = "", folder: str = "", target_folder: 
         return error("Provide 'target_folder' - the destination folder PATH inside the file's own "
                      "project (e.g. 'Parts/Fixtures'), or '/' for the project root.")
 
-    df, meta, err = resolve_file_reference(file, project=project, folder=folder)
+    df, meta, err = resolve_file_reference(file, project=project, folder=folder, id_input=None)
     if err:
         return error(err)
 

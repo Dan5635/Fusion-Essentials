@@ -10,8 +10,14 @@ thresholds. Plus the guards (no document; a non-Design document).
 No live Fusion — fakes model exactly the read surface the handler touches.
 """
 
-import json
+import live_api_facts as _api_facts
+
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
+
 import types
+
+import pytest
 
 import adsk.cam
 import adsk.core
@@ -51,6 +57,39 @@ from conftest import (
 wo = load_tool("workspace_orient")
 
 
+@pytest.fixture
+def unread_history(monkeypatch):
+    def orient(fault):
+        root = FakeRoot(joints=[FakeJoint("Joint1", 2 if fault == "joint" else 0)])
+        des = FakeDesign(root, design_type=0)
+        doc = _doc(design=des, refs=[_ref("Linked", out_of_date=True)] if fault == "reference" else [])
+        app = FakeApplication(active_document=doc, active_product=des)
+        monkeypatch.setattr(wo, "app", app)
+        monkeypatch.setattr(wo._common, "app", app)
+        monkeypatch.setattr(adsk.fusion.Design, "cast", lambda value: des)
+        monkeypatch.setattr(adsk.cam.CAM, "cast", lambda value: None)
+        def unavailable(_design):
+            raise RuntimeError("3 : this is not a parametric design")
+        monkeypatch.setattr(MakeDesign, "timeline", property(unavailable), raising=False)
+        return _payload(wo.handler())
+    return orient
+
+
+@pytest.mark.parametrize("fault", [None, "joint", "reference"])
+def test_unavailable_history_is_not_zero_or_healthy_and_keeps_independent_faults(unread_history, fault):
+    out = unread_history(fault)
+    health = out["health"]
+    assert all(health[key] is None for key in (
+        "timeline_features", "timeline_errors", "timeline_warnings", "timeline_suppressed",
+        "timeline_markers", "timeline_rolled_back"))
+    assert health["is_healthy"] is (None if fault is None else False)
+    assert health["joint_count"] == 1
+    assert health["broken_joints"] == (["Joint1"] if fault == "joint" else [])
+    assert health["out_of_date_references"] == (["Linked"] if fault == "reference" else [])
+    assert "not observed zero/healthy history" in out["note"] and "Finish Form" in out["note"]
+    assert not out["note"].startswith("No compute errors")
+
+
 # ── fakes: just the read surface workspace_orient touches ───────────────────────────────────────
 
 class _Coll:
@@ -71,30 +110,20 @@ UNAVAILABLE = ("3 : The occurrence's referenced component is unavailable (broken
                "external reference).")
 
 
-class BrokenOcc:
-    """An occurrence whose referenced component will not load. Only `name` reads; component,
-    fullPathName and childOccurrences all RAISE, isReferencedComponent reads FALSE (a live xref
-    reads True) and isValid reads True - so occ.component raising is the only signal."""
-    def __init__(self, name="45740"):
-        self.name = name
-        self.isReferencedComponent = False
-        self.isValid = True
-
-    @property
-    def component(self):
-        raise RuntimeError(UNAVAILABLE)
-
-    @property
-    def fullPathName(self):
-        raise RuntimeError("2 : InternalValidationError : path.valid()")
-
-    @property
-    def childOccurrences(self):
-        raise RuntimeError("2 : InternalValidationError : path.valid()")
+def BrokenOcc(name="45740"):
+    """Build the shared occurrence fake with the measured broken-reference reads."""
+    path_error = "2 : InternalValidationError : path.valid()"
+    return make_occurrence(
+        path=name,
+        referenced=False,
+        valid=True,
+        raises_on={"component": UNAVAILABLE,
+                   "fullPathName": path_error,
+                   "childOccurrences": path_error})
 
 
 def FakeOcc(name, comp=None, children=0, bodies=1, grounded=False, xref=False,
-            broken_children=()):
+            broken_children=(), ground_to_parent=False):
     """One occurrence in the browser digest, on the shared occurrence fake.
 
     component.occurrences is the COMPONENT-LOCAL superset - the only collection an unresolved child
@@ -102,12 +131,13 @@ def FakeOcc(name, comp=None, children=0, bodies=1, grounded=False, xref=False,
     component = MakeComp(name=comp or name.split(":")[0],
                          occurrences=list(broken_children) + [None] * children)
     return make_occurrence(path=name, component=component, children=[None] * children,
-                           bodies=[None] * bodies, grounded=grounded, referenced=xref)
+                           bodies=[None] * bodies, grounded=grounded, referenced=xref,
+                           ground_to_parent=ground_to_parent)
 
 
 class FakeJoint(_SharedJoint):
     """The shared joint narrowed to the name and health an orientation rollup reads."""
-    def __init__(self, name, health=0):
+    def __init__(self, name, health=_HEALTHY):
         super().__init__(name=name, health=health)
 
 
@@ -123,9 +153,9 @@ class FakeTimelineHealthOnly:
     classes are indistinguishable to this read.
 
     The absence is an object that genuinely lacks the attribute, never a member deleted off the
-    shared adsk mock - that deletion does not reliably undo itself (tests/CLAUDE.md), and an ABSENT
+    shared adsk mock - that deletion does not reliably undo itself (tests/AGENTS.md), and an ABSENT
     attribute is exactly what has to stay distinguishable from a state that read fine."""
-    def __init__(self, name, tl_health=0):
+    def __init__(self, name, tl_health=_HEALTHY):
         self.name = name
         self.timelineObject = FakeTL(tl_health)
 
@@ -215,21 +245,17 @@ class _FoldersSetup(_SharedSetup):
     the same operations with the folders dropped)."""
 
 
-class FakeOp:
+class FakeOp(FakeOperation):
     """A CAM Operation as the orientation read buckets it: the lifecycle state plus the toolpath
     pair that tells a generated-but-EMPTY op (valid, no toolpath) from one that never generated."""
 
     def __init__(self, has_toolpath, name="Op", toolpath_valid=True, suppressed=False, state=None,
                  errored=False):
-        self.name = name
-        self.hasToolpath = has_toolpath
-        self.isToolpathValid = toolpath_valid
-        self.isSuppressed = suppressed
-        self.operationState = (adsk.cam.OperationStates.IsValidOperationState
-                               if state is None else state)
-        self.hasError = errored
-        self.hasWarning = False
-        self.isGenerating = False
+        super().__init__(name=name, has_toolpath=has_toolpath, valid=toolpath_valid,
+                         suppressed=suppressed,
+                         operation_state=(adsk.cam.OperationStates.IsValidOperationState
+                                          if state is None else state),
+                         has_error=errored)
 
 
 def FakeCAM(setups, machining_times=None):
@@ -297,9 +323,7 @@ def _install(active_product=None, doc=None, cam=None, design_for_cast=None,
     adsk.cam.CAM.cast = lambda x: ccast if (ccast is not None and x is ccast) else None
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ──────────────────────────────────────────────────────────────────────────────────────
@@ -371,32 +395,6 @@ class TestOrientation:
         out = _payload(wo.handler())
         assert out["design"]["parameters"] is None and "parameters" not in out["pointers"]
 
-    def test_an_open_form_edit_is_named_and_its_unread_health_is_null(self):
-        des = self._small_design(design_type=0)
-        des.userParameters = _NamedCollection(raises="3 : this is not a parametric design")
-        _install(active_product=des, doc=_doc(design=des),
-                 workspace=types.SimpleNamespace(id="TSplineEnvironment", name="Form"))
-        out = _payload(wo.handler())
-        assert out["design"]["in_form_edit"] is True
-        assert out["health"]["is_healthy"] is None and out["health"]["timeline_features"] is None
-        assert out["health"]["timeline_rolled_back"] is None
-        assert "Finish Form" in out["note"] and "No compute errors" not in out["note"]
-
-    def test_the_workspace_is_read_after_the_form_switch_lands(self, monkeypatch):
-        des = self._small_design(design_type=0)
-        _install(active_product=des, doc=_doc(design=des))
-        pumps = []
-
-        def pump():
-            pumps.append(1)
-            if len(pumps) == 3:
-                wo.app.userInterface.activeWorkspace = types.SimpleNamespace(
-                    id="TSplineEnvironment", name="Form")
-        monkeypatch.setattr(wo._inputs._pump_until.__globals__["adsk"], "doEvents", pump,
-                            raising=False)
-        out = _payload(wo.handler())
-        assert out["design"]["in_form_edit"] is True and out["workspace"] == "Form"
-
     def test_healthy_rollup(self):
         des = self._small_design()
         _install(active_product=des, doc=_doc(design=des))
@@ -444,7 +442,9 @@ class TestOrientation:
     def test_healthy_note_says_so(self):
         des = self._small_design()
         _install(active_product=des, doc=_doc(design=des))
-        assert _payload(wo.handler())["note"].startswith("No compute errors")
+        out = _payload(wo.handler())
+        assert out["note"].startswith("No compute errors")
+        assert "Finish Form" not in out["note"]        # parametric: no open-edit ambiguity
 
     def test_direct_mode_has_no_timeline(self):
         root = FakeRoot(top_occs=[FakeOcc("A:1")])
@@ -453,6 +453,8 @@ class TestOrientation:
         out = _payload(wo.handler())
         assert out["design"]["mode"] == "direct"
         assert out["health"]["timeline_features"] == 0
+        # An open Form or base-feature edit also reads direct - the verdict carries the caveat.
+        assert "Finish Form" in out["note"]
 
     def test_browser_digest_is_depth_one(self):
         occs = [FakeOcc("Asm:1", children=12, bodies=0, xref=True),
@@ -475,6 +477,45 @@ class TestOrientation:
         out = _payload(wo.handler())
         assert len(out["browser_digest"]) == wo._DIGEST_LIMIT      # capped, not all 40
         assert out["design"]["top_level_occurrences"] == 40        # but the true count is reported
+
+
+# ── the two ground flags: the UI Ground/Fix flag and the parent lock, reported apart ─────────────
+
+class TestGroundFlags:
+    @pytest.fixture
+    def orient(self, monkeypatch):
+        def run(occs):
+            des = FakeDesign(FakeRoot(top_occs=occs), timeline=[FakeTL(0)])
+            app = FakeApplication(active_document=_doc(design=des), active_product=des)
+            monkeypatch.setattr(wo, "app", app)
+            monkeypatch.setattr(wo._common, "app", app)
+            monkeypatch.setattr(adsk.fusion.Design, "cast", lambda value: des)
+            monkeypatch.setattr(adsk.cam.CAM, "cast", lambda value: None)
+            return _payload(wo.handler())
+        return run
+
+    def test_a_parent_locked_occurrence_is_reported_without_counting_as_grounded(self, orient):
+        # the first component of a design: isGroundToParent true, isGrounded false
+        out = orient([FakeOcc("WebCoupon:1", grounded=False, ground_to_parent=True)])
+        assert out["health"]["grounded_occurrences"] == 0
+        assert out["health"]["ground_to_parent_occurrences"] == 1
+        row = out["browser_digest"][0]
+        assert (row["grounded"], row["ground_to_parent"]) == (False, True)
+
+    def test_each_flag_is_counted_apart_over_every_top_level_occurrence(self, orient):
+        # the counts cover the whole top level, past the digest cap, and neither flag stands in
+        # for the other: two grounded, three parent-locked, one of them both
+        occs = [FakeOcc(f"P{i}:1") for i in range(wo._DIGEST_LIMIT + 5)]
+        occs[0] = FakeOcc("Locked:1", ground_to_parent=True)
+        occs[1] = FakeOcc("Fixed:1", grounded=True)
+        occs[-2] = FakeOcc("LockedLate:1", ground_to_parent=True)
+        occs[-1] = FakeOcc("BothLate:1", grounded=True, ground_to_parent=True)
+        out = orient(occs)
+        assert out["health"]["grounded_occurrences"] == 2
+        assert out["health"]["ground_to_parent_occurrences"] == 3
+        # a row carries ground_to_parent only where it reads true
+        flags = [(r["grounded"], r.get("ground_to_parent")) for r in out["browser_digest"][:3]]
+        assert flags == [(False, True), (True, None), (False, None)]
 
 
 # ── timeline markers (null health) + rolled-back marker + warnings surfaced distinctly ────────────
@@ -1352,6 +1393,8 @@ class TestBbox:
         assert bb["units"] == "mm"
         assert bb["size"] == {"x": 50.0, "y": 50.0, "z": 50.0}
         assert bb["center"] == {"x": 25.0, "y": 25.0, "z": 25.0}
+        assert "may omit hidden geometry" in bb["scope"]
+        assert "Body extents: model_inspect" in bb["scope"]
 
     def test_bbox_none_when_no_geometry(self):
         root = FakeRoot(top_occs=[], all_count=0, bbox=None)   # empty/sketch-only design
@@ -1479,14 +1522,14 @@ class TestRelationHealthInFirstCall:
     def test_failed_constraint_drops_the_first_call_health(self):
         # Measured: a failed assembly constraint left this read healthy while only a deeper
         # include=['relations'] slice named it - the orientation read folds relation health in.
-        des = self._design_with_constraint(health=2)
+        des = self._design_with_constraint(health=_ERROR)
         _install(active_product=des, doc=_doc(design=des))
         h = _payload(wo.handler())["health"]
         assert h["is_healthy"] is False
         assert h["broken_relations"] == ["Constraint 1"]
 
     def test_healthy_constraint_leaves_the_rollup_alone(self):
-        des = self._design_with_constraint(health=0)
+        des = self._design_with_constraint(health=_HEALTHY)
         _install(active_product=des, doc=_doc(design=des))
         h = _payload(wo.handler())["health"]
         assert h["is_healthy"] is True and h["broken_relations"] == []
@@ -1495,7 +1538,7 @@ class TestRelationHealthInFirstCall:
         # is_healthy counts broken_relations, so the verdict sentence and the pointers must too:
         # otherwise the one fault in the design reads "No compute errors ..." beside is_healthy
         # false, with nothing naming the tool that repairs it.
-        des = self._design_with_constraint(health=2)
+        des = self._design_with_constraint(health=_ERROR)
         _install(active_product=des, doc=_doc(design=des))
         out = _payload(wo.handler())
         assert out["health"]["is_healthy"] is False
@@ -1505,7 +1548,7 @@ class TestRelationHealthInFirstCall:
         assert out["pointers"]["fix_relations"].startswith("assembly_get(")
 
     def test_a_healthy_design_keeps_the_clean_verdict_and_no_relation_pointer(self):
-        des = self._design_with_constraint(health=0)
+        des = self._design_with_constraint(health=_HEALTHY)
         _install(active_product=des, doc=_doc(design=des))
         out = _payload(wo.handler())
         assert "No compute errors" in out["note"]
@@ -1537,14 +1580,14 @@ class TestHealthReadOffTheTimelineItem:
 
     def test_as_built_joint_errored_on_its_timeline_item_is_named(self):
         # the other failing state (2 = ERROR); both sides of the warning/error pair must count.
-        des = self._design(as_built=[FakeTimelineHealthOnly("ArmSpin", tl_health=2)])
+        des = self._design(as_built=[FakeTimelineHealthOnly("ArmSpin", tl_health=_ERROR)])
         _install(active_product=des, doc=_doc(design=des))
         assert _payload(wo.handler())["health"]["broken_joints"] == ["ArmSpin"]
 
     def test_as_built_joint_healthy_on_its_timeline_item_is_not_named_or_unknown(self):
         # healthState 0 = HEALTHY: the boundary just below the failing pair. Counted healthy, so
         # neither broken nor withheld.
-        des = self._design(as_built=[FakeTimelineHealthOnly("ArmSpin", tl_health=0)])
+        des = self._design(as_built=[FakeTimelineHealthOnly("ArmSpin", tl_health=_HEALTHY)])
         _install(active_product=des, doc=_doc(design=des))
         h = _payload(wo.handler())["health"]
         assert h["broken_joints"] == [] and h["is_healthy"] is True
@@ -1580,7 +1623,7 @@ class TestHealthReadOffTheTimelineItem:
         assert h["broken_joints"] == ["PistonSlide"] and "joints_health_unknown" not in h
 
     def test_rigid_group_broken_on_its_timeline_item_is_named(self):
-        des = self._design(relations=[FakeTimelineHealthOnly("Rigid Group 1", tl_health=2)])
+        des = self._design(relations=[FakeTimelineHealthOnly("Rigid Group 1", tl_health=_ERROR)])
         _install(active_product=des, doc=_doc(design=des))
         out = _payload(wo.handler())
         assert out["health"]["broken_relations"] == ["Rigid Group 1"]
@@ -1588,7 +1631,7 @@ class TestHealthReadOffTheTimelineItem:
         assert "Rigid Group 1" in out["pointers"]["fix_relations"]
 
     def test_healthy_rigid_group_is_neither_broken_nor_unknown(self):
-        des = self._design(relations=[FakeTimelineHealthOnly("Rigid Group 1", tl_health=0)])
+        des = self._design(relations=[FakeTimelineHealthOnly("Rigid Group 1", tl_health=_HEALTHY)])
         _install(active_product=des, doc=_doc(design=des))
         h = _payload(wo.handler())["health"]
         assert h["broken_relations"] == [] and h["is_healthy"] is True
@@ -1616,7 +1659,7 @@ class TestHealthReadOffTheTimelineItem:
         assert out["note"].startswith("No compute errors")
 
 
-# ── entitlement / capability block (LICENSE-CTX-1) ───────────────────────────────────────────────
+# ── generation capability block ────────────────────────────────────────────────────────────────
 #
 # The block probes a SMALL sentinel set of strategy names document-independently through
 # adsk.cam.OperationStrategy.createFromString(name).isGenerationAllowed and reports the OBSERVED
@@ -1640,8 +1683,7 @@ class TestCapabilityBlock:
         assert og == {name: True for name in wo._cam_common.CAPABILITY_SENTINELS}
 
     def test_blocked_strategies_read_false_not_null(self, monkeypatch):
-        # false is an OBSERVED answer (the base license declines it), distinct from an unread probe's
-        # null - so a blocked strategy must publish False, never fold into the unknown case.
+        # false is an observed generation-permission answer, distinct from an unread probe's null.
         des = self._small_design()
         _install(active_product=des, doc=_doc(design=des))
         monkeypatch.setattr(wo._cam_common, "_create_strategy", strategy_factory(self._all(False)))
@@ -1683,19 +1725,17 @@ class TestCapabilityBlock:
         assert set(og) == set(wo._cam_common.CAPABILITY_SENTINELS)
         assert len(og) == 4                         # compact - a few keys, not the 54-row dump
 
-    def test_the_note_cites_the_flag_and_asserts_no_license_tier(self, monkeypatch):
+    def test_the_note_calls_the_flags_generation_permission_not_license_verification(self, monkeypatch):
         des = self._small_design()
         _install(active_product=des, doc=_doc(design=des))
         monkeypatch.setattr(wo._cam_common, "_create_strategy", strategy_factory(self._all(True)))
         note = _payload(wo.handler())["machining_capabilities"]["note"]
         assert "isGenerationAllowed" in note                       # cited to the read that backs it
         assert "cam_get(include=['strategies'])" in note           # pointer kept: empty test registry
-        assert "No license tier or SKU is asserted" in note        # the honesty line
+        assert "generation permission" in note                    # the field's meaning
+        assert "not subscription or license verification" in note
         assert "you have" not in note.lower()                      # never claims a named license/tier
-        # the flag is an ENTITLEMENT read, not a generation promise - the note must not say a
-        # true-reading strategy 'generates' (tool/geometry/machine can still fail it).
-        assert "true = it generates" not in note
-        assert "INSTALLATION, not the open document" in note
+        assert "entitlement reads absent" not in note
 
     def test_the_cam_get_pointer_is_dropped_when_the_cam_family_is_gated_off(self, monkeypatch):
         # cam is a gateable family: on a server with cam_get unregistered the note must not name a
@@ -1743,10 +1783,9 @@ class TestCapabilityBlock:
         og = _payload(wo.handler())["machining_capabilities"]["observed_generation"]
         assert og["swarf"] is True and og["probe_geometry"] is False
 
-    def test_the_entitlement_verdict_keeps_an_unread_flag_apart_from_a_blocked_one(self):
+    def test_the_aggregate_keeps_an_unread_flag_apart_from_a_false_permission(self):
         # sys_capability_map points a cold agent here for this ONE verdict. A bare all() over the
-        # flags would fold an unread None into False - a confident 'not entitled' for a probe that
-        # never answered, which is the opposite of what null means on the wire.
+        # flags would fold an unread None into False, hiding that one probe did not answer.
         assert wo._cam_common.entitled_over([True, True, True, True]) is True
         assert wo._cam_common.entitled_over([True, False, True, True]) is False
         assert wo._cam_common.entitled_over([True, None, True, True]) is None

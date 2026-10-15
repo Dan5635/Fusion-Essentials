@@ -14,7 +14,8 @@ def _rebox(curve):
     """Re-derive the bounding box from the endpoints, the way Fusion's is derived."""
     a, b = curve.startSketchPoint.geometry, curve.endSketchPoint.geometry
     curve.boundingBox = FakeBoundingBox3D(
-        FakePoint(min(a.x, b.x), min(a.y, b.y), 0.0), FakePoint(max(a.x, b.x), max(a.y, b.y), 0.0))
+        FakePoint(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z)),
+        FakePoint(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z)))
 
 
 def _boxed(token, x, y, dx=1.0, dy=0.0, length=10.0):
@@ -35,8 +36,13 @@ def _matrix():
 
     def set_to_rotation(angle, axis, origin):
         m.angle = angle
-        cells[0][0], cells[0][1] = math.cos(angle), -math.sin(angle)
-        cells[1][0], cells[1][1] = math.sin(angle), math.cos(angle)
+        x, y, z = axis.x, axis.y, axis.z
+        co, si = math.cos(angle), math.sin(angle)
+        cross = ((0, -z, y), (z, 0, -x), (-y, x, 0))
+        for r in range(3):
+            for c in range(3):
+                cells[r][c] = (co * (r == c) + (1 - co) * (x, y, z)[r] * (x, y, z)[c]
+                               + si * cross[r][c])
         return True
 
     def set_cell(row, col, value):
@@ -55,9 +61,9 @@ def _place(entity, matrix):
     t = matrix.translation
     for p in (entity.startSketchPoint.geometry, entity.endSketchPoint.geometry):
         x, y, z = p.x, p.y, p.z
-        p.x = matrix.getCell(0, 0) * x + matrix.getCell(0, 1) * y + t.x
-        p.y = matrix.getCell(1, 0) * x + matrix.getCell(1, 1) * y + t.y
-        p.z = matrix.getCell(2, 2) * z + t.z
+        p.x = sum(matrix.getCell(0, c) * (x, y, z)[c] for c in range(3)) + t.x
+        p.y = sum(matrix.getCell(1, c) * (x, y, z)[c] for c in range(3)) + t.y
+        p.z = sum(matrix.getCell(2, c) * (x, y, z)[c] for c in range(3)) + t.z
     _rebox(entity)
 
 
@@ -171,6 +177,100 @@ class TestGuards:
 
 
 class TestTheContainerAndTheMatrix:
+
+    def test_local_x_rotation_moves_an_endpoint_out_of_plane(self, mod, sketches):
+        plate, _ = sketches
+        line = _lines(plate).item(0)
+        line.endSketchPoint.geometry = FakePoint(0.0, 1.0, 0.0)
+        _rebox(line)
+        plate.move = _mover([], moves=None)
+
+        out = payload(mod.handler(entities="line:0", rotation_deg=45,
+                                  rotation_axis=[2, 0, 0]))
+
+        end = line.endSketchPoint.geometry
+        assert (end.x, end.y, end.z) == pytest.approx((0, 2 ** -0.5, 2 ** -0.5))
+        assert out["coordinates_verified"] is True
+        assert "curve interiors were not checked" in out["note"]
+        assert out["requested"]["rotation_axis"] == [2, 0, 0]
+
+    def test_three_dimensional_pivot_sets_the_translation_term(self, mod, sketches):
+        plate, _ = sketches
+        line = _lines(plate).item(0)
+        line.endSketchPoint.geometry = FakePoint(0.0, 1.0, 0.0)
+        _rebox(line)
+        plate.move = _mover([], moves=None)
+
+        out = payload(mod.handler(entities="line:0", rotation_deg=90,
+                                  rotation_axis=[1, 0, 0], center_z=5))
+
+        start, end = line.startSketchPoint.geometry, line.endSketchPoint.geometry
+        assert (start.y, start.z) == pytest.approx((0.5, 0.5))
+        assert (end.y, end.z) == pytest.approx((0.5, 1.5))
+        assert out["requested"]["center_z"] == 5.0
+
+    @pytest.mark.parametrize("kwargs,part", [
+        ({"rotation_axis": [0, 0, 0]}, "nonzero"),
+        ({"rotation_axis": [1, 2]}, "three numbers"),
+        ({"rotation_axis": [1, float("nan"), 0]}, "finite"),
+        ({"rotation_axis": [1e-20, 0, 0]}, "nonzero"),
+        ({"rotation_axis": [1, 0, 0], "rotation_deg": 0}, "nonzero 'rotation_deg'"),
+        ({"center_z": 5, "rotation_deg": 0}, "needs scaling or rotation"),
+        ({"center_z": 5, "rotation_deg": 45}, "needs scaling or rotation"),
+        ({"rotation_deg": float("inf")}, "finite"),
+    ])
+    def test_bad_axis_or_unused_pivot_refused_before_move(self, mod, sketches, kwargs, part):
+        plate, _ = sketches
+        called = []
+        plate.move = _mover(called, moves=None)
+        args = {"entities": "line:0", "rotation_deg": 45, **kwargs}
+        assert part in error_message(mod.handler(**args))
+        assert called == []
+
+    def test_wrong_xyz_after_axis_move_is_an_error(self, mod, sketches):
+        plate, _ = sketches
+        line = _lines(plate).item(0)
+
+        def wrong_move(collection, matrix):
+            line.endSketchPoint.geometry.y += 0.1
+            _rebox(line)
+            return True
+
+        plate.move = wrong_move
+        msg = error_message(mod.handler(entities="line:0", rotation_deg=45,
+                                        rotation_axis=[1, 0, 0]))
+        assert "requested XYZ transform did not verify" in msg and "may have moved" in msg
+
+    def test_z_pivot_changes_scale_without_rotation(self, mod, sketches):
+        plate, _ = sketches
+        line = _lines(plate).item(0)
+        plate.move = _mover([], moves=None)
+
+        out = payload(mod.handler(entities="line:0", scale_factor=2, center_z=5))
+
+        assert line.startSketchPoint.geometry.z == pytest.approx(-0.5)
+        assert out["coordinates_verified"] is True
+
+    def test_held_axis_move_does_not_claim_geometry_changed(self, mod, sketches):
+        plate, _ = sketches
+        plate.move = _mover([], moves=(), returns=True)
+        msg = error_message(mod.handler(entities="line:0", rotation_deg=45,
+                                        rotation_axis=[0, 1, 0]))
+        assert "requested XYZ transform did not verify" in msg and "may have moved" in msg
+        assert "move changed" not in msg
+
+    def test_disappearing_moved_endpoint_cannot_verify_from_start_alone(self, mod, sketches):
+        plate, _ = sketches
+        line = _lines(plate).item(0)
+
+        def unread_end(collection, matrix):
+            line.endSketchPoint.geometry = None
+            return True
+
+        plate.move = unread_end
+        msg = error_message(mod.handler(entities="line:0", rotation_deg=45,
+                                        rotation_axis=[1, 0, 0]))
+        assert "could not verify endpoint XYZ coordinates" in msg
 
     def test_move_is_handed_an_object_collection_not_a_plain_list(self, mod, sketches):
         plate, _ = sketches
@@ -417,3 +517,121 @@ class TestPointsAreVerifiedToo:
         reason, evidence = kind.verify({"sketch_name": "Plate"}, {}, before)
         # the curve count is unchanged - only a POINT moved - and that is still a real change
         assert reason == "" and evidence == {"curve_count_after": 2}
+
+
+class TestOffThePlane:
+
+    def test_dz_alone_is_a_move_and_reaches_the_matrix_in_centimetres(self, mod, sketches):
+        plate, _ = sketches
+        calls = []
+        plate.move = _mover(calls, moves=None)
+        out = payload(mod.handler(entities="line:0", dz=5, units="mm"))
+        assert round(calls[0][1].translation.z, 6) == 0.5
+        assert out["moved_entities"] == ["line:0"] and out["requested"]["dz"] == 5.0
+        assert _lines(plate).item(0).startSketchPoint.geometry.z == 0.5
+        assert "on_plane_entities" not in out
+
+    def test_a_loop_that_loses_its_profile_is_reported_with_both_counts(self, mod, sketches):
+        import types
+        plate, _ = sketches
+        plate.profiles = types.SimpleNamespace(count=1)
+        lift = _mover([], moves=None)
+
+        def move(collection, matrix):
+            plate.profiles.count = 0
+            return lift(collection, matrix)
+        plate.move = move
+        out = payload(mod.handler(entities="line:0", dz=5))
+        assert (out["profile_count_before"], out["profile_count_after"]) == (1, 0)
+        assert "from 1 to 0 profile(s)" in out["note"]
+
+    def test_an_entity_that_moved_in_plane_but_kept_z_zero_is_named(self, mod, sketches):
+        plate, _ = sketches
+        shift = _mover([], moves=None)
+
+        def flat_move(collection, matrix):
+            matrix.translation.z = 0.0             # the platform drops the lift, keeps the slide
+            return shift(collection, matrix)
+        plate.move = flat_move
+        out = payload(mod.handler(entities="line:0", dx=10, dz=5))
+        assert out["on_plane_entities"] == ["line:0"]
+        assert out["note"].startswith("line:0 still read z = 0")
+
+    def test_a_move_without_dz_keeps_its_reply_shape(self, mod, sketches):
+        plate, _ = sketches
+        plate.move = _mover([], moves=None)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert "dz" not in out["requested"] and "profile_count_before" not in out
+
+
+class TestMotionNobodyAskedFor:
+    def _dragging(self, plate):
+        """A move that carries line:1 along with whatever was asked, as a constraint would."""
+        asked = _mover([], moves=None)
+
+        def move(collection, matrix):
+            _place(_lines(plate).item(1), matrix)
+            return asked(collection, matrix)
+        return move
+
+    def test_a_curve_a_constraint_dragged_along_is_named_apart_from_the_request(self, mod,
+                                                                               sketches):
+        plate, _ = sketches
+        plate.move = self._dragging(plate)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert out["moved_entities"] == ["line:0"] and out["followed_entities"] == ["line:1"]
+        assert "1 entity not asked for moved too" in out["note"]
+
+    def test_a_move_that_carries_nothing_else_names_no_follower(self, mod, sketches):
+        plate, _ = sketches
+        plate.move = _mover([], moves=None)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert "followed_entities" not in out and "followed_entities_read" not in out
+        assert "not asked for" not in out["note"]
+
+    def test_both_asked_entities_are_never_their_own_followers(self, mod, sketches):
+        plate, _ = sketches
+        plate.move = _mover([], moves=None)
+        out = payload(mod.handler(entities="line:0,line:1", dx=10))
+        assert out["moved_entities"] == ["line:0", "line:1"] and "followed_entities" not in out
+
+    def test_a_sketch_past_the_scan_bound_says_followers_were_not_read(self, mod, sketches,
+                                                                      monkeypatch):
+        plate, _ = sketches
+        monkeypatch.setattr(mod, "_FOLLOW_SCAN", 1)
+        plate.move = self._dragging(plate)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert out["followed_entities_read"] is False and "followed_entities" not in out
+
+    def test_a_bystander_whose_position_does_not_read_marks_the_followers_partial(
+            self, mod, sketches, monkeypatch):
+        plate, _ = sketches
+        third = _boxed("L2", 9.0, 0.0)
+        plate.sketchCurves._items.append(third)
+        plate.sketchCurves.sketchLines._items.append(third)
+        plate.move = self._dragging(plate)
+        real = mod._assert.entity_position
+        monkeypatch.setattr(mod._assert, "entity_position",
+                            lambda e: None if e is third else real(e))
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert out["followed_entities"] == ["line:1"] and out["followed_entities_read"] is False
+
+    def test_an_asked_curve_is_told_from_bystanders_by_equality_not_by_its_token(self, mod,
+                                                                                sketches):
+        plate, _ = sketches
+        # two different curves sharing one token string: only the asked one is excluded
+        _lines(plate).item(1).entityToken = _lines(plate).item(0).entityToken
+        plate.move = self._dragging(plate)
+        out = payload(mod.handler(entities="line:0", dx=10))
+        assert out["followed_entities"] == ["line:1"]
+
+    def test_a_lifted_line_brought_back_down_is_not_said_to_have_stayed_flat(self, mod, sketches):
+        plate, _ = sketches
+        line = _lines(plate).item(0)
+        line.startSketchPoint.geometry.z = line.endSketchPoint.geometry.z = 0.5
+        _rebox(line)
+        plate.move = _mover([], moves=None)
+        out = payload(mod.handler(entities="line:0", dz=-5))
+        assert out["returned_to_plane"] == ["line:0"] and "on_plane_entities" not in out
+        assert "still read z = 0" not in out["note"]
+        assert line.startSketchPoint.geometry.z == 0.0

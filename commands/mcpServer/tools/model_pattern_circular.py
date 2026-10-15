@@ -14,8 +14,9 @@ from ._common import error, ok, safe
 from . import _common
 from . import _inputs
 from . import _assert
-from ._pattern_common import (_BODIES, _OCCURRENCES, _direction_entity, _direction_label,
-                              _owning_component, _resolve_input_entities)
+from ._pattern_common import (_BODIES, _OCCURRENCES, _FEATURES, _FACES, _seed_property,
+                              _seed_kind, _seed_shapes, _seed_effect, _direction_entity,
+                              _direction_label, _owning_component, _resolve_input_entities)
 
 app = adsk.core.Application.get()
 
@@ -25,23 +26,30 @@ _CIRC_AXIS = _inputs.AxisRef("axis", face_entity=True, default="z")
 
 
 def handler(occurrences: str = "", bodies=None, quantity: int = 4, total_angle_deg: float = 360.0,
-            axis: str = "z", symmetric: bool = False) -> dict:
+            axis: str = "z", symmetric: bool = False, features=None, faces=None) -> dict:
     """Pattern component occurrences OR bodies evenly around an axis."""
     if int(quantity) < 2:
         return error("quantity must be >= 2 for a circular pattern.")
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document with components first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
-    coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies)
+    coll, resolved, rerr = _resolve_input_entities(design, occurrences, bodies, features, faces)
     if rerr:
         return error(rerr)
 
     # The axis and the feature must share a component or Fusion raises getObjectPath.
-    owner = _owning_component(design, coll, bodies)
+    kind = _seed_kind(occurrences, bodies, features, faces)
+    owner = _owning_component(design, coll, bodies, features, faces)
+    if owner is None:
+        return error("Pattern seed owner did not read; reacquire its feature or face before retrying.")
     ax, axerr = _direction_entity(_CIRC_AXIS, axis, owner, design)
     if axerr:
         return error(axerr)
+
+    before, berr = _seed_shapes(coll, kind)
+    if berr:
+        return error(berr)
 
     try:
         pin = owner.features.circularPatternFeatures.createInput(coll, ax)
@@ -59,6 +67,10 @@ def handler(occurrences: str = "", bodies=None, quantity: int = 4, total_angle_d
     if not feature:
         return error(_common.no_feature_error(design, "Circular pattern"))
 
+    effect, eerr = _seed_effect(feature, before)
+    if eerr:
+        return error(eerr)
+
     # Verify the effect: the REAL instance count read off the created feature, never the request.
     real_total = safe(lambda: feature.patternElements.count)
     if real_total is not None and int(real_total) != int(quantity):
@@ -66,28 +78,45 @@ def handler(occurrences: str = "", bodies=None, quantity: int = 4, total_angle_d
             f"Pattern '{safe(lambda: feature.name)}' created {int(real_total)} instances but "
             f"{int(quantity)} were requested. The feature is left in the timeline for inspection - "
             "design_delete_feature removes it.")
+    landed = safe(lambda: feature.parentComponent)
+    component = safe(lambda: landed.name) or None
+    note = kind.capitalize() + " patterned around the axis."
+    if component is None:
+        note += " Its owning component did not read; design_get(include=['timeline']) lists it."
+    elif _common.same_component(landed, safe(lambda: design.rootComponent)) is False:
+        note += f" The pattern is owned by component '{component}'."
+    axis_owner = _inputs.entity_component(ax)
+    axis_component = safe(lambda: axis_owner.name) or None
+    foreign_axis = (component is not None and axis_component is not None
+                    and _common.same_component(axis_owner, landed) is False)
+    if foreign_axis:
+        note += f" Its axis belongs to component '{axis_component}'."
     return ok({
         "patterned": True,
         "type": "circular",
         "feature": safe(lambda: feature.name),
+        "component": component,
+        **({"axis_component": axis_component} if foreign_axis else {}),
         "entities": resolved,
-        "entity_kind": "bodies" if bodies not in (None, "", []) else "occurrences",
+        "entity_kind": kind,
+        **effect,
         "axis": _direction_label(_CIRC_AXIS, axis, ax),
         "quantity": int(real_total) if real_total is not None else int(quantity),
         "total_angle_deg": float(total_angle_deg),
         "symmetric": bool(symmetric),
-        "note": ("Bodies" if bodies not in (None, "", []) else "Occurrences")
-                + " patterned around the axis. Pair with view_screenshot to view.",
+        "note": note + " Pair with view_screenshot to view.",
     })
 
 
 TOOL_DESCRIPTION = (
-"Pattern occurrences or bodies evenly around an axis."
+"Pattern occurrences or bodies evenly around an axis. Also faces/features; one seed kind per call."
 )
 tool = (
     Tool.create_simple(name="model_pattern_circular", description=TOOL_DESCRIPTION)
     .add_input_property(*_OCCURRENCES.as_property())
     .add_input_property("bodies", _BODIES.schema())
+    .add_input_property(*_seed_property(_FEATURES))
+    .add_input_property(*_seed_property(_FACES))
     .add_input_property("quantity", {"type": "integer"})
     .add_input_property("total_angle_deg", {"type": "number", "description": "360 = a full ring."})
     .add_input_property(*_CIRC_AXIS.as_property())

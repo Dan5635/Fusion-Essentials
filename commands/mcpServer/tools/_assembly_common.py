@@ -5,16 +5,41 @@
 before the mutation, and which of them moved across it - translation AND rotation."""
 
 from ._common import safe
-# The same before/after occurrence-position reader joint_at_geometry publishes 'moved_by' from,
-# over one shared solver-noise tolerance.
-from .joint_at_geometry import _MOVE_TOL_CM, _move_delta, _occ_origin      # noqa: F401
+from . import _common
 
 MAP_BLURB = (
     "the occurrence WORLD-POSE sampler an assembly write is judged by: _constraint_positions - "
-    "every target's translation and basis BEFORE the mutation, one that will not read ABSENT "
-    "rather than zeroed; _constraint_moves - which moved across it (translation plus "
-    "_axes_rotation_deg, the flip a translation-only row hides), and whether ANY target was "
-    "sampled on both sides")
+    "every target's translation and basis BEFORE the mutation, an unread one ABSENT, not "
+    "zeroed; _constraint_moves - which moved across it (translation plus _axes_rotation_deg, "
+    "the flip a translation-only row hides), and whether ANY target was sampled on both "
+    "sides; _occ_origin/_move_delta - one occurrence's shift")
+
+
+def _occ_origin(occ):
+    """A placed occurrence's world translation in cm, or None."""
+    point = _common.occurrence_world_translation(occ)
+    return tuple(point.values()) if point is not None else None
+
+
+# Above this the reposition is reported as moved_by. 0.005 cm = 0.05 mm - below it the move is joint
+# solver noise, not a teleport worth flagging.
+_MOVE_TOL_CM = 0.005
+
+
+def _move_delta(before, after):
+    """{distance_mm, direction} if the moving occurrence shifted more than _MOVE_TOL_CM, else
+    None."""
+    # joint_at aligns the two picked KEYPOINTS (a planar face's centroid, an edge's midpoint), so
+    # pairing a small feature with a large one repositions the part by the keypoint gap.
+    if before is None or after is None:
+        return None
+    dx, dy, dz = after[0] - before[0], after[1] - before[1], after[2] - before[2]
+    dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+    if dist <= _MOVE_TOL_CM:
+        return None
+    inv = 1.0 / dist
+    return {"distance_mm": round(dist * 10.0, 3),
+            "direction": [round(dx * inv, 4), round(dy * inv, 4), round(dz * inv, 4)]}
 
 
 def _occ_axes(occ):

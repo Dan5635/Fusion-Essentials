@@ -70,9 +70,9 @@ def _algorithm_held(inp, at):
 def handler(target: str = "", tools=None, operation: str = "join",
             algorithm: str = "enhanced") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     tgt, terr = _TARGET.resolve(target)
     if terr:
@@ -226,8 +226,9 @@ def handler(target: str = "", tools=None, operation: str = "join",
 
     # comp = tgt.parentComponent above: every occurrence places that one component. Tool placement
     # is measured by measure_api.py row mesh-combine-tool-lands-where-placed.
-    note = ("Mesh bodies combined ('enhanced' yields fewer triangles than 'legacy'). The edit lands "
-            "on the COMPONENT, so EVERY instance carries it; a tool addressed '<occurrence>:<mesh>' "
+    note = ("Mesh bodies combined. 'algorithm' is what the input read back before the add; the "
+            "algorithm that ran is not confirmed. The edit lands on the COMPONENT, so EVERY "
+            "instance carries it; a tool addressed '<occurrence>:<mesh>' "
             "lands where that occurrence places it. Inspect with model_inspect (mesh target) or "
             "convert with mesh_to_brep.")
     bf_name = result["base_feature_name"]
@@ -250,6 +251,7 @@ def handler(target: str = "", tools=None, operation: str = "join",
         "base_feature": bf_name,
         "operation": op_key,
         "algorithm": result["algorithm_applied"],
+        "algorithm_source": "input_readback",
         "target": tgt_name,
         "tools": tool_names,
         "result_bodies": result_bodies,

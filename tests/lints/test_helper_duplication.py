@@ -1,7 +1,8 @@
-"""Lint: a shared helper lives in exactly ONE module - its home (CLAUDE.md "Reuse before you write").
+"""Lint: a shared helper lives in exactly ONE module - its home (AGENTS.md "Reuse before you write").
 A denylisted symbol (one optional leading underscore allowed) is defined in its home module and
 nowhere else under tools/; a same-named definition doing a different job takes an _ALLOWLIST entry.
-Two shared VALUE shapes are matched by shape below, since a renamed copy slips a name denylist."""
+Two shared VALUE shapes and identical function bodies are matched by shape below, since a renamed
+copy slips a name denylist."""
 
 import ast
 import os
@@ -14,6 +15,14 @@ from conftest import TOOLS_DIR
 # Each entry names the ONE file allowed to define it; every other tool module must import it from
 # there instead of re-implementing it.
 _DENYLIST = {
+    # The read primitive is intentionally tiny, but a local three-line copy under `_safe` is
+    # still a different implementation of the same exception-swallowing contract.
+    "safe": ("_read_primitives", "def"),
+    "read_extrude_definition": ("_edit_feature_common", "def"),
+    "read_sweep_definition": ("_edit_feature_common", "def"),
+    "feature_definition": ("_edit_feature_common", "def"),
+    "extrude_extent_kind": ("_edit_feature_common", "def"),
+    "extrude_tapers": ("_edit_feature_common", "def"),
     "get_cam": ("_cam_common", "def"),
     # The cutting-tool identity pair the create and the edit both read Operation.tool back with -
     # one home, so the '#<n> - ' prefix strip cannot drift between the two comparisons and turn a
@@ -25,7 +34,6 @@ _DENYLIST = {
     # without that .error guard is how one of them publishes or writes that 0 as a real size.
     "tool_dimension_value": ("_cam_common", "def"),
     "find_setup": ("_cam_common", "def"),
-    "find_operation": ("_cam_common", "def"),
     "walk_operations": ("_cam_common", "def"),
     # The kind -> child-collection map (operations/folders/patterns) the walk and both leaf
     # readers share - a local copy is how a reorder's re-read comes to read a DIFFERENT
@@ -261,7 +269,6 @@ _DENYLIST = {
     # itemByName - the name that "exists" in the census then resolves to nothing.
     "find_sketches_by_name": ("_common", "def"),
     "find_sketch": ("_common", "def"),
-    "resolve_sketch": ("_common", "def"),
     "find_or_recent_sketch": ("_common", "def"),
     "resolve_or_recent_sketch": ("_common", "def"),
     # The component SCOPE over that same walk: one match rule (exact, case-insensitive) and one
@@ -298,15 +305,45 @@ _DENYLIST = {
     # sketch_get's two depths cannot accept different spellings.
     "scope_components": ("_sketch_detail", "def"),
     "scope_component": ("_sketch_detail", "def"),
-    "timeline_health": ("_common", "def"),
+    "timeline_health": ("_design_primitives", "def"),
+    # The ONE sentence a failed edit states its kept/rolled-back/unchanged state in, the ONE marker
+    # clause, and the ONE verified reverse: a copy is how an edit tool claims what no re-read backs.
+    "outcome_clause": ("_common", "def"),
+    "marker_clause": ("_common", "def"),
+    "restore_definition": ("_edit_feature_common", "def"),
+    # The ONE pre-roll read of an operand's source row and the ONE refusal naming the reorder that
+    # fixes it: a copy is how one editor says "no sketch named" about a sketch drawn after it.
+    "operand_source": ("_edit_feature_common", "def"),
+    "later_operand_refusal": ("_edit_feature_common", "def"),
+    # The ONE sketch-point census a solve's moves are read from, and the identity match a
+    # dimension's entities are named by: a copy is how two tools disagree about what moved.
+    "point_census": ("_sketch_detail", "def"),
+    "moved_points": ("_sketch_detail", "def"),
+    "point_ends": ("_sketch_detail", "def"),
+    "moved_cm": ("_sketch_detail", "def"),
+    "point_cm": ("_sketch_detail", "def"),
+    "point_mm": ("_sketch_detail", "def"),
+    "distance_cm": ("_sketch_detail", "def"),
+    "dimension_entities": ("_sketch_detail", "def"),
     # The ONE token-keyed timeline census a delete or a suppress diffs before and after; a second
     # copy can key on names and lose a namesake, or skip the collapsed groups the caveat names.
     "timeline_census": ("_design_common", "def"),
     "timeline_item_key": ("_design_common", "def"),
-    # The ONE open-Form-edit read and the no-timeline refusal worded off it: a second copy is how
-    # one read goes back to calling an open Form edit a healthy direct design.
-    "in_form_edit": ("_inputs", "def"),
+    # The ONE no-timeline refusal text every no-timeline call site shares.
     "no_timeline_reason": ("_design_common", "def"),
+    # The ONE identity-told collapsed-group hint; a name-only copy names the first namesake's group.
+    "collapsed_group_hint_for": ("_design_common", "def"),
+    # The ONE hole-flag, hole-value and display gates pmi_create and pmi_edit refuse on before any
+    # write.
+    "hole_flags_error": ("_pmi", "def"),
+    "hole_values_error": ("_pmi", "def"),
+    "display_error": ("_pmi", "def"),
+    # The ONE four-count sketch census a failed entry and its anchor cleanup are judged by, and the
+    # ONE midpoint-anchor retire sketch_dimension and sketch_constrain report through.
+    "entry_counts": ("_sketch_batch", "def"),
+    "retired_clause": ("_sketch_batch", "def"),
+    "refuse": ("_sketch_batch", "def"),
+    "MID_ANCHORS": ("_sketch_batch", "assign"),
     # The ONE seam read - a second copy is how two tools call the same seam smooth and sharp.
     "edge_angles": ("_continuity", "def"),
     "body_seams": ("_continuity", "def"),
@@ -336,6 +373,12 @@ _DENYLIST = {
     "direct_feature_absence": ("_common", "def"),
     "no_feature_error": ("_common", "def"),
     "failed_effect_remedy": ("_common", "def"),
+    # The ONE retained-feature sentence and the deleteMe a failed write already runs, so every
+    # site names the same address and design_delete_feature call.
+    "feature_address": ("_feature_address", "def"),
+    "left_in_timeline": ("_common", "def"),
+    "delete_failed_feature": ("_common", "def"),
+    "scope_left_clause": ("_design_common", "def"),
     # The body census a feature-free effect check counts on: one home so the resolve-ONCE rule and
     # the measured "the pieces land in the TARGET's parentComponent" scoping cannot be right in one
     # tool and stale in the next.
@@ -362,7 +405,7 @@ _DENYLIST = {
     # The ONE feature-path resolver (sweep / pipe / path pattern / on-path datum): one home so the
     # 'sketch:<name>' chain rule and the single-handle chaining rule cannot be right in one tool
     # and stale in the next.
-    "build_path": ("_common", "def"),
+    "build_path": ("_inputs", "def"),
     # The timeline walk and the EXACT-match/'name@index' matcher behind FeatureRef: one home, so a
     # tool cannot re-roll the matcher with a substring fallback.
     "_timeline_objects": ("_inputs", "def"),
@@ -377,6 +420,7 @@ _DENYLIST = {
     # rejects, which is exactly the asymmetry this home removes.
     "parse_anchor_ref": ("_common", "def"),
     "anchor_point": ("_common", "def"),
+    "anchor_preflight": ("_common", "def"),
     "midpoint_sketch_point": ("_common", "def"),
     "SKETCH_ANCHORS": ("_common", "assign"),
     "entity_component": ("_inputs", "def"),
@@ -406,6 +450,9 @@ _DENYLIST = {
     # supplies only its own no-body sentence) - a copy is how one of them stops refusing an
     # ambiguous name.
     "resolve_body_or_recent": ("_common", "def"),
+    # The ONE finite-non-bool-number decision three input guards refuse on; a copy is how one guard
+    # starts taking True as 1 or NaN as a size while its siblings refuse them.
+    "finite_number": ("_common", "def"),
     # The ONE boolean-flag read that answers None for unreadable. A re-roll is written as
     # safe(getter, False), which is exactly the confident-False this exists to stop.
     "read_flag": ("_common", "def"),
@@ -452,6 +499,9 @@ _DENYLIST = {
     # tuple-vs-list return comes to differ quietly between tools comparing the same two vectors.
     "dot": ("_geom", "def"),
     "cross": ("_geom", "def"),
+    # The ONE same-axis-line test: a second copy is how a bend-wall census and a thread's radius
+    # read come to disagree about whether two cylinders share an axis.
+    "coaxial": ("_geom", "def"),
     "body_aabb": ("_geom", "def"),
     # The min/max collapse over several boxes, and the occurrence's own MESH read. One home each:
     # a second union re-rolls which corner wins on an unreadable box, and a second mesh read walks
@@ -549,10 +599,8 @@ _DENYLIST = {
 
 
 # (module without .py, symbol) -> why this same-named definition is a DIFFERENT job, not a re-roll
-# of the shared helper. Each reason must describe the local definition's own job. Kept honest by
-# test_allowlist_entries_still_exist_and_still_differ: the entry must still match the pattern in
-# that module AND its definition must still differ from the home module's - a local copy that
-# becomes identical to home is a true duplicate and loses its exemption.
+# of the shared helper. Each reason must describe the local definition's own job. A local copy
+# that becomes identical to home is a true duplicate and loses its entry.
 _ALLOWLIST = {
     # cam_edit_setup's pointer names the SETUP's own parameters (cam_get(..., setup=...)), a
     # different read from the operation-scoped one in _cam_common - not a re-roll of it.
@@ -579,31 +627,6 @@ def _read(fn):
     # Shared with every other lint reading this corpus: the denylist sweep asks for each tool file
     # once per symbol (~150 x ~190), and _corpus reads each one once per process.
     return _corpus.text(os.path.join(TOOLS_DIR, fn))
-
-
-def _bracket_delta(line):
-    return sum(line.count(o) for o in "([{") - sum(line.count(c) for c in ")]}")
-
-
-def _definition_block(src, match):
-    """The full statement starting at `match`: a def's body (lines until the next column-0 line) or
-    a possibly-multi-line assignment (lines until brackets balance). Good enough for a lint's
-    same-or-different comparison; strings containing brackets can only over-extend the block."""
-    lines = src[match.start():].splitlines()
-    block = [lines[0]]
-    depth = _bracket_delta(lines[0])
-    for line in lines[1:]:
-        if depth <= 0 and line and not line[0].isspace():
-            break
-        block.append(line)
-        depth += _bracket_delta(line)
-    return "\n".join(block).strip()
-
-
-def _normalized(block, symbol):
-    """The block with the symbol's optional leading underscore dropped, so `_OPERATIONS = (...)`
-    compares against home's `OPERATIONS = (...)` on content, not on the private prefix."""
-    return re.sub(r"\b_" + re.escape(symbol) + r"\b", symbol, block)
 
 
 class TestHelperDefinedOnlyInItsHomeModule:
@@ -634,33 +657,6 @@ class TestHelperDefinedOnlyInItsHomeModule:
                     f"the denylist entry is stale, fix it or move the definition back"
                 )
         assert not offenders, "helper duplication:\n  " + "\n  ".join(offenders)
-
-    def test_allowlist_entries_still_exist_and_still_differ(self):
-        # An entry that no longer matches anything is dead weight hiding a regression check; an
-        # entry whose local definition became a verbatim copy of home's is a true duplicate that
-        # must collapse, not stay exempted.
-        stale = []
-        for (mod_name, symbol), reason in _ALLOWLIST.items():
-            assert reason.strip(), f"({mod_name}, {symbol}) allowlist entry needs a reason"
-            assert symbol in _DENYLIST, f"({mod_name}, {symbol}): '{symbol}' is not denylisted"
-            home, kind = _DENYLIST[symbol]
-            path = os.path.join(TOOLS_DIR, mod_name + ".py")
-            if not os.path.exists(path):
-                stale.append(f"({mod_name}, {symbol}): no such module - remove the entry")
-                continue
-            src = _read(mod_name + ".py")
-            m = _pattern(symbol, kind).search(src)
-            if not m:
-                stale.append(f"({mod_name}, {symbol}): the module no longer defines it - "
-                             f"remove the entry")
-                continue
-            home_src = _read(home + ".py")
-            hm = _pattern(symbol, kind).search(home_src)
-            if hm and (_normalized(_definition_block(src, m), symbol)
-                       == _normalized(_definition_block(home_src, hm), symbol)):
-                stale.append(f"({mod_name}, {symbol}): now identical to {home}'s definition - "
-                             f"a true duplicate; collapse it onto {home} and remove the entry")
-        assert not stale, "stale allowlist entries:\n  " + "\n  ".join(stale)
 
 
 # The value-shape arm: two shared maps a local copy re-rolls under a NAME the denylist above cannot
@@ -724,3 +720,165 @@ class TestSharedValueMapsAreNotReRolled:
             "a local world-axis x/y/z -> unit-vector map re-rolls _inputs._AXIS_VECS - import and "
             "use it (or the AxisRef kind, which also accepts an edge/face handle):\n  "
             + "\n  ".join(offenders))
+
+
+def _function_body_key(node):
+    """Return a stable AST key for a function body, excluding its name and location."""
+    return ast.dump(ast.Module(body=node.body, type_ignores=[]),
+                    annotate_fields=True, include_attributes=False)
+
+
+def _function_defs(path):
+    """Return module-local function definitions, including nested helper functions."""
+    return [node for node in ast.walk(_corpus.tree(path))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _body_duplicate_groups(min_statements=5):
+    """Return identical function bodies defined in more than one tool module."""
+    groups = {}
+    for fn in _all_tool_files():
+        path = os.path.join(TOOLS_DIR, fn)
+        for node in _function_defs(path):
+            if len(node.body) < min_statements:
+                continue
+            groups.setdefault(_function_body_key(node), []).append(
+                (fn, node.name, node.lineno, len(node.body)))
+    return [sorted(rows) for rows in groups.values()
+            if len({row[0] for row in rows}) > 1]
+
+
+def _cam_product_resolver(node):
+    """True for a direct CAMProductType lookup outside the CAM helper home."""
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "itemByProductType"
+            and any(isinstance(arg, ast.Constant) and arg.value == "CAMProductType"
+                    for arg in node.args))
+
+
+def _xyz_read_tuple(node):
+    """True for a direct tuple/list of x, y and z reads from one parameter."""
+    if not isinstance(node, (ast.Tuple, ast.List)) or len(node.elts) != 3:
+        return False
+    bases = []
+    attrs = []
+    for elt in node.elts:
+        if not isinstance(elt, ast.Attribute) or not isinstance(elt.value, ast.Name):
+            return False
+        bases.append(elt.value.id)
+        attrs.append(elt.attr)
+    return len(set(bases)) == 1 and attrs == ["x", "y", "z"]
+
+
+def _xyz_helper(node):
+    """True for a local `_xyz` whose return directly exposes one point's coordinates."""
+    return (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in {"_xyz", "xyz"}
+            and any(isinstance(stmt, ast.Return) and _xyz_read_tuple(stmt.value)
+                    for stmt in node.body))
+
+
+def _active_design_guard(node):
+    """True for the repeated inline `if not design: return error('...')` guard."""
+    return (isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name)
+            and node.test.operand.id == "design"
+            and len(node.body) == 1
+            and isinstance(node.body[0], ast.Return)
+            and isinstance(node.body[0].value, ast.Call)
+            and isinstance(node.body[0].value.func, ast.Name)
+            and node.body[0].value.func.id == "error"
+            and bool(node.body[0].value.args)
+            and isinstance(node.body[0].value.args[0], ast.Constant)
+            and isinstance(node.body[0].value.args[0].value, str))
+
+
+def _outside_home_offenders(predicate, home_names):
+    """Return `file:line` matches outside the named helper modules."""
+    out = []
+    for fn in _all_tool_files():
+        if fn in {name + ".py" for name in home_names}:
+            continue
+        for node in ast.walk(_corpus.tree(os.path.join(TOOLS_DIR, fn))):
+            if predicate(node):
+                out.append(f"{fn}:{getattr(node, 'lineno', '?')}")
+    return out
+
+
+class TestSharedHelpersHaveOneBody:
+    def test_no_cross_module_function_body_is_copied_under_a_new_name(self):
+        groups = _body_duplicate_groups()
+        checked = sum(1 for fn in _all_tool_files()
+                      for node in _function_defs(os.path.join(TOOLS_DIR, fn))
+                      if len(node.body) >= 5)
+        assert checked, "nothing was checked: no function body has at least five statements"
+        offenders = ["; ".join(f"{fn}:{line} {name} ({count} statements)"
+                               for fn, name, line, count in group)
+                     for group in groups]
+        assert not offenders, (
+            "identical helper body appears in more than one tool module - import the home helper "
+            "instead of copying it under a new name:\n  " + "\n  ".join(offenders))
+
+
+class TestCanonicalHelperShapes:
+    def test_cam_product_lookup_has_one_home(self):
+        checked = sum(1 for fn in _all_tool_files()
+                      for node in ast.walk(_corpus.tree(os.path.join(TOOLS_DIR, fn)))
+                      if _cam_product_resolver(node))
+        offenders = _outside_home_offenders(_cam_product_resolver, {"_cam_common"})
+        assert checked, "nothing was checked: no CAMProductType lookup was found"
+        assert not offenders, (
+            "direct CAMProductType lookup outside _cam_common - use _cam_common.get_cam so the "
+            "product cast and absent-product refusal stay one contract:\n  "
+            + "\n  ".join(offenders))
+
+    def test_xyz_point_reader_has_one_home(self):
+        offenders = []
+        checked = 0
+        for fn in _all_tool_files():
+            if fn in {"_common.py", "_geom.py"}:
+                continue
+            for node in _function_defs(os.path.join(TOOLS_DIR, fn)):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and node.name in {"_xyz", "xyz"}:
+                    checked += 1
+                if _xyz_helper(node):
+                    offenders.append(f"{fn}:{node.lineno} {node.name}")
+        assert checked, "nothing was checked: no xyz helper was found outside its homes"
+        assert not offenders, (
+            "local xyz reader outside _common/_geom - use the measured coordinate helper so an "
+            "unreadable component is null rather than zero:\n  " + "\n  ".join(offenders))
+
+    def test_active_design_refusal_has_one_home(self):
+        checked = sum(1 for fn in _all_tool_files()
+                      for node in ast.walk(_corpus.tree(os.path.join(TOOLS_DIR, fn)))
+                      if isinstance(node, ast.If))
+        offenders = _outside_home_offenders(_active_design_guard, {"_common"})
+        assert checked, "nothing was checked: no conditional was found"
+        assert not offenders, (
+            "inline no-active-design refusal - call _common.require_design so its wording and "
+            "remedy stay one contract:\n  " + "\n  ".join(offenders))
+
+    def test_wait_pump_does_not_reappear_inside_other_loops(self):
+        offenders = []
+        checked = 0
+        for fn in _all_tool_files():
+            if fn == "_export.py":
+                continue
+            for loop in (node for node in ast.walk(_corpus.tree(os.path.join(TOOLS_DIR, fn)))
+                         if isinstance(node, (ast.For, ast.AsyncFor, ast.While))):
+                checked += 1
+                for call in ast.walk(loop):
+                    if not isinstance(call, ast.Call):
+                        continue
+                    name = call.func.attr if isinstance(call.func, ast.Attribute) else \
+                        getattr(call.func, "id", None)
+                    if name in {"doEvents", "sleep"}:
+                        offenders.append(f"{fn}:{call.lineno}: {name} in a loop")
+        assert checked, "nothing was checked: no loop was found outside _export"
+        assert not offenders, (
+            "unbounded wait primitive outside _export.pump_until - route the asynchronous wait "
+            "through the bounded shared pump:\n  " + "\n  ".join(offenders))

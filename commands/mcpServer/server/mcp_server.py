@@ -10,22 +10,23 @@ and the resources/* reads over a static catalog the caller hands in) by hand, so
 no external packages are required.
 
 Differences from the sample this was adapted from:
-  - The MCP endpoint is served on the path **/mcp** (to match Fusion's built-in
-    well-known endpoint) in addition to "/".
+  - The MCP endpoint is served on the path **/mcp** in addition to "/".
   - Logging goes through fusion360utils (futil), not raw app.log/print.
   - start_server() distinguishes a port-already-in-use bind failure (EADDRINUSE)
     from other errors and reports it via a structured result, so the caller can
-    tell the user to disable Autodesk's built-in MCP server.
+    name who answers on the port and point the user at the mcp_port setting.
 """
 
 import asyncio
 import errno
 import hashlib
+import hmac
 import json
 import math
 import os
 import socket
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -33,14 +34,12 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
 from ....lib import fusion360utils as futil
+from .. import endpoint
+from ..endpoint import MCP_PATH
 from ..mcp_primitives.item import Item
 from ..version import __version__
 from .task_manager import TaskManager
 from . import drawing_jobs
-
-# The MCP path served by Fusion's built-in server; we mirror it so clients
-# configured for the well-known endpoint reach us unchanged.
-MCP_PATH = '/mcp'
 
 # A measurement switch: while this marker file exists, tools/list carries no description at any
 # depth - names, types, enums and required flags only - so an eval can measure what the
@@ -84,10 +83,16 @@ INSTRUCTIONS = (
 # Header names (Streamable HTTP transport).
 SESSION_HEADER = 'Mcp-Session-Id'
 
-# Our server's identifying name. Returned by GET /health and used by the
-# post-start self-check to confirm WE are the server answering on the port
-# (vs. Autodesk's built-in server, which reports "MCP HTTP Server").
+# Our server's identifying name: GET /health and initialize's serverInfo both report it, and
+# identify_listener() compares against it to tell our server from any other on a port.
 SERVER_NAME = "Fusion-Essentials MCP Server"
+
+# identify_listener()'s verdicts on who answers an MCP initialize on a port.
+LISTENER_OURS = 'fusion_essentials'
+LISTENER_OTHER = 'other'
+LISTENER_UNIDENTIFIED = 'unidentified'
+# Wall-clock seconds identify_listener() waits for an answer before it abandons the exchange.
+LISTENER_DEADLINE_S = 2.0
 
 # Seconds a main-thread tool task may run before _execute_on_main_thread reports "still running".
 # Tools that legitimately run long (e.g. STEP export, cloud upload) opt out via enforce_timeout=False
@@ -98,6 +103,10 @@ MAIN_THREAD_TASK_TIMEOUT_S = 30
 START_OK = 'ok'
 START_PORT_IN_USE = 'port_in_use'
 START_ERROR = 'error'
+
+
+class _CancelledBeforeStart(Exception):
+    """An explicit cancellation prevented the queued handler from starting."""
 
 
 class _AfterSendResponse(dict):
@@ -216,13 +225,18 @@ class SimpleMCPServer:
     def __init__(self, name: str = SERVER_NAME, resources=None, job_store=None,
                  attestation=None):
         self.name = name
-        # Session id assigned at initialize and echoed back to the client on every
-        # response. Generated lazily so each server instance has a stable id.
+        # Health and anonymous transport replies identify the serving load; initialized
+        # clients receive separate signed transport scopes.
         self.session_id = uuid.uuid4().hex
+        self._client_session_secret = os.urandom(32)
+        self._active_calls = {}
+        self._active_calls_lock = threading.Lock()
         self.tools: Dict[str, Item] = {}
         # tool name -> {prop: enum spec}, precomputed at registration so enum validation is O(1) per arg.
         self._enum_specs: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self.server_info = {"name": name, "version": __version__}
+        # {host, port, mcp_url} read off the bound socket by start_server; None until then.
+        self.bound = None
         self._attestation = attestation
         self._job_store = job_store
         self._job_store_lock = threading.Lock()
@@ -283,7 +297,7 @@ class SimpleMCPServer:
         attestation["schema_fingerprint"] = self.schema_fingerprint()
         return {"status": "healthy", "server": self.name,
                 "version": self.server_info["version"], "session_id": self.session_id,
-                "attestation": attestation}
+                "bound": self.bound, "attestation": attestation}
 
     def register(self, item: Item):
         if not isinstance(item, Item):
@@ -295,7 +309,57 @@ class SimpleMCPServer:
         self._enum_specs[item.primitive.name] = _enum_specs(item.primitive.input_schema)
         futil.log(f"MCP tool registered: {item.primitive.name}")
 
-    async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    def _new_client_session(self):
+        """Issue an opaque client scope valid for this server lifetime."""
+        nonce = uuid.uuid4().hex
+        signature = hmac.new(self._client_session_secret, nonce.encode('ascii'),
+                             hashlib.sha256).hexdigest()
+        return '.'.join((self.session_id, nonce, signature))
+
+    def _valid_client_session(self, value):
+        """Whether a client scope was signed by this serving instance."""
+        if not isinstance(value, str):
+            return False
+        parts = value.split('.')
+        if (len(parts) != 3 or parts[0] != self.session_id or len(parts[1]) != 32
+                or any(char not in '0123456789abcdef' for char in parts[1])
+                or len(parts[2]) != 64
+                or any(char not in '0123456789abcdef' for char in parts[2])):
+            return False
+        signature = hmac.new(self._client_session_secret, parts[1].encode('ascii'),
+                             hashlib.sha256).hexdigest()
+        return hmac.compare_digest(parts[2], signature)
+
+    @staticmethod
+    def _call_key(client_session, request_id):
+        """A client-scoped JSON-RPC id, preserving numeric versus string identity."""
+        if isinstance(request_id, str):
+            return client_session, 'string', request_id
+        if (isinstance(request_id, (int, float)) and not isinstance(request_id, bool)
+                and (not isinstance(request_id, float) or math.isfinite(request_id))):
+            return client_session, 'number', request_id
+        return None
+
+    def _cancel_request(self, client_session, params):
+        """Prevent an explicitly cancelled callback from entering its handler."""
+        if not self._valid_client_session(client_session) or not isinstance(params, dict):
+            return
+        key = self._call_key(client_session, params.get('requestId'))
+        if key is None or ('reason' in params and not isinstance(params['reason'], str)):
+            return
+        with self._active_calls_lock:
+            call = self._active_calls.get(key)
+        if call is None:
+            return
+        with call['lock']:
+            if call['completed'] or call['started']:
+                return
+            call['cancelled'] = call['completed'] = True
+            task_id = call['task_id']
+        if task_id is not None:
+            TaskManager.cancel(task_id)
+
+    async def handle_request(self, request: Dict[str, Any], client_session=None) -> Dict[str, Any]:
         # A JSON-RPC request MUST be a single object. A LIST body is a batch (this server does not
         # implement batching); any other non-object body is malformed. Either way return ONE
         # well-formed error object (id:null) instead of raising - the .get() calls below assume a
@@ -316,7 +380,8 @@ class SimpleMCPServer:
             # Notifications (no "id") get no response body; caller returns 202.
             is_notification = "id" not in request
             if is_notification:
-                # e.g. notifications/initialized, notifications/cancelled - accept silently.
+                if method == 'notifications/cancelled':
+                    self._cancel_request(client_session, params)
                 return None
 
             if method == "initialize":
@@ -326,7 +391,7 @@ class SimpleMCPServer:
             elif method == "tools/list":
                 return self._handle_tools_list(request_id)
             elif method == "tools/call":
-                return await self._handle_tools_call(request_id, params)
+                return await self._handle_tools_call(request_id, params, client_session)
             elif method == "resources/list":
                 return self._handle_resources_list(request_id, params)
             elif method == "resources/read":
@@ -373,7 +438,8 @@ class SimpleMCPServer:
         return {"jsonrpc": "2.0", "id": request_id,
                 "result": {"tools": _wire_tool_rows(self.tools)}}
 
-    async def _handle_tools_call(self, request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_tools_call(self, request_id: Any, params: Dict[str, Any],
+                                 client_session=None) -> Dict[str, Any]:
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
         if tool_name not in self.tools:
@@ -402,17 +468,36 @@ class SimpleMCPServer:
                 return self._accept_deferred(request_id, tool_name, item, request_key,
                                              execution_arguments)
 
-        futil.log(f"MCP calling tool: {tool_name}")
+        call, key = None, None
+        if self._valid_client_session(client_session):
+            key = self._call_key(client_session, request_id)
+            if key is None:
+                return self._error(request_id, -32600, 'A tool request id must be a string or number.')
+            call = {'lock': threading.Lock(), 'result': None, 'exception': None,
+                    'completed': False, 'cancelled': False, 'started': False, 'task_id': None}
+            with self._active_calls_lock:
+                if key in self._active_calls:
+                    return self._error(request_id, -32600, 'Request id is already in progress in this session.')
+                self._active_calls[key] = call
         try:
+            futil.log(f"MCP calling tool: {tool_name}")
             if item.run_on_main_thread:
-                result = await self._execute_on_main_thread(
-                    item.handler, execution_arguments,
-                    enforce_timeout=item.enforce_timeout)
+                options = {'enforce_timeout': item.enforce_timeout}
+                if call is not None:
+                    options['cancellation'] = call
+                result = await self._execute_on_main_thread(item.handler, execution_arguments, **options)
             else:
+                if call is not None:
+                    with call['lock']:
+                        if call['cancelled']:
+                            raise _CancelledBeforeStart()
+                        call['started'] = True
                 result = item.handler(**execution_arguments)
             if tool_name == "sys_capability_map":
                 result = self._with_schema_fingerprint(result)
             return {"jsonrpc": "2.0", "id": request_id, "result": result}
+        except _CancelledBeforeStart:
+            return None
         except Exception as e:
             # A tool EXECUTION failure (including the curated timeout messages from
             # _execute_on_main_thread) is reported inside the result with isError=true, per the MCP
@@ -424,6 +509,13 @@ class SimpleMCPServer:
                 "id": request_id,
                 "result": self._tool_error_result(f"Tool '{tool_name}' failed: {e}"),
             }
+        finally:
+            if call is not None:
+                with call['lock']:
+                    call['completed'] = True
+                with self._active_calls_lock:
+                    if self._active_calls.get(key) is call:
+                        self._active_calls.pop(key)
 
     def _jobs(self):
         with self._job_store_lock:
@@ -500,18 +592,7 @@ class SimpleMCPServer:
 
     def _validate_tool_arguments(self, tool_name: str, item: Item,
                                  arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Check `arguments` against item.primitive.input_schema before dispatch.
-
-        Argument NAMES are checked here, and any argument whose schema property declares an `enum`
-        is checked against it: a permissive client that sends an out-of-enum value (e.g.
-        find_geometry kind="faces") would otherwise get silent wrong behavior (match_count:0) instead
-        of a correction. Unknown keys are rejected ONLY when the tool's wire schema declares
-        additionalProperties=false - a lenient schema stays lenient, so the schema never promises what
-        the server then refuses. Keys a handler deliberately accepts off-schema pass through
-        (_SCHEMA_OMITTED_ARGS). Failures come back as isError TOOL results rather than JSON-RPC
-        protocol errors - a deliberate deviation from the spec's invalid-params bucket: an in-band
-        result is what a calling agent can actually read and self-correct from.
-        """
+        """Check names, required keys, enums and Boolean leaves in item.primitive.input_schema."""
         schema = item.primitive.input_schema or {}
         properties = schema.get("properties") or {}
         required = schema.get("required") or []
@@ -538,6 +619,41 @@ class SimpleMCPServer:
         if enum_error is not None:
             return enum_error
 
+        for name, property_schema in properties.items():
+            if name in arguments and isinstance(property_schema, dict):
+                boolean_error = self._validate_boolean(tool_name, property_schema,
+                                                       arguments[name], name, optional=name not in required)
+                if boolean_error is not None:
+                    return boolean_error
+        return None
+
+    def _validate_boolean(self, tool_name: str, schema: Dict[str, Any],
+                          value: Any, path: str, optional: bool = False) -> Optional[Dict[str, Any]]:
+        """Reject non-Booleans at declared Boolean leaves, following properties and array items."""
+        declared_types = schema.get("type", [])
+        if isinstance(declared_types, str):
+            declared_types = [declared_types]
+        if ("boolean" in declared_types
+                and all(kind in ("boolean", "null") for kind in declared_types)):
+            if type(value) is not bool and not (value is None and "null" in declared_types):
+                remedy = ("Omit this optional key to use its default, or use true or false."
+                          if value is None and optional else "Use true or false.")
+                return self._tool_error_result(
+                    f"Invalid Boolean for {path!a} in tool {tool_name!a}: {value!a}. " + remedy)
+        if isinstance(value, dict):
+            for name, property_schema in (schema.get("properties") or {}).items():
+                if name in value and isinstance(property_schema, dict):
+                    failure = self._validate_boolean(tool_name, property_schema, value[name],
+                                                     f"{path}.{name}",
+                                                     optional=name not in (schema.get("required") or []))
+                    if failure is not None:
+                        return failure
+        elif isinstance(value, list) and isinstance(schema.get("items"), dict):
+            for index, element in enumerate(value):
+                failure = self._validate_boolean(tool_name, schema["items"], element,
+                                                 f"{path}[{index}]")
+                if failure is not None:
+                    return failure
         return None
 
     def _validate_enums(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -565,14 +681,20 @@ class SimpleMCPServer:
         return None
 
     async def _execute_on_main_thread(self, handler_func, arguments: Dict[str, Any],
-                                      enforce_timeout: bool = True) -> Any:
+                                      enforce_timeout: bool = True, cancellation=None) -> Any:
         """Run handler_func(**arguments) on Fusion's main thread via TaskManager."""
         import time
 
-        result_holder = {'result': None, 'exception': None, 'completed': False}
-        result_lock = threading.Lock()
+        result_holder = cancellation if cancellation is not None else {
+            'result': None, 'exception': None, 'completed': False,
+            'cancelled': False, 'started': False, 'task_id': None}
+        result_lock = result_holder.get('lock') or threading.Lock()
 
         def callback(data):
+            with result_lock:
+                if result_holder['cancelled']:
+                    return
+                result_holder['started'] = True
             try:
                 result = handler_func(**data['arguments'])
                 with result_lock:
@@ -591,6 +713,9 @@ class SimpleMCPServer:
                         "No change was made - safe to retry.")
                     result_holder['completed'] = True
 
+        with result_lock:
+            if result_holder['cancelled']:
+                raise _CancelledBeforeStart()
         if not TaskManager.is_running():
             TaskManager.start()
 
@@ -598,12 +723,20 @@ class SimpleMCPServer:
                                    data={"arguments": arguments}, on_drop=dropped)
         if not task_id:
             raise Exception("Failed to post task to TaskManager")
+        with result_lock:
+            result_holder['task_id'] = task_id
+            cancelled_before_bind = result_holder['cancelled']
+        if cancelled_before_bind:
+            TaskManager.cancel(task_id)
+            raise _CancelledBeforeStart()
 
         timeout = MAIN_THREAD_TASK_TIMEOUT_S
         start_time = time.time()
         while enforce_timeout is False or (time.time() - start_time < timeout):
             with result_lock:
                 if result_holder['completed']:
+                    if result_holder['cancelled']:
+                        raise _CancelledBeforeStart()
                     if result_holder['exception'] is not None:
                         raise result_holder['exception']
                     return result_holder['result']
@@ -618,6 +751,8 @@ class SimpleMCPServer:
         cancelled = TaskManager.cancel(task_id)
         with result_lock:
             if result_holder['completed']:
+                if result_holder['cancelled']:
+                    raise _CancelledBeforeStart()
                 # Finished in the cancel window - honor the real result, don't fake a timeout.
                 if result_holder['exception'] is not None:
                     raise result_holder['exception']
@@ -745,6 +880,7 @@ class MCPHandler(BaseHTTPRequestHandler):
         return parts.scheme in _ALLOWED_ORIGIN_SCHEMES and hostname in _ALLOWED_ORIGIN_HOSTS
 
     def do_POST(self):
+        self._response_session_id = self.mcp_server.session_id
         # MCP endpoint on /mcp (well-known) and "/" (convenience).
         if self.path not in (MCP_PATH, '/'):
             self.send_error(404, "Not Found")
@@ -766,16 +902,39 @@ class MCPHandler(BaseHTTPRequestHandler):
             self.send_error(400, f"Invalid JSON: {detail}")
             return
 
+        session_id = self.headers.get(SESSION_HEADER)
+        initializing = isinstance(request_data, dict) and request_data.get('method') == 'initialize'
+        client_session = None
+        if session_id is not None and session_id != self.mcp_server.session_id:
+            valid = getattr(self.mcp_server, '_valid_client_session', lambda value: False)
+            if valid(session_id):
+                client_session = session_id
+        if (not initializing and session_id is not None
+                and session_id != self.mcp_server.session_id and client_session is None):
+            self.send_response(404)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
+        if client_session is not None:
+            self._response_session_id = client_session
         try:
-            response = asyncio.run(self.mcp_server.handle_request(request_data))
+            if client_session is None:
+                response = asyncio.run(self.mcp_server.handle_request(request_data))
+            else:
+                response = asyncio.run(self.mcp_server.handle_request(
+                    request_data, client_session=client_session))
         except Exception as e:
             self.send_error(500, str(e))
             return
 
-        # Notifications/responses (no id) -> 202 Accepted, no body (spec rule 4).
+        if initializing and isinstance(response, dict) and 'result' in response:
+            self._response_session_id = self.mcp_server._new_client_session()
+        # Notifications and cancelled queued calls have no JSON-RPC response body.
         if response is None:
             self.send_response(202)
-            self.send_header(SESSION_HEADER, self.mcp_server.session_id)
+            self.send_header(SESSION_HEADER, self._response_session_id)
+            self.send_header('Content-Length', '0')
             origin = self.headers.get('Origin')
             if origin and self._origin_ok():
                 self.send_header('Access-Control-Allow-Origin', origin)
@@ -789,6 +948,7 @@ class MCPHandler(BaseHTTPRequestHandler):
             after_send()
 
     def do_GET(self):
+        self._response_session_id = self.mcp_server.session_id
         if not self._origin_ok():
             self.send_error(403, "Origin not allowed")
             return
@@ -822,7 +982,7 @@ class MCPHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
-        self.send_header(SESSION_HEADER, self.mcp_server.session_id)
+        self.send_header(SESSION_HEADER, getattr(self, '_response_session_id', self.mcp_server.session_id))
         # No permissive CORS header: this is a loopback-only server, not a browser
         # API, and the Origin check already restricts who may call it. Echoing the
         # caller's loopback Origin keeps legitimate same-machine browser clients
@@ -852,8 +1012,8 @@ def start_server(host: str, port: int, items=None, resources=None, job_store=Non
     and loads no content itself; an empty catalog means the resources capability
     is never advertised.
 
-    The caller (entry.start) is responsible for surfacing the port-in-use case to
-    the user (likely Autodesk's built-in MCP server holding 27182).
+    Exactly host:port is tried, once. The caller (entry.start) surfaces the
+    port-in-use case to the user; identify_listener() names who answers there.
     """
     try:
         mcp = SimpleMCPServer(resources=resources, job_store=job_store,
@@ -868,7 +1028,7 @@ def start_server(host: str, port: int, items=None, resources=None, job_store=Non
             http_server = ThreadedHTTPServer((host, port), handler_cls)
         except OSError as e:
             if e.errno in (errno.EADDRINUSE, errno.EACCES) or getattr(e, 'winerror', None) == 10048:
-                futil.log(f"MCP server: port {port} already in use (likely Fusion's built-in MCP server)")
+                futil.log(f"MCP server: could not bind {host}:{port} ({e})")
                 return {"status": START_PORT_IN_USE, "port": port}
             raise
 
@@ -885,6 +1045,9 @@ def start_server(host: str, port: int, items=None, resources=None, job_store=Non
             name=f"FE-MCP-Server-{host}:{port}",
         )
         thread.start()
+        # The socket's own address, not the requested one: /health and sys_capability_map
+        # publish this record. A server object that reports no address leaves it None.
+        mcp.bound = endpoint.record_bound(getattr(http_server, "server_address", None))
         futil.log(f"MCP server started on http://{host}:{port}{MCP_PATH}")
         return {"status": START_OK, "mcp": mcp, "http_server": http_server, "thread": thread}
     except Exception:
@@ -892,35 +1055,89 @@ def start_server(host: str, port: int, items=None, resources=None, job_store=Non
         return {"status": START_ERROR, "message": "Failed to start MCP server (see Text Commands log)"}
 
 
-def verify_ownership(host: str, port: int, timeout: float = 2.0):
-    """Probe GET http://host:port/health and check who is answering.
+def _initialize_reply(resp, expired):
+    """The JSON-RPC reply in an initialize response (plain JSON or the first SSE data line), or
+    None once expired() is true or the body passes 64 KiB."""
+    sse = "text/event-stream" in (resp.headers.get("Content-Type") or "")
+    body = b""
+    while len(body) <= 65536 and not expired():
+        chunk = resp.read1(4096)
+        if not chunk:
+            return None if sse else json.loads(body.decode("utf-8"))
+        body += chunk
+        if sse:
+            for line in body.split(b"\n")[:-1]:
+                if line.startswith(b"data:"):
+                    return json.loads(line[5:].decode("utf-8"))
+    return None
 
-    Layer-2 collision check: even after a successful bind, confirm the
-    server replying on the port is actually ours and not, say, Autodesk's built-in
-    server that won an earlier race. Returns one of:
-        "ours"      -> /health reports our SERVER_NAME (all good)
-        "foreign"   -> something else answered (e.g. Autodesk's "MCP HTTP Server")
-        "unreachable" -> nothing answered / error (treat as inconclusive)
 
-    Runs from entry.start() on the main thread; our own server answers on its
-    background thread, so this self-request does not deadlock. Kept short-timeout
-    and fully defensive so it can never hang Fusion startup.
-    """
-    import json as _json
+def identify_listener(host: str, port: int, deadline_s: float = LISTENER_DEADLINE_S):
+    """{kind, name, serving session_id} of whoever answers MCP on host:port within
+    deadline_s of wall-clock time; never raises, and blocks its caller no longer than that."""
     import urllib.request
 
-    url = f"http://{host}:{port}/health"
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
-        return "ours" if data.get("server") == SERVER_NAME else "foreign"
-    except Exception:
-        return "unreachable"
+    found = {"kind": LISTENER_UNIDENTIFIED, "name": None, "session_id": None}
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+        "clientInfo": {"name": "fusion-essentials-port-check", "version": __version__}}})
+    request = urllib.request.Request(
+        f"http://{host}:{port}{MCP_PATH}", data=body.encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream"})
+    ends = time.monotonic() + deadline_s
+    answers = []
+
+    def _ask():
+        try:
+            with urllib.request.urlopen(request, timeout=deadline_s) as resp:
+                reply = _initialize_reply(resp, lambda: time.monotonic() >= ends)
+                name = reply["result"]["serverInfo"]["name"]
+            session_id = None
+            if name == SERVER_NAME:
+                remaining = ends - time.monotonic()
+                if remaining <= 0:
+                    return
+                # Initialize gives a private client scope; an anonymous ping names the serving load.
+                ping = urllib.request.Request(request.full_url, method="POST",
+                    data=json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json",
+                             "Accept": "application/json, text/event-stream"})
+                with urllib.request.urlopen(ping, timeout=remaining) as resp:
+                    echoed = _initialize_reply(resp, lambda: time.monotonic() >= ends)
+                    session_id = resp.headers.get(SESSION_HEADER)
+                if (time.monotonic() >= ends or not isinstance(echoed, dict)
+                        or echoed.get("jsonrpc") != "2.0"
+                        or echoed.get("id") != 2 or "error" in echoed or echoed.get("result") != {}
+                        or not isinstance(session_id, str) or not session_id):
+                    return
+            answers.append((name, session_id))
+        except Exception:
+            pass
+
+    # The socket timeout bounds one silent wait, not a reply that keeps dripping, so the
+    # exchange runs on its own thread and is abandoned when the join's deadline passes.
+    asker = threading.Thread(target=_ask, daemon=True, name="FE-MCP-ListenerProbe")
+    asker.start()
+    asker.join(deadline_s)
+    if not answers:
+        return found
+    name, session_id = answers[0]
+    if not isinstance(name, str) or not name:
+        return found
+    found["name"] = name
+    if name == SERVER_NAME:
+        found["kind"] = LISTENER_OURS
+        found["session_id"] = session_id
+    else:
+        found["kind"] = LISTENER_OTHER
+    return found
 
 
 def stop_server(http_server, thread, timeout: float = 5) -> bool:
     """Shut down the HTTP server and join its thread. Safe to call with None."""
     try:
+        endpoint.record_bound(None)
         if http_server:
             http_server.shutdown()
             http_server.server_close()

@@ -163,7 +163,7 @@ def get_tool_profile(body, axis, plane_intersect):
             if profile[i][1] >= segment[3] - 1e-8 or profile[i][1] <= segment[2] + 1e-8:
                 continue
             elif profile[i][0] < (((segment[1] - segment[0]) / (segment[3] - segment[2]))
-                                  * (segment[2] - profile[i][1]) + segment[0]):
+                                  * (profile[i][1] - segment[2]) + segment[0]):
                 ind_to_pop.append(i)
         for i in range(0, len(ind_to_pop)):
             profile.pop(ind_to_pop[i] - i)

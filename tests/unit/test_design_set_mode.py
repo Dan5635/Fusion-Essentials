@@ -6,7 +6,8 @@ on the post-assignment READ-BACK rather than on the request.
 """
 
 import live_api_facts as _api_facts
-from conftest import MakeDesign, error_message, install, load_tool, make_timeline, payload
+from conftest import (FakeFeatures, MakeDesign, _NamedCollection, error_message, install,
+                      load_tool, make_timeline, payload)
 
 dm = load_tool("design_set_mode")
 
@@ -82,14 +83,12 @@ class TestSetMode:
 
     def test_history_discarded_rides_on_the_read_back_not_the_request(self):
         # the assignment is accepted and changes nothing (the measured platform lie). A conversion
-        # that did not happen discarded no timeline - so BOTH flags read false, agreeing with the
-        # note. history_discarded=true here would be the request talking, not the design.
+        # that did not happen must not report ok() with false flags - it REFUSES, and the message
+        # states what the read-back actually shows, not what the request asked for.
         des = install(dm, _ModeDesign(ignore_set=True))
-        out = payload(dm.handler(target="direct", confirm_history_loss=True))
-        assert out["converted"] is False
-        assert out["history_discarded"] is False
-        assert out["now"] == "parametric" and des.designType == _PARAMETRIC
-        assert "did not take" in out["note"]
+        msg = error_message(dm.handler(target="direct", confirm_history_loss=True))
+        assert "did not take" in msg and "still reads parametric" in msg
+        assert des.designType == _PARAMETRIC
 
     def test_an_unreadable_mode_publishes_null_flags_not_a_verdict(self):
         # designType does not decode to either mode after the assignment: whether the conversion
@@ -101,20 +100,41 @@ class TestSetMode:
         assert out["now"] == "unknown"
         assert "UNCONFIRMED" in out["note"]
 
-    def test_an_open_form_edit_refuses_before_any_mode_verdict(self, monkeypatch):
-        # the edit is what reads direct, so 'Already direct.' would be false and no assignment runs
-        des = install(dm, _ModeDesign(design_type=_DIRECT))
-        monkeypatch.setattr(dm._inputs, "in_form_edit", lambda d: True)
-        for target in dm._TARGETS:
-            assert "Finish Form" in error_message(
-                dm.handler(target=target, confirm_history_loss=True))
-        assert des.designType == _DIRECT
-
     def test_a_conversion_that_took_still_reports_the_discard(self):
         # the other side of the same gate: a PROVEN parametric->direct did discard the timeline.
         install(dm, _ModeDesign())
         out = payload(dm.handler(target="direct", confirm_history_loss=True))
         assert out["converted"] is True and out["history_discarded"] is True
+
+
+class _LeavesAFormDesign(_ModeDesign):
+    """A not-taken designType assignment that also leaves a new Form behind - the review's fix 4
+    evidence (an open Form edit's failed conversion left a stray Form)."""
+    def __setattr__(self, name, value):
+        if name == "designType" and getattr(self, "_ignore_set", False):
+            self.rootComponent.features.formFeatures._items.append(object())
+        super().__setattr__(name, value)
+
+
+class TestNotTakenStillDirect:
+    """A not-taken assignment that still reads direct is the one signal an open Form or
+    base-feature edit gives (fix 4) - it REFUSES, naming what (if anything) moved."""
+
+    def test_nothing_moved_says_so(self):
+        # direct -> parametric attempted, ignored, still reads direct: no Form/timeline/group
+        # collection changed between the two reads.
+        des = install(dm, _ModeDesign(design_type=_DIRECT, ignore_set=True))
+        msg = error_message(dm.handler(target="parametric"))
+        assert "did not take" in msg and "Finish Form" in msg
+        assert "nothing it can read changed" in msg
+        assert des.designType == _DIRECT
+
+    def test_a_moved_form_count_names_the_count(self):
+        des = install(dm, _LeavesAFormDesign(design_type=_DIRECT, ignore_set=True))
+        des.rootComponent.features = FakeFeatures()
+        des.rootComponent.features.formFeatures = _NamedCollection([])
+        msg = error_message(dm.handler(target="parametric"))
+        assert "Finish Form" in msg and "1 Form(s)" in msg
 
 
 class TestTargetEnum:

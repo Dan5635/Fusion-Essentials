@@ -10,7 +10,8 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import named_with_remainder, ok, error, safe, set_verified
-from ._cam_common import _MANUAL_NC_STRATEGY, get_cam, find_setup, is_additive_setup, tree_nodes
+from ._cam_common import (_MANUAL_NC_STRATEGY, get_cam, find_setup,
+                          is_additive_setup, refresh_flat_setup_models, sync_validity, tree_nodes)
 from ._cam_templates import _LOCATION, _find_template_by_name, _template_library, hint_is_self_contained
 from . import _inputs
 # _read_tool_number is the one tool_number read - the fork check shares it with the add path.
@@ -242,6 +243,14 @@ def handler(setup: str = "", template_url: str = "",
     if not safe(lambda: template.isValidTemplate, True):
         return error(f"Template '{safe(lambda: template.name)}' is not in a valid state to apply.")
 
+    flat_refreshed = 0
+    if gen_key == "generate":
+        if not sync_validity(cam):
+            return error("CAM.checkValidity failed before template apply; nothing was applied.")
+        flat_refreshed, ferr = refresh_flat_setup_models(target_setup)
+        if ferr:
+            return error(f"Setup '{setup}': {ferr}")
+
     # Build the input + apply.
     ops_before = safe(lambda: target_setup.allOperations.count)
     before_census = _path_census(_setup_op_nodes(target_setup))
@@ -285,6 +294,7 @@ def handler(setup: str = "", template_url: str = "",
         "template": safe(lambda: template.name),
         "setup": safe(lambda: target_setup.name),
         "generation_mode": gen_key,
+        "flat_models_refreshed": flat_refreshed,
         "created_count": len(created_names),
         "created_operations": created_names,
         "operations_added": added_count,

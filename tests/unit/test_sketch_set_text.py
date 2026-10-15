@@ -16,8 +16,10 @@ import types
 
 import pytest
 
-from conftest import (MakeComp, MakeDesign, Sketch, SketchCurves, _NamedCollection, install,
-                      load_tool)
+from conftest import (FakeValueInput, MakeComp, MakeDesign, Sketch, SketchCurves,
+                      _NamedCollection, install, load_tool)
+from tests.fakes.sketch import TextRectangleRotation
+from tests.fakes.geometry import FakeMatrix3D, FakeVector3D
 
 st = load_tool("sketch_set_text")
 
@@ -177,7 +179,7 @@ class FakeComp(MakeComp):
 
 class FakeDesign(MakeDesign):
     """The shared design plus the computeAll a parametric recompute calls, recorded in `computed`.
-    resolve_sketch (used by the create path) searches rootComponent + all_components."""
+    find_sketch (used by the create path) searches rootComponent + all_components."""
     def __init__(self, comps, design_type=1):
         super().__init__(comp=comps[0] if comps else None, all_components=list(comps),
                          design_type=design_type)
@@ -587,10 +589,12 @@ class TestLandedString:
 class FakeTextInput:
     """A SketchTextInput: the three setAs* placements plus the formatting properties. angle/flips
     are real attributes so set_verified's read-back succeeds, as it does live. `place_returns`
-    models Fusion REFUSING a placement - the setAs* call answers false and nothing is placed."""
-    def __init__(self, text, height, place_returns=True):
-        self.text = text
-        self.height = height
+    models Fusion REFUSING a placement - the setAs* call answers false and nothing is placed.
+    It holds what createInput3 is handed, under the two supported names: `expression` and the
+    `height2` ValueInput. The retired `height` is absent, so a read of it raises."""
+    def __init__(self, expression, height2, place_returns=True):
+        self.expression = expression
+        self.height2 = height2
         self.multiline = None
         self.along = None
         self.fit = None
@@ -644,9 +648,10 @@ def _fake_definition(ipt, obj_type, blind):
 
 
 class FakeSketchTexts:
-    """createInput2/add that model a real SketchTexts collection: add() APPENDS so `count` rises -
+    """createInput3/add that model a real SketchTexts collection: add() APPENDS so `count` rises -
     unless `materialize=False`, which returns a truthy text object while the collection stays flat
-    (the on-face silent-no-op the honesty read-back must catch). `raise_on_add` models Fusion
+    (the on-face silent-no-op the honesty read-back must catch). The retired createInput2 is
+    absent, so a create that reaches for it fails. `raise_on_add` models Fusion
     rejecting the placement at add() time; `definition_type` forces the landed definition;
     `blind_definition` makes every placement read off it fail; `placement_override` makes the
     definition report a placement that DISAGREES with the request; `place_returns=False` makes the
@@ -657,11 +662,17 @@ class FakeSketchTexts:
     `bbox` is the (x0, y0, x1, y1) cm box the landed text reports as SketchText.boundingBox. The
     default is the measured shape of the case that motivated reporting it - an Arial h8 label
     running 188 mm - so it is nowhere near len(text) * height and a width read off the box is
-    distinguishable from one estimated from the inputs. None models a text with no readable box."""
+    distinguishable from one estimated from the inputs. None models a text with no readable box.
+
+    BINDINGS-SOURCED, not measured: the landed text's textParameter holds the input's expression as
+    written and its heightParameter the centimetres the height2 real carried. `landed_expression`
+    and `landed_height_cm` are INJECTED disagreements with what was asked; `blind_parameters` is a
+    text neither parameter reads on."""
     def __init__(self, initial=0, materialize=True, add_returns=True, raise_on_add=None,
                  definition_type=None, blind_definition=False, place_returns=True,
                  placement_override=None, font_raises=None, landed_font=None, blind_font=False,
-                 bbox=(0.0, 0.0, 18.8, 0.8)):
+                 bbox=(0.0, 0.0, 18.8, 0.8), landed_expression=None, landed_height_cm=None,
+                 blind_parameters=False):
         self.last_input = None
         self._texts = [type("T", (), {"name": f"T{i}"})() for i in range(initial)]
         self.materialize = materialize
@@ -675,12 +686,15 @@ class FakeSketchTexts:
         self.landed_font = landed_font
         self.blind_font = blind_font
         self.bbox = bbox
+        self.landed_expression = landed_expression
+        self.landed_height_cm = landed_height_cm
+        self.blind_parameters = blind_parameters
         self.add_calls = 0
     @property
     def count(self):
         return len(self._texts)
-    def createInput2(self, text, height):
-        self.last_input = FakeTextInput(text, height, place_returns=self.place_returns)
+    def createInput3(self, expression, height):
+        self.last_input = FakeTextInput(expression, height, place_returns=self.place_returns)
         return self.last_input
     def add(self, ipt):
         self.add_calls += 1
@@ -694,6 +708,12 @@ class FakeSketchTexts:
         for prop, value in self.placement_override.items():
             setattr(definition, prop, value)
         st = types.SimpleNamespace(name="Text1", definition=definition)
+        if not self.blind_parameters:
+            st.textParameter = FakeParam(ipt.expression if self.landed_expression is None
+                                         else self.landed_expression)
+            st.heightParameter = types.SimpleNamespace(
+                value=ipt.height2.realValue if self.landed_height_cm is None
+                else self.landed_height_cm)
         if self.bbox is not None:
             x0, y0, x1, y1 = self.bbox
             st.boundingBox = types.SimpleNamespace(
@@ -725,6 +745,7 @@ def _install_create(sketch_name="Plate", texts=None, lines=0, circles=0):
     design = _install([MakeComp(name="Root", sketches=[sk])])
     import adsk.core
     adsk.core.Point3D.create = staticmethod(lambda x, y, z: ("pt", x, y, z))
+    adsk.core.ValueInput.createByReal = staticmethod(lambda v: FakeValueInput(real=v))
     # HorizontalAlignments/VerticalAlignments members arrive pre-seeded with the measured ints
     # (live_api_facts via conftest) - the fake reads them, never assigns them.
     return design, sk
@@ -784,8 +805,8 @@ class TestCreate:
         design, sk = _install_create()
         out = _payload(st.handler(text="LBL", create=True, sketch_name="Plate", height=10, units="mm"))
         assert out["created"] is True and out["text"] == "LBL"
-        # height 10mm -> 1.0cm handed to createInput2
-        assert sk.sketchTexts.last_input.height == 1.0
+        # height 10mm -> a 1.0cm real handed to createInput3
+        assert sk.sketchTexts.last_input.height2.realValue == 1.0
 
     def test_create_without_a_height_applies_the_documented_default(self):
         # 'height' defaults to None on the wire so an edit-time height is DETECTABLE and refused;
@@ -793,13 +814,13 @@ class TestCreate:
         design, sk = _install_create()
         _payload(st.handler(text="A", create=True, sketch_name="Plate", units="mm"))
         assert st._DEFAULT_HEIGHT == 5.0
-        assert sk.sketchTexts.last_input.height == 0.5     # 5mm -> 0.5cm
+        assert sk.sketchTexts.last_input.height2.realValue == 0.5     # 5mm -> 0.5cm
 
     def test_the_create_default_is_applied_in_the_requested_units(self):
         # boundary beside it: the default is a number in 'units', not a fixed centimetre value
         design, sk = _install_create()
         _payload(st.handler(text="A", create=True, sketch_name="Plate", units="cm"))
-        assert sk.sketchTexts.last_input.height == 5.0
+        assert sk.sketchTexts.last_input.height2.realValue == 5.0
 
     def test_create_position_scaled(self):
         design, sk = _install_create()
@@ -880,6 +901,55 @@ class TestCreate:
         _install_create()
         res = st.handler(text="A", create=True, sketch_name="Plate", mode="wrap_around")
         assert res["isError"] is True and "wrap_around" in res["message"]
+
+
+class TestCreateReadBack:
+    """createInput3 takes the string as a parameter EXPRESSION and the height as a ValueInput, so
+    the create reads both back off the landed text."""
+
+    @pytest.mark.parametrize("text,expression", [("LBL", "'LBL'"), ("It's", "'It\\'s'"),
+                                                 ("d1 + 2", "'d1 + 2'")])
+    def test_the_string_goes_in_as_a_quoted_literal(self, text, expression):
+        # unquoted, 'd1 + 2' is an expression over a parameter and the label would follow it
+        design, sk = _install_create()
+        out = _payload(st.handler(text=text, create=True, sketch_name="Plate"))
+        assert sk.sketchTexts.last_input.expression == expression
+        assert out["created"] is True and out["text"] == text
+
+    def test_a_string_that_lands_as_another_is_an_error_naming_the_delete(self):
+        texts = FakeSketchTexts(initial=2, landed_expression="'OTHER'")
+        _install_create(texts=texts)
+        res = st.handler(text="LBL", create=True, sketch_name="Plate")
+        assert res["isError"] is True
+        assert "Asked for the string 'LBL'" in res["message"]
+        assert "reads back 'OTHER'" in res["message"]
+        assert "sketch_delete_entity(sketch_name='Plate', target='text:2')" in res["message"]
+
+    def test_a_height_that_lands_at_another_size_is_an_error_in_the_callers_units(self):
+        # 10 mm asked, 0.1 cm landed: the reading a real taken in the document's unit would give
+        texts = FakeSketchTexts(landed_height_cm=0.1)
+        _install_create(texts=texts)
+        res = st.handler(text="LBL", create=True, sketch_name="Plate", height=10, units="mm")
+        assert res["isError"] is True
+        assert "Asked for height 10.0 mm" in res["message"]
+        assert "heightParameter reads 1.0 mm" in res["message"]
+        assert "target='text:0'" in res["message"]
+
+    def test_a_height_difference_at_the_tolerance_passes_and_one_past_it_errors(self):
+        # 2e-6 - 1e-6 is EXACT in binary floating point, so the equal case sits ON the boundary.
+        for landed, is_error in ((2e-6, False), (3e-6, True)):
+            _install_create(texts=FakeSketchTexts(landed_height_cm=landed))
+            res = st.handler(text="A", create=True, sketch_name="Plate", height=1e-6, units="cm")
+            assert res["isError"] is is_error, landed
+
+    def test_parameters_that_do_not_read_are_published_null_with_the_request_disclosed(self):
+        _install_create(texts=FakeSketchTexts(blind_parameters=True))
+        out = _payload(st.handler(text="LBL", create=True, sketch_name="Plate", height=10))
+        assert out["created"] is True
+        # unread is not a mismatch, and it is not the caller's value echoed as a read either
+        assert out["text"] is None and out["height"] is None
+        assert out["requested"]["text"] == "LBL" and out["requested"]["height"] == 10.0
+        assert "REQUESTED" in out["note"]
 
 
 # ── multi_line: the box is ANCHORED by 'align' ──────────────────────────────
@@ -999,7 +1069,7 @@ class TestPathModes:
 
     def test_edge_handle_path_is_refused_before_anything_is_created(self):
         # a BRepEdge path is accepted by setAsAlongPath and then rejected at add() live, so the
-        # handle never reaches createInput2
+        # handle never reaches createInput3
         design, sk = _install_create(lines=1)
         res = st.handler(text="A", create=True, sketch_name="Plate", mode="along_path",
                          path=_EDGE_HANDLE)
@@ -1111,12 +1181,52 @@ class TestModeInputRefusals:
 # ── angle + flips: set on the input, published as REQUESTED ─────────────────
 
 class TestFormatting:
-    def test_angle_is_converted_from_degrees_to_radians(self):
-        design, sk = _install_create()
-        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=45))
-        assert sk.sketchTexts.last_input.angle == pytest.approx(math.radians(45))
-        # the payload publishes the REQUESTED degrees, not a read-back of the created text
-        assert out["requested"]["angle_deg"] == 45.0
+    @pytest.fixture
+    def rotation(self, monkeypatch):
+        scenario = TextRectangleRotation()
+        original = _fake_definition
+        def definition(ipt, obj_type, blind):
+            result = original(ipt, obj_type, blind)
+            if ipt.mode == "multi_line":
+                scenario.objectType = result.objectType
+                scenario.horizontalAlignment = result.horizontalAlignment
+                scenario.characterSpacing = result.characterSpacing
+                return scenario
+            return result
+        monkeypatch.setattr(__import__(__name__, fromlist=["_"]), "_fake_definition", definition)
+        def matrix():
+            result = FakeMatrix3D()
+            result.getCell = lambda r, c: result.asArray()[4 * r + c]
+            return result
+        monkeypatch.setattr(st.adsk.core.Matrix3D, "create", matrix)
+        monkeypatch.setattr(st.adsk.core.Vector3D, "create", lambda *v: FakeVector3D(*v))
+        return scenario
+
+    def test_angle_rotates_landed_rectangle_about_centre(self, rotation):
+        _design, sk = _install_create()
+        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=30))
+        assert rotation.calls == [pytest.approx(math.radians(30))]
+        assert sk.sketchTexts.last_input.angle == 0.0
+        point = rotation.rectangleLines[0].startSketchPoint.geometry
+        assert (point.x, point.y) == pytest.approx((1.409455543377232, 1.171891108675446))
+        assert out["requested"]["angle_deg"] == 30.0
+
+    def test_rectangle_centre_uses_both_ends_when_one_edge_reverses(self, rotation):
+        rotation._injected = frozenset(["reversed_edge"])
+        _install_create()
+        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=30))
+        assert out["created"] is True and out["requested"]["angle_deg"] == 30.0
+        point = rotation.rectangleLines[0].endSketchPoint.geometry
+        assert (point.x, point.y) == pytest.approx((1.409455543377232, 1.171891108675446))
+
+    def test_retained_text_remedy_quotes_apostrophe_sketch_name(self, rotation):
+        rotation._injected = frozenset(["rotate_false"])
+        name = "Owner's Plate"
+        _design, sk = _install_create(sketch_name=name, texts=FakeSketchTexts(initial=3))
+        res = st.handler(text="A", create=True, sketch_name=name, angle_deg=30)
+        assert res["isError"] is True and "returned false" in res["message"]
+        assert f"sketch_delete_entity(sketch_name={name!r}, target='text:3')" in res["message"]
+        assert sk.sketchTexts.count == 4
 
     def test_flips_are_set_and_reported(self):
         design, sk = _install_create()
@@ -1132,33 +1242,73 @@ class TestFormatting:
         assert "requested" not in out
         assert sk.sketchTexts.last_input.angle == 0.0
 
-    def test_note_marks_the_requested_values_as_unverified(self):
+    def test_note_names_rotation_geometry_verification(self, rotation):
         design, sk = _install_create()
         out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=30))
-        assert "REQUESTED" in out["note"] and "were not read back off the created text" in out["note"]
+        assert "rectangle endpoints matched the requested rotation" in out["note"]
+        assert "confirm them with view_screenshot" not in out["note"]
 
-    def test_angle_that_does_not_take_is_an_error(self):
-        # a SWIG proxy accepts an assignment to a name it does not define; only the read-back
-        # catches it, and a create that silently ignored the rotation must not report success
-        class _Deaf(FakeTextInput):
-            @property
-            def angle(self):
-                return 0.0
-            @angle.setter
-            def angle(self, v):
-                pass
-        texts = FakeSketchTexts()
-        texts.createInput2 = lambda text, height: setattr(
-            texts, "last_input", _Deaf(text, height)) or texts.last_input
+    @pytest.mark.parametrize("fault,message,called", [
+        ("rotate_false", "returned false", True),
+        ("rotate_drop", "endpoints did not match", True),
+        ("rotate_partial", "endpoints did not match", True),
+        ("rotate_raises", "Injected rotation raise", True),
+        ("unread_before", "did not read before", False),
+        ("unread_after", "did not read after", True),
+        ("missing_line", "did not read before", False)])
+    def test_rotation_failure_names_retained_text(self, rotation, fault, message, called):
+        rotation._injected = frozenset([fault])
+        texts = FakeSketchTexts(initial=2)
         design, sk = _install_create(texts=texts)
-        res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg=45)
-        assert res["isError"] is True and "angle_deg" in res["message"]
-        assert sk.sketchTexts.count == 0
+        res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg=30)
+        assert res["isError"] is True and message in res["message"]
+        assert "The text WAS created" in res["message"]
+        assert "sketch_delete_entity(sketch_name='Plate', target='text:2')" in res["message"]
+        assert sk.sketchTexts.count == 3 and bool(rotation.calls) is called
 
-    def test_non_numeric_angle_is_refused(self):
-        _install_create()
-        res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg="sideways")
+    @pytest.mark.parametrize("angle", ["sideways", float("inf"), float("nan"), True])
+    def test_invalid_angle_is_refused_before_creating_input(self, angle):
+        _design, sk = _install_create()
+        res = st.handler(text="A", create=True, sketch_name="Plate", angle_deg=angle)
         assert res["isError"] is True and "DEGREES" in res["message"]
+        assert sk.sketchTexts.last_input is None and sk.sketchTexts.add_calls == 0
+
+    @pytest.mark.parametrize("angle", [0, 360, -720])
+    def test_whole_turn_preserves_rectangle_without_rotation(self, rotation, angle):
+        _install_create()
+        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", angle_deg=angle))
+        assert out["created"] is True and out["requested"]["angle_deg"] == angle
+        assert rotation.calls == []
+
+    @pytest.mark.parametrize("mode", ["along_path", "fit_on_path"])
+    def test_nonzero_path_angle_refuses_before_creation(self, mode):
+        _design, sk = _install_create(lines=1)
+        res = st.handler(text="A", create=True, sketch_name="Plate", mode=mode,
+                         path="line:0", angle_deg=30)
+        assert res["isError"] is True and "offered for mode 'multi_line' only" in res["message"]
+        assert "sketch_move" in res["message"] and "Rotate the path curve" in res["message"]
+        assert sk.sketchTexts.last_input is None and sk.sketchTexts.add_calls == 0
+
+    @pytest.mark.parametrize("mode", ["along_path", "fit_on_path"])
+    def test_whole_turn_path_angle_uses_unchanged_placement(self, mode):
+        _design, sk = _install_create(lines=1)
+        out = _payload(st.handler(text="A", create=True, sketch_name="Plate", mode=mode,
+                                  path="line:0", angle_deg=360))
+        assert out["created"] is True and out["requested"]["angle_deg"] == 360
+        assert sk.sketchTexts.last_input.angle == 0.0
+
+    def test_rotation_preserves_text_metadata(self, rotation):
+        _design, sk = _install_create()
+        out = _payload(st.handler(text="It's", create=True, sketch_name="Plate", angle_deg=30,
+                                  height=7, font_name="Arial", align="right",
+                                  character_spacing=12, flip_h=True, flip_v=True))
+        text = sk.sketchTexts._texts[-1]
+        assert text.textParameter.expression == st._quote("It's")
+        assert text.heightParameter.value == pytest.approx(0.7)
+        assert text.fontName == "Arial" and out["align"] == "right"
+        assert out["character_spacing"] == 12
+        assert sk.sketchTexts.last_input.isHorizontalFlip is True
+        assert sk.sketchTexts.last_input.isVerticalFlip is True
 
 
 # ── the definition read-back decides whether the right mode landed ──────────
@@ -1253,7 +1403,7 @@ class TestCreateOnlyGuard:
         _install([FakeComp("Root", [FakeSketch("S", [FakeText("'a'")])])])
         res = st.handler(text="X", mode="along_path")
         assert res["isError"] is True
-        assert "'mode'" in res["message"] and "create=true" in res["message"]
+        assert "'text' cannot ride a layout edit" in res["message"]
 
     def test_angle_without_create_is_refused_rather_than_ignored(self):
         _install([FakeComp("Root", [FakeSketch("S", [FakeText("'a'")])])])
@@ -1263,7 +1413,7 @@ class TestCreateOnlyGuard:
     def test_flip_false_still_counts_as_supplied(self):
         _install([FakeComp("Root", [FakeSketch("S", [FakeText("'a'")])])])
         res = st.handler(text="X", flip_h=False)
-        assert res["isError"] is True and "'flip_h'" in res["message"]
+        assert res["isError"] is True and "'text' cannot ride a layout edit" in res["message"]
 
     def test_position_without_create_is_refused_like_the_other_create_inputs(self):
         # x/y default to None, so a supplied one is detectable - refusing flip_h but silently
@@ -1889,3 +2039,227 @@ class TestParameterBinding:
         self._one_text()
         res = st.handler(text="LBL", create=True, sketch_name="Plate", parameter="weight_text")
         assert res["isError"] is True and "cannot ride a create" in res["message"]
+
+
+# -- layout edits on ONE existing text: flips, style, path re-lay, explode --------------------
+
+
+class _OutlineCurve:
+    def __init__(self, a, b):
+        ends = [types.SimpleNamespace(x=p[0], y=p[1]) for p in (a, b)]
+        self.evaluator = types.SimpleNamespace(getEndPoints=lambda: [True] + ends)
+
+
+class _LayoutText:
+    """An existing text with a real outline. `lies`: 'flag_only' (a flip reads back, the glyphs
+    stay), 'sticky_flip', 'sticky_style', 'other_side' (a re-lay lands below and at the far end,
+    as measured after a trip through fit-on-path), 'keeps_class', 'explode_keeps'."""
+
+    def __init__(self, definition="along_path", lies=(), owner=None):
+        self.lies, self.owner = lies, owner
+        self._flips = {"isHorizontalFlip": False, "isVerticalFlip": False}
+        self._style = 0
+        self.definition = types.SimpleNamespace(objectType=_DEFINITION_TYPES[definition])
+        self.relaid = None
+        self._box(0.0, 0.0)
+
+    def _box(self, x, y):
+        self.boundingBox = types.SimpleNamespace(minPoint=types.SimpleNamespace(x=x, y=y),
+                                                 maxPoint=types.SimpleNamespace(x=x + 1.0, y=y + 0.5))
+
+    def asCurves(self):
+        sx = -1.0 if self._flips["isHorizontalFlip"] and "flag_only" not in self.lies else 1.0
+        sy = -1.0 if self._flips["isVerticalFlip"] and "flag_only" not in self.lies else 1.0
+        return [_OutlineCurve((0.0, 0.0), (sx * 1.0, sy * 0.5)),
+                _OutlineCurve((sx * 1.0, sy * 0.5), (sx * 0.2, sy * 0.4))]
+
+    def _relay(self, mode, curve, above):
+        self.relaid = (mode, curve, above)
+        if "keeps_class" not in self.lies:
+            self.definition = types.SimpleNamespace(objectType=_DEFINITION_TYPES[mode],
+                                                    isAbovePath=above)
+            if "no_path" not in self.lies:
+                self.definition.path = object() if "old_path" in self.lies else curve
+        wrong = "other_side" in self.lies
+        self._box(5.0 if wrong else 0.0, (-0.5 if above else 0.0) if wrong
+                  else (0.0 if above else -0.5))
+        return True
+
+    def redefineAsAlongPath(self, curve, above, halign, spacing):
+        return self._relay("along_path", curve, above)
+
+    def redefineAsFitOnPath(self, curve, above):
+        return self._relay("fit_on_path", curve, above)
+
+    def explode(self):
+        if "explode_keeps" not in self.lies:
+            self.owner._items.remove(self)
+        return [object()] * 44
+
+
+def _flip_property(name):
+    def _get(self):
+        return self._flips[name]
+
+    def _set(self, value):
+        if "sticky_flip" not in self.lies:
+            self._flips[name] = value
+    return property(_get, _set)
+
+
+def _style_property():
+    def _set(self, value):
+        if "sticky_style" not in self.lies:
+            self._style = value
+    return property(lambda self: self._style, _set)
+
+
+_LayoutText.isHorizontalFlip = _flip_property("isHorizontalFlip")
+_LayoutText.isVerticalFlip = _flip_property("isVerticalFlip")
+_LayoutText.textStyle = _style_property()
+
+
+def _layout(monkeypatch, definition="along_path", lies=()):
+    """A sketch 'S' holding one layout text and line:0 from (0,0) to (6,0) cm, with bold=1,
+    italic=2, underline=4 as the style bits."""
+    text = _LayoutText(definition, lies)
+    sketch = FakeSketch("S", [text])
+    text.owner = sketch.sketchTexts
+    line = types.SimpleNamespace(
+        startSketchPoint=types.SimpleNamespace(geometry=types.SimpleNamespace(x=0.0, y=0.0)),
+        endSketchPoint=types.SimpleNamespace(geometry=types.SimpleNamespace(x=6.0, y=0.0)))
+    _install([FakeComp("Root", [sketch])])
+    monkeypatch.setattr(st._common, "resolve_entity_ref",
+                        lambda sk, ref: line if ref == "line:0" else None)
+    monkeypatch.setattr(st.adsk.fusion, "TextStyles", types.SimpleNamespace(
+        TextStyleBold=1, TextStyleItalic=2, TextStyleUnderline=4), raising=False)
+    return text, sketch, line
+
+
+class TestLayoutEdit:
+    def test_a_flip_needs_no_string_and_reports_the_outline_changing(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, flip_h=True))
+        assert text.isHorizontalFlip is True
+        assert out["flip_h"] is True and out["flip_h_outline_changed"] is True
+
+    def test_a_flip_whose_glyphs_stay_put_says_so(self, monkeypatch):
+        _layout(monkeypatch, lies=("flag_only",))
+        out = _payload(st.handler(sketch_name="S", index=0, flip_v=True))
+        assert out["flip_v_outline_changed"] is False
+        assert "glyph outline reads the same" in out["note"]
+
+    def test_a_flip_that_does_not_read_back_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("sticky_flip",))
+        res = st.handler(sketch_name="S", index=0, flip_h=True)
+        assert res["isError"] is True and "flip_h=True did not take" in res["message"]
+
+    def test_style_sets_the_bits_and_reads_them_back_as_names(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, style=["bold", "italic"]))
+        assert text.textStyle == 3 and out["style"] == ["bold", "italic"]
+
+    def test_a_style_that_does_not_land_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("sticky_style",))
+        res = st.handler(sketch_name="S", index=0, style=["italic"])
+        assert res["isError"] is True and "reads back 0, not 2" in res["message"]
+
+    def test_a_relay_onto_a_line_checks_the_side_it_landed_on(self, monkeypatch):
+        text, _sk, line = _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, mode="along_path", path="line:0",
+                                  above_path=False, units="cm"))
+        assert text.relaid == ("along_path", line, False)
+        assert out["placement_checked"] is True
+        assert out["bounding_box"] == [[0.0, -0.5], [1.0, 0.0]]
+
+    def test_a_relay_that_lands_on_the_other_side_and_end_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("other_side",))
+        res = st.handler(sketch_name="S", index=0, mode="along_path", path="line:0")
+        assert res["isError"] is True
+        assert "sits below the path, not above" in res["message"]
+        assert "at the path's end, not align='left'" in res["message"]
+
+    def test_a_relay_that_keeps_the_old_definition_class_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("keeps_class",))
+        res = st.handler(sketch_name="S", index=0, mode="fit_on_path", path="line:0")
+        assert res["isError"] is True and "not 'fit_on_path'" in res["message"]
+
+    def test_a_multi_line_text_is_refused_before_the_relay(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch, definition="multi_line")
+        res = st.handler(sketch_name="S", index=0, mode="along_path", path="line:0")
+        assert res["isError"] is True and "multi-line box" in res["message"]
+        assert text.relaid is None
+
+    def test_explode_checks_the_text_is_gone(self, monkeypatch):
+        _text, sketch, _line = _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, explode=True))
+        assert out["curve_count"] == 44 and out["sketch_text_count"] == 0
+        assert sketch.sketchTexts.count == 0
+
+    def test_an_explode_that_leaves_the_text_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("explode_keeps",))
+        res = st.handler(sketch_name="S", index=0, explode=True)
+        assert res["isError"] is True and "went from 1 to 1 text(s)" in res["message"]
+
+    @pytest.mark.parametrize("args, text", [
+        ({"flip_h": True}, "pass 'sketch_name' and its 'index'"),
+        ({"sketch_name": "S", "index": 3, "flip_h": True}, "No sketch text 3"),
+        ({"sketch_name": "S", "index": 0, "explode": True, "flip_h": True}, "rides alone"),
+        ({"sketch_name": "S", "index": 0, "style": ["heavy"]}, "got 'heavy'"),
+        ({"sketch_name": "S", "index": 0, "flip_h": True, "height": 3},
+         "'height' cannot ride a layout edit"),
+        ({"sketch_name": "S", "index": 0, "mode": "multi_line", "path": "line:0"},
+         "cannot be turned into a multi_line box")])
+    def test_layout_guards(self, monkeypatch, args, text):
+        target, _sk, _line = _layout(monkeypatch)
+        res = st.handler(**args)
+        assert res["isError"] is True and text in res["message"]
+        assert target.isHorizontalFlip is False and target.relaid is None
+
+
+class TestLayoutEditOrderAndPath:
+    def test_the_definition_naming_the_requested_path_confirms_it(self, monkeypatch):
+        _layout(monkeypatch)
+        out = _payload(st.handler(sketch_name="S", index=0, mode="along_path", path="line:0"))
+        assert out["path_confirmed"] is True and "path_confirmed is null" not in out["note"]
+
+    def test_a_relay_that_answers_true_and_keeps_the_previous_path_is_an_error(self, monkeypatch):
+        _layout(monkeypatch, lies=("old_path",))
+        res = st.handler(sketch_name="S", index=0, mode="along_path", path="line:0")
+        assert res["isError"] is True and "still reads another path, not 'line:0'" in res["message"]
+
+    def test_an_unreadable_definition_path_is_published_as_unconfirmed(self, monkeypatch):
+        _layout(monkeypatch, lies=("no_path",))
+        out = _payload(st.handler(sketch_name="S", index=0, mode="along_path", path="line:0"))
+        assert out["path_confirmed"] is None and "path_confirmed is null" in out["note"]
+
+    def test_a_bad_relay_is_refused_before_the_flip_lands(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        res = st.handler(sketch_name="S", index=0, flip_h=True, style=["bold"],
+                         mode="along_path", path="line:9")
+        assert res["isError"] is True and "'path' did not resolve 'line:9'" in res["message"]
+        assert text.isHorizontalFlip is False and text.textStyle == 0
+
+    def test_a_native_relay_failure_names_the_edits_already_applied(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch, lies=("keeps_class",))
+        res = st.handler(sketch_name="S", index=0, flip_h=True, style=["bold"],
+                         mode="fit_on_path", path="line:0")
+        assert res["isError"] is True
+        assert "Already applied in this call: flip_h=True, style." in res["message"]
+        assert text.isHorizontalFlip is True
+
+    def test_relay_steering_without_a_relay_is_refused(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        res = st.handler(sketch_name="S", index=0, flip_h=True, above_path=False)
+        assert res["isError"] is True and "pass 'mode' and 'path' with them" in res["message"]
+        assert text.isHorizontalFlip is False
+
+
+class TestUnderlineIsNotOffered:
+    def test_underline_is_refused_by_name_before_any_write(self, monkeypatch):
+        text, _sk, _line = _layout(monkeypatch)
+        res = st.handler(sketch_name="S", index=0, flip_h=True, style=["underline"])
+        assert res["isError"] is True and "'style' takes bold, italic; got 'underline'" in res["message"]
+        assert text.isHorizontalFlip is False
+        assert st.tool.to_dict()["inputSchema"]["properties"]["style"]["items"]["enum"] == [
+            "bold", "italic"]

@@ -15,7 +15,7 @@ from . import _inputs
 from . import _joints
 from . import _relations
 
-# The "what to reuse from here" catalog line for the generated CLAUDE.md helper map.
+# The "what to reuse from here" catalog line for the generated AGENTS.md helper map.
 MAP_BLURB = (
     "the row SERIALIZERS behind assembly_get, one per array in its payload - reach for one only "
     "from there. _occ_record/_all_occurrence_rows - occurrence identity, placement behind "
@@ -25,7 +25,22 @@ MAP_BLURB = (
     "_contact_rows - the rest")
 
 
-def _occ_record(occ, inv_k, occ_joints, include_joints, full_path=False, with_pose=False):
+def _occurrence_joint_names(occ, memberships, membership_unread=False):
+    """Return exact joint names held by this occurrence and whether any comparison was unread."""
+    names, unverified = [], membership_unread
+    unread = object()
+    for member, name in memberships:
+        same = safe(lambda member=member: occ == member, unread)
+        if same is True:
+            if name not in names:
+                names.append(name)
+        elif same is not False:
+            unverified = True
+    return names, unverified
+
+
+def _occ_record(occ, inv_k, joint_memberships, include_joints, full_path=False, with_pose=False,
+                membership_unread=False):
     """ONE occurrence row: identity + ground flags + body count + the joints it takes part in.
     with_pose adds its world placement (_geom.occ_world_frame - origin, basis axes, bbox), the
     ~40-line half of the row; full_path adds the fullPathName two same-named instances differ by."""
@@ -33,8 +48,7 @@ def _occ_record(occ, inv_k, occ_joints, include_joints, full_path=False, with_po
     rec = {
     "name": name,
     "component": safe(lambda: occ.component.name),
-    "grounded": bool(safe(lambda: occ.isGrounded, False)),
-    "ground_to_parent": bool(safe(lambda: occ.isGroundToParent, False)),
+    **_common.ground_flags(occ),
     "body_count": safe(lambda: occ.bRepBodies.count, 0),
     }
     if full_path:
@@ -42,7 +56,10 @@ def _occ_record(occ, inv_k, occ_joints, include_joints, full_path=False, with_po
     if with_pose:
         rec.update(_geom.occ_world_frame(occ, inv_k))
     if include_joints:
-        rec["joints"] = occ_joints.get(name, [])
+        rec["joints"], unverified = _occurrence_joint_names(
+            occ, joint_memberships, membership_unread)
+        if unverified:
+            rec["joints_unverified"] = True
     return rec
 
 
@@ -53,10 +70,12 @@ def _unresolved_row(broken):
             "detail": broken["detail"]}
 
 
-def _all_occurrence_rows(walk, inv_k, cap, occ_joints, include_joints, with_pose=False):
+def _all_occurrence_rows(walk, inv_k, cap, joint_memberships, include_joints, with_pose=False,
+                         membership_unread=False):
     """The all_occurrences slice: rows for the usable occurrences, then one flagged row per
     unresolved reference, bounded by cap. Returns (rows, walk)."""
-    rows = [_occ_record(o, inv_k, occ_joints, include_joints, full_path=True, with_pose=with_pose)
+    rows = [_occ_record(o, inv_k, joint_memberships, include_joints, full_path=True,
+                        with_pose=with_pose, membership_unread=membership_unread)
             for o in walk.occurrences[:cap]]
     for b in walk.broken[:max(0, cap - len(rows))]:
         rows.append(_unresolved_row(b))
@@ -246,21 +265,43 @@ def _joint_frame(design, j, inv_k):
 _MEMBER_CAP = 12
 
 
+def _jo_consumer_key(design, jo, occurrence):
+    """Return a readable native-origin identity plus its proven placed path, else None."""
+    identity = _common.native_identity(jo)
+    owner = safe(lambda: jo.parentComponent)
+    if identity is None or _common.native_identity(owner) is None:
+        return None
+    if occurrence is None:
+        return (identity, None) if _common.same_component(owner, safe(lambda: design.rootComponent)) is True else None
+    path = safe(lambda: occurrence.fullPathName)
+    if (not isinstance(path, str) or not path
+            or _common.same_component(owner, safe(lambda: occurrence.component)) is not True):
+        return None
+    return identity, path
+
+
 def _jo_consumers(design):
-    """{JointOrigin name: [joint names]} - which joints CONSUME each JO as an input, matched by
-    name over the shared joint walk. Best-effort: never raises."""
-    out = {}
+    """Return placed origin consumers and canonical keys whose stored half could not be resolved."""
+    out, unresolved = {}, []
     for j in _joints.all_joints(design):
         jname = safe(lambda j=j: j.name)
         if not jname:
             continue
-        for attr in ("geometryOrOriginOne", "geometryOrOriginTwo"):
+        # A sub-component joint's native halves answer its first placement only, so each
+        # placement's proxy half credits the origin there too.
+        views = [j] + [proxy for _path, proxy in _joints.joint_placements(design, j)]
+        for attr, half in (("geometryOrOriginOne", "occurrenceOne"),
+                           ("geometryOrOriginTwo", "occurrenceTwo")):
             ref = safe(lambda j=j, a=attr: getattr(j, a))
-            if ref is not None and _joints.is_joint_origin(ref):
-                rn = safe(lambda ref=ref: ref.name)
-                if rn:
-                    out.setdefault(rn, []).append(jname)
-    return out
+            if ref is None or not _joints.is_joint_origin(ref):
+                continue
+            for view in views:
+                key = _jo_consumer_key(design, ref, safe(lambda v=view, a=half: getattr(v, a), object()))
+                if key is None:
+                    unresolved.append(_common.native_identity(ref))
+                elif jname not in out.get(key, []):
+                    out.setdefault(key, []).append(jname)
+    return out, unresolved
 
 
 def _jo_instances(design, jo, comp):
@@ -341,7 +382,10 @@ def _jo_row(design, jo, ref, comp, inv_k, consumers):
         row["world_position"] = wp
     if z or x or y:
         row["frame"] = {"z_axis": z, "x_axis": x, "y_axis": y}
-    row["consumed_by"] = consumers.get(nm, [])
+    key = _jo_consumer_key(design, jo, safe(lambda: jo.assemblyContext, object()))
+    known, unresolved = consumers
+    row["consumed_by"] = (None if key is None or any(i is None or i == key[0] for i in unresolved)
+                          else known.get(key, []))
     tok = safe(lambda: jo.entityToken)
     if tok:
         row["handle"] = tok

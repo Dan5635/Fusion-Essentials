@@ -44,9 +44,9 @@ def _closed(mb):
 
 def handler(mesh: str = "", thickness=None, units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     vals, verr = _inputs.resolve_inputs(_SPEC, {"mesh": mesh, "thickness": thickness,
                                                 "units": units})
@@ -104,7 +104,8 @@ def handler(mesh: str = "", thickness=None, units: str = "mm") -> dict:
     if not comparable and not volume_readable:
         return error("Mesh shell raised no error, but nothing could be read back off the mesh "
                      "afterwards (triangle and vertex counts and volume are all unreadable) - the "
-                     "hollow is UNVERIFIED, so it is reported as a failure.")
+                     "hollow is UNVERIFIED, so it is reported as a failure. "
+                     + _common.failed_effect_remedy(design, feature))
     if not moved:
         # The clause names only what was actually READ: a count that came back None, or a volume
         # neither end could report, must not appear in a sentence claiming it held still.

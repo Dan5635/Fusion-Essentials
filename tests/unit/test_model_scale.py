@@ -7,6 +7,9 @@ origin, and the honesty gates - a scale whose measured volume ratio is not the f
 factors imply, one that moved nothing, and one whose geometry cannot be read back all surface as
 errors rather than a false ok.
 """
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
+_ERROR = _api_facts.ENUMS["fusion.FeatureHealthStates"]["ErrorFeatureHealthState"]
 
 import types
 
@@ -36,7 +39,7 @@ class _VI:
 class FakeScaleFeature:
     """The created ScaleFeature. `params` maps a factor parameter name (scaleFactor / xScale / ...)
     to the number Fusion resolved it to - what the handler reads back for an expression factor."""
-    def __init__(self, name="Scale1", health=0, params=None):
+    def __init__(self, name="Scale1", health=_HEALTHY, params=None):
         self.name = name
         self.healthState = health
         self.errorOrWarningMessage = "the scale collapses the body"
@@ -466,7 +469,7 @@ class TestHonesty:
 
     def test_health_error_reported_not_false_ok(self, monkeypatch):
         body = _body(volume=8.0)
-        feature = FakeScaleFeature(health=2)
+        feature = FakeScaleFeature(health=_ERROR)
         _wire(monkeypatch, [body], FakeScaleFeatures([body], feature=feature))
         res = ms.handler(bodies=["Block"], factor=2)
         assert res["isError"] is True

@@ -19,6 +19,9 @@ from ._common import ok, error, iter_collection, safe
 from . import _common
 from . import _data_common
 from . import _inputs
+from ._doc_common import component_solids as _solids, occurrence_pose as _pose
+from ._doc_common import path_fault as _path_fault, path_resolves as _resolves
+from ._doc_common import same_pose as _same_pose
 
 app = adsk.core.Application.get()
 
@@ -41,14 +44,16 @@ def _find_row(table, target):
     return None
 
 _ACTIONS = ("create", "activate", "add_configuration", "rename_configuration", "add_parameter",
-            "add_suppress", "add_visibility", "set_appearance", "add_material", "add_insert")
+            "add_suppress", "add_visibility", "set_appearance", "add_material", "add_insert",
+            "delete_configuration", "copy_configuration", "switch_occurrence", "set_parameter")
+_OCCURRENCE = _inputs.OccurrenceRef("occurrence")
 
 
 # ── resolvers (patched in tests; real lookups here) ─────────────────────────
 
 # Timeline entity names are NOT design-wide unique (two components can each hold an 'Extrude1'), so
 # the suppress column's target goes through FeatureRef, which refuses the ambiguity.
-_FEATURE = _inputs.FeatureRef("feature")
+_FEATURE = _inputs.FeatureRef("feature", allow_group=True)
 
 
 def _resolve_appearance(design, name):
@@ -185,9 +190,10 @@ def _do_create(design):
                "configurations": _row_names(table),
                "note": "Design converted to a configured design (one configuration so far). Add "
                        "configurations and columns with the other actions. To see it in the UI: SAVE, "
-                       "then REOPEN by the URN that save reports - the first save moves this document "
-                       "to a NEW lineage, and the pre-conversion one is relocated to a Fusion-managed "
-                       "project ('System Project - CONFIG') that deleting this design leaves behind."})
+                       "then REOPEN by the URN that save reports - the document can move to a NEW "
+                       "lineage on a save (lineage_changed), and the pre-conversion one is relocated "
+                       "to a Fusion-managed project ('System Project - CONFIG') that deleting this "
+                       "design leaves behind."})
 
 
 def _do_activate(design, table, name):
@@ -269,6 +275,234 @@ def _do_rename_configuration(table, name, new_name):
                "note": "Configuration renamed. Address it by the new name from now on."})
 
 
+_ROW_CAP = 1000         # rows one census reads
+_LIST_CAP = 100         # rows or columns one reply lists
+
+# The cell reads the add_* actions verify by; a field a cell does not carry raises and is skipped.
+_CELL_FIELDS = (("expression", lambda c: c.expression),
+                ("is_suppressed", lambda c: c.isSuppressed),
+                ("is_visible", lambda c: c.isVisible),
+                ("part_configuration", lambda c: c.row.name),
+                ("theme_row", lambda c: c.referencedTableRow.name))
+
+
+def _row_census(table):
+    """(records, row objects, problem): every top-table row as {name, id, index, active}."""
+    rows = safe(lambda: table.rows)
+    count = _common.counted(lambda: rows.count)
+    if count is None:
+        return None, None, "the configuration rows did not count"
+    if count > _ROW_CAP:
+        return None, None, f"the table holds {count} rows, over the {_ROW_CAP} read here"
+    active_id = safe(lambda: table.activeRow.id)
+    records, objects = [], []
+    for i in range(count):
+        row = safe(lambda i=i: rows.item(i))
+        name, row_id = safe(lambda: row.name), safe(lambda: row.id)
+        if name is None or row_id is None:
+            return None, None, f"configuration row {i} did not read its name and id"
+        # ConfigurationRow.index is published as read; its base is not assumed.
+        records.append({"name": name, "id": row_id, "index": safe(lambda: row.index),
+                        "active": None if active_id is None else row_id == active_id})
+        objects.append(row)
+    return records, objects, None
+
+
+def _one_row(records, target):
+    """(position, problem): the ONE census row whose name, else id, is exactly `target`."""
+    for key in ("name", "id"):
+        hits = [i for i, r in enumerate(records) if r[key] == target]
+        if len(hits) == 1:
+            return hits[0], None
+        if len(hits) > 1:
+            ids = _common.named_with_remainder([str(records[i]["id"]) for i in hits])
+            return None, (f"'{target}' matches {len(hits)} configurations by {key} (ids: {ids}). "
+                          "Pass one row's id as 'name'.")
+    names = _common.named_with_remainder([str(r["name"]) for r in records], _LIST_CAP)
+    return None, f"No configuration matched '{target}'. Available: {names or '(none)'}."
+
+
+def _row_ref(record):
+    """A census row as the {name, id, index} a reply publishes."""
+    return {k: record[k] for k in ("name", "id", "index")}
+
+
+def _active_ref(records):
+    """{name, id} of the row the census marks active, or None when the active row did not read."""
+    hits = [r for r in records if r["active"] is True]
+    return {"name": hits[0]["name"], "id": hits[0]["id"]} if len(hits) == 1 else None
+
+
+def _active_facts(out, before, after):
+    """Fill active_before/active_after/active_changed in `out`; returns the two active refs."""
+    was, now = _active_ref(before), _active_ref(after)
+    out["active_before"], out["active_after"] = was, now
+    out["active_changed"] = None if was is None or now is None else was["id"] != now["id"]
+    if out["active_changed"] is None:
+        out["active_unread"] = "the active row did not read on both sides of the write"
+    return was, now
+
+
+def _table_state(before, after, problem):
+    """One sentence saying whether the re-read census equals the one before the write."""
+    if after is None:
+        return f"The table did not re-read ({problem}); read design_get(include=['configurations'])."
+    names = _common.named_with_remainder([f"'{r['name']}'" for r in after], _LIST_CAP)
+    active = _active_ref(after)
+    state = f"rows {names or '(none)'}" + (f"; active '{active['name']}'" if active else "")
+    return (f"The table reads unchanged ({state})." if after == before
+            else f"The table now reads {state}.")
+
+
+def _cell_facts(col, row_name):
+    """The fields of one cell that read, addressed by row name; None when none did."""
+    cell = safe(lambda: col.getCellByRowName(row_name))
+    if cell is None:
+        return None
+    facts = {}
+    for key, read in _CELL_FIELDS:
+        value = safe(lambda read=read: read(cell))
+        if value is not None:
+            facts[key] = value
+    return facts or None
+
+
+def _copied_cells(table, source_name, copy_name):
+    """(rows, truncated, problem): per column, the copy's cell against its source's cell."""
+    cols = safe(lambda: table.columns)
+    count = _common.counted(lambda: cols.count)
+    if count is None:
+        return None, False, "the table's columns did not count"
+    rows = []
+    for i in range(min(count, _LIST_CAP)):
+        col = safe(lambda i=i: cols.item(i))
+        src, cpy = _cell_facts(col, source_name), _cell_facts(col, copy_name)
+        row = {"column": safe(lambda: col.title), "column_id": safe(lambda: col.id),
+               "source": src, "copy": cpy, "equal": None}
+        if src is None or cpy is None:
+            blank = [w for w, v in (("source", src), ("copy", cpy)) if v is None]
+            row["unread"] = f"no known field read on the {' and the '.join(blank)} cell"
+        elif set(src) != set(cpy):
+            row["unread"] = "the two cells read different fields"
+        else:
+            row["equal"] = src == cpy
+        rows.append(row)
+    return rows, count > _LIST_CAP, None
+
+
+def _do_copy_configuration(table, name, new_name):
+    """Copy one configuration row and judge the copy by the row census taken after it."""
+    name, new_name = (name or "").strip(), (new_name or "").strip()
+    if not name:
+        return error("Provide 'name' - the configuration to copy (its name or id); 'new_name' "
+                     "names the copy.")
+    before, objects, problem = _row_census(table)
+    if problem:
+        return error(f"Nothing was copied: {problem}. Read design_get(include=['configurations']).")
+    pos, problem = _one_row(before, name)
+    if problem:
+        return error(problem)
+    source = before[pos]
+    made = objects[pos].copy(new_name)           # MUTATION
+    after, _objects, problem = _row_census(table)
+    if problem:
+        return error(f"copy() ran on configuration '{source['name']}', but afterwards {problem} - "
+                     "whether a row was added is unread. Read "
+                     "design_get(include=['configurations']) before retrying.")
+    known = {r["id"] for r in before}
+    fresh = [r for r in after if r["id"] not in known]
+    made_id = safe(lambda: made.id) if made is not None else None
+    landed = [r for r in fresh if r["id"] == made_id]
+    if len(landed) != 1:
+        listed = _common.named_with_remainder([f"'{r['name']}'" for r in fresh])
+        return error(f"Copying configuration '{source['name']}' did not verify: copy() returned "
+                     + ("no row" if made is None else f"a row whose id reads {made_id!r}")
+                     + f" and the table lists {len(fresh)} new row(s)"
+                     + (f" ({listed})" if fresh else "")
+                     + ". Read design_get(include=['configurations']) before retrying.")
+    new = landed[0]
+    out = {"copied": True, "source": _row_ref(source), "configuration": new["name"],
+           "id": new["id"], "index": new["index"]}
+    note = f"Configuration '{source['name']}' copied as '{new['name']}'"
+    if new_name and new["name"] != new_name:
+        out["requested_name"], out["adopted_differs"] = new_name, True
+        note += f", not the requested '{new_name}'"
+    was, now = _active_facts(out, before, after)
+    if out["active_changed"]:
+        note += f". The active configuration reads '{now['name']}' now (was '{was['name']}')"
+    shared = [n for n in (source["name"], new["name"])
+              if sum(1 for r in after if r["name"] == n) != 1]
+    if shared:
+        out["cells"] = None
+        out["cells_unread"] = ("cells are addressed by row name, and more than one row is named "
+                               + _common.named_with_remainder([f"'{n}'" for n in shared]))
+    else:
+        cells, truncated, problem = _copied_cells(table, source["name"], new["name"])
+        out["cells"] = cells
+        if problem:
+            out["cells_unread"] = problem
+        if truncated:
+            out["cells_truncated"] = True
+    out["configurations"] = [r["name"] for r in after[:_LIST_CAP]]
+    if len(after) > _LIST_CAP:
+        out["configurations_truncated"] = True
+    # Only a cell read on both sides can differ; an unread cell stays unknown and is no mismatch.
+    differ = [str(c["column"] or c["column_id"]) for c in out["cells"] or [] if c["equal"] is False]
+    if differ:
+        out["verified"], out["cells_differ"] = False, differ
+        return error(f"{note}, but {len(differ)} copied cell(s) read differently from the source "
+                     f"in column(s) {_common.named_with_remainder(differ)}; the new row stays in "
+                     "the table. Read design_get(include=['configurations']); to discard the copy, "
+                     f"call action='delete_configuration', name='{new['id']}'.", out)
+    out["note"] = note + ". Address the copy by 'configuration' or 'id'."
+    return ok(out)
+
+
+def _do_delete_configuration(table, name):
+    """Delete one configuration row and judge the delete by the row census taken after it."""
+    name = (name or "").strip()
+    if not name:
+        return error("Provide 'name' - the configuration to delete (its name or id).")
+    before, objects, problem = _row_census(table)
+    if problem:
+        return error(f"Nothing was deleted: {problem}. Read design_get(include=['configurations']).")
+    pos, problem = _one_row(before, name)
+    if problem:
+        return error(problem)
+    target = before[pos]
+    try:
+        answered = objects[pos].deleteMe()       # MUTATION
+    except Exception as exc:
+        after, _objects, problem = _row_census(table)
+        return error(f"Fusion refused deleting configuration '{target['name']}': {exc} "
+                     + _table_state(before, after, problem))
+    after, _objects, problem = _row_census(table)
+    if problem:
+        return error(f"deleteMe() answered {answered!r} for configuration '{target['name']}', but "
+                     f"afterwards {problem} - whether the row is gone is unread. Read "
+                     "design_get(include=['configurations']) before retrying.")
+    still = any(r["id"] == target["id"] for r in after)
+    if answered is not True or still:
+        return error(f"Deleting configuration '{target['name']}' did not verify: deleteMe() "
+                     f"answered {answered!r} and its id {target['id']!r} is "
+                     f"{'still' if still else 'no longer'} listed. "
+                     + _table_state(before, after, problem))
+    out = {"deleted": _row_ref(target), "remaining": [_row_ref(r) for r in after[:_LIST_CAP]]}
+    if len(after) > _LIST_CAP:
+        out["remaining_truncated"] = True
+    was, now = _active_facts(out, before, after)
+    note = (f"Configuration '{target['name']}' deleted; this tool cannot restore a deleted "
+            "configuration.")
+    if target["active"] is True or out["active_changed"]:
+        note += " It was the active one: " if target["active"] is True else " "
+        note += (f"'{now['name']}' is active now" if now is not None
+                 else "which configuration is active now did not read")
+        note += ("; the active configuration changed, so read the model with design_get / "
+                 "param_get.")
+    out["note"] = note
+    return ok(out)
+
+
 def _validate_rows(table, value_map):
     """Every key in value_map must be an existing configuration row name."""
     names = set(_row_names(table))
@@ -305,7 +539,15 @@ def _do_add_parameter(design, table, parameter, values):
         cell = safe(lambda rname=rname: col.getCellByRowName(rname))
         if cell is None:
             return error(f"No cell for configuration '{rname}' in the '{parameter}' column.")
-        cell.expression = str(expr) # MUTATION
+        try:
+            cell.expression = str(expr) # MUTATION
+        except Exception as exc:
+            removed = _column_rolled_back(table, col)
+            return error(f"Setting '{parameter}' cell '{rname}' to {expr!r} failed: {exc}"
+                         + (f" ({n} earlier cell(s) read back)" if n else "") + ". "
+                         + ("The new column was removed." if removed else
+                            "New-column removal is unconfirmed.")
+                         + " Read design_get(include=['configurations']) before retrying.")
         # An unreadable read-back is a FAILURE, not a pass - the same rule the material path
         # states; a silently dropped write reads back None here.
         got = safe(lambda cell=cell: cell.expression)
@@ -328,6 +570,237 @@ def _do_add_parameter(design, table, parameter, values):
                        "parameter drives a dimension."})
 
 
+def _do_set_parameter(table, parameter, values):
+    """Set one existing inactive parameter cell and read its expression back."""
+    if not parameter:
+        return error("Provide 'parameter' - the parameter column to edit.")
+    if not isinstance(values, dict) or len(values) != 1:
+        return error("set_parameter needs 'values' with exactly one {configuration: expression} entry.")
+    target, expression = next(iter(values.items()))
+    if not isinstance(expression, str) or not expression.strip():
+        return error(f"The expression for configuration {target!r} must be a nonempty string; "
+                     f"got {expression!r}.")
+    records, _rows, problem = _row_census(table)
+    if records is None:
+        return error(f"Cannot edit {parameter!r}: {problem}.")
+    position, problem = _one_row(records, target)
+    if problem:
+        return error(problem)
+    row = records[position]
+    if row["active"] is None:
+        return error("The active configuration did not read; switch to a different row and retry.")
+    if row["active"]:
+        return error(f"Configuration '{row['name']}' is active. Activate another row before "
+                     "editing this cell, then activate it again to verify the driven model.")
+    columns = safe(lambda: table.columns)
+    count = _common.counted(lambda: columns.count)
+    if count is None or count > _ROW_CAP:
+        return error(f"The configuration columns did not read within the {_ROW_CAP} column bound.")
+    matches = []
+    for index in range(count):
+        col = safe(lambda index=index: columns.item(index))
+        if col is None:
+            return error(f"Configuration column {index} did not read; cannot establish a unique "
+                         f"'{parameter}' parameter column. Nothing was written.")
+        if type(col).__name__ != "ConfigurationParameterColumn":
+            continue
+        controlled = safe(lambda col=col: col.parameter)
+        controlled_name = safe(lambda controlled=controlled: controlled.name)
+        if controlled_name is None:
+            return error(f"Parameter column {index} did not identify its parameter; cannot "
+                         f"establish a unique '{parameter}' column. Nothing was written.")
+        if controlled_name == parameter:
+            matches.append((col, controlled))
+    if len(matches) != 1:
+        return error(f"Expected one existing parameter column for '{parameter}', found "
+                     f"{len(matches)}. Read design_get(include=['configurations']) to inspect "
+                     "the columns before editing.")
+    col, controlled = matches[0]
+    if safe(lambda: controlled.unit) == _TEXT_UNIT:
+        return error(f"'{parameter}' is a {_TEXT_UNIT} parameter; its configuration cell may "
+                     "discard writes. Vary a numeric parameter instead.")
+    col_id = safe(lambda: col.id)
+    cell = safe(lambda: col.getCellByRowId(row["id"]))
+    before = safe(lambda: cell.expression)
+    if col_id is None or cell is None or before is None:
+        return error(f"The existing '{parameter}' cell for '{row['name']}' did not read its "
+                     "column id and expression. Nothing was written.")
+    if before == expression:
+        return ok({"changed": False, "parameter": parameter, "configuration": _row_ref(row),
+                   "column_id": col_id, "expression": before,
+                   "note": "The cell already has this expression; nothing was written."})
+    try:
+        cell.expression = expression
+    except Exception as exc:
+        after = safe(lambda: cell.expression)
+        return error(f"Setting '{parameter}' cell '{row['name']}' to {expression!r} raised "
+                     f"{exc}; it now reads {after!r} after {before!r} before. "
+                     "Read design_get(include=['configurations']) before retrying.")
+    after = safe(lambda: cell.expression)
+    new_records, _rows, row_problem = _row_census(table)
+    if after != expression or new_records != records:
+        return error(f"The '{parameter}' cell for '{row['name']}' reads {after!r} after "
+                     f"{expression!r} was assigned (before {before!r}); "
+                     + (f"row census changed: {new_records!r}." if new_records is not None else
+                        f"row census did not read: {row_problem}.")
+                     + " Read design_get(include=['configurations']) before retrying.")
+    return ok({"changed": True, "parameter": parameter, "configuration": _row_ref(row),
+               "column_id": col_id, "previous_expression": before, "expression": after,
+               "active_configuration": _active_ref(new_records),
+               "note": "The inactive cell reads the new expression. The active model remains on "
+                       "its prior row; activate this configuration, then read param_get and "
+                       "model_inspect to verify driven geometry."})
+
+
+def _group_members(group, count):
+    """[(name, isSuppressed or None)] for each member of a timeline group, in group order."""
+    out = []
+    for k in range(count):
+        member = safe(lambda k=k: group.item(k))
+        out.append((safe(lambda: member.name) or f"member {k}",
+                    _common.read_flag(lambda: member.isSuppressed)))
+    return out
+
+
+def _group_snapshot(group):
+    """(snapshot, problem): a timeline group's name, index, collapsed flag and members as read."""
+    count = _common.counted(lambda: group.count)
+    if count is None:
+        return None, "the group's member count did not read"
+    if count > _ROW_CAP:
+        return None, f"the group holds {count} members, over the {_ROW_CAP} read here"
+    return {"name": safe(lambda: group.name), "index": safe(lambda: group.index),
+            "collapsed": _common.read_flag(lambda: group.isCollapsed), "member_count": count,
+            "members": _group_members(group, count)}, None
+
+
+def _group_cells(col, rows):
+    """[{configuration, id, suppressed}] - the group column's cell per census row, as read."""
+    cells = []
+    for r in rows[:_LIST_CAP]:
+        got = _common.read_flag(lambda r=r: col.getCellByRowId(r["id"]).isSuppressed)
+        cells.append({"configuration": r["name"], "id": r["id"], "suppressed": got})
+        if got is None:
+            cells[-1]["unread"] = "the cell's isSuppressed did not read"
+    return cells
+
+
+def _suppress_group(table, group, suppressed_in):
+    """add_suppress for a timeline group: the column by id and title, each requested cell re-read."""
+    before, _objects, problem = _row_census(table)
+    if problem:
+        return error(f"No column was added: {problem}. Read design_get(include=['configurations']).")
+    snap, problem = _group_snapshot(group)
+    if problem:
+        return error(f"No column was added: {problem}. Read design_get(include=['timeline']).")
+    known = _column_ids(table)
+    if known is None:
+        return error("No column was added: the table's columns did not list. Read "
+                     "design_get(include=['configurations']).")
+    wanted = []
+    for target in suppressed_in or []:
+        pos, problem = _one_row(before, str(target))
+        if problem:
+            return error("No column was added - suppressed_in: "
+                         + problem.replace("as 'name'", "in 'suppressed_in'"))
+        if pos not in wanted:
+            wanted.append(pos)
+    name = snap["name"]
+    col = table.columns.addSuppressColumn(group)  # MUTATION
+    kind = type(col).__name__ if col else None
+    col_id = safe(lambda: col.id) if col else None
+    listed = _column_ids(table)
+    fresh = None if listed is None else [i for i in listed if i not in known]
+    existed = col_id is not None and col_id in known and fresh == []
+    if kind != "ConfigurationSuppressColumn" or col_id is None or not (existed
+                                                                     or fresh == [col_id]):
+        return error(f"The suppress column for group '{name}' did not verify: addSuppressColumn "
+                     + ("returned nothing" if not col else
+                        f"returned a {kind} whose id reads {col_id!r}")
+                     + (", and the columns did not re-list" if fresh is None else
+                        f", and the table lists {len(fresh)} new column id(s)")
+                     + ". Read design_get(include=['configurations']) before retrying.")
+    # A group column's .feature reads None, so the column is known by its id and title alone.
+    title = safe(lambda: col.title)
+    took, failed = [], []
+    for pos in wanted:
+        row, why = before[pos], None
+        cell = safe(lambda row=row: col.getCellByRowId(row["id"]))
+        if cell is None:
+            why = "no cell"
+        else:
+            try:
+                cell.isSuppressed = True          # MUTATION
+            except Exception as exc:
+                why = f"the set raised: {exc}"
+        if why is None:
+            got = _common.read_flag(lambda cell=cell: cell.isSuppressed)
+            why = None if got is True else f"reads {'nothing' if got is None else got!r}"
+        if why is None:
+            took.append(row)
+        else:
+            failed.append(f"'{row['name']}' ({why})")
+    after, _objects, problem = _row_census(table)
+    rows = before if after is None else after
+    active = None if after is None else _active_ref(after)
+    members = [n for n, _s in snap["members"]]
+    out = {"target_kind": "group",
+           "group": {"name": name, "index": snap["index"], "member_count": snap["member_count"],
+                     "members": members[:_LIST_CAP]},
+           "column_id": col_id, "column_title": title, "column_existed": existed,
+           "suppressed_in": [r["name"] for r in took],
+           "cells": _group_cells(col, rows), "active_configuration": active}
+    if len(members) > _LIST_CAP:
+        out["group"]["members_truncated"] = True
+    if len(rows) > _LIST_CAP:
+        out["cells_truncated"] = True
+    if active is None:
+        out["active_unread"] = problem or "the active row did not read after the write"
+    state = "was already in the table" if existed else "was added"
+    if failed:
+        out["cells_failed"] = failed
+        return error(f"Suppress column {title!r} (id {col_id}) for group '{name}' {state} and "
+                     f"stays, but {len(failed)} of {len(wanted)} requested cell(s) do not read "
+                     f"suppressed: {_common.named_with_remainder(failed)}. Cells that do: "
+                     + (_common.named_with_remainder([f"'{r['name']}'" for r in took]) or "none")
+                     + ". Read design_get(include=['configurations']).", out)
+    note = (f"Suppress column {title!r} {state} for timeline group '{name}'; a group column is "
+            "linked to its group by title only.")
+    if title != name:
+        note += " That title is not the group's name."
+    live = active is not None and any(r["id"] == active["id"] for r in took)
+    later = [f"'{r['name']}'" for r in took if not (live and r["id"] == active["id"])]
+    if live:
+        now = _group_members(group, snap["member_count"])
+        on = [n for n, s in now if s is True]
+        off = [n for n, s in now if s is False]
+        unread = [n for n, s in now if s is None]
+        if unread or not now:
+            out["members_suppressed_now"] = None
+            out["members_unread"] = ("the group holds no members" if not now else
+                                     "isSuppressed did not read on "
+                                     + _common.named_with_remainder(unread))
+        elif on and off:
+            out["members_suppressed_now"] = "mixed"
+            out["members_differ"] = {"suppressed": on[:_LIST_CAP],
+                                     "not_suppressed": off[:_LIST_CAP]}
+            return error(f"Group '{name}' reads half applied under the active configuration "
+                         f"'{active['name']}': suppressed {_common.named_with_remainder(on)}; "
+                         f"not suppressed {_common.named_with_remainder(off)}. The column and "
+                         "its cells stay. Read design_get(include=['timeline']).", out)
+        else:
+            out["members_suppressed_now"] = bool(on)
+        note += (f" '{active['name']}' is active: members_suppressed_now is the members' "
+                 "state read after the write.")
+    if later:
+        note += (f" The model changes for {_common.named_with_remainder(later)} when that "
+                 "configuration is activated (action='activate').")
+    if not wanted:
+        note += " No cell was set; name configurations in suppressed_in."
+    out["note"] = note
+    return ok(out)
+
+
 def _do_add_suppress(design, table, feature, suppressed_in):
     if not feature:
         return error("Provide 'feature' - the timeline feature name to suppress per configuration.")
@@ -335,6 +808,9 @@ def _do_add_suppress(design, table, feature, suppressed_in):
     if ferr:
         return error(ferr)
     feat, feature = resolved            # publish the TIMELINE name that resolved, not the raw input
+    # The kind hands back a group only after reading isCollapsed True on it.
+    if safe(lambda: feat.isCollapsed) is True:
+        return _suppress_group(table, feat, suppressed_in)
     suppressed_in = suppressed_in or []
     unknown = [r for r in suppressed_in if r not in set(_row_names(table))]
     if unknown:
@@ -610,9 +1086,9 @@ def _do_add_material(design, table, body, materials):
 
     unset = [c for c in _row_names(table) if c not in applied]
     note = ("Material column added for this body, each listed configuration linked to its own "
-            "theme row; the names above are read back off the table cells. A body material read "
-            "right after design_configure(action='activate', name=...) can still report the other "
-            "configuration's material, so read the table, not the body, to confirm what is configured.")
+            "theme row; the names above are read back off the table cells. Read "
+            "design_get(include=['configurations']) for the configured table; this reply does not "
+            "verify the body's assigned material.")
     out = {"body": body, "themes": len(applied), "materials": applied,
            "column_id": safe(lambda: col.id), "column_title": safe(lambda: col.title)}
     if unset:
@@ -712,10 +1188,70 @@ def _as_map(val, field):
     return None, f"'{field}' must be a JSON object ({{name: value}}), got {type(val).__name__}."
 
 
+def _do_switch_occurrence(design, occurrence, name):
+    """Switch ONE inserted configured occurrence to another row of its own table."""
+    if not (occurrence or "").strip():
+        return error("action='switch_occurrence' needs 'occurrence' - the inserted instance, by "
+                     "handle or full path (design_get(include=['tree'])).")
+    occ, oerr = _OCCURRENCE.resolve(occurrence)
+    if oerr:
+        return error(oerr)
+    configured = _common.read_flag(lambda: occ.isConfiguration)
+    if configured is not True:
+        return error(f"'{occurrence}' " + ("is not an inserted configuration, so it has no row "
+                                           "to switch." if configured is False else
+                                           "did not read whether it is a configuration."))
+    row_now = safe(lambda: occ.configurationRow.name)
+    rows = safe(lambda: occ.configurationRow.parentTable.rows)
+    held = [rows.item(i) for i in range(safe(lambda: rows.count, 0) or 0)] if rows else []
+    names = [safe(lambda r=r: r.name) for r in held]
+    if row_now is None or not names:
+        return error(f"The configuration rows of '{occurrence}' did not read, so nothing was "
+                     "switched.")
+    wanted = (name or "").strip()
+    if names.count(wanted) != 1:
+        return error(f"'name' must be one row of the configuration '{occurrence}' was inserted "
+                     f"from. Got '{name}'. Rows: {', '.join(str(n) for n in names)}.")
+    if wanted == row_now:
+        return error(f"'{occurrence}' is already on row '{wanted}'; nothing to switch.")
+    path_before, pose_before = safe(lambda: occ.fullPathName), _pose(occ)
+    volume_before = _solids(safe(lambda: occ.component))[1]
+    try:
+        answer = occ.switchConfiguration(held[names.index(wanted)])
+    except Exception as e:
+        return error(f"Could not switch '{occurrence}' to row '{wanted}': {e}")
+    if answer is not True:
+        return error(f"switchConfiguration answered {answer!r} for '{occurrence}'; re-read it "
+                     "with design_get(include=['tree']).")
+    if _common.read_flag(lambda: occ.isValid) is not True:
+        return error(f"The switch of '{path_before}' answered true but the occurrence could not "
+                     "be re-read afterwards; find it with design_get(include=['tree']).")
+    path, landed = safe(lambda: occ.fullPathName), safe(lambda: occ.configurationRow.name)
+    faults = []
+    if landed != wanted:
+        faults.append(f"it reads row '{landed}', not '{wanted}'")
+    if not _same_pose(pose_before, _pose(occ)):
+        faults.append("it did not keep its placement")
+    if _path_fault(design, path):
+        faults.append(_path_fault(design, path))
+    if faults:
+        return error(f"The switch of '{path_before}' WAS made, but " + "; ".join(faults)
+                     + f". It now reads '{path}'.")
+    volume = _solids(safe(lambda: occ.component))[1]
+    return ok({"switched": True, "occurrence": path, "path_before": path_before,
+               "row": landed, "row_before": row_now,
+               "old_path_resolves": _resolves(design, path_before),
+               "volume_cm3_before": volume_before, "volume_cm3": volume,
+               "note": ("The occurrence took the row's name: use 'occurrence' from here on. Its "
+                        "placement is unchanged. Not checked: joints on it and nested "
+                        "occurrences - read assembly_get.")})
+
+
 def handler(action: str = "", name: str = "", new_name: str = "", parameter: str = "",
             feature: str = "", body: str = "", values: dict = None, suppressed_in: list = None,
             hidden_in: list = None, appearances: dict = None, materials: dict = None,
-            insert_part: str = "", insert_config: str = "", insert_map: dict = None) -> dict:
+            insert_part: str = "", insert_config: str = "", insert_map: dict = None,
+            occurrence: str = "") -> dict:
     """Build/extend a configured design - 'action' selects the verb, dispatched below. WRITES."""
     action = (action or "").strip()
     if action not in _ACTIONS:
@@ -731,12 +1267,17 @@ def handler(action: str = "", name: str = "", new_name: str = "", parameter: str
         if e:
             return error(e)
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     if action == "create":
         return _do_create(design)
+    # A host that carries an inserted configuration need not be a configured design itself.
+    if action == "switch_occurrence":
+        return _do_switch_occurrence(design, occurrence, name)
+    if (occurrence or "").strip():
+        return error(f"'occurrence' belongs to action='switch_occurrence', not '{action}'.")
 
     # all other actions need an existing configuration table
     table = _top_table(design)
@@ -749,8 +1290,14 @@ def handler(action: str = "", name: str = "", new_name: str = "", parameter: str
         return _do_add_configuration(table, name)
     if action == "rename_configuration":
         return _do_rename_configuration(table, name, new_name)
+    if action == "copy_configuration":
+        return _do_copy_configuration(table, name, new_name)
+    if action == "delete_configuration":
+        return _do_delete_configuration(table, name)
     if action == "add_parameter":
         return _do_add_parameter(design, table, parameter, values)
+    if action == "set_parameter":
+        return _do_set_parameter(table, parameter, values)
     if action == "add_suppress":
         return _do_add_suppress(design, table, feature, suppressed_in)
     if action == "add_visibility":
@@ -776,9 +1323,11 @@ tool = (
             "description": "The configuration (rename_configuration: the existing one)."})
     .add_input_property("new_name", {"type": "string"})
     .add_input_property("parameter", {"type": "string"})
-    .add_input_property("feature", {"type": "string"})
+    .add_input_property("feature", {"type": "string",
+            "description": "Feature/group name or index; qualify features."})
     .add_input_property(*_BODY.as_property())
-    .add_input_property("values", {"type": "object", "description": "{config: expression} (add_parameter)."})
+    .add_input_property("values", {"type": "object",
+                        "description": "{config: expression} (add_parameter/set_parameter)."})
     .add_input_property("suppressed_in", {"type": "array", "items": {"type": "string"},
             "description": "Which configurations (add_suppress)."})
     .add_input_property("hidden_in", {"type": "array", "items": {"type": "string"},
@@ -793,11 +1342,13 @@ tool = (
             "description": "add_insert; default the part's first."})
     .add_input_property("insert_map", {"type": "object",
             "description": "{assembly_config: part_config} (add_insert)."})
+    .add_input_property("occurrence", {"type": "string",
+            "description": "For switch_occurrence."})
     .strict_schema()
 )
 # enforce_timeout=False: add_insert's addFromConfiguration is a blocking, uninterruptible
 # main-thread call that COMMITS - one ran past the server's cap with the occurrence, the column and
-# both cell mappings landed. The flag covers all ten actions, so each one's loops are bounded.
+# both cell mappings landed. The flag covers every action, so each one's loops are bounded.
 item = Item.create_tool_item(
     tool=tool, write="write", handler=handler, run_on_main_thread=True,
     enforce_timeout=False,

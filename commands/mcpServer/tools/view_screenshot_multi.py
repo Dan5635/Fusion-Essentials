@@ -13,7 +13,7 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
-from ._common import error
+from ._common import ok, error
 from . import _view_common
 
 app = adsk.core.Application.get()
@@ -122,7 +122,7 @@ def handler(views=None, width: int = _WIDTH_DEFAULT, height: int = _HEIGHT_DEFAU
                 vp, saved_camera, smooth=_view_common.SCREENSHOT_GLIDE)
             if not _view_common.camera_restored(read_back, saved_camera):
                 camera_warning = ("The camera could NOT be put back where it was before these "
-                                  "shots: the read-back eye/target do not match the saved camera. "
+                                  "shots: the read-back camera framing does not match the saved camera. "
                                   "The viewport is left at the last captured view - "
                                   "view_set(orient) re-aims it.")
             elif restore_smooth_error:
@@ -151,7 +151,7 @@ def handler(views=None, width: int = _WIDTH_DEFAULT, height: int = _HEIGHT_DEFAU
         summary += (f" Dropped {len(dropped)} view(s) over the {_MAX_VIEWS}-view cap: "
                     f"{', '.join(dropped)} - request them in a second call.")
     content.insert(0, {"type": "text", "text": summary})
-    return {"content": content, "isError": False}
+    return ok(content=content)
 
 
 TOOL_DESCRIPTION = (

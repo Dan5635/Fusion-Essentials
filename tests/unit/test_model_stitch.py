@@ -1,6 +1,5 @@
 """Unit tests for model_stitch.py - the tolerance and the became_solid verdict."""
 
-import json
 
 import adsk.core
 import adsk.fusion
@@ -66,9 +65,7 @@ def _install(features, bodies_by_name=None, handle_map=None):
     return install(so, make_design(comp=comp, tokens=handle_map))
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class TestStitch:

@@ -35,7 +35,7 @@ RETURNS = [
 ]
 
 # A healthy open doc collapses to {name, is_active}; an unsaved/modified/hidden one keeps the flag that
-# makes it interesting (the terse razor - CLAUDE.md "Reuse before you write").
+# makes it interesting (the terse razor - AGENTS.md "Reuse before you write").
 _DOC_NOISE = {"is_active": False, "is_visible": True, "is_saved": True, "is_modified": False}
 
 
@@ -111,6 +111,7 @@ def _open_documents(max_results=_OPEN_DOCS_CAP):
     exceptions = []
     total = safe(lambda: docs.count, 0)
     cap = max(1, int(max_results))
+    active_listed = False
     for i in range(total):
         # item(i) guarded: a stale document proxy answers NO document. The slot keeps its place in
         # the 'open:N' numbering but its row carries no open_index - doc_activate/doc_close refuse
@@ -124,12 +125,12 @@ def _open_documents(max_results=_OPEN_DOCS_CAP):
         # Current DataFile availability and modification state determine the row and exceptions.
         df, is_modified, is_saved = _doc_save_facts(d)
         has_df = df is not None
-        if i < cap:
+        # Document wrappers are not identity-stable; equality compares the measured handle.
+        is_active = bool(safe(lambda d=d: d == active, False)) if active is not None else False
+        if i < cap or (is_active and not active_listed):
             row = terse({
                 "name": name,
-                # EQUALITY, never identity: Document wrappers are not identity-stable (measured
-                # live - `is` reads False for the active doc); `==` compares the handle.
-                "is_active": bool(safe(lambda d=d: d == active, False)),
+                "is_active": is_active,
                 "is_visible": safe(lambda d=d: d.isVisible),
                 "is_saved": is_saved,
                 "is_modified": is_modified,
@@ -137,7 +138,11 @@ def _open_documents(max_results=_OPEN_DOCS_CAP):
             }, _DOC_NOISE)
             # The opaque handle identifies a document across index shifts; open:N remains positional.
             row["open_index"] = i
-            rows.append(row)
+            if i < cap:
+                rows.append(row)
+            else:
+                rows[-1] = row
+            active_listed = active_listed or is_active
         # A missing current cloud identity or modified state stays visible beyond the row cap.
         if not has_df or is_modified is True:
             exceptions.append({

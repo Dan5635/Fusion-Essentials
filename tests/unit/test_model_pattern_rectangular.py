@@ -1,11 +1,117 @@
 """Unit tests for model_pattern_rectangular.py - the grid, its directions and its counts."""
+from conftest import install as _install_design
 
 import types
+import pytest
 from conftest import (BRepBody, BRepEdge, BRepFace, Circle3D, FakePoint, FakeVector3D, Line3D,
-                      MakeComp, MakeDesign, Plane, _NamedCollection, entity_proxy, install,
+                      FakeFeature, MakeComp, MakeDesign, Plane, _NamedCollection, entity_proxy, install,
                       load_tool, make_occurrence, payload)
 
 pt = load_tool("model_pattern_rectangular")
+
+
+@pytest.fixture
+def new_pattern_seeds(monkeypatch):
+    import adsk.fusion
+    common = load_tool("_pattern_common")
+    owner = MakeComp(name="SeedOwner", entity_token="seed-owner")
+    body = BRepBody("Stock", parent_component=owner)
+    face = BRepFace(Plane(normal=FakeVector3D(0, 0, 1)), body=body)
+    feature = FakeFeature(name="CutSeed", bodies=[body], parent_component=owner)
+    monkeypatch.setattr(adsk.fusion, "Feature", FakeFeature)
+    monkeypatch.setattr(common._FEATURES, "resolve", lambda raw: (([feature], list(raw)), None))
+    monkeypatch.setattr(common._FACES, "resolve", lambda raw: ([face] * len(raw), None))
+    return common, owner, feature, face
+
+
+def test_new_pattern_kinds_refuse_conflicts_and_resolved_duplicate_faces(new_pattern_seeds):
+    common, _owner, _feature, _face = new_pattern_seeds
+    for args in (("Part:1", None, ["CutSeed"], None),
+                 ("", ["Stock"], None, ["face"]),
+                 ("", None, ["CutSeed"], ["face"])):
+        collection, _labels, err = common._resolve_input_entities(None, *args)
+        assert collection is None and "conflict" in err
+    collection, _labels, err = common._resolve_input_entities(None, "", None, faces=["face", "alias"])
+    assert collection is None and "repeated seed" in err
+
+
+def test_feature_seed_keeps_its_owner_and_refuses_nonfeatures(new_pattern_seeds, monkeypatch):
+    common, owner, feature, _face = new_pattern_seeds
+    coll, labels, err = common._resolve_input_entities(None, "", None, features=["CutSeed"])
+    assert err is None and labels == ["CutSeed"] and coll.item(0) is feature
+    assert common._owning_component(None, coll, None, features=["CutSeed"]) is owner
+    monkeypatch.setattr(common._FEATURES, "resolve", lambda raw: (([owner], list(raw)), None))
+    coll, _labels, err = common._resolve_input_entities(None, "", None, features=["NotAFeature"])
+    assert coll is None and "not a modeling feature" in err
+
+
+def test_pattern_new_kind_refuses_unreadable_or_foreign_owner(new_pattern_seeds, monkeypatch):
+    common, _owner, feature, _face = new_pattern_seeds
+    other = FakeFeature(name="Other", bodies=[BRepBody()], parent_component=MakeComp(name="OtherOwner"))
+    monkeypatch.setattr(common._FEATURES, "resolve", lambda raw: (([feature, other], list(raw)), None))
+    coll, _labels, err = common._resolve_input_entities(None, "", None, features=["CutSeed", "Other"])
+    assert coll is None and "same readable owning component" in err
+
+
+@pytest.mark.parametrize("kind", ["features", "faces"])
+def test_pattern_owner_cannot_fall_back_to_root_after_resolution(new_pattern_seeds, monkeypatch, kind):
+    common, owner, feature, face = new_pattern_seeds
+    args = {kind: ["seed"]}
+    coll, _labels, err = common._resolve_input_entities(None, "", None, **args)
+    assert err is None
+    monkeypatch.setattr(feature if kind == "features" else face.body, "parentComponent", None)
+    assert common._owning_component(MakeDesign(comp=owner), coll, None, **args) is None
+    baseline, err = common._seed_shapes(coll, kind)
+    assert baseline is None and "owner did not read" in err
+
+
+def test_pattern_unreadable_seed_collection_is_a_refusal(new_pattern_seeds, monkeypatch):
+    common, _owner, _feature, _face = new_pattern_seeds
+    coll, _labels, _err = common._resolve_input_entities(None, "", None, faces=["seed"])
+    def unread(_index):
+        raise RuntimeError("unreadable collection")
+    monkeypatch.setattr(coll, "item", unread)
+    baseline, err = common._seed_shapes(coll, "faces")
+    assert baseline is None and "owner did not read" in err
+
+
+@pytest.mark.parametrize("name", ["rectangular", "circular", "path"])
+def test_pattern_unreadable_owner_stops_before_direction_or_native_create(monkeypatch, name):
+    mod = load_tool("model_pattern_" + name)
+    install(mod, MakeDesign())
+    monkeypatch.setattr(mod, "_resolve_input_entities", lambda *_a: (object(), ["seed"], None))
+    monkeypatch.setattr(mod, "_owning_component", lambda *_a: None)
+    def direction_must_not_read(*_a):
+        pytest.fail("direction lookup ran after the owner became unreadable")
+    monkeypatch.setattr(mod, "build_path" if name == "path" else "_direction_entity", direction_must_not_read)
+    result = mod.handler(features=["seed"], **({"distance": 10} if name == "path" else {}))
+    assert result.get("isError") is True and "owner did not read" in str(result)
+
+
+@pytest.fixture
+def pattern_shapes(monkeypatch):
+    common = load_tool("_pattern_common")
+    edit = load_tool("_edit_feature_common")
+    rows = [{"stock": {"shape": "cut-once"}}, {"stock": {"shape": "cut-twice"}}]
+    monkeypatch.setattr(edit, "all_shapes", lambda *_args, **_kwargs: rows.pop(0))
+    return common, rows
+
+
+def test_pattern_effect_requires_geometry_and_counts_new_bodies(pattern_shapes):
+    common, rows = pattern_shapes
+    feature = FakeFeature(name="Pattern1")
+    baseline = (MakeComp(), rows.pop(0))
+    effect, err = common._seed_effect(feature, baseline)
+    assert err is None and effect == {"pattern_geometry_changed": True}
+    rows.append(baseline[1])
+    effect, err = common._seed_effect(feature, baseline)
+    assert effect is None and "body geometry did not change" in err and "design_delete_feature" in err
+    rows.append({**baseline[1], "new-body": {"shape": "copied"}})
+    effect, err = common._seed_effect(feature, baseline)
+    assert err is None and effect["pattern_geometry_changed"] is True
+    rows.append(None)
+    effect, err = common._seed_effect(feature, baseline)
+    assert effect is None and "geometry did not read" in err
 
 
 class FakeRectInput:
@@ -272,7 +378,22 @@ class TestResolution:
         assert set(out["entities"]) == {"A:1", "B:1"}
 
 
+@pytest.fixture
+def rectangular_count_fixture():
+    """Install a single occurrence and its measured rectangular-pattern collection."""
+    return _install(["Block:1"])[0]
+
+
 class TestRectangular:
+
+    @pytest.mark.parametrize("quantity_two", [0, -2])
+    def test_invalid_second_quantity_refuses_before_feature_input(
+            self, rectangular_count_fixture, quantity_two):
+        res = pt.handler(occurrences="Block:1", quantity_one=2, quantity_two=quantity_two)
+        assert res["isError"] is True
+        assert f"quantity_two={quantity_two}" in res["message"] and "Use 1" in res["message"]
+        assert rectangular_count_fixture.last_input is None
+        assert rectangular_count_fixture.add_calls == 0
 
     def test_single_direction_scales_spacing(self):
         rf, _ = _install(["Block:1"])
@@ -331,12 +452,13 @@ class TestRectangular:
         assert "'direction_two': 'w' is not a world axis" in res["message"]
 
     def test_single_row_direction_two_none_in_payload(self):
-        _install(["Block:1"])
+        rf, _ = _install(["Block:1"])
         out = payload(pt.handler(occurrences="Block:1", quantity_one=4, spacing_one=10,
                                               quantity_two=1))
         # quantity_two==1 -> direction_two reported as None, total = quantity_one
         assert out["direction_two"] is None
         assert out["total_instances"] == 4
+        assert rf.last_input.dir_two[1] == ("real", 1) and rf.add_calls == 1
 
     def test_spacing_scaled_inches(self):
         rf, _ = _install(["Block:1"])
@@ -594,7 +716,7 @@ class TestZeroSpacingGuards:
     def test_single_row_zero_spacing_two_is_fine_to_pass_the_guard(self, monkeypatch):
         # quantity_two=1 never uses spacing_two - the guard must not refuse it. The absent-design
         # error AFTER the guard is the proof the guard let the call through.
-        monkeypatch.setattr(pt._common, "design", lambda: None)
+        _install_design(pt, None)
         res = pt.handler(bodies="B", quantity_one=2, spacing_one=5,
                                      quantity_two=1, spacing_two=0)
         assert "spacing_two" not in res.get("message", "")

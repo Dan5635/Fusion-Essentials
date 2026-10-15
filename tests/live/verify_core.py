@@ -19,6 +19,7 @@ re-exports this whole surface; import it from there.
 import argparse
 import dis
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -30,8 +31,24 @@ import urllib.request
 import zlib
 
 import cloud_config
+import machine_config
 
-BASE = "http://127.0.0.1:27182"
+
+def _addin_endpoint():
+    """The add-in's endpoint module (commands/mcpServer/endpoint.py), loaded by path."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "commands", "mcpServer", "endpoint.py")
+    spec = importlib.util.spec_from_file_location("fusion_essentials_endpoint", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ENDPOINT = _addin_endpoint()
+_MACHINE_READ = machine_config.current()
+MACHINE = _MACHINE_READ[0]
+PORT = MACHINE["port"] if MACHINE else ENDPOINT.DEFAULT_PORT
+BASE = f"http://{ENDPOINT.HOST}:{PORT}"
 MCP = BASE + "/mcp"
 SERVER_NAME = "Fusion-Essentials MCP Server"
 DOC_PREFIX = "EVAL_sweep"
@@ -71,7 +88,8 @@ _DWELL = "_dwell"
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 SRC_ROOT = os.path.join(REPO_ROOT, "commands", "mcpServer")
-VERIFIED = os.path.join(_HERE, "VERIFIED_TOOLS.md")
+VERIFIED = os.path.join(machine_config.record_root(MACHINE) if MACHINE else _HERE,
+                        "VERIFIED_TOOLS.md")
 
 _FACADE_NS = None
 
@@ -98,7 +116,25 @@ def facade(name):
     return ns[name]
 
 
-def _post(payload, with_session=False):
+def require_machine():
+    """Require the same complete configuration before each real transport dispatch."""
+    config, found, path, source = _MACHINE_READ
+    if found:
+        raise SystemExit(machine_config.refusal(path, source, found))
+    current, problems = machine_config.load(path)
+    if problems or current != config:
+        raise SystemExit("Sweep configuration changed or became unreadable: " + path
+                         + ". Start a new process; no further call was made.")
+    return config
+
+
+def _post(payload, with_session=False, script_declaration=None):
+    config = require_machine()
+    if payload.get("method") == "tools/call":
+        params = payload.get("params") or {}
+        tool, arguments = params.get("name", ""), params.get("arguments") or {}
+        effects = machine_config.declared_effects(tool, arguments, script_declaration)
+        machine_config.require_call(config, tool, arguments, effects)
     req = urllib.request.Request(
         MCP, data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json",
@@ -111,10 +147,15 @@ def _post(payload, with_session=False):
         return body
 
 
-def call(tool, arguments):
+def call(tool, arguments, script_declaration=None):
     """One tools/call. Returns (is_error, payload_or_text)."""
-    out = _post({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                 "params": {"name": tool, "arguments": arguments}})
+    config = require_machine()
+    effects = machine_config.declared_effects(tool, arguments, script_declaration)
+    machine_config.require_call(config, tool, arguments, effects)
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": tool, "arguments": arguments}}
+    out = (_post(payload, script_declaration=script_declaration) if script_declaration is not None
+           else _post(payload))
     if "error" in out:
         return True, out["error"].get("message", str(out["error"]))
     result = out["result"]
@@ -150,10 +191,24 @@ def attestation_identity(health):
             "load_id": attestation["load_id"], "session_id": health["session_id"]}
 
 
+def _health_read():
+    """The /health body; a read that times out is taken once more after 5 s, then raises."""
+    require_machine()
+    for last in (False, True):
+        try:
+            with urllib.request.urlopen(BASE + "/health", timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except OSError as exc:
+            timed_out = isinstance(exc, TimeoutError) or isinstance(
+                getattr(exc, "reason", None), TimeoutError)
+            if last or not timed_out:
+                raise
+            time.sleep(5)
+
+
 def health_gate():
-    # /health recomputes the loaded attestation on every call - seconds - so 5 s reads a live server as absent.
-    with urllib.request.urlopen(BASE + "/health", timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    require_machine()
+    data = _health_read()
     if data.get("server") != SERVER_NAME:
         sys.exit(f"Refusing to run: {BASE} is answering as {data.get('server')!r}, "
                  f"not {SERVER_NAME!r}. Is Autodesk's built-in server on this port?")
@@ -170,6 +225,7 @@ def _schema_fingerprint(rows):
 
 
 def registered_tools(health=None, include_rows=False):
+    require_machine()
     out, response_session = _post(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         with_session=True)
@@ -186,93 +242,6 @@ def registered_tools(health=None, include_rows=False):
             sys.exit("Refusing to run: tools/list does not match the attested schema fingerprint.")
     names = sorted(row["name"] for row in rows)
     return (names, tuple(rows)) if include_rows else names
-
-
-# --- harness leftovers ------------------------------------------------------------------------
-# The Local machine and template assets the sweep and measure_api create, by exact leaf name. A run
-# that dies before its teardown leaves them in the operator's library, so each run reaps them.
-
-PROCESS_STARTED = time.time()
-_STAMPED_LEFTOVER = re.compile(r"^(?:SweepMach3Axis|SweepMach4Axis|SweepTmpl) (\d{8}-\d{6})$")
-_UNSTAMPED_LEFTOVER = re.compile(
-    r"^(?:MeasureDeleteMe|MeasureQKey|MeasureKeepsCopy|MeasureTmplDel|MeasureTmplRaise_[0-9a-f]{32})$")
-# A stamped asset younger than this and not this process's own may belong to a run still going.
-LEFTOVER_MIN_AGE_S = 12 * 3600
-
-_LIST_LOCAL_ASSETS = """import json, adsk.core, adsk.cam
-def run(context):
-    lm = adsk.cam.CAMManager.get().libraryManager
-    out = []
-    for kind, lib in (("machine", lm.machineLibrary), ("template", lm.templateLibrary)):
-        stack = [lib.urlByLocation(adsk.cam.LibraryLocations.LocalLibraryLocation)]
-        while stack:
-            folder = stack.pop()
-            out.extend([kind, a.toString(), a.leafName] for a in lib.childAssetURLs(folder))
-            stack.extend(lib.childFolderURLs(folder))
-    print("ASSETS " + json.dumps(out))
-"""
-
-_DELETE_LOCAL_ASSETS = """import json, adsk.core, adsk.cam
-def run(context):
-    lm = adsk.cam.CAMManager.get().libraryManager
-    libs = {{"machine": lm.machineLibrary, "template": lm.templateLibrary}}
-    done = []
-    for kind, url in {targets}:
-        try:
-            done.append([url, bool(libs[kind].deleteAsset(adsk.core.URL.create(url)))])
-        except Exception as exc:
-            done.append([url, str(exc).strip().splitlines()[-1][:120]])
-    print("DELETED " + json.dumps(done))
-"""
-
-
-def harness_leftovers(assets, now, own_since=None, min_age_s=LEFTOVER_MIN_AGE_S):
-    """The (kind, url, leaf) assets a harness made and no live run still needs."""
-    out = []
-    for kind, url, leaf in assets:
-        stem = os.path.splitext(leaf)[0]
-        if _UNSTAMPED_LEFTOVER.match(stem):
-            out.append((kind, url, leaf))
-            continue
-        m = _STAMPED_LEFTOVER.match(stem)
-        if not m:
-            continue
-        stamped = time.mktime(time.strptime(m.group(1), "%Y%m%d-%H%M%S"))
-        if now - stamped >= min_age_s or (own_since is not None and stamped >= own_since):
-            out.append((kind, url, leaf))
-    return out
-
-
-def _local_assets():
-    is_error, payload = call("sys_execute_script", {"script": _LIST_LOCAL_ASSETS, "read_only": True})
-    m = None if is_error else re.search(r"^ASSETS (.*)$", str(payload), re.M)
-    if not m:
-        raise RuntimeError("listing the Local machine/template libraries failed: "
-                           + str(payload)[:200])
-    return [tuple(row) for row in json.loads(m.group(1))]
-
-
-def reap_harness_assets(when, own_since=None):
-    """Delete harness leftovers from the Local libraries; print what went and what did not."""
-    if "sys_execute_script" not in registered_tools():
-        print(f"harness leftovers ({when}): NOT reaped - sys_execute_script is not registered")
-        return False
-    try:
-        targets = harness_leftovers(_local_assets(), time.time(), own_since)
-        if not targets:
-            print(f"harness leftovers ({when}): none in the Local libraries")
-            return True
-        script = _DELETE_LOCAL_ASSETS.format(targets=repr([[k, u] for k, u, _ in targets]))
-        is_error, payload = call("sys_execute_script", {"script": script})
-        remaining = {u for _, u, _ in harness_leftovers(_local_assets(), time.time(), own_since)}
-    except Exception as exc:
-        print(f"harness leftovers ({when}): NOT reaped - {exc}")
-        return False
-    gone = [leaf for _, u, leaf in targets if u not in remaining]
-    kept = [leaf for _, u, leaf in targets if u in remaining]
-    print(f"harness leftovers ({when}): deleted {len(gone)} ({', '.join(gone) or '-'})"
-          + (f"; STILL PRESENT {', '.join(kept)}: {str(payload)[:200]}" if kept else ""))
-    return not kept
 
 
 # --- the DAG ----------------------------------------------------------------------------------
@@ -318,6 +287,41 @@ class Parked:
         self.expect = expect
 
 
+class Independent:
+    """Mark an explicit cross-tool, file or geometry witness for earlier target calls."""
+
+    def __init__(self, expect, targets, witness):
+        if (not callable(expect) or not targets or isinstance(targets, str)
+                or any(not isinstance(target, str) or not target for target in targets)
+                or not isinstance(witness, str) or not re.fullmatch(
+                    r"(tool|file|geometry):.+", witness)):
+            raise ValueError("Independent needs a predicate, target names and tool/file/geometry witness")
+        self.expect, self.targets, self.witness = expect, tuple(targets), witness
+
+
+def independent_targets(expect, tool, earlier, reader_is_read=False):
+    """Return explicitly witnessed targets that actually passed earlier in this family."""
+    while isinstance(expect, _GATES):
+        if isinstance(expect, Independent):
+            if predicate_kind(expect) != "value":
+                return set()
+            if expect.witness.startswith("tool:") and (
+                    expect.witness != "tool:" + tool or reader_is_read is not True):
+                return set()
+            return (set(expect.targets) & set(earlier)) - {tool}
+        expect = expect.expect
+    return set()
+
+
+def independent_witness(expect):
+    """Return the explicit witness annotation, if any."""
+    while isinstance(expect, _GATES):
+        if isinstance(expect, Independent):
+            return expect.witness
+        expect = expect.expect
+    return None
+
+
 class Needs:
     """expect=Needs("<capability>", expect) - a step that RUNS only where that capability is
     entitled.
@@ -353,7 +357,37 @@ def _unless(capability, expect="refused"):
     return Unless(capability, expect)
 
 
-_GATES = (Parked, Needs, Unless)
+class ScriptEffects:
+    """Carry source-audited persistent effects bound to one exact native script, not a wire field."""
+
+    def __init__(self, script, effects, expect="ok"):
+        self.declaration = machine_config.effect_declaration(script, effects)
+        self.expect = expect
+
+
+_GATES = (Parked, Needs, Unless, Independent, ScriptEffects)
+
+
+def step_script_declaration(expect):
+    """Return the single exact-source declaration through existing expectation wrappers."""
+    found = None
+    while isinstance(expect, _GATES):
+        if isinstance(expect, ScriptEffects):
+            if found is not None and found != expect.declaration:
+                raise ValueError("row has conflicting script-effect declarations")
+            found = expect.declaration
+        expect = expect.expect
+    return found
+
+
+def scope_unit(rows, capabilities):
+    """Gate a source-closed producer/consumer story together without changing its judged callbacks."""
+    names = tuple(dict.fromkeys(capabilities))
+    if not names or any(name not in machine_config.SWITCHES for name in names):
+        raise ValueError("scope unit needs explicit machine prerequisite names")
+    for capability in reversed(names):
+        rows = [(tool, args, Needs(capability, expect), save) for tool, args, expect, save in rows]
+    return rows
 
 
 def _unparked(expect):
@@ -363,6 +397,86 @@ def _unparked(expect):
     while isinstance(expect, _GATES):
         expect = expect.expect
     return expect
+
+
+def step_conditions(expect):
+    """Read every prerequisite with its own polarity through all expectation wrappers."""
+    found = []
+    while isinstance(expect, _GATES):
+        if isinstance(expect, (Needs, Unless)):
+            names = expect.capability if isinstance(expect.capability, tuple) else (expect.capability,)
+            found.extend((name, "unless" if isinstance(expect, Unless) else "needs") for name in names)
+        expect = expect.expect
+    return tuple(dict.fromkeys(found))
+
+
+def gate_decision(entitlements, expect):
+    """Resolve all prerequisites without conflating operator exclusions with observations."""
+    requested = machine_config.asked(MACHINE) if MACHINE is not None else {}
+    return machine_config.conjunction(machine_config.condition(
+        name, polarity, requested.get(name), entitlements.get(name), [CLOUD_LINK_CRASH_REVIEW])
+        for name, polarity in step_conditions(expect))
+
+
+def tiered(rows):
+    """Attach idempotent tool requirements while preserving existing gates and predicates."""
+    out = []
+    for tool, args, expect, save in rows:
+        declaration = step_script_declaration(expect)
+        if declaration is not None and tool != "sys_execute_script":
+            raise ValueError("script effects attached to a non-script row")
+        effects = declaration["effects"] if declaration is not None else None
+        if isinstance(args, dict):
+            if declaration is not None:
+                machine_config.declared_effects(tool, args, declaration)
+            needed = machine_config.call_requirements(tool, args, effects)
+        else:
+            needed = machine_config.call_requirements(tool, {}, effects)
+            if tool == "cam_edit_tools":
+                needed = tuple(sorted(set(needed) | {"library_writes"}))
+        existing = set(step_conditions(expect))
+        for capability in reversed(needed):
+            if (capability, "needs") not in existing:
+                expect = Needs(capability, expect)
+        out.append((tool, args, expect, save))
+    return out
+
+
+def declared_allows(expect):
+    """Exclude only explicit positive opt-outs, never infer measured absence from a choice."""
+    requested = machine_config.asked(MACHINE) if MACHINE is not None else {}
+    return not any(polarity == "needs" and requested.get(name) is False
+                   for name, polarity in step_conditions(expect))
+
+
+def condition_expect(conditions, expect):
+    """Attach each prerequisite with its own polarity while preserving the judged predicate."""
+    for name, polarity in reversed(tuple(dict.fromkeys(conditions))):
+        expect = (Unless if polarity == "unless" else Needs)(name, expect)
+    return expect
+
+
+def replace_inner_expect(original, inner):
+    """Preserve annotation wrappers when an existing camera constructor settles its predicate."""
+    import copy
+    wrappers = []
+    while isinstance(original, _GATES):
+        wrappers.append(original)
+        original = original.expect
+    for wrapper in reversed(wrappers):
+        outer = copy.copy(wrapper)
+        outer.expect = inner
+        inner = outer
+    return inner
+
+
+def compatible_neighbour(primary, neighbour):
+    """Use an uncertain conditional neighbour only when the primary shares its prerequisite."""
+    requested = machine_config.asked(MACHINE) if MACHINE is not None else {}
+    if not requested or all(requested.values()):
+        return True
+    return all(row in primary or (row[1] == "needs" and requested.get(row[0]) is True)
+               for row in neighbour)
 
 
 def step_capability(expect):
@@ -385,24 +499,19 @@ def step_runs_unentitled(expect):
 
 
 def gate_allows(entitlements, expect):
-    """Whether the run may execute this step: a Needs step where its capability reads entitled, an
-    Unless step where it reads absent (False - an unreadable probe runs neither), any other step
-    always."""
-    capability = step_capability(expect)
-    if capability is None:
-        return True
-    if step_runs_unentitled(expect):
-        return entitlements.get(capability) is False
-    return capability_met(entitlements, capability)
+    """Allow only conjunctive run outcomes; requested unavailable work stops admission."""
+    decision = gate_decision(entitlements, expect)
+    if decision["state"] == "stop":
+        raise SystemExit("Requested sweep prerequisite unavailable: " + str(decision["conditions"]))
+    return decision["state"] == "run"
 
 
 def gate_skip_reason(entitlements, expect):
-    """The receipt's bucket line for a gated step the run held back - an Unless step on an entitled
-    installation says so, every other case is the capability's own skip reason."""
-    capability = step_capability(expect)
-    if step_runs_unentitled(expect) and entitlements.get(capability) is True:
-        return f"{capability} entitled - this row runs only where it is absent"
-    return capability_skip_reason(capability, entitlements)
+    """Name every observed/requested prerequisite of an omitted executable row."""
+    decision = gate_decision(entitlements, expect)
+    return decision["state"] + ": " + "; ".join(
+        f"{row['capability']} {row['polarity']} asked={row['asked']!r} measured={row['measured']!r}"
+        for row in decision["conditions"])
 
 
 def parked_reason(expect):
@@ -453,6 +562,8 @@ def _cloud_tier_probe():
     act may reach a create on a maybe. None is kept for the hub read alone, which decides nothing
     about a path. Each answer prints the sentence an operator acts on, since the receipt row carries
     only the verdict."""
+    if cloud_config.RUN_BINDING is not None:
+        return cloud_config.ensure_run_destination(facade("call"))
     config, problem = cloud_config.load_config()
     if problem:
         print("cloud tier: " + problem)
@@ -488,7 +599,14 @@ def _cloud_tier_probe():
 # One probe function per capability name. A capability a step or act declares is looked up here at
 # the start of a run; a name with no probe answers None and routes as unmet, so a typo cannot read
 # as entitled.
-CAPABILITY_PROBES = {"machining_extension": _machining_extension_probe,
+def _native_script_probe():
+    """Observe native-script registration without treating an off request as absence."""
+    return "sys_execute_script" in facade("registered_tools")()
+
+
+CAPABILITY_PROBES = {"native_script": _native_script_probe,
+                     **{name: lambda: None for name in machine_config.PERMISSIONS},
+                     "machining_extension": _machining_extension_probe,
                      CLOUD_TIER: _cloud_tier_probe,
                      CLOUD_LINK_CRASH_REVIEW: _cloud_link_crash_review_probe}
 
@@ -497,7 +615,8 @@ CAPABILITY_PROBES = {"machining_extension": _machining_extension_probe,
 # installation loses that tool's coverage. A tier is the opposite: it exists so that tools which
 # touch an operator's own cloud data are held back BY DEFAULT, and being skipped is their resting
 # state (test_tool_verify_receipt reads this to keep the two invariants apart).
-OPT_IN_TIERS = frozenset({CLOUD_TIER, CLOUD_LINK_CRASH_REVIEW})
+OPT_IN_TIERS = frozenset({CLOUD_TIER, CLOUD_LINK_CRASH_REVIEW, "native_script"}
+                         | machine_config.PERMISSIONS)
 
 # One sentence beside a capability's skip verdict - what an operator does to turn the tier on. A
 # capability with no entry says only that it is not entitled.
@@ -651,14 +770,35 @@ def predicate_kind(expect):
 EXPORT_DIR = os.path.join(tempfile.gettempdir(), "eval_sweep_exports").replace("\\", "/")
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
+
+def _write_fixture(path, data):
+    """Publish complete fixture bytes only when the existing file differs."""
+    try:
+        with open(path, "rb") as current:
+            if current.read() == data:
+                return path
+    except FileNotFoundError:
+        pass
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(path), delete=False) as staged:
+            temporary = staged.name
+            staged.write(data)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
+    return path
+
+
 # The one fixture the harness AUTHORS rather than builds through a tool: no tool writes an SVG and
 # there is no SVG exporter to round-trip through the way mesh_export -> mesh_insert does. 36 x 16 SVG
 # user units - importSVG ignores the file's width/height and viewBox, so at scale=3.7795 (1 user unit
 # = 1 mm) this art lands about 36 x 16 mm, which is the band the insert beat measures.
 SVG_PATH = EXPORT_DIR + "/eval_logo.svg"
-with open(SVG_PATH, "w", encoding="utf-8") as _svg_fixture:
-    _svg_fixture.write('<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="20mm" '
-                       'viewBox="0 0 40 20"><rect x="2" y="2" width="36" height="16"/></svg>')
+_write_fixture(SVG_PATH, b'<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="20mm" '
+                        b'viewBox="0 0 40 20"><rect x="2" y="2" width="36" height="16"/></svg>')
 
 # The SK-5 closure fixture: a 96-user-unit square at the SVG origin. At 1/96 inch per user unit and
 # scale=1 that is exactly one inch, and the art lands y-DOWN from the sketch origin - so the sketch's
@@ -668,9 +808,8 @@ with open(SVG_PATH, "w", encoding="utf-8") as _svg_fixture:
 # FILLS a viewBox is the one shape that cannot tell a top-left anchor from a bottom-left one - so
 # stating them here would make the fixture disagree with the measurement it exists to close.
 SVG96_PATH = EXPORT_DIR + "/eval_square96.svg"
-with open(SVG96_PATH, "w", encoding="utf-8") as _svg96_fixture:
-    _svg96_fixture.write('<svg xmlns="http://www.w3.org/2000/svg">'
-                         '<rect x="0" y="0" width="96" height="96"/></svg>')
+_write_fixture(SVG96_PATH, b'<svg xmlns="http://www.w3.org/2000/svg">'
+                          b'<rect x="0" y="0" width="96" height="96"/></svg>')
 
 
 def write_png(path, size=64, rgb=(255, 140, 0)):
@@ -684,15 +823,11 @@ def write_png(path, size=64, rgb=(255, 140, 0)):
         return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
     ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
     row = b"\x00" + bytes(rgb) * size
-    with open(path, "wb") as fh:
-        fh.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
-                 + chunk(b"IDAT", zlib.compress(row * size)) + chunk(b"IEND", b""))
-    return path
+    return _write_fixture(path, b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+                          + chunk(b"IDAT", zlib.compress(row * size)) + chunk(b"IEND", b""))
 
 
-# A STABLE path, rewritten in place on every import: a stamped name would leave one more file in
-# EXPORT_DIR per pytest run. The cloud file it becomes needs no stamp either - each run uploads it
-# into a run-stamped folder of its own.
+# Stable fixture paths keep imports from accumulating files; identical bytes need no write.
 MARKER_PNG = write_png(EXPORT_DIR + "/sweep_marker.png")
 
 
@@ -960,6 +1095,13 @@ def _measured(label, got, ok_):
     if not ok_:
         raise AssertionError(f"{label}: measured {got}")
     return True
+
+
+def _bound_on_harness(source, bound):
+    """True when a published 'bound' row is the endpoint this harness connected on."""
+    return _measured(f"{source} bound endpoint (harness uses {MCP})", bound,
+                     isinstance(bound, dict) and bound.get("mcp_url") == MCP
+                     and bound.get("port") == PORT)
 
 
 # Values a LATER step's predicate has to compare against. A predicate is handed the payload alone,
@@ -1499,7 +1641,7 @@ def _base_feature_closed(p):
 
 def _arranged(count):
     """model_arrange: the solver's effect read back - which named inputs MOVED, or the occurrences
-    it added (it restructures parts under Envelope occurrences and can mint copies)."""
+    it added (the feature adds Arrange/Envelope occurrences and can mint copies)."""
     def check(p):
         return _measured(f"arrange effect (want {count} shapes)",
                          {"arranged_count": p.get("arranged_count"), "moved": p.get("moved"),
@@ -1856,8 +1998,7 @@ def _link_healthy(link_key):
 
 def _limits_survived(name, min_deg, max_deg):
     """assembly_get: the joint's enabled rotation limits after a motion re-set, off the design's
-    own joint walk. A re-set that CHANGES the axis clears them; one that keeps it leaves them
-    standing, so this is the reading that tells the two apart."""
+    own joint walk."""
     def check(p):
         row = next((j for j in (p.get("joints") or []) if j.get("name") == name), None)
         lim = (row or {}).get("rotation_limits_deg") or {}
@@ -1900,7 +2041,7 @@ def _joint_axis_vs(name, kind, key, same):
 
 def _axis_kept(name, axis):
     """joint_edit with NO axis: 'axis' is the direction READ off the joint (not the tool's own
-    default) and 'axis_kept' says so - a re-aim nobody asked for also drops the joint's limits."""
+    default) and 'axis_kept' says so."""
     def check(p):
         return _measured(f"'{name}' kept its own {axis} axis across the re-set",
                          {"edited": p.get("edited"), "changes": p.get("changes"),
@@ -2074,12 +2215,12 @@ def _param_read(name, value, units="mm"):
 
 
 def _param_favorited(name, favorite=True):
-    """param_set_favorite: 'favorite' is Parameter.isFavorite READ BACK after the set (null when the
-    read declined), so it is the flag the parameter holds, not the flag requested."""
+    """Check the independently read parameter's favorite flag."""
     def check(p):
+        parameter = p.get("parameter") or {}
         return _measured(f"favorite read-back '{name}' (want {favorite})",
-                         {"name": p.get("name"), "favorite": p.get("favorite")},
-                         p.get("name") == name and p.get("favorite") is favorite)
+                         {"name": parameter.get("name"), "favorite": parameter.get("favorite")},
+                         parameter.get("name") == name and parameter.get("favorite") is favorite)
     return check
 
 
@@ -2471,7 +2612,7 @@ _SKETCH_PLANE = {}
 _PLANE_VIEW = {"xy": "top", "xz": "front", "yz": "right"}
 
 
-def _watch(occurrence):
+def _watch(occurrence, planes=None):
     """A camera row: orient and FRAME the occurrence, so a viewer watching the run sees the chunk
     about to be exercised fill the viewport instead of sitting as a speck in a corner. The story
     world is metres wide (every cameo gets its own grid slot) while the parts are tens of
@@ -2482,14 +2623,15 @@ def _watch(occurrence):
     foreshortened to near nothing, and text on it cannot be read at all. Anything with a body in it
     keeps iso, where a solid reads as a solid."""
     names = occurrence if isinstance(occurrence, list) else [occurrence]
+    planes_by_name = _SKETCH_PLANE if planes is None else planes
     flat = not any(str(n).endswith(":1") for n in names)
     view = "iso-top-right"
     if flat:
-        planes = {_SKETCH_PLANE.get(str(n)) for n in names}
-        planes.discard(None)
+        on_planes = {planes_by_name.get(str(n)) for n in names}
+        on_planes.discard(None)
         # one shared plane: look straight down its normal. Mixed planes have no such view, so iso
         # at least shows all of them at an angle rather than one of them edge-on.
-        view = _PLANE_VIEW.get(planes.pop(), "top") if len(planes) == 1 else "iso-top-right"
+        view = _PLANE_VIEW.get(on_planes.pop(), "top") if len(on_planes) == 1 else "iso-top-right"
     return ("view_set", {"action": "orient", "orientation": view, "focus": occurrence},
             _smooth_off, None)
 

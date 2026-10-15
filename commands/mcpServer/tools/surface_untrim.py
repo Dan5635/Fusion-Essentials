@@ -53,9 +53,9 @@ def untrim_handler(faces=None, loop_type="all", extension=None, units="mm") -> d
     if k is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     face_ents, ferr = _FACES.resolve(faces)

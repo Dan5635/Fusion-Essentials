@@ -18,6 +18,7 @@ import json
 import threading
 import time
 import uuid
+from collections import deque
 from typing import Any, Callable, Dict, Optional
 
 import adsk.core
@@ -48,6 +49,8 @@ class TaskManager:
     _tasks_lock = threading.Lock()
     _lifecycle_lock = threading.Lock()
     _is_running = False
+    _dispatching = False
+    _deferred_tasks = deque()
 
     def __new__(cls):
         if cls._instance is None:
@@ -91,6 +94,7 @@ class TaskManager:
                 cls._custom_event = None
                 dropped = list(cls._pending_tasks.values())
                 cls._pending_tasks.clear()
+                cls._deferred_tasks.clear()
             for task in dropped:
                 cls._notify_drop(task, "task_manager_stopped_before_claim")
             try:
@@ -210,21 +214,40 @@ class TaskEventHandler(adsk.core.CustomEventHandler):
         try:
             event_data = json.loads(args.additionalInfo)
             task_id = event_data.get('task_id')
-            command = event_data.get('command')
-
-            # Atomically claim the task: pop under the lock so a concurrent cancel()
-            # (poster timed out) can't double-fire or run after removal. A missing
-            # id means it was already cancelled - nothing to do.
             with TaskManager._tasks_lock:
-                task_info = self._pending_tasks.pop(task_id, None) if task_id else None
-            if task_info is None:
-                return
+                task_info = self._pending_tasks.get(task_id) if task_id else None
+                if not TaskManager._is_running or task_info is None:
+                    return
+                # doEvents can deliver another event inside the active callback.
+                # Keep that task pending so cancel, reap and stop can still remove it.
+                if TaskManager._dispatching:
+                    if not task_info.get('deferred'):
+                        task_info['deferred'] = True
+                        TaskManager._deferred_tasks.append(task_id)
+                    return
+                TaskManager._dispatching = True
 
-            callback = task_info['callback']
             try:
-                callback(task_info['data'])
-            except Exception:
-                futil.handle_error(f'TaskManager.callback[{command}]')
+                while task_id:
+                    with TaskManager._tasks_lock:
+                        task_info = (self._pending_tasks.pop(task_id, None)
+                                     if TaskManager._is_running else None)
+                        now = time.monotonic()
+                        expired = (task_info is not None and
+                                   now - task_info.get('created', now) > _PENDING_TASK_TTL_S)
+                    if expired:
+                        TaskManager._notify_drop(task_info, 'pending_task_reaped')
+                    elif task_info is not None:
+                        try:
+                            task_info['callback'](task_info['data'])
+                        except Exception:
+                            futil.handle_error(f"TaskManager.callback[{task_info['command']}]")
+                    with TaskManager._tasks_lock:
+                        task_id = (TaskManager._deferred_tasks.popleft()
+                                   if TaskManager._deferred_tasks else None)
+            finally:
+                with TaskManager._tasks_lock:
+                    TaskManager._dispatching = False
         except json.JSONDecodeError:
             futil.handle_error('TaskManager.notify.json')
         except Exception:

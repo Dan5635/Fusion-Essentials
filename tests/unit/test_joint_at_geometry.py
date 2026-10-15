@@ -8,6 +8,7 @@ a vertex uses createByPoint. Plus the motion mapping and the handle-resolution g
 construction is captured on fakes so we assert which JointGeometry factory + keypoint were used,
 without a live design.
 """
+from conftest import install as _install_module_design
 
 from types import SimpleNamespace
 
@@ -169,6 +170,7 @@ def _moving_occ(name, pos, local=None):
     proxy's local matrix leaves its parent's placement out, so the two disagree the moment an
     ancestor is not identity."""
     return make_occurrence(path=name, transform2=_at(pos),
+                           assembly_context=make_occurrence('Host:1'),
                            transform=_at(local if local is not None else pos))
 
 
@@ -476,13 +478,16 @@ class TestHandler:
     def test_reports_health_warning_when_joint_fails_to_compute(self, monkeypatch):
         # a joint can ADD fine yet report a WARNING state (over-constrained / Compute Failed) - the
         # handler must surface that as a health warning, not a false success.
-        _install_design(monkeypatch, {"a": _face(_ST.CylinderSurfaceType), "b": _face(_ST.CylinderSurfaceType)},
+        joints = _install_design(monkeypatch, {"a": _face(_ST.CylinderSurfaceType), "b": _face(_ST.CylinderSurfaceType)},
                         joint_health=_FHS.WarningFeatureHealthState,
                         joint_msg="Can't resolve positions.Compute FailedX")
-        out = _payload(jg.handler(handle_one="a", handle_two="b", motion="revolute"))
-        assert out["healthy"] is False
-        assert "FAILED TO COMPUTE" in out["health_warning"]
-        assert "Compute Failed" not in out["health_warning"]   # message trimmed
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid", name="LockedGeometry")
+        assert out["isError"] is True
+        assert "FAILED TO COMPUTE" in out["message"]
+        assert "REMAINS" in out["message"]
+        assert "design_delete_feature(feature='LockedGeometry')" in out["message"]
+        assert "Compute Failed" not in out["message"]
+        assert joints.count == 1 and joints.item(0).name == "LockedGeometry"
 
     def test_the_health_warning_is_one_whole_condensed_sentence(self, monkeypatch):
         # Fusion's errorOrWarningMessage carries embedded NEWLINES and REPEATS its sentence, joined
@@ -493,9 +498,10 @@ class TestHandler:
         _install_design(monkeypatch, {"a": _face(_ST.CylinderSurfaceType),
                                       "b": _face(_ST.CylinderSurfaceType)},
                         joint_health=_FHS.WarningFeatureHealthState, joint_msg=blob)
-        out = _payload(jg.handler(handle_one="a", handle_two="b", motion="revolute"))
-        warning = out["health_warning"]
-        assert warning.endswith("Can't resolve positions. Inspect relationships.")
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+        assert out["isError"] is True
+        warning = out["message"]
+        assert "Can't resolve positions. Inspect relationships." in warning
         assert "Compute Failed" not in warning and "\n" not in warning
 
     def test_a_message_at_the_cap_is_whole_and_one_character_over_is_marked_cut(self, monkeypatch):
@@ -505,9 +511,10 @@ class TestHandler:
             _install_design(monkeypatch, {"a": _face(_ST.CylinderSurfaceType),
                                           "b": _face(_ST.CylinderSurfaceType)},
                             joint_health=_FHS.WarningFeatureHealthState, joint_msg="z" * length)
-            warning = _payload(jg.handler(handle_one="a", handle_two="b",
-                                          motion="revolute"))["health_warning"]
-            assert warning.endswith(" ...") is cut, length
+            result = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+            assert result["isError"] is True
+            warning = result["message"]
+            assert ("z" * 200 + " ..." in warning) is cut, length
             # 'z' appears nowhere in the fixed lead-in, so this counts the MESSAGE's own characters
             assert warning.count("z") == (200 if cut else length), length
 
@@ -616,10 +623,9 @@ class TestHandler:
         out = _payload(jg.handler(handle_one="a", handle_two="b", motion="rigid"))
         assert out["moved_by"]["distance_mm"] == 30.0
 
-    def test_transform_is_the_fallback_when_transform2_will_not_read(self, monkeypatch):
-        # An occurrence whose transform2 DECLINES must still be watched off its LOCAL .transform,
-        # not silently dropped to "no move".
+    def test_unreadable_transform2_discloses_incomplete_movement_without_local_fallback(self, monkeypatch):
         moving = make_occurrence("Rod:1", transform=_at((0.0, 0.0, 0.0)),
+                                 assembly_context=make_occurrence('Host:1'),
                                  raises_on={"transform2": "3 : the placement is unavailable"})
         face_a = _face(_ST.PlaneSurfaceType); face_a.assemblyContext = moving
         face_b = _face(_ST.PlaneSurfaceType)
@@ -629,7 +635,20 @@ class TestHandler:
             j = orig_add(ji); moving.transform = _at((3.0, 0.0, 0.0)); return j
         joints.add = moving_add
         out = _payload(jg.handler(handle_one="a", handle_two="b", motion="rigid"))
-        assert out["moved_by"]["distance_mm"] == 30.0
+        assert 'moved_by' not in out and 'move_warning' not in out
+        assert 'translation was not read' in out['movement_warning']
+
+    @pytest.mark.parametrize('coordinate', [None, float('inf'), True])
+    def test_unreadable_translation_coordinate_discloses_incomplete_movement(self, monkeypatch, coordinate):
+        moving = _moving_occ('Rod:1', (0.0, 0.0, 0.0))
+        matrix, getter = moving.transform2, FakeMatrix3D.translation.fget
+        monkeypatch.setattr(FakeMatrix3D, 'translation', property(
+            lambda current: FakeVector3D(coordinate, 0.0, 0.0) if current is matrix else getter(current)))
+        face = _face(_ST.PlaneSurfaceType)
+        face.assemblyContext = moving
+        _install_design(monkeypatch, {'a': face, 'b': _face(_ST.PlaneSurfaceType)})
+        out = _payload(jg.handler(handle_one='a', handle_two='b', motion='rigid'))
+        assert 'moved_by' not in out and 'translation was not read' in out['movement_warning']
 
     def test_no_moved_by_when_part_stays_put(self, monkeypatch):
         # a well-matched pair whose keypoints already coincide does not move -> no moved_by / warning.
@@ -639,6 +658,37 @@ class TestHandler:
         _install_design(monkeypatch, {"a": face_a, "b": face_b})       # add() leaves the position unchanged
         out = _payload(jg.handler(handle_one="a", handle_two="b", motion="rigid"))
         assert "moved_by" not in out and "move_warning" not in out
+
+    def test_shared_constraint_sampler_withholds_unreadable_translation(self):
+        sampler = load_tool('_assembly_common')
+        occurrence = make_occurrence('Rod:1', transform=_at((3.0, 0.0, 0.0)),
+                                     assembly_context=make_occurrence('Host:1'),
+                                     raises_on={'transform2': 'unreadable'})
+        assert sampler._constraint_positions({'rod': occurrence}) == {}
+        assert sampler._constraint_moves({'rod': ((0.0, 0.0, 0.0), None)},
+                                         {'rod': occurrence}) == ([], False)
+
+    def test_root_occurrence_is_sampled_in_world_coordinates(self, monkeypatch):
+        component = MakeComp(name='Host', entity_token='root-host')
+        native = make_occurrence('Host:1', component=component, transform2=_at((10, 20, 5)))
+        root = MakeComp(occurrences_by_component={'Host': [native]})
+        _install_module_design(jg, make_design(comp=root))
+        sampler = load_tool('_assembly_common')
+        assert sampler._occ_origin(native) == (10, 20, 5)
+        assert sampler._constraint_positions({'host': native})['host'][0] == (10, 20, 5)
+
+    def test_successful_native_local_translation_is_withheld_by_all_movement_consumers(self, monkeypatch):
+        native = make_occurrence('Leaf:1', transform2=_at((2.0, 3.0, 4.0)))
+        face = _face(_ST.PlaneSurfaceType)
+        face.assemblyContext = native
+        _install_design(monkeypatch, {'a': face, 'b': _face(_ST.PlaneSurfaceType)})
+        out = _payload(jg.handler(handle_one='a', handle_two='b', motion='rigid'))
+        sampler = load_tool('_assembly_common')
+        assert sampler._occ_origin(native) is None
+        assert 'moved_by' not in out and 'translation was not read' in out['movement_warning']
+        assert sampler._constraint_positions({'leaf': native}) == {}
+        assert sampler._constraint_moves({'leaf': ((0.0, 0.0, 0.0), None)},
+                                         {'leaf': native}) == ([], False)
 
     def test_motion_setter_failure_reports_error(self, monkeypatch):
         # if the motion setter raises (e.g. incompatible geometry), the handler returns an error
@@ -737,18 +787,20 @@ class TestHealthVerdict:
         assert "health_warning" not in out
 
     def test_an_error_state_is_the_failure_verdict(self, monkeypatch):
-        out = self._out(monkeypatch, joint_health=self._FHS.ErrorFeatureHealthState,
-                        joint_msg="Can't resolve positions.")
-        assert out["healthy"] is False and out["health_state"] == "error"
-        assert "FAILED TO COMPUTE" in out["health_warning"]
+        self._cyl_pair(monkeypatch, joint_health=self._FHS.ErrorFeatureHealthState,
+                       joint_msg="Can't resolve positions.")
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+        assert out["isError"] is True and "health state: error" in out["message"]
+        assert "FAILED TO COMPUTE" in out["message"]
 
     def test_a_warning_state_is_also_a_failure_verdict(self, monkeypatch):
         # Fusion marks a WARNING-state feature 'Compute Failed' too, and assembly_get's
         # broken_joints classes the two alike - so this tool must not split them either.
-        out = self._out(monkeypatch, joint_health=self._FHS.WarningFeatureHealthState,
-                        joint_msg="Conflicting relationships.")
-        assert out["healthy"] is False and out["health_state"] == "warning"
-        assert "FAILED TO COMPUTE" in out["health_warning"]
+        self._cyl_pair(monkeypatch, joint_health=self._FHS.WarningFeatureHealthState,
+                       joint_msg="Conflicting relationships.")
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+        assert out["isError"] is True and "health state: warning" in out["message"]
+        assert "FAILED TO COMPUTE" in out["message"]
 
     def test_a_suppressed_joint_is_not_published_as_a_failed_compute(self, monkeypatch):
         out = self._out(monkeypatch, joint_health=self._FHS.SuppressedFeatureHealthState)
@@ -780,9 +832,9 @@ class TestHealthVerdict:
                                   message="Conflicts with assembly relationships.")
         self._cyl_pair(monkeypatch, new_joint=self._joint(
             health=self._FHS.HealthyFeatureHealthState, timeline_object=item))
-        out = _payload(jg.handler(handle_one="a", handle_two="b", motion="revolute"))
-        assert out["healthy"] is False and out["health_state"] == "warning"
-        assert "Conflicts with assembly relationships." in out["health_warning"]
+        out = jg.handler(handle_one="a", handle_two="b", motion="rigid")
+        assert out["isError"] is True and "health state: warning" in out["message"]
+        assert "Conflicts with assembly relationships." in out["message"]
 
     def test_a_joint_answering_no_state_is_read_off_its_timeline_item(self, monkeypatch):
         # The joint itself answers nothing; its timeline item answers HEALTHY. Reading the joint
@@ -1032,7 +1084,7 @@ class TestPendingMoveRefusal:
 
 class TestCreateGuards:
     def test_no_active_design_is_refused(self, monkeypatch):
-        monkeypatch.setattr(jg._common, "design", lambda: None)
+        _install_module_design(jg, None)
         res = jg.handler(handle_one="a", handle_two="b")
         assert res["isError"] is True and "No active design" in res["message"]
 

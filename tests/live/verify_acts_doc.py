@@ -9,17 +9,168 @@ so the CAM job is what the sweep ends on; and the discard. `reload_smoke` is the
 run() fires after every act: the add-in reload, which restarts the server and so can be no step.
 """
 
+import copy
 import json
+import math
 import os
 import time
+import urllib.error
 import urllib.request
 
 from verify_core import (
-    BASE, EXPORT_DIR, NOTE_MAX, SERVER_NAME, SVG_PATH, _RECALL, _activated, _ctx_get,
+    BASE, EXPORT_DIR, MCP, NOTE_MAX, SERVER_NAME, SVG_PATH, _RECALL, _activated, _bound_on_harness,
+    _ctx_get,
     _document_closed, _document_read, _exported_bytes, _extruded, _fg, _home_address,
-    _home_document, _imported_curves, _imported_sketches, _made_component, _measured,
-    _new_document, _num, _param_added, _param_deleted, _param_read, _recall, _refused, _watch, facade)
+    _home_document, _imported_curves, _imported_sketches, _made_component, _made_component_inactive,
+    _component_metadata, _measured,
+    _metadata_set,
+    _new_document, _near, _num, _param_added, _param_deleted, _param_read, _param_set_to, _recall, _refused, _watch, facade)
 from verify_layout import _DRIFT_CHUNKS, drift_row
+from verify_acts_model_sweep import (
+    _retire_compare, _retire_design_state, _retire_material_state, _sweep_mode_shape, _sweep_mode_box_equal)
+
+
+def _guidance_resource_matches(p):
+    """Read the loaded resource separately and compare its source stamp and content."""
+    reply = facade("_post")({"jsonrpc": "2.0", "id": "guidance-source", "method": "resources/read",
+                            "params": {"uri": p["resource_uri"]}})
+    texts = [r.get("text", "") for r in reply.get("result", {}).get("contents", [])]
+    stamp = f"guidance_id={p.get('guidance_id')}; sha256={p.get('sha256')}"
+    passed = (len(texts) == 1 and len(p.get("sha256") or "") == 64
+              and stamp in texts[0] and "reload the add-in" in texts[0]
+              and all(r["do"][0].upper() + r["do"][1:] in texts[0] for r in p.get("kernel", [])))
+    return _measured("guidance resource source stamp",
+                     {"resource_uri": p["resource_uri"], "source_sha256": p.get("sha256"),
+                      "matching_resource_stamp": passed}, passed)
+
+
+def _kernel_rules_present(p, field="kernel"):
+    """Check the five kernel rules and their applicability fields in a guidance reply."""
+    rules = p.get(field) or []
+    return ([r.get("id") for r in rules] == [
+        "declare-acceptance-and-interfaces", "sequence-is-the-design",
+        "encode-intended-changeability", "build-and-observe-in-milestones",
+        "compare-the-artifact-with-acceptance"]
+        and all(r.get("when") and r.get("do") and r.get("except") and r.get("scenarios")
+                and r.get("prove")
+                and all(step.get("tool") and step.get("observe") for step in r["prove"])
+                for r in rules))
+
+
+_SMALL_EDIT_NATIVE = """import adsk.core, adsk.fusion, json
+def run(context):
+    app = adsk.core.Application.get()
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    matches = [o for o in design.rootComponent.allOccurrences if o.fullPathName == 'EditTarget:1']
+    assert len(matches) == 1
+    occ = matches[0]
+    assert app.activeDocument.dataFile is None
+    body = occ.component.bRepBodies.item(0)
+    def color(a):
+        if a is None: return None
+        for p in a.appearanceProperties:
+            if type(p).__name__ == 'ColorProperty' and p.id == 'opaque_albedo':
+                c = p.value
+                return {'name': a.name, 'id': a.id, 'rgb': [int(c.red), int(c.green), int(c.blue)]}
+        return {'name': a.name, 'id': a.id, 'rgb': None}
+    def assignment(b):
+        row = {'body': b.name}
+        unavailable = {}
+        for field, read in (('material', lambda: b.material.name),
+                            ('appearance', lambda: b.appearance.name),
+                            ('appearance_source_type', lambda: int(b.appearanceSourceType)),
+                            ('opacity', lambda: b.opacity), ('visible_opacity', lambda: b.visibleOpacity)):
+            try: row[field] = read()
+            except Exception as exc:
+                row[field] = None
+                unavailable[field] = str(exc) or type(exc).__name__
+        value = row.get('appearance_source_type')
+        labels = [name for name in dir(adsk.core.AppearanceSourceTypes)
+                  if not name.startswith('_') and name != 'thisown'
+                  and isinstance(getattr(adsk.core.AppearanceSourceTypes, name), int)
+                  and getattr(adsk.core.AppearanceSourceTypes, name) == value]
+        row['appearance_source'] = labels[0] if len(labels) == 1 else None
+        if row['appearance_source'] is None: unavailable['appearance_source'] = 'enum label unread'
+        row['unavailable'] = unavailable
+        return row
+    print(json.dumps({'opacity': occ.component.opacity, 'occurrence': color(occ.appearance),
+        'body': color(body.appearance), 'proxy_body': color(occ.bRepBodies.item(0).appearance),
+        'assignment_body': assignment(body), 'assignment_proxy': assignment(occ.bRepBodies.item(0)),
+        'document_asset': color(design.appearances.itemByName('ProbeGreen'))}))
+"""
+
+
+def _small_edit_assignment(p, before_key):
+    """Check opt-in assignments against a separate native read of the same body placement."""
+    native = (_RECALL.get(before_key) or {}).get("assignment_proxy")
+    valid = isinstance(native, dict) and "mass" not in p and "x" not in p
+    observed = {}
+    for slice_name, fields in (("material", ("material",)),
+                               ("appearance", ("appearance", "appearance_source_type",
+                                               "appearance_source", "opacity", "visible_opacity"))):
+        scope = p.get(slice_name) or {}
+        rows = scope.get("bodies") or []
+        observed[slice_name] = scope
+        valid = (valid and scope.get("scope_complete") is True
+                 and scope.get("truncated") is False and not scope.get("unavailable_census")
+                 and not scope.get("unavailable_slots") and len(rows) == 1)
+        if len(rows) == 1 and isinstance(native, dict):
+            row = rows[0]
+            valid = (valid and row.get("body") == native.get("body")
+                     and row.get("occurrence") == "EditTarget:1"
+                     and all(field in row and field in native and row[field] == native[field]
+                             and bool((row.get("unavailable") or {}).get(field)) ==
+                             bool((native.get("unavailable") or {}).get(field)) for field in fields))
+    return _measured("actual body assignment and placed opacity without default slice", observed, valid)
+
+
+def _small_edit_native_after(p, before):
+    """Check native opacity and each appearance channel against the live entity and asset."""
+    keys = ("opacity", "occurrence", "body", "proxy_body", "document_asset")
+    got = {key: p.get(key) for key in keys}
+    expected = {"opacity": .35, "occurrence": {"name": "ProbeGreen", "rgb": [0, 255, 0]},
+                "body": {"name": "ProbeRed", "rgb": [255, 0, 0]},
+                "proxy_body": {"name": "ProbeRed", "rgb": [255, 0, 0]},
+                "document_asset": {"name": "ProbeGreen", "rgb": [0, 255, 0]}}
+    checks = all(got[key] and all(got[key].get(field) == value
+                  for field, value in expected[key].items()) for key in keys[1:])
+    checks = (checks and _near(got["opacity"], expected["opacity"], 1e-6)
+              and _near(before.get("opacity"), 1, 1e-6)
+              and before.get("occurrence") is None)
+    checks = checks and got["occurrence"].get("id") == got["document_asset"].get("id")
+    return _measured("native opacity, occurrence/body colors and retained document asset",
+                     {"before": before, "after": got}, checks)
+
+
+def _small_edit_parameter_absent(p):
+    rows = p.get("user_parameters") or []
+    return _measured("malformed batch added no prefix", {"names": [r.get("name") for r in rows]},
+                     isinstance(p.get("user_parameters"), list)
+                     and not p.get("walk_truncated") and not p.get("truncated")
+                     and p.get("user_parameter_count") == p.get("matched") == p.get("returned") == 0
+                     and len(rows) == 0
+                     and not any(r.get("name") == "ProbePrefix" for r in rows))
+
+
+def _small_edit_native_prefix(p):
+    rows = p.get("user_parameters") or []
+    values = {r.get("name"): r.get("expression") for r in rows}
+    expected = {"LegalBatchA": "3 mm", "LegalBatchB": "4 mm",
+                "NativeExisting": "2 mm", "NativePrefix": "1 mm"}
+    return _measured("duplicate-existing refusal kept the completed prefix", values,
+                     isinstance(p.get("user_parameters"), list)
+                     and not p.get("walk_truncated") and not p.get("truncated")
+                     and p.get("user_parameter_count") == p.get("matched") == p.get("returned") == 4
+                     and len(rows) == 4 and values == expected)
+
+
+def _small_edit_asset(p):
+    rows = ((p.get("appearances") or {}).get("document") or {}).get("entries") or []
+    row = next((r for r in rows if r.get("name") == "ProbeGreen"), None)
+    return _measured("ProbeGreen is present in the document appearance catalog", row,
+                     row is not None and row.get("scope") == "document" and row.get("is_used") is True
+                     and (p.get("appearances") or {}).get("document", {}).get("readable") is True
+                     and not (p.get("appearances") or {}).get("document", {}).get("truncated"))
 
 
 def _subject_visible(name, visible):
@@ -83,6 +234,7 @@ def _scratch_opened_beside_it(p):
     count and the same address."""
     rows = [r for r in (p.get("open_documents") or []) if r.get("is_active")]
     here = _home_address(p) if len(rows) == 1 else None
+    _RECALL["scratch_open_index"] = rows[0].get("open_index") if len(rows) == 1 else None
     return _measured("the scratch document opened BESIDE the story document",
                      {"open_count": p.get("open_count"), "open_before": _RECALL["open_before"],
                       "scratch": here, "story": _RECALL["story_doc"]},
@@ -91,10 +243,36 @@ def _scratch_opened_beside_it(p):
                      and here is not None and here != _RECALL["story_doc"])
 
 
+def _scratch_active_in_capped_census(p):
+    """Require the active scratch's full-read handle and original slot in one capped row."""
+    rows = p.get("open_documents") or []
+    row = rows[0] if len(rows) == 1 else {}
+    return _measured("the active scratch survives a one-row document census",
+                     {"row": row, "active": p.get("active"), "open_count": p.get("open_count"),
+                      "truncated": p.get("truncated")},
+                     len(rows) == 1 and row.get("is_active") is True
+                     and row.get("document_handle") == _RECALL.get("scratch_doc")
+                     and (p.get("active") or {}).get("document_handle") == _RECALL.get("scratch_doc")
+                     and type(row.get("open_index")) is int
+                     and row["open_index"] == _RECALL.get("scratch_open_index")
+                     and row["open_index"] > 0
+                     and type(p.get("open_count")) is int
+                     and p["open_count"] == _RECALL.get("open_before") + 1
+                     and p.get("truncated") is True)
+
+
 def _handle_args(ctx, key, name, expression):
     """Build a parameter write pinned to the exact document saved in key."""
     return {"name": name, "expression": expression,
             "expect_document": _ctx_get(ctx, key, "the exact owned document handle")}
+
+
+def _other_case(ctx, key):
+    """The document name saved in key with its letter case swapped; raises when the swap is a no-op."""
+    name = _ctx_get(ctx, key, "the active document's display name")
+    if not isinstance(name, str) or name.swapcase() == name:
+        raise ValueError(f"document name {name!r} has no letter whose case can differ")
+    return name.swapcase()
 
 
 def _camera_target(p):
@@ -241,7 +419,9 @@ _SCRATCH_DOCUMENT = [
     ("doc_get", {"include": ["default", "versions", "used_in"]},
      _home_cloud_identity_unavailable, ("story_doc", _recall("story_doc", _story_address))),
     ("doc_new", {}, _new_document, None),
-    ("doc_get", {}, _scratch_opened_beside_it, ("scratch_doc", _home_address)),
+    ("doc_get", {"max_results": 1000}, _scratch_opened_beside_it,
+     ("scratch_doc", _recall("scratch_doc", _home_address))),
+    ("doc_get", {"max_results": 1}, _scratch_active_in_capped_census, None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")},
      _activated(), None),
     ("doc_activate", lambda c: {"name": _ctx_get(c, "scratch_doc", "the scratch document")},
@@ -267,10 +447,1223 @@ _SCRATCH_DOCUMENT = [
     ("param_get", {"name": "HandleRecovered"}, _param_read("HandleRecovered", 2), None),
     ("param_delete", {"name": "HandleRecovered"}, _param_deleted("HandleRecovered"), None),
     ("param_get", {"name": "HandleRecovered"}, _refused("HandleRecovered"), None),
+    # The active document's own name in the other letter case: refused toward the handle, unwritten.
+    ("doc_get", {}, _scratch_gone_story_active, ("story_name", lambda p: p["active"]["name"])),
+    ("param_add", lambda c: {"name": "CaseOnly", "expression": "1 mm",
+                             "expect_document": _other_case(c, "story_name")},
+     _refused("active_document_changed", "letter case", "document_handle"), None),
+    ("param_get", {"name": "CaseOnly"}, _refused("CaseOnly"), None),
 ]
 
 
-# --- ACT 0: OVERTURE - orient, then open the one document the whole story lives in -------------
+def _dxf_layer_sketch(p):
+    """Parks the first DXF-imported sketch's name ('0', its layer) for the numeric-reference rows."""
+    names = [c.get("name") for c in (p.get("created") or []) if c.get("name")]
+    _RECALL["dxf_sketch"] = names[0] if names else None
+    return _imported_sketches(p)
+
+
+def _timeline_rows(p):
+    return (p.get("timeline") or {}).get("timeline") or []
+
+
+def _numref_shape(p):
+    """design_get: the occurrence sits at index 0, the digit-named sketch once at index 1 inside it."""
+    rows = _timeline_rows(p)
+    name = _RECALL.get("dxf_sketch")
+    seat = [r for r in rows if r.get("index") == 0]
+    sk = [r for r in rows if r.get("name") == name]
+    ok = (isinstance(name, str) and name.isascii() and name.isdecimal() and len(seat) == 1
+          and seat[0].get("type") == "Occurrence" and len(sk) == 1 and sk[0].get("index") == 1
+          and bool(sk[0].get("component")))
+    if ok:
+        _RECALL["numref_seat"] = seat[0].get("name")
+        _RECALL["numref_sketch_at"] = f"{sk[0]['component']}/{name}@1"
+        _RECALL["numref_count"] = (p.get("timeline") or {}).get("count")
+    return _measured("an occurrence at index 0 and a digit-named sketch at index 1",
+                     {"name": name, "seat": [r.get("name") for r in seat], "sketch": sk[:1]}, ok)
+
+
+def _numref_bare_delete(c):
+    """design_delete_feature args: the imported sketch's bare digit name, also timeline index 0."""
+    return {"feature": _RECALL["dxf_sketch"]}
+
+
+def _numref_listed_delete(c):
+    """design_delete_feature args: the sketch's candidate exactly as the refusal lists it."""
+    return {"feature": _RECALL["numref_sketch_at"]}
+
+
+def _numref_untouched(p):
+    """design_get after the refusal: the count and the occurrence at index 0 both hold."""
+    rows = _timeline_rows(p)
+    count = (p.get("timeline") or {}).get("count")
+    seat = [r.get("name") for r in rows if r.get("index") == 0]
+    return _measured("timeline untouched by the refusal",
+                     {"count": count, "before": _RECALL.get("numref_count"), "seat": seat},
+                     _num(count) and count == _RECALL["numref_count"]
+                     and seat == [_RECALL["numref_seat"]])
+
+
+def _numref_sketch_deleted(p):
+    """The listed candidate deleted exactly the sketch at index 1 and nothing else."""
+    return _measured("the digit-named sketch alone deleted",
+                     {"feature": p.get("feature"), "index": p.get("index"), "also": p.get("also_deleted")},
+                     p.get("deleted") is True and p.get("feature") == _RECALL["dxf_sketch"]
+                     and p.get("index") == 1 and p.get("also_deleted") == [])
+
+
+def _numref_occurrence_kept(p):
+    """design_get(tree, timeline) after the delete: the occurrence node stands, the sketch is gone, count -1."""
+    rows = _timeline_rows(p)
+    count = (p.get("timeline") or {}).get("count")
+    seat = [r.get("name") for r in rows if r.get("index") == 0]
+    nodes = [n.get("name") for n in ((p.get("tree") or {}).get("children") or [])]
+    return _measured("the occurrence kept, the sketch gone, count -1",
+                     {"count": count, "before": _RECALL.get("numref_count"), "seat": seat, "nodes": nodes},
+                     _num(count) and count == _RECALL["numref_count"] - 1
+                     and seat == [_RECALL["numref_seat"]]
+                     and not any(r.get("name") == _RECALL["dxf_sketch"] for r in rows)
+                     and nodes == [_RECALL["numref_seat"].strip()])
+
+
+def _numref_grouped(p):
+    """design_get while NumRefG is collapsed: the occurrence at 0, one group row over 2 unlisted members."""
+    rows = _timeline_rows(p)
+    name = _RECALL.get("dxf_sketch")
+    seat = [r.get("name") for r in rows if r.get("index") == 0]
+    group = [r for r in rows if r.get("name") == "NumRefG"]
+    ok = (seat == [_RECALL["numref_seat"]] and len(group) == 1
+          and group[0].get("is_collapsed") is True and group[0].get("member_count") == 2
+          and not any(r.get("name") == name for r in rows))
+    if ok:
+        _RECALL["numref_grouped_count"] = (p.get("timeline") or {}).get("count")
+    return _measured("NumRefG collapsed over the digit-named sketch and its sibling",
+                     {"seat": seat, "group": group[:1],
+                      "sketch_rows": [r for r in rows if r.get("name") == name]}, ok)
+
+
+def _numref_untouched_grouped(p):
+    """design_get after the hidden-twin refusal: the grouped count and the occurrence at 0 hold."""
+    rows = _timeline_rows(p)
+    count = (p.get("timeline") or {}).get("count")
+    seat = [r.get("name") for r in rows if r.get("index") == 0]
+    return _measured("timeline untouched by the hidden-twin refusal",
+                     {"count": count, "before": _RECALL.get("numref_grouped_count"), "seat": seat},
+                     _num(count) and count == _RECALL["numref_grouped_count"]
+                     and seat == [_RECALL["numref_seat"]])
+
+
+def _numref_ungrouped(p):
+    """design_get after the ungroup: the count and the sketch's index-1 seat are back, no group row."""
+    rows = _timeline_rows(p)
+    count = (p.get("timeline") or {}).get("count")
+    name = _RECALL.get("dxf_sketch")
+    sk = [r for r in rows if r.get("name") == name]
+    return _measured("the digit-named sketch back at index 1 with no group row",
+                     {"count": count, "before": _RECALL.get("numref_count"), "sketch": sk[:1]},
+                     _num(count) and count == _RECALL["numref_count"] and len(sk) == 1
+                     and sk[0].get("index") == 1
+                     and not any(r.get("name") == "NumRefG" for r in rows))
+
+
+def _numref_first_shape(p):
+    """design_get: the digit-named sketch is the FIRST timeline item, one item follows it."""
+    rows = _timeline_rows(p)
+    name = _RECALL.get("dxf_sketch")
+    ok = (len(rows) == 2 and rows[0].get("name") == name and rows[0].get("index") == 0
+          and rows[1].get("index") == 1)
+    if ok:
+        _RECALL["numref_successor"] = rows[1].get("name")
+    return _measured("the digit-named sketch at index 0 with one successor",
+                     {"rows": [(r.get("index"), r.get("name")) for r in rows]}, ok)
+
+
+def _numref_first_deleted(p):
+    """A delete whose successor renumbers into the freed index still reports the delete."""
+    return _measured("the index-0 sketch deleted and reported so",
+                     {"deleted": p.get("deleted"), "feature": p.get("feature"), "index": p.get("index")},
+                     p.get("deleted") is True and p.get("feature") == _RECALL["dxf_sketch"]
+                     and p.get("index") == 0)
+
+
+def _numref_successor_moved_up(p):
+    """design_get after it: the successor now reads index 0 and no digit-named row remains."""
+    rows = _timeline_rows(p)
+    return _measured("the successor at index 0, the sketch gone",
+                     {"rows": [(r.get("index"), r.get("name")) for r in rows]},
+                     len(rows) == 1 and rows[0].get("index") == 0
+                     and rows[0].get("name") == _RECALL.get("numref_successor"))
+
+
+# A sketch's DXF lands on layer '0' and the import names the sketch after the layer, so the bare
+# token '0' also names timeline index 0; two scratch shapes, each in its own document.
+_NUMERIC_REFERENCE = [
+    ("doc_new", {}, _new_document, None),
+    ("doc_get", {}, _scratch_opened_beside_it, ("numref_doc", _home_address)),
+    ("sketch_create", {"plane": "xy", "name": "Seed"}, "ok", None),
+    ("sketch_add_geometry", {"geometry": [{"kind": "circle", "cx": 0, "cy": 0, "radius": 5}],
+                             "sketch_name": "Seed"}, "ok", None),
+    ("design_export", {"format": "dxf", "file_path": EXPORT_DIR + "/numref_seed",
+                       "dxf_sketch": "Seed"}, _exported_bytes, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")},
+     _activated(), None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "numref_doc", "the numeric-reference document"),
+                             "save_changes": False}, _document_closed, None),
+    # shape 1: an occurrence at index 0, the sketch '0' at index 1 inside it
+    ("doc_new", {}, _new_document, None),
+    ("doc_get", {}, _scratch_opened_beside_it, ("numref_doc", _home_address)),
+    ("model_create_component", {"name": "NumRefBracket", "activate": True}, _made_component, None),
+    ("doc_insert_import", {"file_path": EXPORT_DIR + "/numref_seed.dxf", "format": "dxf",
+                           "plane": "xy"}, _dxf_layer_sketch, None),
+    ("sketch_create", {"plane": "xy", "name": "NumRefSecond"}, "ok", None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_shape, None),
+    # the sketch and its sibling collapsed into a group: the bare "0" still hits index 0, and the
+    # refusal names the group and the ungroup call instead of taking the occurrence
+    ("design_edit_timeline",
+     lambda c: {"action": "group", "name": "NumRefG", "feature": _RECALL["numref_sketch_at"],
+                "end_feature": "NumRefBracket/NumRefSecond"},
+     lambda p: p.get("grouped") is True and p.get("group") == "NumRefG", None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_grouped, None),
+    # the hidden-twin refusal and a listed address's group miss, through the shared kind
+    ("form_get", {"form": "0", "include": ["cage"]},
+     _refused("'0' matches NumRefBracket:1@0 and also names an item inside the collapsed timeline "
+              "group 'NumRefG'", "design_edit_timeline(action='ungroup', feature='NumRefG')"), None),
+    ("form_get", {"form": "NumRefBracket/0@1", "include": ["cage"]},
+     _refused("'NumRefBracket/0' is inside the collapsed timeline group 'NumRefG'",
+              "design_edit_timeline(action='ungroup', feature='NumRefG')"), None),
+    ("design_delete_feature", _numref_bare_delete,
+     _refused("'0' matches NumRefBracket:1@0 and also names an item inside the collapsed timeline "
+              "group 'NumRefG'", "design_edit_timeline(action='ungroup', feature='NumRefG')"), None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_untouched_grouped, None),
+    ("design_edit_timeline", {"action": "ungroup", "feature": "NumRefG"},
+     lambda p: p.get("ungrouped") is True, None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_ungrouped, None),
+    ("design_delete_feature", _numref_bare_delete,
+     _refused("matches 2 timeline objects", "(NumRefBracket:1@0, NumRefBracket/0@1)",
+              "exactly as listed"), None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_untouched, None),
+    ("design_delete_feature", _numref_listed_delete, _numref_sketch_deleted, None),
+    ("design_get", {"include": ["tree", "timeline"], "max_results": 2000}, _numref_occurrence_kept, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")},
+     _activated(), None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "numref_doc", "the numeric-reference document"),
+                             "save_changes": False}, _document_closed, None),
+    # shape 2: the sketch '0' at index 0 with one successor
+    ("doc_new", {}, _new_document, None),
+    ("doc_get", {}, _scratch_opened_beside_it, ("numref_doc", _home_address)),
+    ("doc_insert_import", {"file_path": EXPORT_DIR + "/numref_seed.dxf", "format": "dxf",
+                           "plane": "xy"}, _dxf_layer_sketch, None),
+    ("sketch_create", {"plane": "xy", "name": "After"}, "ok", None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_first_shape, None),
+    ("design_delete_feature", _numref_bare_delete, _numref_first_deleted, None),
+    ("design_get", {"include": ["timeline"], "max_results": 2000}, _numref_successor_moved_up, None),
+    ("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")},
+     _activated(), None),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "numref_doc", "the numeric-reference document"),
+                             "save_changes": False}, _document_closed, None),
+    ("doc_get", {}, _scratch_gone_story_active, None),
+]
+
+
+def _target_design(p):
+    """Return the complete small targeting fixture's tree and indexed history."""
+    tree, tl = p.get("tree") or {}, p.get("timeline") or {}
+    nodes, rows = tree.get("children"), tl.get("timeline")
+    valid = (isinstance(nodes, list) and tree.get("child_count") == len(nodes)
+             and tree.get("truncated") is False and tree.get("children_truncated") is False
+             and not tree.get("root_bodies") and not tree.get("root_bodies_truncated")
+             and isinstance(rows, list) and tl.get("count") == tl.get("returned") == len(rows)
+             and type(tl.get("marker_position")) is int and 0 <= tl["marker_position"] <= len(rows)
+             and not tl.get("truncated") and isinstance(tl.get("groups"), dict)
+             and (tl.get("summary") or {}).get("states") == {"healthy": sum(
+                 r.get("member_count", 1) for r in rows)} and tl["summary"].get("exceptions") == []
+             and all(type(r.get("index")) is int and r["index"] == i and r.get("name") and r.get("type")
+                     for i, r in enumerate(rows)))
+    for n in nodes or []:
+        valid = (valid and n.get("component") and n.get("full_path") and n.get("handle")
+                 and n.get("child_count") == 0 and not n.get("children_truncated")
+                 and type(n.get("body_count")) is int and n["body_count"] == len(n.get("bodies", []))
+                 and not n.get("bodies_truncated") and all(b.get("name") and b.get("handle")
+                     and type(b.get("is_solid")) is bool and type(b.get("visible")) is bool
+                     for b in n.get("bodies", [])))
+    valid = valid and len({n.get("full_path") for n in nodes or []}) == len(nodes or [])
+    valid = valid and sum(n.get("body_count", 0) for n in nodes or []) == 1
+    return {"tree": tree, "timeline": tl} if valid else None
+
+
+def _target_material(p):
+    """Read the independent 10 mm cube's actual material and world-axis bounds."""
+    mass = p.get("mass") or {}
+    bodies = mass.get("per_body") or []
+    values = [p.get(a) for a in "xyz"] + [mass.get("volume"), mass.get("area")]
+    valid = (p.get("target") == "occurrence 'Witness:1'" and p.get("units") == "mm"
+             and p.get("frame") == "world axes (axis-aligned)" and len(bodies) == 1
+             and mass.get("per_body_count") == 1 and mass.get("per_body_truncated") is False
+             and bodies[0].get("body") and bodies[0].get("is_solid") is True
+             and bodies[0].get("lump_count") == 1 and _num(bodies[0].get("volume"))
+             and abs(bodies[0]["volume"] - 1000) < .001
+             and all(_num(a) and abs(a-b) < .001 for a, b in zip(values, [10, 10, 10, 1000, 600])))
+    bounds = [p.get(k, {}).get(a) for k in ("min_point", "max_point") for a in "xyz"]
+    return {"mass": mass, "bounds": bounds} if valid and all(_num(v) for v in bounds) else None
+
+
+def _target_sketch(p, owner, name, radius=None):
+    """Read all disclosed sketch geometry and flags, retaining only stable selector-free facts."""
+    counts, entities = p.get("counts"), p.get("entities")
+    valid = (p.get("component") == owner and p.get("sketch") == name and p.get("units") == "mm"
+             and isinstance(counts, dict) and all(type(n) is int and n >= 0 for n in counts.values())
+             and isinstance(entities, list) and sum(counts.values()) == len(entities)
+             and p.get("truncated") is False and not p.get("profiles_stale")
+             and not p.get("timeline_marker_unrestored") and isinstance(p.get("frame"), dict))
+    for e in entities or []:
+        fields = {"line": ("start", "end"), "circle": ("center",), "point": ("position",)}.get(e.get("type"))
+        valid = valid and fields is not None and all(isinstance(e.get(k), dict) and e[k]
+                  and all(_num(v) for v in e[k].values()) for k in fields or ())
+        if e.get("type") == "circle":
+            valid = valid and _num(e.get("radius")) and e["radius"] > 0
+    for count, key in (("constraint_count", "constraints"), ("dimension_count", "dimensions"), ("profile_count", "profiles")):
+        valid = valid and type(p.get(count)) is int and isinstance(p.get(key), list) and p[count] == len(p[key])
+    if radius is not None:
+        circles = [e for e in entities or [] if e.get("type") == "circle"]
+        valid = valid and len(circles) == 1 and circles[0].get("center") == {"x": 30.0, "y": 20.0}
+        valid = valid and circles[0].get("radius") == radius
+    if not valid:
+        return None
+    return {"entities": [{k: v for k, v in e.items() if k != "handle"} for e in entities],
+            "profiles": [{k: v for k, v in r.items() if k != "handle"} for r in p["profiles"]],
+            **{k: p[k] for k in ("counts", "constraints", "dimensions", "frame")}}
+
+
+def _target_listing(p, sketches, baseline=None, removed=None):
+    """Require every expected current sketch and retain its disclosed counts and visibility."""
+    rows = p.get("sketches")
+    if (not isinstance(rows, list) or p.get("sketch_count") != len(rows) or p.get("truncated")
+            or sorted((r.get("component"), r.get("name")) for r in rows) != sorted(sketches)
+            or not all(type(r.get("is_visible")) is bool for r in rows)):
+        return None
+    if baseline:
+        prior = _RECALL.get(baseline)
+        if prior is None or rows != [r for r in prior if (r["component"], r["name"]) != removed]:
+            return None
+    return rows
+
+
+def _target_document(p):
+    """Read the owned coupon's actual saved/modified flags and complete open-document identities."""
+    active, rows = p.get("active") or {}, p.get("open_documents")
+    if (active.get("document_handle") != _RECALL.get("target_doc") or active.get("has_data_file") is not False
+            or any(type(active.get(k)) is not bool for k in ("is_saved", "is_modified"))
+            or not isinstance(rows, list) or p.get("open_count") != len(rows) or p.get("truncated")
+            or not all(r.get("document_handle") and r.get("name") for r in rows)):
+        return None
+    return {"active": {k: active[k] for k in ("name", "document_handle", "is_saved", "is_modified")},
+            "open": [(r["document_handle"], r["name"]) for r in rows]}
+
+
+def _target_row(tool, args, key, extract, baseline=None):
+    """Build one targeting read whose saved facts also enter the runner's actual context."""
+    def check(p):
+        facts = extract(p)
+        return _measured(key, facts, facts is not None and (baseline is None or facts == _RECALL.get(baseline)))
+    return (tool, args, check, (key, _recall(key, extract)))
+
+
+def _target_history_change(key, owner, name, deleted=False):
+    """Compare a roll or deletion against the independently read exact prior timeline."""
+    def read(p):
+        now, before = _target_design(p), _RECALL.get(key)
+        if now is None or before is None:
+            return None
+        old = before["timeline"]
+        hits = [r for r in old["timeline"] if (r.get("component"), r.get("name")) == (owner, name)]
+        if len(hits) != 1:
+            return None
+        target = hits[0]
+        if deleted:
+            rows = [dict(r, index=i) for i, r in enumerate(r for r in old["timeline"] if r != target)]
+            marker = min(old["marker_position"], len(rows))
+        else:
+            marker = target["index"]
+            rows = [dict(r, is_rolled_back=True) if r["index"] >= marker else r for r in old["timeline"]]
+        return now if (now["tree"] == before["tree"] and now["timeline"]["timeline"] == rows
+                       and now["timeline"]["count"] == len(rows) and now["timeline"]["marker_position"] == marker
+                       and now["timeline"]["groups"] == old["groups"]) else None
+    return read
+
+
+def _target_address(ctx, key, owner, name):
+    """Acquire the current indexed address from a completed independent timeline read."""
+    facts = _ctx_get(ctx, key, "the current full targeting timeline")
+    hits = [r for r in facts["timeline"]["timeline"] if (r.get("component"), r.get("name")) == (owner, name)]
+    if len(hits) != 1 or type(hits[0].get("index")) is not int:
+        raise AssertionError("Target has no unique current timeline address")
+    return f"{owner}/{name}@{hits[0]['index']}"
+
+
+def _target_reads(tag, sketches, baseline=None, changed=None, grouped=False):
+    """Read the finite targeting coupon's history, cube, current sketches and optional hidden group."""
+    design = _target_design if changed is None else _target_history_change(*changed)
+    rows = [_target_row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 3, "max_results": 200}, tag + "_design", design,
+                baseline + "_design" if baseline and changed is None else None),
+            _target_row("model_inspect", {"target": "Witness:1", "include": ["default", "mass"],
+                "per_body": True, "accuracy": "very_high", "units": "mm"}, tag + "_body", _target_material,
+                baseline + "_body" if baseline else None),
+            _target_row("sketch_get", {"max_results": 200}, tag + "_list",
+                lambda p: _target_listing(p, [(o, n) for o, n, _ in sketches],
+                    baseline + "_list" if baseline else None, tuple(changed[1:3]) if changed else None)),
+            _target_row("doc_get", {"max_results": 1000}, tag + "_doc", _target_document,
+                baseline + "_doc" if baseline else None)]
+    for owner, name, radius in sketches:
+        rows.append(_target_row("sketch_get", {"component": owner, "sketch_name": name,
+                    "include_entities": True, "max_results": 200, "units": "mm"}, tag + owner + name,
+                    lambda p, o=owner, n=name, r=radius: _target_sketch(p, o, n, r),
+                    baseline + owner + name if baseline else None))
+    if grouped:
+        def group(p):
+            tl = p.get("timeline") or {}
+            members = tl.get("timeline") or []
+            full = _RECALL.get(tag + "_design", {}).get("timeline", {}).get("timeline", [])
+            gs = [r for r in full if r.get("name") == "HiddenPair"]
+            return members if (len(gs) == 1 and gs[0].get("is_collapsed") is True and gs[0].get("member_count") == 2
+                and len(members) == tl.get("returned") == 2 and not tl.get("truncated")
+                and [(r.get("component"), r.get("name")) for r in members] == [("Hidden", "Twin"), ("Hidden", "Sibling")]
+                and all(r.get("parent_group") == "HiddenPair" for r in members)) else None
+        rows.append(_target_row("design_get", {"include": ["timeline"], "group": "HiddenPair", "max_results": 200},
+                                tag + "_group", group, baseline + "_group" if baseline else None))
+    rows.append(_target_row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 3, "max_results": 200}, tag + "_settled", _target_design, tag + "_design"))
+    return rows
+
+
+def _target_circle(owner, name, radius):
+    return [("sketch_create", {"plane": "xy", "name": name},
+             lambda p: p.get("created") is True and p.get("sketch_name") == name and p.get("component") == owner, None),
+            ("sketch_add_geometry", {"component": owner, "sketch_name": name, "units": "mm",
+             "geometry": [{"kind": "circle", "cx": 30, "cy": 20, "radius": radius}]}, "ok", None)]
+
+
+def _target_begin():
+    return [("doc_new", {}, _new_document, None),
+            ("doc_get", {}, _scratch_opened_beside_it, ("target_doc", _recall("target_doc", _home_address))),
+            ("model_create_component", {"name": "Witness", "activate": True}, _made_component, None),
+            ("sketch_create", {"plane": "xy", "name": "Cube"}, "ok", None),
+            ("sketch_add_geometry", {"component": "Witness", "sketch_name": "Cube", "units": "mm",
+             "geometry": [{"kind": "rectangle", "x1": 0, "y1": 0, "x2": 10, "y2": 10}]}, "ok", None),
+            ("model_extrude", {"component": "Witness", "sketch_name": "Cube", "profile_index": 0,
+                               "distance": 10, "operation": "new", "units": "mm"}, _extruded, None)]
+
+
+def _target_end():
+    return [("doc_activate", lambda c: {"name": _ctx_get(c, "story_doc", "the story document")}, _activated(), None),
+            ("doc_close", lambda c: {"name": _ctx_get(c, "target_doc", "the owned targeting coupon"),
+                                      "save_changes": False}, _document_closed, None),
+            ("doc_get", {}, _scratch_gone_story_active, None)]
+
+
+_TARGET_CUBE = [("Witness", "Cube", None)]
+
+
+def _boolean_suppressed(p):
+    """Check actual missing material and the sole suppressed feature against the baseline."""
+    expected = copy.deepcopy(_RECALL.get("bool_seed_design"))
+    if expected is None:
+        return None
+    nodes = expected["tree"]["children"]
+    if len(nodes) != 1 or nodes[0].get("component") != "Witness":
+        return None
+    nodes[0]["body_count"] = 0
+    nodes[0].pop("bodies", None)
+    timeline = expected["timeline"]
+    hits = [r for r in timeline["timeline"] if r.get("component") == "Witness"
+            and r.get("type") == "ExtrudeFeature"]
+    if len(hits) != 1:
+        return None
+    hits[0].update(is_suppressed=True, health="suppressed")
+    timeline["summary"]["states"] = {"healthy": len(timeline["timeline"]) - 1, "suppressed": 1}
+    actual = {"tree": p.get("tree"), "timeline": p.get("timeline")}
+    return actual if actual == expected else None
+
+
+def _boolean_reads(tag, baseline=None, suppressed=False):
+    """Read the owned Boolean coupon's history, material and open-document census."""
+    rows = [_target_row("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                "tree_handles": True, "max_depth": 3, "max_results": 200}, tag + "_design",
+                _boolean_suppressed if suppressed else _target_design,
+                baseline + "_design" if baseline else None),
+            _target_row("doc_get", {"max_results": 1000}, tag + "_doc", _target_document,
+                baseline + "_doc" if baseline else None)]
+    if not suppressed:
+        rows.append(_target_row("model_inspect", {"target": "Witness:1", "include": ["default", "mass"],
+                "per_body": True, "accuracy": "very_high", "units": "mm"}, tag + "_body",
+                _target_material, baseline + "_body" if baseline else None))
+    return rows
+
+
+def _favorite_parameter_state(p):
+    """Return every readable user parameter's complete value/flag row without accepting a capped census."""
+    rows = p.get("user_parameters")
+    if (not isinstance(rows, list) or p.get("walk_truncated") or p.get("truncated")
+            or p.get("user_parameter_count") != p.get("matched") or p.get("matched") != p.get("returned")
+            or p.get("returned") != len(rows) or len({r.get("name") for r in rows}) != len(rows)
+            or any(not r.get("name") or not isinstance(r.get("expression"), str) or not r["expression"]
+                   or r.get("unit") != "mm" or not isinstance(r.get("comment"), str)
+                   or type(r.get("favorite")) is not bool or not _num(r.get("value"))
+                   or not _num(r.get("value_internal")) or r.get("value_units") != "mm" for r in rows)):
+        return None
+    return sorted(rows, key=lambda row: row["name"])
+
+
+def _favorite_batch_rows():
+    """Exercise nested favorite preflight and real Boolean effects on the existing owned coupon."""
+    rows = []
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c: {**args, "expect_document": _ctx_get(c, "target_doc", "Boolean coupon")}, check, save))
+    for name in ("ScratchFlag", "UntouchedFlag"):
+        write("param_add", {"name": name, "expression": "10 mm", "unit": "mm", "favorite": False},
+              lambda p, name=name: p.get("added") is True and (p.get("parameter") or {}).get("name") == name
+              and p.get("favorite") is False,
+              ("favorite_fixture", lambda p: p["parameter"]["name"]) if name == "ScratchFlag" else None)
+    def census(tag, added=None):
+        def state(p):
+            actual, before = _favorite_parameter_state(p), _RECALL.get("favorite_baseline")
+            if actual is None:
+                return None
+            if tag == "favorite_baseline":
+                return actual if ([r["name"] for r in actual] == ["ScratchFlag", "UntouchedFlag"]
+                    and all(r["favorite"] is False and r["value"] == 10 and r["value_internal"] == 1
+                            and r["expression"] == "10 mm" and r["comment"] == "" for r in actual)) else None
+            if not isinstance(before, list):
+                return None
+            expected_names = [r["name"] for r in before] + ([added[0]] if added else [])
+            if sorted(r["name"] for r in actual) != sorted(expected_names):
+                return None
+            if any(r != old for old in before for r in actual if r["name"] == old["name"]):
+                return None
+            extra = [r for r in actual if r["name"] not in {old["name"] for old in before}]
+            if added and (len(extra) != 1 or extra[0]["favorite"] is not added[1]
+                          or extra[0]["expression"] != "2 mm" or extra[0]["value"] != 2
+                          or extra[0]["value_internal"] != .2 or extra[0]["comment"] != ""):
+                return None
+            return actual
+        rows.append(_target_row("param_get", {"include_generated": True, "max_results": 100}, tag, state))
+        rows.extend(_boolean_reads(tag + "_witness", "bool_seed"))
+    census("favorite_baseline")
+    for prefix in (False, True):
+        specs = ([{"name": "BatchPrefix", "expression": "2 mm", "unit": "mm", "favorite": False}] if prefix else [])
+        specs.append({"name": "BatchFlag", "expression": "2 mm", "unit": "mm", "favorite": "false"})
+        write("param_add", {"params": specs},
+              _refused(f"params[{int(prefix)}].favorite='false'", "JSON true or false", "No parameters added"))
+        census("favorite_refused_" + str(prefix))
+    for suffix, favorite in (("Omitted", None), ("True", True), ("False", False)):
+        name = "Batch" + suffix
+        spec = {"name": name, "expression": "2 mm", "unit": "mm"}
+        if favorite is not None:
+            spec["favorite"] = favorite
+        wanted = favorite is True
+        write("param_add", {"params": [spec]}, lambda p, wanted=wanted: p.get("added_count") == 1
+              and len(p.get("results") or []) == 1 and p["results"][0].get("favorite") is wanted)
+        census("favorite_control_" + suffix, (name, wanted))
+        write("param_delete", {"name": name}, lambda p, name=name: p.get("deleted") is True and p.get("name") == name)
+        census("favorite_retired_" + suffix)
+    for name in ("ScratchFlag", "UntouchedFlag"):
+        write("param_delete", {"name": name}, lambda p, name=name: p.get("deleted") is True and p.get("name") == name)
+    rows.append(("param_get", {"include_generated": True, "max_results": 100},
+                 lambda p: _measured("all owned favorite parameters retired", p, _favorite_parameter_state(p) == []), None))
+    rows.extend(_boolean_reads("favorite_all_retired", "bool_seed"))
+    return rows
+
+
+_BOOLEAN_FLAGS = _target_begin() + _boolean_reads("bool_seed")
+_BOOLEAN_FLAGS += [
+    ("design_get", {"include": ["tree"], "tree_handles": None},
+     _refused("Invalid Boolean for 'tree_handles'", "Omit this optional key to use its default"), None),
+    ("design_get", {"include": ["tree"]},
+     lambda p: _measured("omitted Boolean uses the default", p, isinstance(p.get("tree"), dict)), None),
+] + _boolean_reads("bool_null_omitted", "bool_seed")
+for _bool_tool, _bool_args, _bool_path in [
+    ("design_edit_timeline", lambda c: {"action": "suppress", "suppressed": "false",
+        "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1")}, "suppressed"),
+    ("doc_close", lambda c: {"close_all": "false", "save_changes": False,
+        "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "close_all"),
+    ("doc_close", lambda c: {"name": _ctx_get(c, "target_doc", "the owned coupon"), "save_changes": "false",
+        "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "save_changes"),
+    ("cam_post", lambda c: {"program_name": "BooleanGuardNonexistent", "output_folder": EXPORT_DIR,
+        "overwrite": "false", "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "overwrite"),
+    ("form_create", lambda c: {"primitive": {"shape": "cylinder", "size": [10, 10], "spans": [8, 2],
+        "capped": "false"}, "expect_document": _ctx_get(c, "story_doc", "the inactive story document")}, "primitive.capped"),
+    # Untyped objects reach the handler, whose own gate refuses the string before any write.
+    ("assembly_constrain", {"relationships": [{"snap_one": "Witness:1:top", "snap_two": "Witness:1:bottom",
+        "flip": "false"}]}, "relationships[0].flip"),
+    ("pmi_create", {"kind": "hole_note", "geometry": ["unresolved"], "flags": {"threaded": "false"}},
+     "flags.threaded"),
+    # The display object is checked with the flags, before the geometry resolves or a note exists.
+    ("pmi_create", {"kind": "hole_note", "geometry": ["unresolved"],
+                    "display": {"precision": 2, "leading_zeros": "false"}}, "display.leading_zeros"),
+]:
+    _BOOLEAN_FLAGS += [(_bool_tool, _bool_args,
+        _refused("Invalid Boolean for " + repr(_bool_path), "'false'", "Use true or false."), None)]
+    _BOOLEAN_FLAGS += _boolean_reads("bool_refused_" + _bool_path, "bool_seed")
+# A Boolean value is refused before the geometry resolves, so the unresolvable geometry never answers.
+_BOOLEAN_FLAGS += [("pmi_create", {"kind": "hole_note", "geometry": ["unresolved"], "values": {"depth": True}},
+    _refused("'depth' must be a number (in 'units'), got True.", "No annotation was created."), None)]
+_BOOLEAN_FLAGS += _boolean_reads("bool_refused_values", "bool_seed")
+for _bool_tag, _bool_flag in [("true", {"suppressed": True}), ("omitted", {})]:
+    _BOOLEAN_FLAGS += [("design_edit_timeline", lambda c, flags=_bool_flag: {"action": "suppress",
+        "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1"), **flags},
+        lambda p: p.get("is_suppressed") is True, None)]
+    _BOOLEAN_FLAGS += _boolean_reads("bool_" + _bool_tag, suppressed=True)
+    _BOOLEAN_FLAGS += [("design_edit_timeline", lambda c: {"action": "suppress", "suppressed": False,
+        "feature": _target_address(c, "bool_seed_design", "Witness", "Extrude1")},
+        lambda p: p.get("is_suppressed") is False, None)]
+    _BOOLEAN_FLAGS += _boolean_reads("bool_restored_" + _bool_tag, "bool_seed")
+_BOOLEAN_FLAGS += _favorite_batch_rows() + _target_end()
+
+_TARGET_CONFIRMATION = _target_begin() + [
+    ("model_create_component", {"name": "Suffix", "activate": True}, _made_component, None),
+] + _target_circle("Suffix", "Tail", 3) + _target_reads("tc_end", _TARGET_CUBE + [("Suffix", "Tail", 3)]) + [
+    ("design_edit_timeline", lambda c: {"action": "roll", "feature": _target_address(c, "tc_end_design", "Suffix", "Tail"),
+                                        "to": "before"}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("tc_rolled", _TARGET_CUBE, "tc_end", ("tc_end_design", "Suffix", "Tail", False)) + [
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": False},
+     _refused("Refusing:", "DISCARDS 1 timeline item(s)", "confirm_delete_after_marker=true"), None),
+] + _target_reads("tc_false", _TARGET_CUBE, "tc_rolled") + [
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": "false"},
+     _refused("Invalid Boolean for 'confirm_delete_after_marker'", "'false'", "Use true or false."), None),
+] + _target_reads("tc_string", _TARGET_CUBE, "tc_rolled") + [
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": True},
+     lambda p: (p.get("deleted_after_marker") is True and p.get("deleted_timeline_entries") == 1
+                and p.get("retained_prefix_confirmed") is True), None),
+] + _target_reads("tc_deleted", _TARGET_CUBE, "tc_rolled", ("tc_rolled_design", "Suffix", "Tail", True)) + _target_end()
+
+
+_TARGET_GROUP_TAIL = _target_begin() + [
+    ("model_create_component", {"name": "Suffix", "activate": True}, _made_component, None),
+] + _target_reads("tg_base", _TARGET_CUBE) + _target_circle("Suffix", "DiscardCircleA", 3) + _target_circle("Suffix", "DiscardCircleB", 4) + [
+    ("design_edit_timeline", {"action": "group", "feature": "Suffix/DiscardCircleA", "end_feature": "Suffix/DiscardCircleB",
+                              "name": "DiscardTail"}, lambda p: p.get("member_count") == 2, None),
+    ("design_get", {"include": ["timeline"]},
+     lambda p: (len([r for r in _timeline_rows(p) if r.get("name") == "DiscardTail"
+                    and r.get("member_count") == 2 and r.get("is_collapsed") is True]) == 1), None),
+    ("design_edit_timeline", {"action": "roll", "feature": "DiscardTail", "to": "before"},
+     lambda p: p.get("rolled") is True, None),
+    ("design_edit_timeline", {"action": "delete_after_marker"},
+     _refused("DISCARDS 2 timeline item(s)", "DiscardTail", "Nothing was deleted"), None),
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": True},
+     lambda p: (p.get("deleted_after_marker") is True and p.get("deleted") == 2
+                and p.get("deleted_timeline_entries") == 1 and p.get("retained_prefix_confirmed") is True), None),
+] + _target_reads("tg_deleted", _TARGET_CUBE, "tg_base") + [
+    ("design_edit_timeline", {"action": "delete_after_marker", "confirm_delete_after_marker": True},
+     _refused("Nothing lies after the marker"), None),
+] + _target_reads("tg_repeated", _TARGET_CUBE, "tg_base") + _target_end()
+
+_TARGET_HIDDEN_GEOMETRY = _TARGET_CUBE + [("Hidden", "Twin", 3), ("Hidden", "Sibling", 4)]
+_TARGET_HIDDEN = _target_begin() + [
+    ("model_create_component", {"name": "Hidden", "activate": True}, _made_component, None),
+] + _target_circle("Hidden", "Twin", 3) + _target_circle("Hidden", "Sibling", 4) + _target_reads("th_seed", _TARGET_HIDDEN_GEOMETRY) + [
+    ("design_edit_timeline", lambda c: {"action": "group", "name": "HiddenPair",
+     "feature": _target_address(c, "th_seed_design", "Hidden", "Twin"),
+     "end_feature": _target_address(c, "th_seed_design", "Hidden", "Sibling")}, lambda p: p.get("grouped") is True, None),
+    ("model_create_component", {"name": "Visible", "activate": True}, _made_component, None),
+] + _target_circle("Visible", "Twin", 5) + _target_reads("th_before", _TARGET_HIDDEN_GEOMETRY + [("Visible", "Twin", 5)], grouped=True) + [
+    ("design_delete_feature", {"feature": "Twin"}, _refused("'Twin' matches Visible/Twin@", "collapsed timeline group 'HiddenPair'"), None),
+] + _target_reads("th_refused", _TARGET_HIDDEN_GEOMETRY + [("Visible", "Twin", 5)], "th_before", grouped=True) + [
+    ("design_delete_feature", lambda c: {"feature": _target_address(c, "th_refused_design", "Visible", "Twin")},
+     lambda p: p.get("deleted") is True and p.get("feature") == "Twin", None),
+] + _target_reads("th_deleted", _TARGET_HIDDEN_GEOMETRY, "th_before", ("th_before_design", "Visible", "Twin", True), True) + _target_end()
+
+_TARGET_SLASH_GEOMETRY = _TARGET_CUBE + [("X/Y", "Target", 3)]
+_TARGET_SLASH = _target_begin() + [
+    ("model_create_component", {"name": "X/Y", "activate": True}, _made_component, None),
+] + _target_circle("X/Y", "Target", 3) + _target_reads("ts_before", _TARGET_SLASH_GEOMETRY) + [
+    ("design_edit_timeline", {"action": "roll", "feature": "X/Y/Target", "to": "before"}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("ts_rolled", _TARGET_CUBE, "ts_before", ("ts_before_design", "X/Y", "Target", False)) + [
+    ("design_edit_timeline", {"action": "roll", "to": "end"}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("ts_restored", _TARGET_SLASH_GEOMETRY, "ts_before") + [
+    ("design_edit_timeline", lambda c: {"action": "roll", "to": "before",
+     "feature": _target_address(c, "ts_restored_design", "X/Y", "Target")}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("ts_indexed", _TARGET_CUBE, "ts_before", ("ts_before_design", "X/Y", "Target", False)) + [
+    ("design_edit_timeline", {"action": "roll", "to": "end"}, lambda p: p.get("rolled") is True, None),
+] + _target_reads("ts_indexed_end", _TARGET_SLASH_GEOMETRY, "ts_before") + [
+    ("model_create_component", {"name": "Literal", "activate": True}, _made_component, None),
+] + _target_circle("Literal", "A/B", 4) + [
+    ("model_create_component", {"name": "A", "activate": True}, _made_component, None),
+] + _target_circle("A", "B", 5) + _target_reads("ts_collision", _TARGET_SLASH_GEOMETRY + [("Literal", "A/B", 4), ("A", "B", 5)]) + [
+    ("design_delete_feature", {"feature": "A/B"}, _refused("matches 2 timeline objects", "Literal/A/B@", "A/B@"), None),
+] + _target_reads("ts_refused", _TARGET_SLASH_GEOMETRY + [("Literal", "A/B", 4), ("A", "B", 5)], "ts_collision") + [
+    ("design_delete_feature", lambda c: {"feature": _target_address(c, "ts_refused_design", "Literal", "A/B")},
+     lambda p: p.get("deleted") is True and p.get("feature") == "A/B", None),
+] + _target_reads("ts_deleted", _TARGET_SLASH_GEOMETRY + [("A", "B", 5)], "ts_collision",
+                  ("ts_collision_design", "Literal", "A/B", True)) + _target_end()
+
+def _timeline_cube_material(p):
+    """Return the measured complete 20 mm cube material and bounds, or None when unread."""
+    state = _retire_material_state(p)
+    if (state is None or len(state["bodies"]) != 1
+            or abs(state["shape"]["volume"] - 8000) > .001
+            or abs(state["shape"]["area"] - 2400) > .001
+            or any(abs(state["shape"][side][axis] - value) > .001
+                   for side, value in (("min", 0), ("max", 20)) for axis in "xyz")):
+        return None
+    return state
+
+
+def _timeline_cube_geometry(p):
+    """Return the complete finite cube face-edge or vertex census without handle text."""
+    rows = p.get("matches")
+    vertex = p.get("kind_filter") == "vertex"
+    if (p.get("units") != "mm" or not isinstance(rows, list)
+            or p.get("match_count") != p.get("returned") or p.get("returned") != len(rows)
+            or len(rows) != (8 if vertex else 18)):
+        return None
+    kinds = [r.get("kind") for r in rows]
+    if (kinds.count("vertex") != 8 if vertex else
+            kinds.count("planar_face") != 6 or kinds.count("line_edge") != 12):
+        return None
+    for row in rows:
+        if (not isinstance(row.get("handle"), str) or not row["handle"]
+                or not isinstance(row.get("position"), list) or len(row["position"]) != 3
+                or any(not _num(v) or not math.isfinite(v) for v in row["position"])):
+            return None
+        if row["kind"] != "vertex":
+            metric, value = ("area", 400) if row["kind"] == "planar_face" else ("length", 20)
+            vector = row.get("normal" if metric == "area" else "direction")
+            if (not _num(row.get(metric)) or not math.isfinite(row[metric]) or abs(row[metric] - value) > .001
+                    or not isinstance(vector, list) or len(vector) != 3
+                    or any(not _num(v) or not math.isfinite(v) for v in vector)):
+                return None
+    return sorted([{k: v for k, v in row.items() if k != "handle"} for row in rows],
+                  key=lambda row: (row["kind"], row["position"]))
+
+
+def _timeline_health_rows():
+    """Read unavailable history in the owned base edit and converted direct cube without changing it."""
+    rows = [("doc_get", {}, _home_document, ("timeline_home", _home_address)),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+                            "max_depth": 10, "max_results": 2000},
+             _retire_compare("timeline_home_design", _retire_design_state, False), None),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "timeline_home", "home")},
+             _new_document, ("timeline_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c: {**args, "expect_document": _ctx_get(c, "timeline_doc", "owned cube")}, check, None))
+    write("sketch_create", {"name": "Witness", "plane": "xy"})
+    write("sketch_add_geometry", {"sketch_name": "Witness", "units": "mm", "geometry": [
+        {"kind": "rectangle", "x1": 0, "y1": 0, "x2": 20, "y2": 20}]})
+    write("model_extrude", {"sketch_name": "Witness", "distance": 20, "units": "mm", "operation": "new"}, _extruded)
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+
+    def snapshot(tag, count, after=False):
+        direct = count is None
+        def mode(p):
+            detail = p.get("mode_detail") or {}
+            valid = (all(k in p for k in ("feature_count", "timeline_healthy"))
+                     and "timeline_feature_count" in detail
+                     and p.get("design_type") == ("direct" if direct else "parametric")
+                     and p.get("feature_count") == count and p.get("timeline_healthy") is (None if direct else True)
+                     and detail.get("has_timeline") is (not direct) and detail.get("timeline_feature_count") == count
+                     and (not direct or "model_base_feature(action='finish')" in p.get("note", "")))
+            return p if valid else None
+        rows.append(("design_get", lambda c: {"include": ["default", "mode"]},
+                     _retire_compare("timeline_mode_" + tag, mode, after), None))
+        rows.append(("model_inspect", lambda c: {"target": "", "include": ["default", "mass"],
+                     "per_body": True, "accuracy": "very_high", "units": "mm"},
+                     _retire_compare("timeline_cube_material", _timeline_cube_material, tag != "parametric" or after), None))
+        for kind in ("", "vertex"):
+            rows.append(("find_geometry", lambda c, kind=kind: {"target": "Body1", "units": "mm", "max_results": 100,
+                         **({"kind": kind} if kind else {})},
+                         _retire_compare("timeline_cube_" + kind, _timeline_cube_geometry, tag != "parametric" or after), None))
+        if direct:
+            rows.append(("design_get", lambda c: {"include": ["timeline"]}, _refused("no timeline", "not a parametric design"), None))
+        else:
+            def history(p):
+                state = _retire_design_state(p)
+                tl = (state or {}).get("timeline") or {}
+                return state if (tl.get("count") == count and (tl.get("summary") or {}).get("states") == {"healthy": count}
+                                 and (tl.get("summary") or {}).get("exceptions") == []) else None
+            rows.append(("design_get", lambda c: {"include": ["tree", "timeline"], "tree_bodies": True,
+                         "tree_handles": True, "max_depth": 10, "max_results": 2000},
+                         _retire_compare("timeline_history_" + tag, history, after), None))
+
+    def orient(count):
+        def check(p):
+            health, design = p.get("health") or {}, p.get("design") or {}
+            unread = count is None
+            expected = {"timeline_features": count, "timeline_errors": None if unread else 0,
+                        "timeline_warnings": None if unread else 0, "timeline_suppressed": None if unread else 0,
+                        "timeline_markers": None if unread else 0, "timeline_rolled_back": None if unread else False,
+                        "is_healthy": None if unread else True}
+            valid = (all(k in health and (health[k] is v if v is None or type(v) is bool else
+                         type(health[k]) is int and health[k] == v) for k, v in expected.items())
+                     and health.get("joint_count") == 0 and health.get("broken_joints") == []
+                     and health.get("broken_relations") == [] and health.get("out_of_date_references") == []
+                     and health.get("unresolved_references") == [] and design.get("bodies") == 1
+                     and design.get("mode") == ("direct" if unread else "parametric")
+                     and ("not observed zero/healthy history" in p.get("note", "")
+                          and not p.get("note", "").startswith("No compute errors") if unread else
+                          p.get("note", "").startswith("No compute errors")))
+            return _measured("orientation qualifies only unavailable history", p, valid)
+        return check
+    for tag, count in (("parametric", 2), ("open_base", None), ("finished_base", 3), ("direct", None)):
+        if tag == "open_base":
+            write("model_base_feature", {"action": "start", "base_feature": "HealthScope"},
+                  lambda p: p.get("editing") is True and p.get("base_feature") == "HealthScope" and p.get("open_scope_count") == 1)
+        elif tag == "finished_base":
+            write("model_base_feature", {"action": "finish", "base_feature": "HealthScope"},
+                  lambda p: p.get("editing") is False and p.get("design_mode_now") == "parametric"
+                  and p.get("open_scope_count") == 0 and [r.get("name") for r in p.get("closed_scopes") or []] == ["HealthScope"])
+        elif tag == "direct":
+            write("design_set_mode", {"target": "direct", "confirm_history_loss": True},
+                  lambda p: p.get("converted") is True and p.get("history_discarded") is True and p.get("now") == "direct")
+        snapshot(tag, count)
+        rows.append(("workspace_orient", lambda c: {}, orient(count), None))
+        snapshot(tag, count, True)
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "timeline_home", "home"),
+               "expect_document": _ctx_get(c, "timeline_doc", "owned cube")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "timeline_doc", "owned cube"), "save_changes": False,
+               "expect_document": _ctx_get(c, "timeline_home", "home")}, _document_closed, None),
+             ("design_get", lambda c: {"include": ["tree", "timeline"], "tree_bodies": True, "tree_handles": True,
+               "max_depth": 10, "max_results": 2000}, _retire_compare("timeline_home_design", _retire_design_state, True), None)]
+    return rows
+
+
+def _disclosure_plane_state(p):
+    """Return complete history/tree and independently indexed plane owners."""
+    state = _retire_design_state(p)
+    datums = p.get("datums") or {}
+    rows = datums.get("datums") or []
+    if (state is None or datums.get("match_count") != datums.get("returned") or len(rows) != 2
+            or datums.get("returned") != 2 or datums.get("truncated") is not False):
+        return None
+    planes = [r for r in state["timeline"]["timeline"] if r.get("type") == "ConstructionPlane"]
+    if (len(planes) != 2 or {(r.get("name"), r.get("component")) for r in planes}
+            != {("PlaneTwin", "DatumA"), ("PlaneTwin", "DatumB")}):
+        return None
+    for datum in rows:
+        owner = datum.get("component")
+        if (owner not in ("DatumA", "DatumB") or datum.get("name") != "PlaneTwin"
+                or datum.get("kind") != "construction_plane" or datum.get("placement_count") != 1
+                or datum.get("occurrences") != [owner + ":1"] or datum.get("occurrences_truncated")
+                or not any(row.get("index") == datum.get("timeline_index")
+                           and row.get("component") == owner for row in planes)):
+            return None
+    return {**state, "datums": datums}
+
+
+def _disclosure_poses(p):
+    """Return the complete three empty placed components and their finite bases."""
+    rows = p.get("occurrences") or []
+    expected = {"DatumA:1": [30, 0, 0], "DatumB:1": [60, 0, 0], "EmptyFocus:1": [40, 0, 0]}
+    if (p.get("units") != "mm" or p.get("occurrences_truncated") is not False
+            or p.get("occurrence_count") != 3 or len(rows) != 3
+            or {r.get("name") for r in rows} != set(expected)):
+        return None
+    for row in rows:
+        if (row.get("body_count") != 0 or row.get("origin") != expected[row["name"]]
+                or any(type(row.get(k)) is not bool for k in ("grounded", "ground_to_parent"))
+                or any(not isinstance(row.get(k), list) or len(row[k]) != 3
+                       or any(not _num(v) or not math.isfinite(v) for v in row[k])
+                       for k in ("x_axis", "y_axis", "z_axis"))):
+            return None
+    return rows
+
+
+def _disclosure_witness_material(p):
+    """Return the full independently measured root cube material and finite bounds."""
+    shape = _sweep_mode_shape(p)
+    expected = {"min": dict.fromkeys("xyz", 0), "max": dict.fromkeys("xyz", 20)}
+    if (p.get("units") != "mm" or p.get("lump_count") != 1
+            or not _sweep_mode_box_equal(shape, expected)
+            or not _num(shape["volume"]) or abs(shape["volume"] - 8000) > .001
+            or not _num(shape["area"]) or abs(shape["area"] - 2400) > .001):
+        return None
+    return {"shape": shape, "mass": p["mass"]}
+
+
+def _product_disclosure_rows():
+    """Disclose datum owners, empty focus and handle lifetime in one owned scene."""
+    rows = [("doc_get", {}, _home_document, ("disclosure_home", _home_address)),
+            ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                            "tree_handles": True, "max_results": 2000},
+             _retire_compare("disclosure_home_design", _retire_design_state, False), None),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "disclosure_home", "home")},
+             _new_document, ("disclosure_doc", lambda p: p["document_handle"])),
+            ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c: {**(args(c) if callable(args) else args),
+                     "expect_document": _ctx_get(c, "disclosure_doc", "owned disclosure scene")}, check, save))
+    write("param_add", {"name": "DisclosureHeight", "expression": "10 mm", "unit": "mm"},
+          _param_added("DisclosureHeight", 10))
+    for name, coords, distance, key in (("Witness", (0, 0, 20, 20), "20 mm", "disclosure_witness"),
+                                         ("Stock", (100, 0, 110, 8), "DisclosureHeight", "disclosure_stock")):
+        write("sketch_create", {"name": name, "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name, "units": "mm", "geometry": [
+            dict(zip(("kind", "x1", "y1", "x2", "y2"), ("rectangle", *coords)))]})
+        write("model_extrude", {"sketch_name": name, "distance": distance, "operation": "new"},
+              _extruded, (key, lambda p: p["result_bodies"][0]))
+    for owner, x, z in (("DatumA", 30, 3), ("DatumB", 60, 7)):
+        write("design_activate_component", {"occurrence": "root"})
+        write("model_create_component", {"name": owner, "x": x, "activate": True, "units": "mm"}, _made_component)
+        write("model_construction", {"kind": "plane", "mode": "offset", "plane": "xy",
+              "offset": z, "name": "PlaneTwin", "units": "mm"}, lambda p, owner=owner: p.get("component") == owner
+              and isinstance(p.get("handle"), str) and bool(p["handle"])
+              and "pass it as 'plane' to sketch_create" in p.get("note", "")
+              and "NAME instead" not in p.get("note", ""),
+              ("disclosure_" + owner, lambda p: p["handle"]))
+        rows.append(("find_geometry", lambda c, owner=owner: {"target": owner + ":1", "kind": "construction_plane",
+                     "name": "PlaneTwin", "units": "mm", "max_results": 10},
+                     lambda p, owner=owner, x=x, z=z: p.get("match_count") == p.get("returned") == 1
+                     and p["matches"][0].get("position") == [x, 0, z]
+                     and p["matches"][0].get("normal") == [0, 0, 1]
+                     and p["matches"][0].get("occurrence") == owner + ":1", None))
+        write("sketch_create", lambda c, owner=owner: {"name": owner + "Pick", "plane": _ctx_get(c, "disclosure_" + owner, "plane")},
+              lambda p, owner=owner, x=x, z=z: p.get("component") == owner
+              and (p.get("frame") or {}).get("space") == "world" and p["frame"].get("origin_mm") == [x, 0, z])
+        rows.append(("sketch_get", lambda c, owner=owner: {"sketch_name": owner + "Pick", "component": owner + ":1", "include_entities": True},
+                     lambda p, owner=owner, x=x, z=z: p.get("component") == owner
+                     and (p.get("frame") or {}).get("space") == "world"
+                     and p["frame"].get("origin_mm") == [x, 0, z]
+                     and p["frame"].get("normal") == [0, 0, 1], None))
+    write("design_activate_component", {"occurrence": "root"})
+    write("model_create_component", {"name": "EmptyFocus", "x": 40, "activate": False, "units": "mm"}, _made_component_inactive)
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+    def unchanged(after=False):
+        rows.append(("design_get", lambda c: {"include": ["tree", "timeline", "datums"], "tree_bodies": True,
+                     "tree_handles": True, "max_results": 2000},
+                     _retire_compare("disclosure_read_design", _disclosure_plane_state, after), None))
+        rows.append(("assembly_get", lambda c: {"include": ["poses"], "units": "mm", "max_occurrences": 100},
+                     _retire_compare("disclosure_read_poses", _disclosure_poses, after), None))
+        rows.append(("model_inspect", lambda c: {"target": "", "include": ["default", "mass"], "per_body": True,
+                     "units": "mm", "accuracy": "very_high"},
+                     _retire_compare("disclosure_read_material", _retire_material_state, after), None))
+        rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, "disclosure_witness", "cube"), "units": "mm", "max_results": 100},
+                     _retire_compare("disclosure_witness_geometry", _timeline_cube_geometry, after), None))
+    unchanged()
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "disclosure_witness", "cube"),
+                 "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                 _retire_compare("disclosure_witness_material", _disclosure_witness_material, False), None))
+    for fit in (True, False):
+        def focus(p, fit=fit):
+            a, note = p.get("applied") or {}, p.get("note", "")
+            return (a.get("focus") == "EmptyFocus:1" and a.get("orientation") == "front"
+                    and (a.get("no_measurable_size") is True and a.get("frame_ratio") is None
+                         and "no measurable size" in note and "framed on" not in note if fit else
+                         "WITHOUT zooming" in note and "attempt framing when the focus has measurable size" in note))
+        write("view_set", {"action": "orient", "orientation": "front", "focus": "EmptyFocus:1", "fit": fit}, focus)
+        rows.append(("workspace_orient", lambda c: {}, lambda p: _camera_target(p) == (0, 0, 0), None))
+        unchanged(True)
+    write("view_set", {"action": "orient", "orientation": "front", "fit": False},
+          lambda p: "focus" not in (p.get("applied") or {}) and "Camera aimed" in p.get("note", ""))
+    unchanged(True)
+    write("view_set", {"action": "orient", "orientation": "front", "focus": "Witness", "fit": True},
+          lambda p: "framed on 'Witness'" in p.get("note", "")
+          and _num((p.get("applied") or {}).get("frame_ratio")) and p["applied"]["frame_ratio"] > 0)
+    rows.append(("workspace_orient", lambda c: {}, lambda p: _camera_target(p) == (1, 1, 0), None))
+    unchanged(True)
+    rows.append(("sys_capability_map", {}, lambda p: any(r.get("family") == "find"
+                 and r.get("entry_tool") == "find_geometry" and "short-lived" in r.get("summary", "")
+                 and "re-find if stale" in r.get("summary", "") and "stable" not in r.get("summary", "")
+                 for r in p.get("families") or []), None))
+    write("param_set", {"name": "DisclosureHeight", "expression": "13 mm"}, _param_set_to("DisclosureHeight", 13))
+    rows.append(("param_get", {"name": "DisclosureHeight"}, _param_read("DisclosureHeight", 13), None))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "disclosure_stock", "driven box"),
+                 "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                 lambda p: _num((p.get("mass") or {}).get("volume")) and abs(p["mass"]["volume"] - 1040) < .001
+                 and [p.get(k) for k in "xyz"] == [10, 8, 13], None))
+    def fresh_face(p):
+        faces = [r for r in p["matches"] if r.get("kind") == "planar_face"
+                 and r.get("position") == [10, 10, 20] and r.get("normal") == [0, 0, 1]]
+        _measured("one fresh witness top face", faces, len(faces) == 1)
+        return faces[0]["handle"]
+    rows.append(("find_geometry", lambda c: {"target": _ctx_get(c, "disclosure_witness", "fresh cube handles"), "units": "mm", "max_results": 100},
+                 _retire_compare("disclosure_witness_geometry", _timeline_cube_geometry, True), ("disclosure_fresh_face", fresh_face)))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "disclosure_fresh_face", "fresh witness top face"), "units": "mm"},
+                 lambda p: p.get("kind") == "face" and p.get("oriented") is False
+                 and p.get("min_point") == {"x": 0, "y": 0, "z": 20}
+                 and p.get("max_point") == {"x": 20, "y": 20, "z": 20}
+                 and p.get("center") == {"x": 10, "y": 10, "z": 20}, None))
+    rows.append(("model_inspect", lambda c: {"target": _ctx_get(c, "disclosure_witness", "cube"),
+                 "include": ["default", "mass"], "units": "mm", "accuracy": "very_high"},
+                 _retire_compare("disclosure_witness_material", _disclosure_witness_material, True), None))
+    write("param_set", {"name": "DisclosureHeight", "expression": "10 mm"}, _param_set_to("DisclosureHeight", 10))
+    unchanged(True)
+    # Namesake axes and points in two sub-components: each timeline row names the owner that
+    # model_construction reported, read here after the plane-owner snapshots above are closed.
+    datums = (("axis", "ConstructionAxis", "AxisTwin", {"mode": "two_planes", "plane": "xz", "plane2": "yz"}),
+              ("point", "ConstructionPoint", "PointTwin",
+               {"mode": "three_planes", "plane": "xy", "plane2": "xz", "plane3": "yz"}))
+    for owner in ("DatumA", "DatumB"):
+        write("design_activate_component", {"occurrence": owner + ":1"})
+        for kind, _type, name, args in datums:
+            write("model_construction", {"kind": kind, "name": name, "units": "mm", **args},
+                  lambda p, owner=owner, kind=kind, name=name: p.get("component") == owner
+                  and p.get("kind") == kind and p.get("name") == name and bool(p.get("handle")),
+                  ("disclosure_" + kind + "_" + owner, _recall("disclosure_" + kind + "_" + owner,
+                                                             lambda p: p.get("component"))))
+    write("design_activate_component", {"occurrence": "root"})
+    def datum_owners(p):
+        tl = p.get("timeline") or {}
+        got = [(r.get("type"), r.get("name"), r.get("component")) for r in tl.get("timeline") or []
+               if r.get("type") in ("ConstructionAxis", "ConstructionPoint")]
+        want = [(t, n, _RECALL.get("disclosure_" + k + "_" + o)) for o in ("DatumA", "DatumB")
+                for k, t, n, _a in datums]       # creation order, which the timeline keeps
+        return _measured("datum timeline owners match model_construction's component", {"rows": got, "want": want},
+                         not tl.get("truncated") and tl.get("count") == tl.get("returned") and got == want
+                         and {w[2] for w in want} == {"DatumA", "DatumB"})
+    rows.append(("design_get", {"include": ["timeline"], "max_results": 2000}, datum_owners, None))
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "disclosure_home", "home"),
+                                        "expect_document": _ctx_get(c, "disclosure_doc", "owned scene")}, "ok", None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "disclosure_doc", "owned scene"), "save_changes": False,
+                                      "expect_document": _ctx_get(c, "disclosure_home", "home")}, _document_closed, None),
+             ("design_get", {"include": ["tree", "timeline"], "tree_bodies": True,
+                             "tree_handles": True, "max_results": 2000},
+              _retire_compare("disclosure_home_design", _retire_design_state, True), None)]
+    return rows
+
+
+# --- ACT 13: SMALL EDIT SAFETY -----------------------------------------------------------------
+_SMALL_EDITS = [
+    ("design_set_metadata", {"target": "EditTarget", "part_number": "PN-SMALL-1",
+                              "description": "small edit control"},
+     _metadata_set("EditTarget", "PN-SMALL-1", "small edit control"), None),
+    ("design_set_metadata", {"target": "EditTarget", "part_number": "PN-MUST-NOT-LAND",
+                              "description": 123},
+     _refused("'description'=123", "must be a string", "No metadata was changed"), None),
+    ("design_get", {"include": ["metadata"]},
+     _component_metadata("EditTarget", "PN-SMALL-1", "small edit control"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"}, "oops"]},
+     _refused("params[1] must be a dict", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad", "expression": 2}]},
+     _refused("params[1].expression", "must be a string", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad", "expression": "2", "unit": 5}]},
+     _refused("params[1].unit", "must be a string", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad", "expression": "2", "comment": 5}]},
+     _refused("params[1].comment", "must be a string", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": 5, "expression": "2"}]},
+     _refused("params[1].name", "must be a string", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"expression": "2"}]},
+     _refused("params[1] is missing 'name'", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad"}]},
+     _refused("params[1] is missing 'expression'", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "Bad", "expression": ""}]},
+     _refused("params[1].expression is empty", "No parameters added"), None),
+    ("param_add", {"params": [{"name": "ProbePrefix", "expression": "1 mm"},
+                                {"name": "", "expression": "2"}]},
+     _refused("params[1].name is empty", "No parameters added"), None),
+    ("param_get", {"include_generated": True, "max_results": 100},
+     _small_edit_parameter_absent, None),
+    ("param_add", {"params": [{"name": "LegalBatchA", "expression": "3 mm"},
+                                {"name": "LegalBatchB", "expression": "4 mm"}]},
+     lambda p: p.get("added_count") == 2 and len(p.get("results") or []) == 2, None),
+    ("param_get", {"include_generated": True, "max_results": 100},
+     lambda p: _measured("legal batch values read back",
+         {r.get("name"): r.get("expression") for r in p.get("user_parameters") or []},
+         all(any(r.get("name") == name and r.get("expression") == expression
+                 for r in p.get("user_parameters") or [])
+             for name, expression in (("LegalBatchA", "3 mm"), ("LegalBatchB", "4 mm")))), None),
+    ("param_add", {"name": "NativeExisting", "expression": "2 mm"},
+     _param_added("NativeExisting", 2), None),
+    ("param_add", {"params": [{"name": "NativePrefix", "expression": "1 mm"},
+                                {"name": "NativeExisting", "expression": "3 mm"}]},
+     _refused("already exists", "1 added before this"), None),
+    ("param_get", {"include_generated": True, "max_results": 100}, _small_edit_native_prefix, None),
+    ("appearance_set", {"target": "EditTarget:1:Body1", "color": "#FF0000", "name": "ProbeRed"},
+     lambda p: p.get("kind") == "body" and p.get("appearance") == "ProbeRed"
+               and p.get("color_rgb") == [255, 0, 0] and p.get("applied_to") == ["Body1"], None),
+    ("sys_execute_script", {"script": _SMALL_EDIT_NATIVE, "read_only": True},
+     lambda p: _measured("pre-failure opacity and body color", p,
+                         p.get("opacity") != .35 and (p.get("body") or {}).get("name") == "ProbeRed"
+                         and (p.get("body") or {}).get("rgb") == [255, 0, 0]
+                         and (p.get("proxy_body") or {}).get("name") == "ProbeRed"
+                         and (p.get("proxy_body") or {}).get("rgb") == [255, 0, 0]
+                         and p.get("document_asset") is None
+                         and (p.get("occurrence") or {}).get("name") != "ProbeGreen"),
+     ("small_edit_native_before", _recall("small_edit_native_before", lambda p: p))),
+    ("model_inspect", {"target": "EditTarget:1:Body1", "include": ["material", "appearance"]},
+     lambda p: _small_edit_assignment(p, "small_edit_native_before"), None),
+    ("model_inspect", {"target": "EditTarget:1"},
+     lambda p: _measured("default inspect does not disclose assignments", p,
+                         "material" not in p and "appearance" not in p
+                         and isinstance(p.get("x"), (int, float))), None),
+    ("appearance_set", {"target": "EditTarget:1", "color": "#00FF00",
+                         "opacity": 35, "name": "ProbeGreen"},
+     _refused("reached NONE", "ProbeRed",
+              "Component opacity now reads", "(before this call: 1.0)",
+              "Occurrence appearance now reads {'name': 'ProbeGreen'"), None),
+    ("design_get", {"include": ["appearances"], "name_filter": "ProbeGreen"},
+     _small_edit_asset, None),
+    ("sys_execute_script", {"script": _SMALL_EDIT_NATIVE, "read_only": True},
+     lambda p: _small_edit_native_after(p, _RECALL["small_edit_native_before"]),
+     ("small_edit_native_after", _recall("small_edit_native_after", lambda p: p))),
+    ("model_inspect", {"target": "EditTarget:1", "include": ["material", "appearance"]},
+     lambda p: _small_edit_assignment(p, "small_edit_native_after"), None),
+    ("param_delete", {"name": "LegalBatchA"}, _param_deleted("LegalBatchA"), None),
+    ("param_delete", {"name": "LegalBatchB"}, _param_deleted("LegalBatchB"), None),
+    ("param_delete", {"name": "NativePrefix"}, _param_deleted("NativePrefix"), None),
+    ("param_delete", {"name": "NativeExisting"}, _param_deleted("NativeExisting"), None),
+]
+
+
+# --- a library appearance and its clear, on a body and on one face ------------------------------
+
+_AP_LIBRARY, _AP_NAME = "Fusion Additive Material Library", "Aluminum - Satin"
+
+
+def _ap_body_reads(appearance=None, source=None, recall=None):
+    """model_inspect: the one body's appearance and source, or the pair recalled under `recall`."""
+    def check(p):
+        scope = p.get("appearance") or {}
+        rows = scope.get("bodies") or []
+        got = (rows[0].get("appearance"), rows[0].get("appearance_source")) if len(rows) == 1 else None
+        want = (_RECALL.get(recall) if recall else
+                None if appearance is None and source is None else (appearance, source))
+        return _measured("body appearance and its source", got,
+                         scope.get("scope_complete") is True and scope.get("truncated") is False
+                         and got is not None and None not in got
+                         and (recall is None or want is not None)
+                         and (want is None or tuple(want) == got))
+    return check
+
+
+def _ap_faces_args(ctx):
+    """A read-only native read of the two saved faces' appearance and appearance source."""
+    tokens = [str(ctx.get(key) or "").partition("|@")[0] for key in ("ap_top", "ap_side")]
+    if not all(tokens):
+        raise ValueError("the two face handles are not both readable")
+    script = (
+        "import adsk.core, adsk.fusion, json\n"
+        "def run(context):\n"
+        "    design=adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)\n"
+        "    kinds=adsk.core.AppearanceSourceTypes\n"
+        "    names={getattr(kinds,n):n for n in dir(kinds) if n.endswith('AppearanceSource')}\n"
+        "    rows=[]\n"
+        "    for token in " + repr(tokens) + ":\n"
+        "        found=list(design.findEntityByToken(token))\n"
+        "        face=adsk.fusion.BRepFace.cast(found[0]) if len(found)==1 else None\n"
+        "        rows.append(None if face is None else\n"
+        "            [face.appearance.name, names.get(face.appearanceSourceType)])\n"
+        "    print(json.dumps({'faces':rows}))\n")
+    return {"script": script, "read_only": True}
+
+
+def _appearance_library_rows():
+    """Assign a library appearance to a body and to one face, and clear each override again."""
+    from verify_acts_sketch import _boxed, _family_rows, _script_reply
+    rows, write, read, close = _family_rows("ap_doc")
+    control_geometry = {"target": "EditTarget:1", "include": ["default", "mass"],
+                        "per_body": True, "accuracy": "very_high", "units": "mm"}
+    control_appearance = {"target": "EditTarget:1:Body1", "include": ["appearance"]}
+    read("model_inspect", control_geometry,
+         _retire_compare("ap_neighbour_geometry", _retire_material_state, False))
+    read("model_inspect", control_appearance, _ap_body_reads(),
+         ("ap_neighbour_appearance", _recall("ap_neighbour_appearance", lambda p: (
+             p["appearance"]["bodies"][0]["appearance"],
+             p["appearance"]["bodies"][0]["appearance_source"]))))
+    write("model_create_component", {"name": "AppearanceLibraryCoupon", "activate": True,
+                                     "x": 100}, _made_component)
+    _boxed(write, "ApBase", (0, 0, 20, 10), 8, "ap_body")
+    body = lambda c: "AppearanceLibraryCoupon:1:" + _ctx_get(c, "ap_body", "the box")
+    inspect = lambda c: {"target": body(c), "include": ["appearance"]}
+    for key, at in (("ap_top", [110, 5, 8]), ("ap_side", [110, 0, 4])):
+        read("find_geometry", lambda c, at=at: {"target": body(c), "kind": "planar_face",
+                                                "nearest_to": at, "max_results": 1},
+             lambda p: len(p.get("matches") or []) == 1, _fg(key))
+    aluminium = (_AP_NAME, "BodyAppearanceSource")
+    read("model_inspect", inspect,
+         lambda p: _ap_body_reads()(p)
+         and p["appearance"]["bodies"][0]["appearance_source"] == "MaterialAppearanceSource",
+         ("ap_plain", _recall("ap_plain", lambda p: (
+             p["appearance"]["bodies"][0]["appearance"],
+             p["appearance"]["bodies"][0]["appearance_source"]))))
+    read("design_get", {"include": ["appearances"], "library": _AP_LIBRARY, "name_filter": _AP_NAME},
+         lambda p: [e.get("name") for e in p["appearances"].get("entries") or []] == [_AP_NAME])
+
+    def paint(target, check, **args):
+        write("appearance_set", lambda c: {"target": target(c), **args}, check)
+    library = {"appearance": _AP_NAME, "library": _AP_LIBRARY}
+    paint(body, _refused("'appearance' is a call of its own", "'color'"), color="#FF0000", **library)
+    paint(body, _refused("carries no override of its own", "MaterialAppearanceSource"), clear=True)
+    read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    paint(body, lambda p: p.get("applied") is True and p.get("appearance") == _AP_NAME
+          and p.get("library") == _AP_LIBRARY
+          and p.get("appearance_source") == "BodyAppearanceSource", **library)
+    read("model_inspect", inspect, _ap_body_reads(*aluminium))
+    paint(body, lambda p: p.get("cleared") is True and p.get("appearance_before") == _AP_NAME
+          and p.get("appearance_source") == "MaterialAppearanceSource", clear=True)
+    read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    # A face has no public appearance read, so the two faces are read natively and read-only.
+    top = lambda c: _ctx_get(c, "ap_top", "the top face")
+    plain = lambda p: ([[_RECALL["ap_plain"][0], "MaterialAppearanceSource"]] * 2
+                       == _script_reply(p).get("faces"))
+    read("sys_execute_script", _ap_faces_args, plain)
+    paint(top, lambda p: p.get("kind") == "face"
+          and p.get("appearance_source") == "FaceAppearanceSource", **library)
+    read("sys_execute_script", _ap_faces_args,
+         lambda p: _script_reply(p).get("faces") == [
+             [_AP_NAME, "FaceAppearanceSource"],
+             [_RECALL["ap_plain"][0], "MaterialAppearanceSource"]])
+    read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    paint(top, lambda p: p.get("cleared") is True
+          and p.get("appearance_source") == "MaterialAppearanceSource", clear=True)
+    read("sys_execute_script", _ap_faces_args, plain)
+    read("model_inspect", inspect, _ap_body_reads(recall="ap_plain"))
+    write("view_set", {"action": "orient", "focus": ["AppearanceLibraryCoupon:1"], "fit": True})
+    read("model_inspect", control_geometry,
+         _retire_compare("ap_neighbour_geometry", _retire_material_state, True))
+    read("model_inspect", control_appearance, _ap_body_reads(recall="ap_neighbour_appearance"))
+    close()
+    return rows
+
+
+_SMALL_EDITS += _appearance_library_rows()
+
+
+def _preference_unreadables(payload, retain=False):
+    """Validate and retain published unreadable names without pinning a build-specific member."""
+    prefs = payload.get("preferences") if isinstance(payload, dict) else None
+    records = {}
+
+    def collect(value, path=""):
+        if not isinstance(value, dict):
+            return False
+        if "tier" in value:
+            if path in records or not isinstance(value["tier"], str) or value["tier"] not in {"W", "R"}:
+                return False
+            records[path] = value
+            return True
+        return all(isinstance(key, str) and bool(key) and collect(record, path + "." + key if path else key)
+                   for key, record in value.items())
+
+    names = payload.get("unreadable", []) if isinstance(payload, dict) else None
+    unknown = payload.get("unknown_members", []) if isinstance(payload, dict) else None
+    count = payload.get("unreadable_count", 0 if names == [] else None) if isinstance(payload, dict) else None
+    observed = {"unreadable": names, "unreadable_count": count, "unknown_members": unknown}
+    valid = (isinstance(prefs, dict) and isinstance(prefs.get("graphics"), dict)
+             and "graphicsPreset" in prefs["graphics"] and collect(prefs)
+             and isinstance(names, list) and all(isinstance(name, str) and name for name in names)
+             and len(set(names)) == len(names) and type(count) is int and count == len(names)
+             and isinstance(unknown, list) and not unknown)
+    if valid:
+        flagged = {path for path, record in records.items() if record.get("unreadable") is True}
+        valid = (set(names) == flagged and all(record.get("unknown_member", False) is False
+                 and type(record.get("unreadable", False)) is bool for record in records.values())
+                 and all(records[name].get("value") is None for name in names))
+    _measured("published unreadable preference census", observed, valid)
+    observed = {"unreadable": list(names), "unreadable_count": count, "unknown_members": []}
+    if retain:
+        print("preference unreadable census: " + json.dumps(observed, sort_keys=True))
+    return observed
+
+
+# --- ACT 0: OVERTURE - orient, then open the first family document -----------------------------
 _OVERTURE = [
     ("doc_new", {}, _new_document, None),
     ("workspace_orient", {}, "ok", ("fusion_version", lambda p: p["fusion_version"])),
@@ -280,12 +1673,28 @@ _OVERTURE = [
      lambda p: ({"cam", "mesh", "model", "sketch", "surface", "view"}
                 <= {f["family"] for f in p["families"]}
                 and all(f["tool_count"] >= 1 and f["entry_tool"] for f in p["families"])
-                and p["tool_count"] >= 150), None),
+                and p["tool_count"] >= 150
+                and any(row.get("tool") == "sys_execute_script"
+                        and row.get("enable_path") == (
+                            "Fusion Essentials Settings command -> MCP Server tab -> "
+                            "'Allow AI scripts (unsafe)' checkbox")
+                        for row in p["gated"]["tools"])), None),
+    # the map publishes the address the server's socket bound: it has to be the one this run is
+    # talking to, on the add-in's default port.
+    ("sys_capability_map", {},
+     lambda p: _bound_on_harness("sys_capability_map", p["bound"]), None),
     # the read stamp is for DOCUMENT reads: a tool that answers off the registry rather than the
     # active design carries no 'active_document' key at all (design_get's own beat in the FINALE is
     # the other half of this pair).
     ("sys_find_tool", {"query": "revolve"},
      lambda p: "active_document" not in p and p.get("tool_count", 0) > 0, None),
+    ("sys_find_tool", {"query": "body"},
+     lambda p: (p.get("tool_count", 0) > 0
+                and "BodyRef" in {row.get("kind") for row in p.get("kinds", [])}
+                and "tool's schema" in p.get("note", "")
+                and "handle, name or index" in p.get("note", "")
+                and not any(text in p.get("note", "") for text in ("AGENTS.md", "_inputs.py", "hand-roll"))), None),
+    ("sys_get_api_doc", {"searchPattern": "a+"}, _refused("unsupported repetition"), None),
     # the introspection FOUND the class in the module it lives in: an adsk submodule that would not
     # import is skipped silently, and the search then answers ok with nothing in it.
     ("sys_get_api_doc", {"searchPattern": "RevolveFeatures", "max_results": 3},
@@ -297,16 +1706,34 @@ _OVERTURE = [
     # beside the content hash that says which version answered.
     ("sys_get_guidance", {},
      lambda p: (p.get("recipes") and all(r.get("id") and r.get("use_when") for r in p["recipes"])
-                and all("steps" not in r for r in p["recipes"])), None),
+                and all("steps" not in r for r in p["recipes"])
+                and any(r.get("id") == "model" and "sheet metal" in r.get("use_when", "")
+                        for r in p.get("sections", []))
+                and _kernel_rules_present(p)), None),
+    ("sys_get_guidance", {}, _guidance_resource_matches, None),
+    ("sys_get_guidance", {"section": "model"},
+     lambda p: (any(r.get("id") == "threads-by-intent"
+                   and "tapped hole with model_hole(tap=...)" in r.get("do", "")
+                   and "existing cylindrical face with model_thread" in r.get("do", "")
+                   for r in p.get("rules", []))
+                and any(r.get("id") == "sheet-metal-by-intent"
+                        and all(tool in r.get("do", "") for tool in (
+                            "sheet_get", "sheet_create_flange", "sheet_convert",
+                            "sheet_create_flat_pattern", "design_export"))
+                        for r in p.get("rules", [])) and _kernel_rules_present(p)), None),
     ("sys_get_guidance", {"section": "assemble"},
      lambda p: ({"connected-reference-path", "exercise-the-mechanism"}
                 <= {r.get("id") for r in (p.get("rules") or [])}
+                and _kernel_rules_present(p)
                 and len(p.get("sha256") or "") == 64
                 and all(c in "0123456789abcdef" for c in p.get("sha256") or "")), None),
-    # and the third read: ONE recipe whole - the ordered steps, each with what to read back, and
+    ("sys_get_guidance", {"section": "kernel"},
+     lambda p: (_kernel_rules_present(p, "rules") and "kernel" not in p), None),
+    # the recipe read: ONE recipe whole - the ordered steps, each with what to read back, and
     # the bar. This is the id cam_get's strategies note tells a caller to ask for.
     ("sys_get_guidance", {"recipe": "manufacture-choose-a-strategy"},
      lambda p: (p["recipe"]["id"] == "manufacture-choose-a-strategy"
+                and _kernel_rules_present(p)
                 and len(p["recipe"]["steps"]) >= 3
                 and all(s.get("tool") and s.get("read_back") for s in p["recipe"]["steps"])
                 and p["recipe"]["bar"]["measure"] and p["recipe"]["bar"]["eyes"]), None),
@@ -349,15 +1776,10 @@ _OVERTURE = [
      lambda p: p["preferences"]["compatibility"]["recoverSaveScanFrequency"]["value"] > 0,
      ("pref_scan",
       lambda p: p["preferences"]["compatibility"]["recoverSaveScanFrequency"]["value"])),
-    # the members that RAISE on read are published as null + named in 'unreadable', never dropped -
-    # all THREE of the raising members the [F21] census found on this build, and none of them
-    # miscategorised as a member the build does not carry ('unknown_members' must be absent).
     ("sys_get_preferences", {"include": ["graphics"]},
-     lambda p: ("graphicsPreset" in p["preferences"]["graphics"]
-                and set(p.get("unreadable") or []) >= {"graphics.autoThrottleEffects",
-                                                       "graphics.degradedSelectionDisplayStyle",
-                                                       "graphics.isLimitEffectsDuringNavigation"}
-                and "unknown_members" not in p), None),
+     lambda p: bool(_preference_unreadables(p)),
+     ("pref_graphics_unreadable", _recall("pref_graphics_unreadable",
+                                       lambda p: _preference_unreadables(p, retain=True)))),
     ("sys_set_preferences", lambda c: {"member": "compatibility.recoverSaveScanFrequency",
                                        "value": _ctx_get(c, "pref_scan", "the scan frequency") + 1},
      lambda p: p["now"] == p["previous"] + 1, None),
@@ -370,7 +1792,7 @@ _OVERTURE = [
      "refused", None),
     # a tier-R member names the member and the reason, with nothing written.
     ("sys_set_preferences", {"member": "network.proxyHost", "value": "127.0.0.1"}, "refused", None),
-] + _SCRATCH_DOCUMENT
+] + _SCRATCH_DOCUMENT + _NUMERIC_REFERENCE + _BOOLEAN_FLAGS + _TARGET_CONFIRMATION + _TARGET_GROUP_TAIL + _TARGET_HIDDEN + _TARGET_SLASH + _timeline_health_rows() + _product_disclosure_rows()
 
 # --- THE SHOWCASE: the finished fixture photographed, renamed, exported and read back -----------
 # It runs BEFORE the machining acts so the sweep ends on the CAM job and its post, which is the
@@ -466,8 +1888,13 @@ _SHOWCASE = [
     ("view_screenshot", {"view": "current", "width": 500, "height": 400}, "ok", None),
     ("view_set", {"action": "style", "style": "shaded-edges"}, "ok", None),
     # visibility, in the order that leaves nothing hidden behind: isolate the stock, hide one jaw,
-    # show it again, then drop the isolation. Each verb reports what it reached.
-    ("view_set", {"action": "isolate", "target": "STOCK:1"}, "ok", None),
+    # show it again, then drop the isolation. Each verb reports what it reached. The story document
+    # already reads modified, so the isolate claims no flip of its own.
+    ("view_set", {"action": "isolate", "target": "STOCK:1"},
+     lambda p: _measured("the already-modified document is not claimed by the isolate",
+                         {k: p.get(k) for k in ("document_modified", "modified_by_this_call")},
+                         p.get("document_modified") is True
+                         and "modified_by_this_call" not in p), None),
     ("view_set", {"action": "clear_isolation"}, "ok", None),
     ("view_set", {"action": "hide", "target": "JawMoving:1"}, "ok", None),
     ("view_set", {"action": "show", "target": "JawMoving:1"}, "ok", None),
@@ -709,11 +2136,6 @@ _SHOWCASE = [
     # saved source design) and stays out of the default sweep.
     # adsk.drawing carries no plain shaded member - shading pairs with hidden or with visible edges.
     ("drawing_create", {"view_style": "shaded"}, "refused", None),
-    # center_line / center_mark have NO enum family to reach on this build (the namespace carries
-    # CenterLineOptions / CenterMarkOptions classes instead), so a non-default request is refused
-    # rather than dropped by a best-effort setter.
-    ("drawing_create", {"center_line": "holes"}, "refused", None),
-    ("drawing_create", {"center_mark": "fillets"}, "refused", None),
     ("drawing_create", {"tangent_edges": "partial"}, "refused", None),
     # Fusion gates manual creation on a template carrying view-placeholder information, and the
     # failure escapes an enclosing try/except - so the mode is refused up front instead of called
@@ -793,6 +2215,12 @@ def _server_answers(timeout=_RELOAD_PROBE_TIMEOUT_S):
     return data.get("server") == SERVER_NAME
 
 
+def _health_bound(timeout=20):
+    """The 'bound' row GET /health publishes right now; a read that fails raises."""
+    with urllib.request.urlopen(BASE + "/health", timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8")).get("bound")
+
+
 def _poll_health(up, polls):
     """Poll /health until it reads `up` (True = answering as this server, False = not), bounded by
     `polls` attempts. True when that state was OBSERVED, False when the budget ran out - a budget
@@ -813,7 +2241,7 @@ def _reload_handle(value):
 
 def _reload_census(call, phase="census"):
     try:
-        is_error, payload = call("doc_get", {})
+        is_error, payload = call("doc_get", {"max_results": 1000})
     except Exception as e:
         return None, f"{phase} doc_get did not answer: {e}"
     if is_error or not isinstance(payload, dict) or payload.get("truncated") is not False:
@@ -839,15 +2267,18 @@ def _reload_census(call, phase="census"):
     if active_rows[0].get("document_handle") != active_handle:
         return None, f"{phase} active document did not match its census row"
     return {"handle": active_handle, "document_id": active.get("document_id"),
-            "name": active.get("name"), "rows": rows}, None
+            "name": active.get("name"), "rows": rows, "complete": True,
+            "open_count": count}, None
 
 
-def _reload_cleanup(call, scratch, home):
+def _reload_cleanup(call, scratch, home, evidence=None):
     """Close only the proven scratch and independently restore the original home."""
     problems = []
     state, problem = _reload_census(call, "cleanup")
     if problem:
         return False, problem
+    if evidence is not None:
+        evidence["cleanup_census"] = state
     if not _reload_handle(scratch):
         problems.append("scratch ownership unresolved")
     elif scratch in {row["document_handle"] for row in state["rows"]}:
@@ -863,6 +2294,8 @@ def _reload_cleanup(call, scratch, home):
         state, problem = _reload_census(call, "scratch cleanup")
         if problem:
             return False, "; ".join(problems + [problem])
+        if evidence is not None:
+            evidence["scratch_cleanup_census"] = state
         if scratch in {row["document_handle"] for row in state["rows"]}:
             problems.append("owned scratch remains open")
     handles = {row["document_handle"] for row in state["rows"]}
@@ -887,6 +2320,9 @@ def _reload_cleanup(call, scratch, home):
         problems.append("original home identity did not read back")
     if problems:
         return False, "; ".join(problems)
+    if evidence is not None:
+        evidence["restored_census"] = restored
+        evidence.setdefault("checks", {})["scratch_closed_and_home_restored"] = True
     return True, "scratch cleanup and home restoration verified"
 
 
@@ -908,7 +2344,7 @@ def _reload_owned_handle(call, old_handle, nonce_name):
     return None
 
 
-def _reload_document_probe(call, old_handle, home, nonce_name):
+def _reload_document_probe(call, old_handle, home, nonce_name, evidence=None):
     def ask(tool, args):
         try:
             is_error, payload = call(tool, args)
@@ -920,6 +2356,8 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
     if problem:
         return False, problem, None
     fresh = payload["handle"]
+    if evidence is not None:
+        evidence["post_reload_census"] = payload
     if fresh == old_handle:
         return False, "post-reload scratch handle was not fresh", None
     is_error, nonce = ask("param_get", {"name": nonce_name})
@@ -927,13 +2365,19 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
     if (is_error or not isinstance(par, dict) or par.get("name") != nonce_name
             or par.get("value") != 17):
         return False, "post-reload nonce did not identify the owned scratch", None
+    if evidence is not None:
+        evidence.setdefault("checks", {})["nonce_survived_reload"] = True
     is_error, stale = ask("param_add", {"name": "ReloadStale", "expression": "1 mm",
                                         "expect_document": old_handle})
     if not is_error or "unknown_document_handle" not in str(stale):
         return False, "the expired scratch handle did not refuse before writing", fresh
+    if evidence is not None:
+        evidence.setdefault("checks", {})["old_handle_refused"] = True
     is_error, absent = ask("param_get", {"name": "ReloadStale"})
     if not is_error or "Parameter not found" not in str(absent):
         return False, "the stale-handle parameter was not absent", fresh
+    if evidence is not None:
+        evidence.setdefault("checks", {})["stale_write_absent"] = True
     is_error, added = ask("param_add", {"name": "ReloadRecovered", "expression": "2 mm",
                                         "expect_document": fresh})
     par = (added or {}).get("parameter") if isinstance(added, dict) else None
@@ -944,6 +2388,8 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
     par = (read_back or {}).get("parameter") if isinstance(read_back, dict) else None
     if is_error or not isinstance(par, dict) or par.get("value") != 2:
         return False, "fresh scratch parameter did not read back", fresh
+    if evidence is not None:
+        evidence.setdefault("checks", {})["fresh_handle_write_readback"] = True
     is_error, deleted = ask("param_delete", {"name": "ReloadRecovered",
                                               "expect_document": fresh})
     if is_error or not isinstance(deleted, dict) or deleted.get("deleted") is not True:
@@ -951,16 +2397,75 @@ def _reload_document_probe(call, old_handle, home, nonce_name):
     is_error, absent = ask("param_get", {"name": "ReloadRecovered"})
     if not is_error or "Parameter not found" not in str(absent):
         return False, "fresh scratch cleanup was not read back", fresh
+    if evidence is not None:
+        evidence.setdefault("checks", {})["recovery_parameter_removed"] = True
     return True, "fresh scratch handle recovered and stale handle refused", fresh
 
+def _reload_session_probe(previous_session, old_document_handle, evidence=None):
+    """Require stale transport refusal and a fresh-session document read."""
+    read = {"jsonrpc": "2.0", "id": "reload-session-read", "method": "tools/call",
+            "params": {"name": "doc_get", "arguments": {}}}
+    request = urllib.request.Request(
+        MCP, data=json.dumps(read).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream",
+                 "Mcp-Session-Id": previous_session})
+    try:
+        with urllib.request.urlopen(request, timeout=20):
+            raise RuntimeError("retained transport session was admitted after reload")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise RuntimeError("retained transport session refused with " + str(exc.code)) from exc
+        if exc.read() != b"":
+            raise RuntimeError("stale transport refusal carried an unexpected body")
+        if evidence is not None:
+            evidence.setdefault("checks", {})["old_transport_refused_empty_404"] = True
+    initialized, fresh_session = facade("_post")(
+        {"jsonrpc": "2.0", "id": "reload-session-init", "method": "initialize",
+         "params": {"protocolVersion": "2025-03-26"}}, with_session=True)
+    result = initialized.get("result", {})
+    if (not fresh_session or fresh_session == previous_session
+            or result.get("serverInfo", {}).get("name") != SERVER_NAME):
+        raise RuntimeError("fresh initialize did not identify the restarted server")
+    if evidence is not None:
+        evidence["after_mcp_session"] = fresh_session
+        evidence.setdefault("checks", {})["fresh_session_changed"] = fresh_session != previous_session
+    request = urllib.request.Request(
+        MCP, data=json.dumps(read).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream",
+                 "Mcp-Session-Id": fresh_session})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        reply = json.loads(response.read().decode("utf-8"))
+    result = reply.get("result", {})
+    if result.get("isError") is not False:
+        raise RuntimeError("fresh transport session did not complete doc_get")
+    content = result.get("content") or []
+    payload = json.loads(content[0]["text"]) if content else {}
+    handle = (payload.get("active") or {}).get("document_handle")
+    if not _reload_handle(handle) or handle == old_document_handle:
+        raise RuntimeError("fresh-session doc_get did not read a new document handle")
+    if evidence is not None:
+        evidence["fresh_transport_document_handle"] = handle
+        evidence.setdefault("checks", {})["fresh_session_read_new_handle"] = True
+    return handle
+
+
 def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
-                 up_polls=_RELOAD_UP_POLLS, expected_attestation=None):
+                 up_polls=_RELOAD_UP_POLLS, expected_attestation=None, evidence=None,
+                 before_tool_census=None, expected_fusion_version=None):
     """Reload the add-in and verify a run-owned document survives with fresh identity."""
+    from verify_core import require_machine
+    import machine_config
+    machine_config.require_call(require_machine(), "sys_reload_addin", {})
     call, STORY = facade("call"), facade("STORY")
     home, problem = _reload_census(call, "pre-reload")
     if problem:
         print("  reload beat: " + problem)
         return
+    if evidence is not None:
+        evidence["pre_reload_census"] = home
+        evidence["before_tool_census"] = sorted(before_tool_census or [])
     if home["document_id"] is not None and (
             not isinstance(home["document_id"], str) or not home["document_id"].startswith("urn:")):
         print("  reload beat: original home lineage is invalid")
@@ -996,6 +2501,29 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
         if (is_error or not isinstance(par, dict) or par.get("name") != nonce_name
                 or par.get("value") != 17):
             raise RuntimeError("owned scratch nonce did not read back before reload")
+        initialized, old_session = facade("_post")(
+            {"jsonrpc": "2.0", "id": "reload-session-before", "method": "initialize",
+             "params": {"protocolVersion": "2025-03-26"}}, with_session=True)
+        if (not old_session or initialized.get("result", {}).get("serverInfo", {}).get("name")
+                != SERVER_NAME):
+            raise RuntimeError("pre-reload initialize did not identify the serving session")
+        if evidence is not None:
+            evidence["before_mcp_session"] = old_session
+        if expected_attestation is not None:
+            try:
+                before_health = facade("health_gate")()
+            except (OSError, ValueError, SystemExit) as exc:
+                raise RuntimeError("pre-reload health did not confirm the loaded identity") from exc
+            before_attestation = facade("attestation_identity")(before_health)
+            if (not isinstance(before_attestation, dict)
+                    or any(before_attestation.get(key) != expected_attestation.get(key)
+                           for key in ("implementation_fingerprint", "schema_fingerprint",
+                                       "load_id", "session_id"))):
+                raise RuntimeError("pre-reload identity differs from the run's loaded identity")
+            if evidence is not None:
+                evidence["before_health"] = before_health
+                evidence["before_attestation"] = dict(
+                    before_health["attestation"], session_id=before_health["session_id"])
         is_error, payload = call("sys_reload_addin", {})
         if is_error or "Reload scheduled" not in str(payload):
             raise RuntimeError(f"no reload was scheduled - {str(payload)[:NOTE_MAX]}")
@@ -1018,8 +2546,31 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
             if not all(current_attestation.get(field) == expected_attestation.get(field)
                        for field in ("implementation_fingerprint", "schema_fingerprint")):
                 raise RuntimeError("new server did not prove the expected build")
-            if "sys_reload_addin" not in facade("registered_tools")(current_health):
+            if expected_fusion_version is not None:
+                build_error, build_observation = call("workspace_orient", {})
+                after_fusion_version = (build_observation.get("fusion_version")
+                                        if isinstance(build_observation, dict) else None)
+                if (build_error or not isinstance(after_fusion_version, str)
+                        or not after_fusion_version or after_fusion_version == "?"
+                        or after_fusion_version != expected_fusion_version):
+                    raise RuntimeError("restarted Fusion build differs from the run's build")
+                if evidence is not None:
+                    evidence["after_build_observation"] = build_observation
+                    evidence["after_fusion_version"] = after_fusion_version
+            after_tool_census = facade("registered_tools")(current_health)
+            if "sys_reload_addin" not in after_tool_census:
                 raise RuntimeError("restarted tools/list did not return sys_reload_addin")
+            if before_tool_census is not None and sorted(before_tool_census) != after_tool_census:
+                raise RuntimeError("restarted tool census differs from the starting registry")
+            if evidence is not None:
+                evidence["after_health"] = current_health
+                evidence["after_attestation"] = dict(
+                    current_health["attestation"], session_id=current_health["session_id"])
+                evidence["after_tool_census"] = after_tool_census
+                evidence.setdefault("checks", {}).update({
+                    "new_load_and_session": True, "same_implementation_and_schema": True,
+                    "tool_census_matches": before_tool_census is None
+                    or sorted(before_tool_census) == after_tool_census})
             restart_note = "new load and session identities proved the expected build"
         else:
             if not _poll_health(False, down_polls):
@@ -1027,6 +2578,13 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
             if not _poll_health(True, up_polls):
                 raise RuntimeError(f"/health did not answer again within {up_polls} probes")
             restart_note = f"/health stopped answering and answered again as {SERVER_NAME}"
+        if evidence is not None:
+            evidence["scratch_handle_before_reload"] = canary
+            evidence["nonce_name"] = nonce_name
+            evidence["nonce_value_mm"] = 17
+            evidence.setdefault("checks", {})["nonce_read_back_before_reload"] = True
+            evidence.setdefault("checks", {})["reload_scheduled"] = True
+        transport_handle = _reload_session_probe(old_session, canary, evidence)
         try:
             found = call("sys_find_tool", {"query": _RELOAD_SMOKE_QUERY})[1]
         except Exception as e:
@@ -1035,16 +2593,25 @@ def reload_smoke(rows, notes, valued=None, down_polls=_RELOAD_DOWN_POLLS,
         names = [m.get("tool") for m in matches if isinstance(m, dict)]
         if "sys_reload_addin" not in names:
             raise RuntimeError("restarted registry did not return sys_reload_addin")
-        ok, note, fresh = _reload_document_probe(call, canary, home, nonce_name)
+        # Two reads of the restarted server, each compared with the URL this run connected on.
+        _bound_on_harness("/health", facade("_health_bound")())
+        mapped = call("sys_capability_map", {})[1]
+        _bound_on_harness("sys_capability_map",
+                          mapped.get("bound") if isinstance(mapped, dict) else None)
+        ok, note, fresh = _reload_document_probe(call, canary, home, nonce_name, evidence)
         if not ok:
             raise RuntimeError(note)
-        cleanup_ok, cleanup_note = _reload_cleanup(call, fresh, home)
+        if fresh != transport_handle:
+            raise RuntimeError("fresh-session read disagreed with the owned scratch census")
+        cleanup_ok, cleanup_note = _reload_cleanup(call, fresh, home, evidence)
         if not cleanup_ok:
             raise RuntimeError(cleanup_note)
         rows.append(("sys_reload_addin", "pass",
                      f"{restart_note}; the restarted "
                      f"registry returned {len(names)} match(es) for '{_RELOAD_SMOKE_QUERY}', "
-                     "sys_reload_addin among them"))
+                     f"sys_reload_addin among them; /health and sys_capability_map both publish "
+                     f"{MCP} as bound; retained transport refused with empty 404 and fresh "
+                     "initialize/read recovered the owned scratch"))
         notes["sys_reload_addin"] = STORY.get("sys_reload_addin", "")
         if valued is not None:
             valued.add("sys_reload_addin")

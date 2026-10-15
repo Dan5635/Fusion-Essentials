@@ -93,7 +93,7 @@ class TestRequireOverATruncatedWalk:
         assert "unknown" not in out["note"]
 
 
-# ── BOUNDED READS: the selection echo is capped (CLAUDE.md "Bound it") ──────────────────────────
+# ── BOUNDED READS: the selection echo is capped (AGENTS.md "Bound it") ──────────────────────────
 
 class TestSelectionCap:
     def test_under_cap_untruncated_and_unchanged(self, monkeypatch):

@@ -12,7 +12,7 @@ import json
 import adsk.core
 import adsk.fusion
 
-from ._common import counted, measured, read_flag, safe
+from ._common import counted, error, measured, occurrence_world_translation, read_flag, safe
 
 app = adsk.core.Application.get()
 
@@ -74,13 +74,22 @@ class VersionAdvanced(Postcondition):
         from . import _doc_common
         doc = safe(lambda: app.activeDocument)
         still = safe(lambda: doc.isModified) if doc is not None else None
+        before_version = before.get("version") if isinstance(before, dict) else None
+        lineage_after = safe(lambda: doc.dataFile.id) if doc is not None else None
         if still is None:
             local_confirmed = False
         elif still:
+            fresh = _doc_common.fresh_version_read(app, lineage_after)
+            landed = _doc_common._version_advanced(before_version, fresh)
+            tip = fresh.get("latest_version_number") or fresh.get("version_number")
+            cloud = (f"A fresh read shows cloud version {tip} landed." if landed
+                     else "A fresh read shows no new cloud version." if landed is False
+                     else "Whether a cloud version landed is unknown: the fresh version reads were "
+                          "not comparable.")
             return ("save reported success but the active document is STILL modified - local save "
-                    "completion was not confirmed. The cloud version state is not decided by this "
-                    "modified flag. Close any referencing or duplicate document, reopen this one "
-                    "top-level, then inspect doc_get/data_get before saving again."), {}
+                    f"completion was not confirmed. {cloud} Close any referencing or duplicate "
+                    "document, reopen this one top-level, then inspect doc_get/data_get before "
+                    "saving again."), {}
         else:
             local_confirmed = True
 
@@ -93,8 +102,6 @@ class VersionAdvanced(Postcondition):
                 evidence["pending"] = True
             return "", evidence
 
-        before_version = before.get("version") if isinstance(before, dict) else None
-        lineage_after = safe(lambda: doc.dataFile.id) if doc is not None else None
         verdict, after = _doc_common.wait_for_version_advance(
             app, lineage_after, before_version, self._DEADLINE_S, self._POLL_SLEEP)
         evidence.update({
@@ -112,11 +119,21 @@ class VersionAdvanced(Postcondition):
         })
         if verdict is not True:
             evidence["pending"] = True
-            evidence["version_status"] = (
-                "Cloud version advancement was not observed in fresh comparable reads. Re-read "
-                "data_get for the document_id." if verdict is False else
-                "Cloud version advancement is unknown because fresh before/after lineage/version "
-                "reads were not comparable. Re-read data_get for the document_id.")
+            held = before.get("lineage") if isinstance(before, dict) else None
+            if verdict is None and _doc_common._lineage_moved(held, lineage_after):
+                evidence["version_status"] = (
+                    f"The document's lineage read {held} before the save and {lineage_after} "
+                    "after it. version_before was read on the first and version_after on the "
+                    "second, so the two numbers are not compared and no advance is reported. "
+                    + ("" if after.get("data_file") is not None else
+                       "A fresh lookup of the second did not return a file in this call. ")
+                    + f"Read data_get(file='{lineage_after}').")
+            else:
+                evidence["version_status"] = (
+                    "Cloud version advancement was not observed in fresh comparable reads. Re-read "
+                    "data_get for the document_id." if verdict is False else
+                    "Cloud version advancement is unknown because fresh before/after lineage/version "
+                    "reads were not comparable. Re-read data_get for the document_id.")
         return "", evidence
 
 
@@ -336,7 +353,8 @@ class FeatureHealthy(Postcondition):
             if label == "error":
                 return ((f"'{nm}' was created but FAILED to compute. " + msg).strip()
                         + " It remains in the timeline - fix its inputs or remove it with "
-                          "design_delete_feature."), {}
+                          "design_delete_feature. Not measured whether later items this call "
+                          "added computed; re-read with design_get(include=['timeline'])."), {}
             warnings.append((nm + ": " + msg).strip().rstrip(":"))
         evidence = {"features_verified": count - before}
         if warnings:
@@ -450,14 +468,9 @@ class ChildGeometryMoved(Postcondition):
     _MOVE_TOL_CM = 0.01                   # 0.1 mm - below this a "move" is joint-solver noise
 
     def _translation(self, occ):
-        """The occurrence's WORLD translation, compared below against a world-space geometry point."""
-        # .transform on a nested proxy is the LOCAL matrix; .transform2 composes the parent in.
-        m = safe(lambda: occ.transform2) or safe(lambda: occ.transform)
-        t = safe(lambda: m.translation) if m is not None else None
-        if t is None:
-            return None
-        return (safe(lambda: t.x, 0.0) or 0.0, safe(lambda: t.y, 0.0) or 0.0,
-                safe(lambda: t.z, 0.0) or 0.0)
+        """A placed occurrence's world translation in cm, or None."""
+        point = occurrence_world_translation(occ)
+        return tuple(point.values()) if point is not None else None
 
     def _deep_body_point(self, occ):
         """A WORLD-space bbox-min corner of a body on occ's DEEPEST descendant occurrence that owns
@@ -511,7 +524,7 @@ class ChildGeometryMoved(Postcondition):
                 continue
             tr = self._translation(occ)
             pt = self._deep_body_point(occ)
-            if tr is None or pt is None:
+            if pt is None:
                 continue
             entries.append((occ, tr, pt))
         return entries
@@ -527,7 +540,7 @@ class ChildGeometryMoved(Postcondition):
         for occ, tr0, pt0 in before:
             tr1 = self._translation(occ)
             pt1 = self._deep_body_point(occ)
-            if tr1 is None or pt1 is None:
+            if tr0 is None or tr1 is None or pt1 is None:
                 unverified.append(safe(lambda occ=occ: occ.name) or "an unnamed occurrence")
                 continue
             parent_moved = self._dist(tr0, tr1)
@@ -562,6 +575,10 @@ _CENSUS_BODY_CAP = 2000
 _AREA_TOL_CM2 = 1e-6
 _PLACE_TOL_CM = 1e-4
 _ELEMENT_CAP = 400
+# The rotation cells of a row-major 4x4 and the cell difference two orientations may read apart by
+# and still count as one: adjacent copies of a 400-instance ring differ by 1.6e-2.
+_ROTATION_CELLS = (0, 1, 2, 4, 5, 6, 8, 9, 10)
+_TURN_TOL = 1e-6
 
 
 def census_bodies():
@@ -616,6 +633,9 @@ def total_area(bodies):
     return total, unread
 
 
+_NOT_MEASURED_CONSUMED = " Not measured whether its input bodies were consumed."
+
+
 class FreeEdgesChanged(Postcondition):
     """After a stitch or unstitch: the design's FREE-edge count moved the declared way - 'sealed'
     drops it (edge pairs joined), 'opened' raises it (faces set loose)."""
@@ -634,9 +654,12 @@ class FreeEdgesChanged(Postcondition):
 
     def capture(self, kwargs):
         bodies = census_bodies()
-        return free_edge_count(bodies) if bodies is not None else None
+        return {"free": free_edge_count(bodies) if bodies is not None else None,
+                "timeline": _timeline_count()}
 
     def verify(self, kwargs, payload, before):
+        since = before.get("timeline") if isinstance(before, dict) else None
+        before = before.get("free") if isinstance(before, dict) else None
         bodies = census_bodies()
         after = free_edge_count(bodies) if bodies is not None else None
         if before is None or after is None:
@@ -648,16 +671,17 @@ class FreeEdgesChanged(Postcondition):
                 return "", {"free_edges_confirmed": False}
             if after >= before:
                 return (f"the stitch reported success but the design's free-edge count did not drop "
-                        f"({before} before, {after} after) - no edge pair was sealed."), {}
+                        f"({before} before, {after} after) - no edge pair was sealed."
+                        + _NOT_MEASURED_CONSUMED + _left_by(payload, always=True, since=since)), {}
         elif after <= before:
             return (f"the unstitch reported success but the design's free-edge count did not rise "
-                    f"({before} before, {after} after) - no face was set loose."), {}
+                    f"({before} before, {after} after) - no face was set loose."
+                    + _NOT_MEASURED_CONSUMED + _left_by(payload, always=True, since=since)), {}
         return "", {"free_edges_before": before, "free_edges_after": after}
 
 
 class SurfaceAreaAdded(Postcondition):
-    """After a surface-creating Edit: the design's total body surface area GREW, so the sheet the
-    payload names exists as measured area."""
+    """Verify that total body surface area increased beyond the area threshold."""
 
     name = "surface_area_added"
     rung = "geometry"
@@ -665,9 +689,12 @@ class SurfaceAreaAdded(Postcondition):
 
     def capture(self, kwargs):
         bodies = census_bodies()
-        return total_area(bodies) if bodies is not None else None
+        return {"area": total_area(bodies) if bodies is not None else None,
+                "timeline": _timeline_count()}
 
     def verify(self, kwargs, payload, before):
+        since = before.get("timeline") if isinstance(before, dict) else None
+        before = before.get("area") if isinstance(before, dict) else None
         bodies = census_bodies()
         after = total_area(bodies) if bodies is not None else None
         if before is None or after is None:
@@ -677,15 +704,51 @@ class SurfaceAreaAdded(Postcondition):
             return "", {"area_added_cm2": round(delta, 6)}
         if before[1] or after[1]:
             return "", {"surface_area_confirmed": False}
-        return (f"the surface was reported created but the design's total body surface area is "
-                f"unchanged ({round(after[0], 6)} cm2) - no surface geometry was added."), {}
+        return (f"the surface was reported created, but total body surface area changed by "
+                f"{delta:.12g} cm2; verification requires an increase above {_AREA_TOL_CM2:g} cm2."
+                + _left_by(payload, since=since)), {
+                    "area_change_cm2": delta, "area_increase_threshold_cm2": _AREA_TOL_CM2}
+
+
+def _timeline_count():
+    """The active design's timeline count, or None when it does not read (DIRECT mode raises)."""
+    from ._common import design
+    d = design()
+    tl = safe(lambda: d.timeline) if d is not None else None
+    return safe(lambda: tl.count) if tl is not None else None
+
+
+def _added_address(name, since):
+    """The address of the ONE timeline item named `name` added at index `since` or later, else None."""
+    from ._common import design
+    from ._inputs import candidate_address
+    d = design()
+    tl = safe(lambda: d.timeline) if d is not None else None
+    count = safe(lambda: tl.count) if tl is not None else None
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in (since, count)):
+        return None
+    items = [safe(lambda k=k: tl.item(k)) for k in range(since, count)]
+    hits = [o for o in items if o is not None and (safe(lambda o=o: o.name) or "").strip() == name]
+    return candidate_address(hits[0]) if len(hits) == 1 else None
+
+
+def _left_by(payload, always=False, since=None):
+    """The removal clause for the payload's feature and bodies ('' with none, unless `always`)."""
+    from ._common import design, left_in_timeline
+    feature = payload.get("feature") or payload.get("form")
+    if not isinstance(feature, str) or not feature:
+        return " " + left_in_timeline(design(), None) if always else ""
+    bodies = [b for b in payload.get("result_bodies") or () if isinstance(b, str)]
+    added = (" Its result bodies: " + ", ".join(f"'{b}'" for b in bodies) + "." if bodies else "")
+    address = _added_address(feature.strip(), since) or feature
+    return added + " " + left_in_timeline(design(), address)
 
 
 class PatternElementsPlaced(Postcondition):
     """After a pattern: the copies sit at DISTINCT places. With ``spacings`` ((quantity key,
     spacing key, quantity default, spacing default) per grid direction, direction one innermost)
-    the read is the element transforms and the first instance along each direction must be one
-    spacing from the seed; without them it is the result bodies' boxes."""
+    the read is the element transforms, the first instance one spacing from the seed; without
+    them it is the result bodies' boxes, or a bodiless pattern's element occurrence poses."""
 
     # A circular element's transform is NOT its placement (a 4 x 360 deg ring reads 0/180/270/0 deg
     # while its bodies sit at 0/90/180/270, the seed LAST in feature.bodies), so a ring is read by
@@ -763,6 +826,51 @@ class PatternElementsPlaced(Postcondition):
             out.append((lo + hi, lo))
         return out
 
+    @staticmethod
+    def _occurrence_poses(feature):
+        """[[16 transform2 values per occurrence] per element], or None when any did not read."""
+        from ._common import finite_number
+        els = safe(lambda: feature.patternElements)
+        n = counted(lambda: els.count) if els is not None else None
+        if not n or n > _ELEMENT_CAP:
+            return None
+        out = []
+        for i in range(n):
+            # An element's occurrences are an OccurrenceVector: it iterates and carries no count.
+            occs = safe(lambda k=i: list(els.item(k).occurrences))
+            if not occs or (out and len(occs) != len(out[0])):
+                return None
+            poses = []
+            for o in occs:
+                arr = safe(lambda o=o: [finite_number(v) for v in o.transform2.asArray()])
+                if arr is None or len(arr) != 16 or None in arr:
+                    return None
+                poses.append(arr)
+            out.append(poses)
+        return out
+
+    @staticmethod
+    def _one_pose(a, b):
+        """Whether two poses read one position (within _PLACE_TOL_CM) and one orientation."""
+        moved = ChildGeometryMoved._dist((a[3], a[7], a[11]), (b[3], b[7], b[11]))
+        return moved <= _PLACE_TOL_CM and all(abs(a[k] - b[k]) <= _TURN_TOL
+                                              for k in _ROTATION_CELLS)
+
+    def _occurrences_placed(self, feature, quantity):
+        """Count pairwise-distinct occurrence poses for bodiless patterns, else return unconfirmed."""
+        # A circular element's own transform reads a zero translation, so it is never the read.
+        unknown = {"pattern_elements_confirmed": False}
+        placed = self._occurrence_poses(feature)
+        if placed is None:
+            return unknown
+        if isinstance(quantity, int) and not isinstance(quantity, bool) and quantity != len(placed):
+            return unknown
+        for i, poses in enumerate(placed):
+            if any(all(self._one_pose(a, b) for a, b in zip(poses, other))
+                   for other in placed[:i]):
+                return unknown
+        return {"elements_placed": len(placed)}
+
     def _spacing_miss(self, kwargs, placed):
         """The clause naming the first direction whose landed step is not the requested spacing."""
         from ._common import scale
@@ -782,13 +890,18 @@ class PatternElementsPlaced(Postcondition):
         return ""
 
     def verify(self, kwargs, payload, before):
+        if payload.get("entity_kind") in ("features", "faces"):
+            return "", {"pattern_elements_confirmed": False}
         feature = self._feature(payload, before)
         if feature is None:
             placed = None
         elif self.spacings:
             placed = self._transforms(feature)
         else:
+            from ._common import result_bodies
             placed = self._body_boxes(feature)
+            if placed is None and not result_bodies(feature):
+                return "", self._occurrences_placed(feature, payload.get("quantity"))
         if placed is None:
             return "", {"pattern_elements_confirmed": False}
         seen = {}
@@ -806,18 +919,24 @@ class PatternElementsPlaced(Postcondition):
         return "", {"elements_placed": len(placed)}
 
 
-def _verification_failed(post, ex):
-    """The fail-closed error result when a HARD postcondition's capture or verify RAISED."""
+def _verification_failed(post, ex, payload=None):
+    """Return a hard capture refusal or an unverified post-write error with reported identities."""
     detail = str(ex)[:160]
     tool = getattr(post, "read_tool", None)
     reread = (f"Re-read with {tool} and retry only if the change did not take."
               if tool else "Re-read the affected state and retry only if the change did not take.")
-    note = (f"The mutation may have succeeded, but its verification could not run ({detail}). "
-            f"Reporting failure rather than a possible no-op passed as success. " + reread)
-    return {"content": [{"type": "text", "text": json.dumps(
-                {"postcondition": post.name, "verification_error": detail, "note": note}, indent=2)}],
-            "isError": True,
-            "message": f"{post.name}: verification could not run - {detail}"}
+    body = {"postcondition": post.name, "verification_error": detail}
+    if payload is None:
+        body.update(handler_not_run=True,
+                    note="The required baseline could not be read; this tool's handler was not run. "
+                         "Inspect the affected state before retrying.")
+        message = f"{post.name}: baseline capture failed; handler not run - {detail}"
+    else:
+        body.update(handler_reported_unverified_result=payload,
+                    note=f"The mutation may have succeeded, but its verification could not run ({detail}). "
+                         "Nested results are handler-reported, not confirmation. " + reread)
+        message = f"{post.name}: verification could not run - {detail}"
+    return error(body["note"], body, message=message)
 
 
 def _check_input_keys(handler, posts):
@@ -838,9 +957,7 @@ def _check_input_keys(handler, posts):
 
 
 def wrap(handler, postconditions):
-    """Wrap an Edit handler with capture -> handler -> verify, running verify only on a JSON ok().
-    A raising capture or verify fails the call for a HARD kind and annotates for a SOFT one; the
-    mutation is never rolled back. Applied INSIDE _write_guard.wrap."""
+    """Guard an Edit's baseline, run its handler, then verify JSON success without rollback."""
     posts = list(postconditions or [])
     if not posts:
         return handler
@@ -854,6 +971,9 @@ def wrap(handler, postconditions):
 
     def asserted(**kwargs):
         before = [_capture(p, kwargs) for p in posts]
+        for p, (_baseline, cap_ex) in zip(posts, before):
+            if cap_ex is not None and p.severity != "soft":
+                return _verification_failed(p, cap_ex)
         result = handler(**kwargs)
         if not isinstance(result, dict) or result.get("isError"):
             return result
@@ -870,13 +990,10 @@ def wrap(handler, postconditions):
 
         for p, (b, cap_ex) in zip(posts, before):
             soft = (p.severity == "soft")
-            # A capture that raised makes verification impossible; a HARD one fails closed.
             if cap_ex is not None:
-                if soft:
-                    payload.setdefault(p.name + "_confirmed", False)
-                    payload.setdefault("verify_error", ("capture failed: " + str(cap_ex))[:120])
-                    continue
-                return _verification_failed(p, cap_ex)
+                payload.setdefault(p.name + "_confirmed", False)
+                payload.setdefault("verify_error", ("capture failed: " + str(cap_ex))[:120])
+                continue
             try:
                 reason, evidence = p.verify(kwargs, payload, b)
             except Exception as ex:
@@ -885,16 +1002,18 @@ def wrap(handler, postconditions):
                     payload.setdefault(p.name + "_confirmed", False)
                     payload.setdefault("verify_error", str(ex)[:120])
                     continue
-                return _verification_failed(p, ex)
+                return _verification_failed(p, ex, payload)
             if reason:
                 if soft:
                     payload.setdefault("verified", {})[p.name] = {"confirmed": False,
                                                                   "reason": reason}
                     continue
-                return {"content": [{"type": "text", "text": json.dumps(
-                            {"postcondition": p.name, "note": reason}, indent=2)}],
-                        "isError": True,
-                        "message": f"{p.name}: {reason}"}
+                reread = f"Re-read with {p.read_tool}." if p.read_tool else "Re-read the affected state."
+                body = {"postcondition": p.name, "note": reason + " " + reread
+                        + " Nested results are handler-reported, not confirmation; inspect before retrying.",
+                        "handler_reported_unverified_result": payload,
+                        "verification_evidence": evidence or {}}
+                return error(body["note"], body, message=f"{p.name}: {reason}")
             for k, v in (evidence or {}).items():
                 payload.setdefault(k, v)
         content[0]["text"] = json.dumps(payload, indent=2)

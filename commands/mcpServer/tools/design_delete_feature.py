@@ -35,15 +35,18 @@ def _find_object(timeline, want):
     resolver: an EXACT case-insensitive match, a repeated name refused with its candidates."""
     return _inputs.resolve_timeline_object(
         _inputs._timeline_objects(timeline), want, "the feature to delete",
-        miss_hint=lambda name: _design_common.collapsed_group_hint(timeline, name))
+        miss_hint=lambda name: _design_common.collapsed_group_hint(timeline, name),
+        hidden_hint=lambda name, hits: _design_common.hidden_twin_hint(timeline, name, hits))
 
 
 def _name_hits(timeline, name):
-    """How many timeline objects carry `name` right now, through the same matcher the delete was
-    resolved with - None when the timeline itself could not be read, which is not a count of zero."""
+    """How many timeline objects carry `name` right now - None when the timeline could not be read."""
+    # By NAME only: a digit name is also an index, and the next item renumbers into that index after
+    # the delete, so the matcher would count the survivor and report the delete as not done.
     if timeline is None or _common.counted(lambda: timeline.count) is None:
         return None
-    return len(_inputs._match_timeline_objects(_inputs._timeline_objects(timeline), name))
+    key = name.strip().lower()
+    return sum(1 for o in _inputs._timeline_objects(timeline) if _inputs._name_key(o) == key)
 
 
 def _remove_features_named(design, name):
@@ -104,15 +107,15 @@ def handler(feature: str = "") -> dict:
     if not want:
         return error("Provide 'feature' - the timeline object name to delete (see design_get(include=['timeline'])).")
 
-    design = _common.design()
-    if not design:
-        return error("No active design (open a document with design geometry).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     timeline = _timeline(design)
     if timeline is None:
         return error(_design_common.no_timeline_reason(
-            design, "This design has no timeline (a direct-modelling design has no deletable "
-                    "timeline features). Delete bodies/occurrences directly instead."))
+            "This design has no timeline (a direct-modelling design has no deletable "
+            "timeline features). Delete bodies/occurrences directly instead."))
 
     obj, rerr = _find_object(timeline, want)
     if rerr:

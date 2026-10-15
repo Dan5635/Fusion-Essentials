@@ -15,15 +15,19 @@ hasToolpath reads TRUE on an empty swarf toolpath, so it cannot answer that ques
 """
 
 import json
+import math
 import re
 import sys
 import time
+from machine_config import RETAINED_LIBRARY_NAME
 
 from verify_core import (
-    EXPORT_DIR, MACHINE_NAME, NOTE_MAX, Parked, TEMPLATE_NAME, _RECALL, _box, _ctx_get, _dwell,
-    _extruded, _face_up_at, _fg, _fgn, _imported, _joint_origin_computed, _made_component,
+    EXPORT_DIR, Independent, MACHINE_NAME, NOTE_MAX, Parked, TEMPLATE_NAME, _RECALL, _box, _ctx_get, _dwell,
+    _activated, _document_closed, _extruded, _face_up_at, _fg, _fgn, _home_address, _home_document,
+    _imported, _joint_origin_computed, _made_component, _new_document,
     _matched, _measured, _near, _needs, _num, _param_read, _param_set_to, _pocket_selected,
     _recall, _refused, _selected_saved, _watch, facade)
+from verify_acts_model_sweep import _retire_compare, _retire_material_state, _retire_reads
 
 # THE NAMES THE STORY BUILDS UNDER, in one place for the acts that have to agree on them: the
 # modelling acts create the part and the parameter that drives it, the vise act creates the billet
@@ -36,6 +40,7 @@ VISE_BASE = "ViseBase"         # the fixture bodies the setup is told about
 JAW_FIXED = "JawFixed"
 JAW_MOVING = "JawMoving"
 CAM_SETUP = "DemoSetup"        # the milling setup the job, the post and the template ride on
+_SUPPRESSED_EMPTY_SETUP = "SuppressedDisclosureEmpty"
 FLIP_SETUP = "FlipSetup"       # the second setup: the part turned over, machined from underneath
 FLIP_WCS = "FlipWCS"           # that setup's own origin, a Joint Origin at the part's own centre
 
@@ -264,6 +269,98 @@ def _empty_pocket_settled(p, handle_key):
                      and "cam_generate(target=<op>, skip_valid=false)" in (p.get("empty_triage") or ""))
 
 
+def _face_fault_read(ctx, prepare=False):
+    """Read the two offsets, or seed a deliberate fault in the pinned owned operation."""
+    before = _ctx_get(ctx, "face_fault_before", "the known face baseline") if prepare else ctx.get("face_fault_before")
+    script = """import adsk.core, adsk.cam, hashlib, json
+def run(context):
+    app = adsk.core.Application.get()
+    guards = [m for n,m in __import__('sys').modules.items() if n.endswith('.tools._write_guard')]
+    assert len(guards) == 1
+    assert guards[0].resolve_document_handle(HANDLE) == app.activeDocument
+    assert app.activeDocument.isValid and app.activeDocument.dataFile is None
+    cam = adsk.cam.CAM.cast(app.activeDocument.products.itemByProductType('CAMProductType'))
+    assert cam is not None
+    setups = [s for s in cam.setups if s.name == SETUP_NAME]
+    assert len(setups) == 1
+    ops = [setups[0].allOperations.item(i) for i in range(setups[0].allOperations.count)]
+    ops = [op for op in ops if op.name == OP_NAME]
+    assert len(ops) == 1
+    op = ops[0]
+    assert EXPECTED_ID is None or op.operationId == EXPECTED_ID
+    tool = json.loads(op.tool.toJson())
+    assert isinstance(tool, dict) and tool
+    tool_hash = hashlib.sha256(json.dumps(tool,sort_keys=True).encode()).hexdigest()
+    assert EXPECTED_TOOL is None or tool_hash == EXPECTED_TOOL
+    p = op.parameters.itemByName('bottomHeight_offset')
+    assert p is not None
+    SEED
+    rows = {}
+    for i in range(op.parameters.count):
+        item = op.parameters.item(i)
+        if item.name in ('bottomHeight_offset', 'topHeight_offset'):
+            value = item.value.value
+            assert type(value) in (str, bool, int, float)
+            rows[item.name] = {'expression':item.expression,'value':value,'error':item.error,
+                              'enabled':item.isEnabled,'editable':item.isEditable}
+    print(json.dumps({'operation':op.name,'id':op.operationId,'has_error':op.hasError,
+        'suppressed':op.isSuppressed,'tool_sha256':tool_hash,
+        'parameters':rows}))
+"""
+    seed = ("assert op.hasError is False and abs(p.value.value) < 1e-9\n"
+            "    p.expression = '50 mm'\n"
+            "    assert p.expression == '50 mm' and abs(p.value.value-5.0) < 1e-9") if prepare else "pass"
+    script = script.replace("HANDLE", repr(_ctx_get(ctx, "face_fault_document", "the owned face document")))
+    script = script.replace("SETUP_NAME", repr(CAM_SETUP)).replace("OP_NAME", repr(_ctx_get(ctx, "face_op", "the face op")))
+    script = script.replace("EXPECTED_ID", repr(before["id"] if before else None))
+    script = script.replace("EXPECTED_TOOL", repr(before["tool_sha256"] if before else None)).replace("SEED", seed)
+    return {"script": script, "read_only": not prepare}
+
+
+def _face_fault_known(p, faulted=False):
+    """Whether both offset snapshots and the native operation identity are readable."""
+    return (_partial_snapshot_known(p, _RECALL.get("face_op"), ["bottomHeight_offset", "topHeight_offset"], allow_errors=faulted)
+            and type(p.get("suppressed")) is bool)
+
+
+def _face_fault_restored(p):
+    """Compare the same native operation and both offsets with their known baseline."""
+    before = _RECALL.get("face_fault_before") or {}
+    return _measured("face offsets, tool and operation state restored", p,
+                     _face_fault_known(p) and p == before)
+
+
+def _face_fault_seeded(p):
+    """Check the seeded offset fault against the prior cutter and neighbouring offset."""
+    before = _RECALL.get("face_fault_before") or {}
+    rows, old = p.get("parameters") or {}, before.get("parameters") or {}
+    bottom = rows.get("bottomHeight_offset") or {}
+    return _measured("deliberate face fault is present on the same operation", p,
+        _face_fault_known(p, faulted=True) and p.get("has_error") is True and p.get("suppressed") is False
+        and p.get("id") == before.get("id") and p.get("tool_sha256") == before.get("tool_sha256")
+        and all((rows.get("topHeight_offset") or {}).get(k) == (old.get("topHeight_offset") or {}).get(k)
+                for k in ("expression", "value", "enabled", "editable"))
+        and bottom.get("expression") == "50 mm" and _near(bottom.get("value"), 5.0, 1e-9))
+
+
+def _face_op_settled(handle_key, label, want):
+    """Poll the face op's own generation by handle until it completes, then require `want`'s counts."""
+    def check(p):
+        handle = _RECALL[handle_key]
+        for _attempt in range(60):
+            if p.get("completed") is True:
+                break
+            time.sleep(1)
+            failed, p = facade("call")("cam_get_status", {"handle": handle})
+            if failed:
+                raise AssertionError(f"cam_get_status(handle={handle!r}) failed: {p}")
+        live = p.get("live_states") or {}
+        return _measured(label, {"completed": p.get("completed"), "live_states": live},
+                         p.get("completed") is True
+                         and all(live.get(k) == v for k, v in want.items()))
+    return check
+
+
 def _empty_pocket_raw(p):
     """Require the named pocket's raw empty-path flags and warning in the setup read."""
     row = _operation_row(p, FLIP_SETUP, _EMPTY_REMEDY_OP)
@@ -390,6 +487,141 @@ def _generating_withholds_ready(p):
                       "generating_setups": [r.get("setup") for r in live],
                       "readiness": readiness},
                      all("ready to post" not in text for text in readiness))
+
+
+def _capped_scan_args(setup):
+    """Temporarily cap the source and display reads, then compare restored native and public counts."""
+    script = """import adsk.cam, adsk.core, adsk.fusion, json, sys
+
+def run(context):
+    read = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools._cam_read'))
+    common = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools._cam_common'))
+    get = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_get'))
+    status = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_get_status'))
+    app = adsk.core.Application.get()
+    cam, error = common.get_cam()
+    assert cam is not None, error
+    node, error = common.resolve_cam_node(cam, SETUP_NAME, kinds=('setup',), label='setup')
+    assert node is not None, error
+    setup = node.obj
+    def payload(result):
+        assert result.get('isError') is False, result
+        return json.loads(result['content'][0]['text'])
+    def read_operations():
+        return payload(get.handler(include=['operations'], setup=SETUP_NAME))
+    def setup_row(result):
+        return next(r for r in result['operations']['setups'] if r['setup'] == SETUP_NAME)
+    doc = app.activeDocument
+    design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    assert design is not None
+    def snapshot():
+        bodies = []
+        for i in range(design.allComponents.count):
+            component = design.allComponents.item(i)
+            for j in range(component.bRepBodies.count):
+                body = component.bRepBodies.item(j)
+                box = body.boundingBox
+                bodies.append((component.name, body.name,
+                               (box.minPoint.x, box.minPoint.y, box.minPoint.z),
+                               (box.maxPoint.x, box.maxPoint.y, box.maxPoint.z)))
+        data_file = doc.dataFile
+        return {'document': (doc.name, data_file.id if data_file else None, doc.isModified),
+                'workspace': app.userInterface.activeWorkspace.id,
+                'timeline': (design.timeline.markerPosition, design.timeline.count),
+                'body_count': len(bodies), 'body_boxes': bodies}
+    flat = setup.allOperations
+    flat_count = flat.count
+    cast_count = sum(1 for i in range(flat_count)
+                     if adsk.cam.Operation.cast(flat.item(i)) is not None)
+    before_state = snapshot()
+    source_cap = read._MAX_ITEMS
+    display_cap = get._OPERATIONS_CAP
+    try:
+        read._MAX_ITEMS = 1
+        partial = read_operations()
+        read._MAX_ITEMS = source_cap
+        get._OPERATIONS_CAP = 1
+        displayed = read_operations()
+    finally:
+        read._MAX_ITEMS = source_cap
+        get._OPERATIONS_CAP = display_cap
+    complete = read_operations()
+    live = payload(status.handler(target=SETUP_NAME))
+    after_state = snapshot()
+    partial_row = setup_row(partial)
+    displayed_row = setup_row(displayed)
+    complete_row = setup_row(complete)
+    partial_summary = partial_row['summary']
+    displayed_summary = displayed_row['summary']
+    complete_summary = complete_row['summary']
+    status_total = (live.get('live_states') or {}).get('total')
+    checks = {
+        'flat_count_matches_operation_casts': flat_count == cast_count,
+        'source_cap_returns_prefix': len(partial_row['operations']) == 1 and flat_count > 1,
+        'partial_read_marks_scan_incomplete': partial_row['operations_truncated'] is True
+            and partial_summary.get('scan_complete') is False
+            and partial_summary.get('observed_operation_count') == 1,
+        'partial_read_withholds_readiness': partial_summary.get('readiness', '').startswith(
+            'Readiness not established: operation scan incomplete'),
+        'display_cap_keeps_complete_summary': displayed['operations'].get('truncated') is True
+            and len(displayed_row['operations']) == 1
+            and displayed_summary.get('scan_complete') is True
+            and displayed_summary.get('observed_operation_count') == cast_count
+            and displayed_summary == complete_summary
+            and not displayed_summary.get('readiness', '').startswith(
+                'Readiness not established: operation scan incomplete'),
+        'restored_read_has_complete_summary': complete_row['operations_truncated'] is False
+            and complete_summary.get('scan_complete') is True
+            and complete_summary.get('observed_operation_count') == len(complete_row['operations'])
+            and len(complete_row['operations']) == cast_count,
+        'independent_status_covers_flat_operation_count': status_total == flat_count,
+        'both_caps_restored': read._MAX_ITEMS == source_cap and get._OPERATIONS_CAP == display_cap,
+        'observed_native_fields_unchanged': before_state == after_state,
+        'native_state_snapshot_readable': bool(before_state['document'][0])
+            and isinstance(before_state['document'][2], bool)
+            and bool(before_state['workspace']) and before_state['timeline'][1] is not None
+            and before_state['body_count'] > 0,
+    }
+    print(json.dumps({'passed': all(checks.values()), 'checks': checks,
+                      'evidence': {'setup': SETUP_NAME, 'all_operations_count': flat_count,
+                                   'operation_cast_count': cast_count,
+                                   'partial_rows': len(partial_row['operations']),
+                                   'display_rows': len(displayed_row['operations']),
+                                   'restored_rows': len(complete_row['operations']),
+                                   'partial_readiness': partial_summary.get('readiness'),
+                                   'status_total': status_total,
+                                   'before_state': before_state, 'after_state': after_state,
+                                   'source_cap_restored': read._MAX_ITEMS == source_cap,
+                                   'display_cap_restored': get._OPERATIONS_CAP == display_cap}}))
+"""
+    return {"script": script.replace("SETUP_NAME", repr(setup)), "read_only": True}
+
+
+def _capped_scan_guarded(payload):
+    """Require the partial scan verdict, native census, uncapped status and cap restoration."""
+    checks = payload.get("checks") or {}
+    return _measured("incomplete source scan withholds readiness and restores the full read",
+                     payload.get("evidence") or {},
+                     payload.get("passed") is True and checks
+                     and all(value is True for value in checks.values()))
+
+
+def _manufacture_validity(p):
+    """The setup slice reports this call's sync separately from its Manufacture workspace basis."""
+    return _measured("Manufacture workspace basis and validity sync are distinct fields",
+                     {"validity_basis": p.get("validity_basis"),
+                      "validity_synced": p.get("validity_synced")},
+                     p.get("validity_basis") == "manufacture_verified"
+                     and p.get("validity_synced") is True)
+
+
+def _design_validity(p):
+    """A sync can run in Design while operation validity remains outside its trusted workspace."""
+    return _measured("Design workspace remains unverified after a successful validity sync",
+                     {"validity_basis": p.get("validity_basis"),
+                      "validity_synced": p.get("validity_synced")},
+                     p.get("validity_basis") == "unverified_design_workspace"
+                     and p.get("validity_synced") is True)
 
 
 def _op_named(setup, strategy, name):
@@ -567,17 +799,17 @@ def _folder_compound_edit(p):
 
 
 def _machining_capabilities(p):
-    """workspace_orient's entitlement block: one observed_generation entry per sentinel strategy and
-    nothing else, each a flag that ANSWERED - null there is 'the probe could not read it', which is
-    not an entitlement. Which way the flags read is this installation's licence to state, not this
-    beat's, so the values are reported rather than asserted - the capability tier is what acts on
-    them."""
-    obs = (p.get("machining_capabilities") or {}).get("observed_generation") or {}
+    """workspace_orient's strategy-generation permission block and its public meaning."""
+    cap = p.get("machining_capabilities") or {}
+    obs = cap.get("observed_generation") or {}
+    note = str(cap.get("note") or "")
     return _measured("machining capability sentinels",
                      {"observed_generation": obs},
                      set(obs) == {"steep_and_shallow", "multiaxis_finishing", "swarf",
                                   "probe_geometry"}
-                     and all(isinstance(v, bool) for v in obs.values()))
+                     and all(isinstance(v, bool) for v in obs.values())
+                     and "generation permission" in note
+                     and "not subscription or license verification" in note)
 
 
 def _types_offered(*names):
@@ -607,6 +839,82 @@ def _setup_scope(setup, require_operations=False):
                          {"setup_count": p.get("setup_count"), "names": names,
                           "operation_setups": [r.get("setup") for r in (operations or [])]},
                          p.get("setup_count") == 1 and names == [setup] and scoped_ops)
+    return check
+
+
+def _empty_setup_scope(setup):
+    """Independently read one named setup with no operations."""
+    def check(p):
+        rows = p.get("setups") or []
+        row = next((r for r in rows if r.get("name") == setup), None)
+        return _measured(f"'{setup}' exists with no operations",
+                         {"setup_count": p.get("setup_count"), "row": row},
+                         p.get("setup_count") == 1 and row is not None
+                         and row.get("operation_count") == 0)
+    return check
+
+
+def _setup_absent(setup):
+    """Independently read that a temporary setup no longer exists."""
+    def check(p):
+        names = [r.get("name") for r in p.get("setups") or []]
+        return _measured(f"'{setup}' was removed from the CAM setup census",
+                         {"setup_count": p.get("setup_count"), "names": names},
+                         p.get("truncated") is False
+                         and isinstance(p.get("setup_count"), int)
+                         and len(names) == p.get("setup_count")
+                         and setup not in names)
+    return check
+
+
+def _manual_nc_valid_without_path(setup):
+    """Read a pathless valid Manual NC row and its operation-validity wording."""
+    def check(p):
+        rec, rows = _setup_operation_rows(p, setup)
+        row = rows[0] if len(rows) == 1 else None
+        readiness = ((rec or {}).get("summary") or {}).get("readiness") or ""
+        return _measured(f"'{setup}' validity does not claim a generated path",
+                         {"row": row, "readiness": readiness},
+                         bool(rec) and row is not None and bool(row.get("name"))
+                         and row.get("strategy") == "manual"
+                         and row.get("state") == "valid" and row.get("has_toolpath") is False
+                         and "empty_toolpath" not in row
+                         and "tool_unselected" not in (row.get("blocked_by") or [])
+                         and "1 of 1 active operations pass the validity check" in readiness
+                         and "valid toolpaths" not in readiness)
+    return check
+
+
+def _document_suppression_view(setup, include_suppressed=False):
+    """Check the document suppression route, tally and empty setup disclosure."""
+    checked = "per-setup fallback" if include_suppressed else "per-active-operation check"
+    tally = "all_operations" if include_suppressed else "active_operations"
+    suppressed = 1 if include_suppressed else 0
+    excluded = 0 if include_suppressed else 1
+    def check(p):
+        measured = p.get("measured") or {}
+        states = measured.get("states") or {}
+        empty_names = measured.get("empty_setups") or []
+        empty_paths = measured.get("empty_toolpaths") or []
+        total = states.get("total")
+        count_matches = (total == _RECALL.get("document_ops_active") + 1
+                         if include_suppressed else isinstance(total, int) and total > 0)
+        return _measured("document suppression read keeps the empty setup disclosure",
+                         {"passed": p.get("passed"), "checked": p.get("checked"),
+                          "states": states, "suppressed_excluded": measured.get("suppressed_excluded"),
+                          "empty_setups": empty_names,
+                          "empty_setups_excluded": measured.get("empty_setups_excluded"),
+                          "empty_toolpaths": empty_paths},
+                         isinstance(p.get("passed"), bool)
+                         and p.get("checked") == checked
+                         and count_matches
+                         and states.get("suppressed") == suppressed
+                         and measured.get("suppressed_excluded") == excluded
+                         and p.get("tolerance_used", {}).get("tally_counts") == tally
+                         and p.get("tolerance_used", {}).get("verdict_counts") == tally
+                         and measured.get("empty_setups_excluded") == 1
+                         and empty_names == [setup]
+                         and _RECALL.get("manual_template_op_name") not in empty_paths)
     return check
 
 
@@ -814,10 +1122,506 @@ def _wcs_origin_at(recall_key):
     return check
 
 
+def _origin_with_helper(name):
+    """joint_create_origin(bbox_center): the origin lands on its computed anchor and the reply
+    publishes the helper sketch it drew, named and hidden."""
+    landed = _joint_origin_computed(name)
+
+    def check(p):
+        return landed(p) and _measured(
+            "the reply publishes its helper sketch named and hidden", p.get("helper_sketch"),
+            p.get("helper_sketch") == {"name": "JointOriginAnchor", "visible": False})
+    return check
+
+
+def _anchor_helper_hidden(p):
+    """sketch_get list: the one helper sketch a bbox_center joint origin drew reads the name the
+    tool assigns and hidden - the independent read behind the reply's own helper_sketch."""
+    rows = [r for r in p.get("sketches", []) if r.get("name") == "JointOriginAnchor"]
+    return _measured("the bbox_center helper sketch reads named and hidden", rows,
+                     p.get("truncated") is not True and len(rows) == 1
+                     and rows[0].get("is_visible") is False)
+
+
 # ACT 10a: CAM on the REAL part in the REAL fixture - job built and generated. The scratch-stock
 # rows remain as this act's fallback, so the CAM family stays covered when the story world
 # could not build.
-_CAM_STORY = [
+def _setup_preflight_state(p, mode):
+    """Return complete paired setup facts, checking the target mode before normalizing that field."""
+    rows = p.get("setups")
+    if (p.get("setup_count") != 2 or p.get("truncated") is not False
+            or not isinstance(rows, list) or [r.get("name") for r in rows] != ["SetupA", "SetupB"]):
+        return None
+    for row in rows:
+        wcs = row.get("wcs") or {}
+        if (row.get("operation_type") != "MillingOperation" or type(row.get("is_active")) is not bool
+                or row.get("machine") is not None or row.get("operation_count") != 0 or row.get("folder_count") != 0
+                or row.get("model_lists_truncated") is not False or "model_lists_unreadable" in row
+                or row.get("selected_models") != ["Source:1"] or row.get("fixtures") != [] or row.get("stock_solids") != []
+                or row.get("stock_mode") != (mode if row["name"] == "SetupA" else "relative_box")
+                or wcs.get("units") != "mm" or not wcs.get("origin_mode") or not wcs.get("orientation_mode")
+                or any(not isinstance(wcs.get(k), list) or len(wcs[k]) != 3
+                       or any(not _num(v) or not math.isfinite(v) for v in wcs[k])
+                       for k in ("origin", "x_axis", "y_axis", "z_world"))):
+            return None
+    return [{**row, "stock_mode": "fixed_box"} if row["name"] == "SetupA" else row for row in rows]
+
+
+_SETUP_PREFLIGHT_PARAMS = (
+    "job_type", "wcs_orientation_mode", "wcs_orientation_axisZ", "wcs_orientation_flipZ",
+    "wcs_orientation_axesZX_unselected_default", "wcs_orientation_axesZY_unselected_default",
+    "wcs_orientation_axesXY_unselected_default", "wcs_orientation_axesXZ_unselected_default",
+    "wcs_orientation_cSys", "wcs_orientation_axisX", "wcs_orientation_flipX", "wcs_orientation_axisY",
+    "wcs_orientation_flipY", "wcs_origin_turning", "wcs_origin_mode", "wcs_origin_point",
+    "wcs_model_point", "wcs_origin_boxPoint", "wcs_stock_point")
+
+
+def _setup_preflight_parameters(p, setup, exact=False):
+    """Return disclosed visible/extents facts or the measured job/WCS expression slice."""
+    params = p.get("parameters") or {}
+    if params.get("setup") != setup:
+        return None
+    if not exact:
+        sections, extents = params.get("sections"), params.get("stock_extents") or {}
+        if not isinstance(sections, dict) or not sections or extents.get("units") != "mm":
+            return None
+        rows = [r for group in sections.values() for r in group]
+        if (params.get("parameter_count") != len(rows) or not rows
+                or any(not r.get("name") or not isinstance(r.get("expression"), str) for r in rows)
+                or any(not _num((extents.get(k) or {}).get("value"))
+                       or not math.isfinite(extents[k]["value"])
+                       or not isinstance(extents[k].get("expression"), str)
+                       for k in ("stockXLow", "stockXHigh", "stockYLow", "stockYHigh", "stockZLow", "stockZHigh",
+                                 "surfaceXLow", "surfaceXHigh", "surfaceYLow", "surfaceYHigh", "surfaceZLow", "surfaceZHigh"))):
+            return None
+        return {k: v for k, v in params.items() if k != "note"}
+    rows = params.get("requested_parameters")
+    if (not isinstance(rows, list) or params.get("requested_parameter_count") != len(_SETUP_PREFLIGHT_PARAMS)
+            or len(rows) != len(_SETUP_PREFLIGHT_PARAMS) or [r.get("name") for r in rows] != list(_SETUP_PREFLIGHT_PARAMS)
+            or any(r.get("requested_name") != r.get("name") or not isinstance(r.get("expression"), str) for r in rows)):
+        return None
+    return rows
+
+
+def _setup_preflight_material(p):
+    """Return the independently measured source cube or offset witness material and bounds."""
+    state = _retire_material_state(p)
+    size, x = (20, 0) if p.get("target") == "occurrence 'Source:1'" else (10, 40)
+    if (state is None or p.get("target") not in ("occurrence 'Source:1'", "occurrence 'SetupWitness:1'")
+            or len(state["bodies"]) != 1 or not _near(state["shape"]["volume"], size**3, .001)
+            or not all(_near(p.get(k), size, .001) for k in "xyz")
+            or any(not _near((p.get(point) or {}).get(axis), value, .001)
+                   for point, values in (("min_point", (x, 0, 0)), ("max_point", (x+size, size, size)))
+                   for axis, value in zip("xyz", values))):
+        return None
+    return state
+
+
+def _setup_preflight_rows():
+    """Check setup preflight conservation and the disclosed mode retained by a later enum refusal."""
+    rows = [("doc_get", {}, _home_document, ("setup_preflight_home", _home_address))]
+    rows += _retire_reads("setup_preflight_home", [PART_COMP + ":1", STOCK_COMP + ":1"], [])
+    rows += [("doc_new", lambda c: {"expect_document": _ctx_get(c, "setup_preflight_home", "CAM story")},
+              _new_document, ("setup_preflight_doc", lambda p: p["document_handle"])),
+             ("design_activate_component", {"occurrence": "root"}, "ok", None)]
+    def write(tool, args, check="ok"):
+        rows.append((tool, lambda c: {**args, "expect_document": _ctx_get(c, "setup_preflight_doc", "setup scratch")}, check, None))
+    def geometry(p):
+        from verify_acts_model_solids import _edge_extent_geometry
+        return _edge_extent_geometry(p) if p.get("returned") == 18 else None
+    for name, x, size in (("Source", 0, 20), ("SetupWitness", 40, 10)):
+        write("model_create_component", {"name": name, "activate": True}, _made_component)
+        write("sketch_create", {"name": name + "Profile", "plane": "xy"})
+        write("sketch_add_geometry", {"sketch_name": name + "Profile", "units": "mm", "geometry": [
+            {"kind": "rectangle", "x1": x, "y1": 0, "x2": x+size, "y2": size}]})
+        write("model_extrude", {"sketch_name": name + "Profile", "distance": size, "units": "mm", "operation": "new"}, _extruded)
+    write("design_activate_component", {"occurrence": "root"})
+    write("view_set", {"action": "orient", "orientation": "iso-top-right", "fit": True})
+    write("view_switch_workspace", {"workspace": "manufacture"})
+    for name in ("SetupA", "SetupB"):
+        write("cam_create_setup", {"name": name, "operation_type": "milling", "models": ["Source:1"]},
+              lambda p, name=name: p.get("created") is True and p.get("setup_name") == name
+              and p.get("operation_type") == "milling" and p.get("model_count") == 1 and p.get("operation_count") == 0)
+    def mode_edit(mode):
+        write("cam_edit_setup", {"setup": "SetupA", "stock_mode": mode},
+              lambda p: p.get("edited") is True and p.get("setup") == "SetupA" and p.get("stock_mode_set") == mode)
+    mode_edit("fixed_box")
+    write("cam_edit_setup", {"setup": "SetupB", "stock_mode": "relative_box"},
+          lambda p: p.get("setup") == "SetupB" and p.get("stock_mode_set") == "relative_box")
+    def stock_offsets(p):
+        state = _setup_preflight_parameters(p, "SetupB") or {}
+        found = [r for group in state.get("sections", {}).values() for r in group
+                 if r.get("name") in ("job_stockOffsetSides", "job_stockOffsetTop")]
+        _measured("captured readable side and top stock expressions", found,
+                  len(found) == 2 and {r.get("name") for r in found} == {"job_stockOffsetSides", "job_stockOffsetTop"}
+                  and all(isinstance(r.get("expression"), str) and r["expression"] for r in found))
+        return {r["name"]: r["expression"] for r in found}
+    def snapshot(after, mode="fixed_box"):
+        rows.extend(_retire_reads("setup_preflight", ["Source:1", "SetupWitness:1"], [], after,
+                                  material_read=_setup_preflight_material))
+        for target in ("Source:1", "SetupWitness:1"):
+            rows.append(("find_geometry", lambda c, target=target: {"target": target, "units": "mm", "max_results": 100},
+                         _retire_compare("setup_preflight_geometry_" + target, geometry, after), None))
+        rows.append(("cam_get", lambda c: {"include": ["setups"], "units": "mm"},
+                     _retire_compare("setup_preflight_setups", lambda p: _setup_preflight_state(p, mode), after), None))
+        for setup in ("SetupA", "SetupB"):
+            same = after and (setup == "SetupB" or mode == "fixed_box")
+            key = "setup_preflight_" + ("control_" if mode == "fixed_cylinder" and setup == "SetupA" else "") + setup
+            rows.append(("cam_get", lambda c, setup=setup: {"include": ["parameters"], "setup": setup, "units": "mm"},
+                         _retire_compare(key, lambda p, setup=setup: _setup_preflight_parameters(p, setup), same),
+                         ("setup_stock_before", _recall("setup_stock_before", stock_offsets)) if not after and setup == "SetupB" else None))
+            rows.append(("cam_get", lambda c, setup=setup: {"include": ["parameters"], "setup": setup,
+                         "parameter_names": list(_SETUP_PREFLIGHT_PARAMS)},
+                         _retire_compare(key + "_job_wcs",
+                             lambda p, setup=setup: _setup_preflight_parameters(p, setup, True), same), None))
+    snapshot(False)
+    for extra, offender in (({"rename": "SetupB"}, "SetupB"),
+                            ({"parameters": {"NoSuchProbeParameter": "1 mm"}}, "NoSuchProbeParameter"),
+                            ({"models": ["MissingProbeBody"]}, "MissingProbeBody"),
+                            ({"machine": "NoSuchProbeVendor|NoSuchProbeMachine"}, "NoSuchProbe"),
+                            ({"wcs": {"bogus": True}}, "bogus")):
+        write("cam_edit_setup", {"setup": "SetupA", "stock_mode": "fixed_cylinder", **extra}, _refused(offender))
+        snapshot(True)
+    write("cam_edit_setup", {"setup": "SetupA", "stock_mode": "fixed_cylinder",
+                             "parameters": {"wcs_origin_boxPoint": "NoSuchProbeBoxPoint"}},
+          _refused("Invalid enumeration", "NoSuchProbeBoxPoint", "Observed setup state",
+                   '\"before\": {\"setup\": \"SetupA\", \"stock_mode\": \"fixed_box\"',
+                   '\"now\": {\"setup\": \"SetupA\", \"stock_mode\": \"fixed_cylinder\"',
+                   "Still changed after this failure: stock_mode reads 'fixed_cylinder' "
+                   "(was 'fixed_box')", "job_stockMode reads \"'fixedcylinder'\""))
+    snapshot(True, "fixed_cylinder")
+    rows.append(("cam_get", {"include": ["parameters"], "setup": "SetupA",
+                             "parameter_names": list(_SETUP_PREFLIGHT_PARAMS)},
+                 _retire_compare("setup_preflight_SetupA_job_wcs",
+                                 lambda p: _setup_preflight_parameters(p, "SetupA", True), True), None))
+    mode_edit("fixed_box")
+    snapshot(True)
+    mode_edit("fixed_cylinder")
+    snapshot(True, "fixed_cylinder")
+    mode_edit("fixed_box")
+    snapshot(True)
+    unlock_read = {"include": ["parameters"], "setup": "SetupB", "parameter_names": ["job_continueMachining"]}
+    def unlock_parameter(p):
+        params = p.get("parameters") or {}
+        found = params.get("requested_parameters") or []
+        if (params.get("setup") != "SetupB" or params.get("requested_parameter_count") != 1 or len(found) != 1
+                or found[0].get("name") != "job_continueMachining" or found[0].get("requested_name") != "job_continueMachining"
+                or not isinstance(found[0].get("expression"), str)):
+            return None
+        return found[0]
+    def unlock_before(p):
+        row = unlock_parameter(p)
+        return _measured("the second setup's continue parameter before unlocking", row,
+                         row is not None and row.get("editable") is False and row.get("expression") == "false")
+    rows.append(("cam_get", lambda c: unlock_read, unlock_before,
+                 ("setup_unlock_before", _recall("setup_unlock_before", unlock_parameter))))
+    write("cam_edit_setup", {"setup": "SetupB", "stock_mode": "previous_setup", "parameters": {"job_continueMachining": "true"}},
+          lambda p: p.get("setup") == "SetupB" and p.get("stock_mode_set") == "previous_setup"
+          and p.get("previous_setup_name") == "SetupA" and p.get("updated_count") == 1
+          and [(r.get("name"), r.get("after")) for r in p.get("changed") or []] == [("job_continueMachining", "true")])
+    rows.append(("cam_get", lambda c: unlock_read,
+                 lambda p: _measured("the pre-mode parameter wrapper edits the unlocked native row", unlock_parameter(p),
+                     unlock_parameter(p) is not None and unlock_parameter(p).get("expression") == "true"
+                     and unlock_parameter(p).get("editable") is True), None))
+    rows.append(("cam_get", lambda c: {"include": ["setups"], "setup": "SetupB"},
+                 lambda p: (_complete_setup_row(p, "SetupB") or {}).get("stock_mode") == "previous_setup"
+                 and (_complete_setup_row(p, "SetupB") or {}).get("selected_models") == ["Source:1"], None))
+    rows.append(("cam_get", lambda c: {"include": ["setups"], "setup": "SetupA"},
+                 lambda p: _measured("the first setup remains unchanged during the unlock control", _complete_setup_row(p, "SetupA"),
+                     bool(_RECALL.get("setup_preflight_setups"))
+                     and _complete_setup_row(p, "SetupA") == _RECALL["setup_preflight_setups"][0]), None))
+    rows.extend(_retire_reads("setup_preflight", ["Source:1", "SetupWitness:1"], [], True,
+                              material_read=_setup_preflight_material))
+    for target in ("Source:1", "SetupWitness:1"):
+        rows.append(("find_geometry", lambda c, target=target: {"target": target, "units": "mm", "max_results": 100},
+                     _retire_compare("setup_preflight_geometry_" + target, geometry, True), None))
+    rows.append(("cam_edit_setup", lambda c: {"setup": "SetupB", "parameters": {
+                 "job_continueMachining": _ctx_get(c, "setup_unlock_before", "continue parameter")["expression"]},
+                 "expect_document": _ctx_get(c, "setup_preflight_doc", "setup scratch")},
+                 lambda p: p.get("setup") == "SetupB" and p.get("updated_count") == 1, None))
+    rows.append(("cam_get", lambda c: unlock_read,
+                 lambda p: _measured("the continue expression restores while unlocked", unlock_parameter(p),
+                     unlock_parameter(p) is not None and bool(_RECALL.get("setup_unlock_before"))
+                     and unlock_parameter(p).get("expression") == _RECALL["setup_unlock_before"]["expression"]), None))
+    write("cam_edit_setup", {"setup": "SetupB", "stock_mode": "relative_box"},
+          lambda p: p.get("setup") == "SetupB" and p.get("stock_mode_set") == "relative_box")
+    rows.append(("cam_get", lambda c: unlock_read,
+                 _retire_compare("setup_unlock_before", unlock_parameter, True), None))
+    write("cam_edit_setup", {"setup": "SetupB", "parameters": {
+              "job_stockOffsetSides": "2 mm", "job_stockOffsetTop": "2 mm",
+              "wcs_origin_boxPoint": "NoSuchProbeBoxPoint"}},
+          _refused("Invalid enumeration", "NoSuchProbeBoxPoint", "Observed setup state",
+                   '\"job_stockOffsetSides\": \"2 mm\"', '\"job_stockOffsetTop\": \"2 mm\"',
+                   "job_stockOffsetSides reads '2 mm'"))
+    rows.append(("cam_get", {"include": ["parameters"], "setup": "SetupB",
+                             "parameter_names": ["job_stockOffsetSides", "job_stockOffsetTop"]},
+                 lambda p: _measured("earlier stock expressions remain after the later enum refusal",
+                     (p.get("parameters") or {}).get("requested_parameters"),
+                     (p.get("parameters") or {}).get("setup") == "SetupB"
+                     and (p.get("parameters") or {}).get("requested_parameter_count") == 2
+                     and sorted((r.get("name"), r.get("expression")) for r in
+                                (p.get("parameters") or {}).get("requested_parameters") or [])
+                     == [("job_stockOffsetSides", "2 mm"), ("job_stockOffsetTop", "2 mm")]), None))
+    def stock_offset_effect(p):
+        state = _setup_preflight_state(p, "fixed_box")
+        before = _RECALL.get("setup_preflight_setups")
+        wanted = ([before[0], {**before[1], "wcs": {**before[1]["wcs"], "origin": [10.0, 10.0, 22.0]}}]
+                  if before else None)
+        return _measured("larger stock offsets move the actual WCS and preserve the other setup", state,
+                         state is not None and state == wanted and state != before)
+    rows.append(("cam_get", lambda c: {"include": ["setups"], "units": "mm"}, stock_offset_effect, None))
+    rows.extend(_retire_reads("setup_preflight", ["Source:1", "SetupWitness:1"], [], True,
+                              material_read=_setup_preflight_material))
+    rows.append(("cam_edit_setup", lambda c: {"setup": "SetupB", "parameters":
+                 _ctx_get(c, "setup_stock_before", "captured side and top stock expressions"),
+                 "expect_document": _ctx_get(c, "setup_preflight_doc", "setup scratch")},
+                 lambda p: p.get("setup") == "SetupB" and p.get("updated_count") == 2, None))
+    snapshot(True)
+    write("view_switch_workspace", {"workspace": "design"})
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "setup_preflight_home", "CAM story"),
+               "expect_document": _ctx_get(c, "setup_preflight_doc", "setup scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "setup_preflight_doc", "setup scratch"), "save_changes": False,
+               "expect_document": _ctx_get(c, "setup_preflight_home", "CAM story")}, _document_closed, None)]
+    rows.extend(_retire_reads("setup_preflight_home", [PART_COMP + ":1", STOCK_COMP + ":1"], [], True))
+    return rows
+
+
+def _selector_tool_state(p):
+    """Return the complete cutter and requested feed/speed rows for selector comparisons."""
+    tool, params = p.get("tool") or {}, p.get("parameters") or {}
+    dimensions = tool.get("dimensions") or {}
+    diameter = dimensions.get("diameter")
+    rows = params.get("requested_parameters") or []
+    if (not tool.get("operation") or not _num(diameter) or not math.isfinite(diameter)
+            or diameter <= 0 or dimensions.get("units") != "mm"
+            or params.get("operation") != tool["operation"]
+            or params.get("requested_parameter_count") != len(rows) or len(rows) != 3
+            or {r.get("name") for r in rows} != {"tool_diameter", "tool_feedCutting", "tool_spindleSpeed"}
+            or any(not isinstance(r.get("expression"), str) for r in rows)):
+        return None
+    return {"tool": tool, "parameters": params}
+
+
+def _selector_operations_state(p):
+    """Return a complete operation census for the selector fixture's setup."""
+    rec, rows = _setup_operation_rows(p, CAM_SETUP)
+    if not rec or rec.get("operations_truncated") is not False or not rows or any(not r.get("name") for r in rows):
+        return None
+    return rec
+
+
+def _selector_cutter(diameter):
+    """Require independent Operation.tool geometry for a legal selector control."""
+    def check(p):
+        state = _selector_tool_state(p)
+        return _measured("selector control cutting diameter", state,
+                         state is not None and _near(state["tool"]["dimensions"].get("diameter"), diameter, .001)
+                         and state["tool"]["dimensions"].get("units") == "mm")
+    return check
+
+
+def _selector_conflict_rows():
+    """Exercise selector conflicts beside legal document/shared forms and unchanged witnesses."""
+    library = "systemlibraryroot://Samples/Milling Tools (Metric)"
+    operation = "SelectorControl"
+    read = {"include": ["tool", "parameters"], "operation": operation,
+            "parameter_names": ["tool_diameter", "tool_feedCutting", "tool_spindleSpeed"]}
+    rows = [("cam_get", {"include": ["library"], "scope": "fusion", "library": library},
+             lambda p: _measured("shared selector library index 0 is a 12 mm cutter", p.get("library"),
+                 any(t.get("index") == 0 and t.get("diameter_mm") == 12
+                     for t in (p.get("library") or {}).get("tools", []))), None),
+            ("cam_get", {"include": ["library"], "scope": "fusion", "library": library,
+                         "tool_type": "ball"},
+             lambda p: _measured("full ball catalog", p.get("library"),
+                 (p.get("library") or {}).get("tool_count", 0) > 6
+                 and len((p.get("library") or {}).get("tools", []))
+                     == (p.get("library") or {}).get("tool_count")
+                     == (p.get("library") or {}).get("returned")
+                 and (p.get("library") or {}).get("truncated") is False),
+             ("ball_catalog", _recall("ball_catalog", lambda p: p["library"]))),
+            ("cam_get", {"include": ["library"], "scope": "fusion", "library": library,
+                         "tool_type": "ball", "max_results": 6},
+             lambda p: _measured("bounded catalog equals the head of the full same-run catalog", p.get("library"),
+                 (p.get("library") or {}).get("tools") == _RECALL["ball_catalog"]["tools"][:6]
+                 and (p.get("library") or {}).get("returned") == 6
+                 and (p.get("library") or {}).get("tool_count") == _RECALL["ball_catalog"]["tool_count"]
+                 and (p.get("library") or {}).get("truncated") is True), None),
+            ("cam_create_operation", {"setup": CAM_SETUP, "strategy": "face", "name": operation,
+                 "tool_library_url": library, "tool_index": 0, "generate": False},
+             _op_named(CAM_SETUP, "face", operation), None),
+            ("cam_get", read, _selector_cutter(12), None),
+            ("cam_edit_operation", {"operation": operation, "tool_scope": "document", "tool_index": _FLAT_MILL},
+             lambda p: p.get("operation") == operation and p.get("tool_index") == _FLAT_MILL, None),
+            ("cam_get", read, _selector_cutter(10), None),
+            ("cam_edit_operation", {"operation": operation, "tool_library_url": library, "tool_index": 0},
+             lambda p: p.get("operation") == operation and p.get("tool_index") == 0, None),
+            ("cam_get", read, _selector_cutter(12), None)]
+    def independent_reads(after):
+        result = _retire_reads("selector_refusal", [PART_COMP + ":1", STOCK_COMP + ":1"], [], after=after)
+        result.extend([
+            ("cam_get", {"include": ["operations"], "setup": CAM_SETUP},
+             _retire_compare("selector_operations", _selector_operations_state, after), None),
+            ("cam_get", read, _retire_compare("selector_target", _selector_tool_state, after), None),
+            ("cam_get", lambda c: {**read, "operation": _ctx_get(c, "face_op", "face witness")},
+             _retire_compare("selector_witness", _selector_tool_state, after), None)])
+        return result
+    rows.extend(independent_reads(False))
+    refusal = _refused("tool_scope='document'", "tool_library_url=", "without a URL")
+    rows.append(("cam_create_operation", {"setup": CAM_SETUP, "strategy": "face", "name": "SelectorRefused",
+                 "tool_scope": "document", "tool_library_url": library, "tool_index": _FLAT_MILL}, refusal, None))
+    rows.extend(independent_reads(True))
+    rows.append(("cam_edit_operation", {"operation": operation, "tool_scope": "document",
+                 "tool_library_url": library, "tool_index": _FLAT_MILL,
+                 "parameters": {"tool_feedCutting": "1234"}, "suppressed": True,
+                 "rename": "SelectorRenamed", "preset": "Default preset"}, refusal, None))
+    rows.extend(independent_reads(True))
+    rows.append(("cam_delete", {"entity": operation}, lambda p: _op_deleted(operation)(p), None))
+    return rows
+
+
+_CHAIN_BUILD = """import adsk.core, adsk.fusion, math
+
+def run(context):
+    app = adsk.core.Application.get()
+    doc = app.activeDocument
+    assert doc.dataFile is None
+    des = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    root = des.rootComponent
+    assert root.occurrences.count == 0 and root.bRepBodies.count == 0
+    T = adsk.fusion.DesignIntentTypes
+    if des.designIntent == T.PartDesignIntentType:
+        des.designIntent = T.HybridDesignIntentType
+    m = adsk.core.Matrix3D.create()
+    m.setToRotation(math.radians(90.0), adsk.core.Vector3D.create(0.0, 0.0, 1.0),
+                    adsk.core.Point3D.create(0, 0, 0))
+    m.translation = adsk.core.Vector3D.create(3.0, 2.0, 0.5)
+    occ = root.occurrences.addNewComponent(m)
+    comp = occ.component
+    comp.name = 'ChainPart'
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0, 0, 0),
+                                                     adsk.core.Point3D.create(1.0, 0.8, 0))
+    feats = comp.features.extrudeFeatures
+    ein = feats.createInput(sk.profiles.item(0),
+                            adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    ein.setDistanceExtent(False, adsk.core.ValueInput.createByReal(0.6))
+    feats.add(ein)
+    comp.bRepBodies.item(0).name = 'ChainBody'
+"""
+
+_CHAIN_READ = """import adsk.core, adsk.fusion, adsk.cam, json
+
+def run(context):
+    doc = adsk.core.Application.get().activeDocument
+    assert doc.dataFile is None
+    d = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+    cam = adsk.cam.CAM.cast(doc.products.itemByProductType('CAMProductType'))
+    def pt(p):
+        return [round(p.x * 10, 4), round(p.y * 10, 4), round(p.z * 10, 4)]
+    def seg(c):
+        good, a, b = c.evaluator.getParameterExtents()
+        ga, pa = c.evaluator.getPointAtParameter(a)
+        gb, pb = c.evaluator.getPointAtParameter(b)
+        assert good and ga and gb
+        return sorted([pt(pa), pt(pb)])
+    ops = {}
+    setup = [s for s in cam.setups if s.name == 'ChainSetup'][0]
+    for op in setup.allOperations:
+        sels = op.parameters.itemByName('contours').value.getCurveSelections()
+        rows = []
+        for i in range(sels.count):
+            sel = sels.item(i)
+            rows.append({'paths': [sorted(seg(path.item(j)) for j in range(path.count))
+                                   for path in sel.outputGeometry],
+                         'has_error': sel.hasError, 'has_warning': sel.hasWarning})
+        ops[op.name] = {'selections': rows, 'heights': sorted(
+            [q.name, q.expression] for q in op.parameters
+            if q.name.startswith(('topHeight_', 'bottomHeight_')))}
+    occ = [o for o in d.rootComponent.occurrences if o.component.name == 'ChainPart'][0]
+    body = occ.bRepBodies.item(0)
+    top = sorted(sorted([pt(e.startVertex.geometry), pt(e.endVertex.geometry)]) for e in body.edges
+                 if abs(e.startVertex.geometry.z * 10 - 11) < 1e-6
+                 and abs(e.endVertex.geometry.z * 10 - 11) < 1e-6)
+    print(json.dumps({'operations': ops, 'top_edges': top, 'pose': list(occ.transform2.asArray()),
+                      'bbox_mm': [pt(body.boundingBox.minPoint), pt(body.boundingBox.maxPoint)],
+                      'timeline_count': d.timeline.count}))
+"""
+
+_CHAIN_OPS = ("CR_Flat", "CR_Grouped")
+
+
+def _chain_top_handles(p):
+    """The handles of the ChainPart line edges at z = 11 mm, in match order."""
+    return [m["handle"] for m in p.get("matches") or []
+            if _near(((m.get("position") or [None] * 3)[2]), 11.0, 1e-3)]
+
+
+def _chain_resolved(p):
+    """Both ops hold one selection of ONE path whose four segments are the body's top edges, and
+    the heights, pose and box read as before the selects."""
+    before = _RECALL.get("chain_before") or {}
+    ops = p.get("operations") or {}
+    top = p.get("top_edges") or []
+    same = all(len((ops.get(n) or {}).get("selections") or []) == 1
+               and ops[n]["selections"][0]["paths"] == [top]
+               and ops[n]["selections"][0]["has_error"] is False
+               and ops[n]["heights"] == ((before.get("operations") or {}).get(n) or {}).get("heights")
+               for n in _CHAIN_OPS)
+    return _measured("flat and grouped chains resolve the same four world segments", p,
+                     len(top) == 4 and same and p.get("pose") == before.get("pose")
+                     and p.get("bbox_mm") == before.get("bbox_mm")
+                     and p.get("bbox_mm") == [[22.0, 20.0, 5.0], [30.0, 30.0, 11.0]])
+
+
+def _chain_transformed_rows():
+    """Flat handles and one chain_group on a rotated, translated component resolve the same four
+    native world segments, in a scratch document closed again."""
+    from verify_core import ScriptEffects, scope_unit
+    rows = [("doc_get", {}, _home_document, ("chain_home", _home_address)),
+            ("doc_new", lambda c: {"expect_document": _ctx_get(c, "chain_home", "CAM story")},
+             _new_document, ("chain_doc", lambda p: p["document_handle"]))]
+    def write(tool, args, check="ok", save=None):
+        rows.append((tool, lambda c: {**(args(c) if callable(args) else args),
+                                      "expect_document": _ctx_get(c, "chain_doc", "chain scratch")},
+                     check, save))
+    write("sys_execute_script", {"script": _CHAIN_BUILD, "read_only": False},
+          ScriptEffects(_CHAIN_BUILD, []))
+    write("view_switch_workspace", {"workspace": "manufacture"})
+    write("cam_edit_tools", {"action": "add", "scope": "document",
+                             "add_tools": [{"from_type": "flat end mill", "diameter": "6 mm"}]},
+          lambda p: p.get("added") == 1 and p.get("tool_count") == 1)
+    write("cam_create_setup", {"name": "ChainSetup", "models": ["ChainPart:1"]},
+          lambda p: p.get("created") is True and p.get("model_count") == 1)
+    for name in _CHAIN_OPS:
+        write("cam_create_operation", {"setup": "ChainSetup", "strategy": "contour2d", "name": name,
+                                       "tool_scope": "document", "tool_index": 0, "generate": False},
+              _op_created("ChainSetup", "contour2d"))
+    rows.append(("find_geometry", {"target": "ChainPart:1", "kind": "line_edge", "units": "mm",
+                                   "max_results": 30},
+                 lambda p: _measured("the transformed block's four top edges",
+                                     _chain_top_handles(p), len(_chain_top_handles(p)) == 4),
+                 ("chain_tops", _chain_top_handles)))
+    rows.append(("sys_execute_script", {"script": _CHAIN_READ, "read_only": True},
+                 ScriptEffects(_CHAIN_READ, []),
+                 ("chain_before", _recall("chain_before", lambda p: p))))
+    write("cam_select_geometry", lambda c: {"operation": "CR_Flat", "selection": "chain",
+                                            "handles": _ctx_get(c, "chain_tops", "top edges"),
+                                            "generate": False}, _flat_chain_applied(1))
+    write("cam_select_geometry", lambda c: {"operation": "CR_Grouped", "selection": "chain",
+                                            "chain_groups": [_ctx_get(c, "chain_tops", "top edges")],
+                                            "generate": False}, _flat_chain_applied(1))
+    rows.append(("sys_execute_script", {"script": _CHAIN_READ, "read_only": True},
+                 ScriptEffects(_CHAIN_READ, [], _chain_resolved), None))
+    write("view_switch_workspace", {"workspace": "design"})
+    rows += [("doc_activate", lambda c: {"name": _ctx_get(c, "chain_home", "CAM story"),
+               "expect_document": _ctx_get(c, "chain_doc", "chain scratch")}, _activated(), None),
+             ("doc_close", lambda c: {"name": _ctx_get(c, "chain_doc", "chain scratch"),
+               "save_changes": False,
+               "expect_document": _ctx_get(c, "chain_home", "CAM story")}, _document_closed, None)]
+    return scope_unit(rows, ("native_script", "library_writes"))
+
+
+_CAM_STORY = _setup_preflight_rows() + _chain_transformed_rows() + [
     # the machining region: the part seated in the vise, which is what every CAM beat acts on.
     _watch([STOCK_COMP + ":1"]),
     # a scratch sketch inside the part's footprint, drawn while Design is still the active
@@ -832,7 +1636,7 @@ _CAM_STORY = [
     # sketch the CAM selection already holds by name is unaffected. Put back in the FINALE.
     ("view_set", {"action": "display", "categories": ["sketches"], "visible": False},
      lambda p: p.get("visible") is False, None),
-    ("cam_get", {}, "ok", None),
+    ("cam_get", {}, _manufacture_validity, None),
     # THE ENTITLEMENT READ, before any CAM structure exists: four sentinel strategies, each
     # answering its own isGenerationAllowed flag. The flags need no CAM product and no setup - the
     # read itself needs an active document - and the capability probe takes this same read.
@@ -897,6 +1701,16 @@ _CAM_STORY = [
     ("cam_edit_tools", {"action": "add_preset", "scope": "document", "tool": _FLAT_MILL,
                         "preset": {"name": "Sweep35", "feed": "35in/min"}},
      lambda p: "Sweep35" in p["presets"], None),
+    ("cam_get", {"include": ["library"], "scope": "document", "library_tool": _FLAT_MILL,
+                 "preset": "SweepMM"},
+     lambda p: (p.get("library", {}).get("tool", {}).get("index") == _FLAT_MILL
+                and "SweepMM" in p["library"].get("preset_names", [])
+                and p["library"].get("preset", {}).get("name") == "SweepMM"
+                and "900" in str(p["library"]["preset"].get("expressions", {}).get("tool_feedCutting"))
+                and "12000" in str(p["library"]["preset"].get("expressions", {}).get("tool_spindleSpeed"))),
+     None),
+    ("cam_get", {"include": ["library"], "scope": "document", "library_tool": _FLAT_MILL,
+                 "preset": "NoSuchSweepPreset"}, "refused", None),
     # a numeric-leading expression that fails evaluation is refused and rolled back, never a
     # silent zero.
     ("cam_edit_tools", {"action": "add_preset", "scope": "document", "tool": _FLAT_MILL,
@@ -989,8 +1803,10 @@ _CAM_STORY = [
     # setup WCS; the bound_entities read-back lands in ctx as the receipt's evidence.
     ("joint_create_origin", {"anchor": "bbox_center", "bbox_target": STOCK_COMP + ":1",
                              "orient_axis": "z", "name": "StockWCS"},
-     _joint_origin_computed("StockWCS"),
+     _origin_with_helper("StockWCS"),
      ("stock_wcs_point", _recall("stock_wcs_point", lambda p: p.get("origin_readback")))),
+    # the first bbox_center anchor in this document, so exactly one helper sketch stands in it
+    ("sketch_get", {"max_results": 1000}, _anchor_helper_hidden, None),
     ("cam_edit_setup", {"setup": CAM_SETUP, "wcs": {"origin": "StockWCS"}}, "ok",
      ("wcs_bound_entities", lambda p: p["wcs_set"]["origin"]["bound_entities"])),
     # the setup's published WCS frame reads the point the joint origin above computed and landed
@@ -1038,13 +1854,7 @@ _CAM_STORY = [
                               "generate": False},
      _op_created(CAM_SETUP, "adaptive"),
      ("adaptive_op", _recall("adaptive_op", lambda p: p["operation"]))),
-    # Fusion's own defaults for this cutter derive a fine stepdown (flute x 0.9 x 0.95) above the
-    # maximum stepdown (flute x 0.75), which errors at generation, so the pass gets one that fits.
-    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "adaptive_op",
-                                                            "the created adaptive op"),
-                                      "parameters": {"fineStepdown": "5 mm"}},
-     lambda p: p["edited"] is True and p["changed"][0]["name"] == "fineStepdown"
-     and "5 mm" in str(p["changed"][0]["after"]), None),
+    *_selector_conflict_rows(),
     ("cam_create_operation", {"setup": CAM_SETUP, "strategy": "contour2d",
                               "tool_scope": "document", "tool_index": _FLAT_MILL,
                               "generate": False},
@@ -1378,7 +2188,16 @@ _CAM_STORY = [
                                        "handles": [_ctx_get(c, "probe_face", "the stepped top")],
                                        "generate": False},
      _needs(MACHINING_EXTENSION, lambda p: _probe_applied(1)(p)
-            and p.get("probe_mode") == "selection-model"), None),
+            and p.get("probe_mode") == "selection-model"
+            and p.get("probing_type") == "probing-z"), None),
+    ("cam_get", {"include": ["parameters"], "operation": _PROBE_OP,
+                 "parameter_names": ["probingType"]},
+     _needs(MACHINING_EXTENSION, lambda p: _measured("omitted probe type reads back from operation", p,
+         (p.get("parameters") or {}).get("operation") == _PROBE_OP
+         and (p.get("parameters") or {}).get("requested_parameter_count") == 1
+         and [(r.get("name"), r.get("expression"))
+              for r in (p.get("parameters") or {}).get("requested_parameters", [])]
+             == [("probingType", "'probing-z'")])), None),
     # the feed edit is read BACK off the parameter: 'after' is the expression the platform stored,
     # which a set that did not take leaves at the tool's default.
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
@@ -1915,6 +2734,20 @@ def _nc_listing(holds=None, gone=None):
     return check
 
 
+def _nc_program_number(program, number):
+    """cam_get(include=['nc_programs']): independently read the listing name and emitted number."""
+    def check(p):
+        rows = (p.get("nc_programs") or {}).get("nc_programs") or []
+        row = next((item for item in rows if item.get("name") == program), None)
+        return _measured(f"NC program {program!r} still lists emitted number {number!r}",
+                         {"name": (row or {}).get("name"),
+                          "program_number": (row or {}).get("program_number"),
+                          "program_number_readable": (row or {}).get("program_number_readable")},
+                         bool(row) and row.get("program_number") == number
+                         and row.get("program_number_readable") is True)
+    return check
+
+
 def _nc_program_deleted(name):
     """cam_delete on an NC PROGRAM: programs hang off cam.ncPrograms, outside the setup tree, and
     'entity_type' is the resolved node's kind - which is what says a program went rather than a
@@ -1977,6 +2810,12 @@ def _setup_ready(setup, count):
 # ACT 10b: CAM read-back + deliverables on the generated job - toolpath shown, NC posted,
 # template saved and re-applied.
 _CAM_DELIVER = [
+    # The source and display caps are injected after generation settles. Native flat operation
+    # items and the uncapped status count independently check the restored public census.
+    ("sys_execute_script", lambda c: _capped_scan_args(CAM_SETUP), _capped_scan_guarded, None),
+    ("view_switch_workspace", {"workspace": "design"}, "ok", None),
+    ("cam_get", {"include": ["setups"]}, _design_validity, None),
+    ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
     # THE NON-EMPTY ORACLE OVER THE WHOLE JOB, taken first, before any row here suppresses or
     # deletes an operation: every operation the setup holds reports its own machining time above
     # zero. The act-boundary poll fails on an EMPTY toolpath; this says the same thing per
@@ -2082,6 +2921,24 @@ _CAM_DELIVER = [
     ("cam_get", {"include": ["nc_programs"]}, _nc_listing(holds="1001"), None),
     ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
      _nc_numbered("1001", "1101", "1001"), None),
+    # A post can reject the emitted number even though it is valid as an NCProgram parameter.
+    # The post log is keyed by that parameter, not the listing name; after the actionable refusal,
+    # independently set the number back and prove the same listing posts as-is.
+    ("cam_set_nc_comment", {"program": "1001", "set_number": "C3_BAD_NUMBER"},
+     _nc_numbered("1001", "1001", "C3_BAD_NUMBER"), None),
+    ("cam_post", {"program_name": "1001", "scope": CAM_SETUP, "post": "haas", "post_scope": "local",
+                  "output_folder": EXPORT_DIR + "/nc", "program_comment": "Failed-post retained comment"},
+     _refused("Program number", "is out of range", "cam_set_nc_comment(program='1001'",
+              "set_number='<number accepted by this post>'", "Existing-program configuration edits remain"), None),
+    ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "C3_BAD_NUMBER"), None),
+    ("cam_set_nc_comment", {"program": "1001", "comment": "BRACKET sweep"},
+     lambda p: p.get("set") is True and p.get("programs_changed") == 1
+     and [(r.get("program"), r.get("comment_before"), r.get("comment_after")) for r in p.get("programs") or []]
+     == [("1001", "Failed-post retained comment", "BRACKET sweep")], None),
+    ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
+     _nc_numbered("1001", "C3_BAD_NUMBER", "1001"), None),
+    ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "1001"), None),
+    ("cam_post", {"program_name": "1001"}, _posted_as_is("1001"), None),
     # REFUSED: a post path whose DIRECTORY does not exist. Its basename resolves in the installed
     # post folder, so a basename fallback would post a .cps nothing asked for; the listing read
     # after it is what says the refusal fired before any program was built.
@@ -2219,6 +3076,15 @@ _CAM_DELIVER = [
      lambda p: p["deleted"] is True, None),
     ("cam_delete", lambda c: {"entity": _ctx_get(c, "adaptive_op", "the created adaptive op")},
      _op_deleted("adaptive_op"), None),
+    ("cam_create_setup", {"models": [PART_COMP], "name": _SUPPRESSED_EMPTY_SETUP},
+     lambda p: p.get("created") is True and p.get("setup_name") == _SUPPRESSED_EMPTY_SETUP
+     and p.get("operation_count") == 0, None),
+    ("cam_get", {"include": ["setups"], "setup": _SUPPRESSED_EMPTY_SETUP},
+     _empty_setup_scope(_SUPPRESSED_EMPTY_SETUP), None),
+    ("cam_get", {"include": ["operations"], "setup": "SetupManualTmpl"},
+     _manual_nc_valid_without_path("SetupManualTmpl"),
+     ("manual_template_op_name", _recall("manual_template_op_name", lambda p:
+         _setup_operation_rows(p, "SetupManualTmpl")[1][0]["name"]))),
     # SUPPRESSION, last of the job edits: the flag is a WRITE here, and it is what gives
     # include_suppressed's FILTERING its live reading. It sits after the post, the setup sheet and
     # the template because suppressing DISCARDS the operation's toolpath - here that costs no later
@@ -2253,9 +3119,67 @@ _CAM_DELIVER = [
      and p["measured"]["suppressed_excluded"] == 0
      and p["tolerance_used"]["verdict_counts"] == "all_operations"
      and p["passed"] is False, None),
+    ("cam_inspect_toolpaths", {}, _document_suppression_view(_SUPPRESSED_EMPTY_SETUP),
+     ("document_ops_active",
+      _recall("document_ops_active", lambda p: p["measured"]["states"]["total"]))),
+    ("cam_inspect_toolpaths", {"include_suppressed": True},
+     _document_suppression_view(_SUPPRESSED_EMPTY_SETUP, include_suppressed=True), None),
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "drill_op", "the drill op"),
                                       "suppressed": False},
      lambda p: p["is_suppressed"] is False, None),
+    ("cam_delete", {"entity": _SUPPRESSED_EMPTY_SETUP},
+     lambda p: p.get("deleted") is True and p.get("entity_type") == "setup", None),
+    ("cam_get", {"include": ["setups"]}, _setup_absent(_SUPPRESSED_EMPTY_SETUP), None),
+    # A native height fault exercises suppression while the public editor refuses and restores.
+    # Suppression excludes the fault from the error count; regeneration checks the restored offset.
+    ("doc_get", {},
+     lambda p: (p.get("active") or {}).get("has_data_file") is False
+               and isinstance((p.get("active") or {}).get("document_handle"), str),
+     ("face_fault_document", _recall("face_fault_document", lambda p: p["active"]["document_handle"]))),
+    ("sys_execute_script", _face_fault_read,
+     lambda p: _face_fault_known(p) and p.get("has_error") is False and p.get("suppressed") is False
+               and _near(p["parameters"]["bottomHeight_offset"]["value"], 0.0, 1e-9),
+     ("face_fault_before", _recall("face_fault_before", lambda p: p))),
+    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
+                                      "parameters": {"bottomHeight_offset": "50 mm"}},
+     _refused("Operation.hasError changed from False to True", "Rolled back all 1 parameter(s)"), None),
+    ("sys_execute_script", _face_fault_read,
+     Independent(_face_fault_restored, ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("sys_execute_script", lambda c: _face_fault_read(c, prepare=True), _face_fault_seeded, None),
+    ("sys_execute_script", _face_fault_read,
+     Independent(_face_fault_seeded, ["sys_execute_script"], "tool:sys_execute_script"), None),
+    ("cam_generate", lambda c: {"target": _ctx_get(c, "face_op", "the face op"),
+                                "skip_valid": False},
+     lambda p: p.get("launched") is True and bool(p.get("handle")),
+     ("faulted_face", _recall("faulted_face", lambda p: p["handle"]))),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "faulted_face", "the faulted generation")},
+     _face_op_settled("faulted_face", "the fault lands: the scoped read counts one errored operation",
+                      {"errored": 1}), None),
+    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
+                                      "suppressed": True},
+     lambda p: p["is_suppressed"] is True and p["was_suppressed"] is False, None),
+    ("cam_get_status", {"target": CAM_SETUP},
+     lambda p: _measured("a suppressed faulted operation reads suppressed, not errored",
+                         {"live_states": p.get("live_states"), "readiness": p.get("readiness")},
+                         (p.get("live_states") or {}).get("errored") == 0
+                         and (p.get("live_states") or {}).get("suppressed") == 1), None),
+    ("cam_get", {"include": ["operations"], "setup": CAM_SETUP},
+     lambda p: _suppressed_census(CAM_SETUP, 1)(p), None),
+    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
+                                      "suppressed": False},
+     lambda p: p["is_suppressed"] is False and p["was_suppressed"] is True, None),
+    ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "face_op", "the face op"),
+                                      "parameters": {"bottomHeight_offset": _ctx_get(c, "face_fault_before", "the face baseline")["parameters"]["bottomHeight_offset"]["expression"]}},
+     lambda p: p.get("updated_count") == 1, None),
+    ("cam_generate", lambda c: {"target": _ctx_get(c, "face_op", "the face op"),
+                                "skip_valid": False},
+     lambda p: p.get("launched") is True and bool(p.get("handle")),
+     ("restored_face", _recall("restored_face", lambda p: p["handle"]))),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "restored_face", "the restored generation")},
+     _face_op_settled("restored_face", "the restored face op generates clean",
+                      {"errored": 0, "valid": 1}), None),
+    ("sys_execute_script", _face_fault_read,
+     Independent(_face_fault_restored, ["cam_edit_operation", "cam_generate"], "tool:sys_execute_script"), None),
     # TEARDOWN of the two assets this run leaves outside the document, each after the beats that use
     # it: the confirm_name guard while the asset exists, the delete on its own read-backs, then the
     # library read as witness. 10a's narrative with 10b's fallback leaves the run-stamped machine.
@@ -2789,6 +3713,12 @@ def _generation_identity_probe(rows, setup, operation, max_polls=40, document_pi
                                   and "run cam_generate" not in line for line in lines),
                               f"{route} active guidance: {lines}"):
                     return False
+                # the nested tally keeps its live measure beside the handle's poll directive
+                if route == "handle" and not judged(
+                        "cam_get_status", "active ops valid" in lines[1]
+                        and f"handle='{handle}'" not in lines[1],
+                        f"handle live_states verdict kept: {lines[1]!r}"):
+                    return False
                 active_routes.add(route)
         if handle_done and target_done:
             break
@@ -3091,6 +4021,21 @@ _CAM_FB_DELIVER = [
     ("cam_get", {"include": ["nc_programs"]}, _nc_listing(holds="1001"), None),
     ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
      _nc_numbered("1001", "1101", "1001"), None),
+    ("cam_set_nc_comment", {"program": "1001", "set_number": "C3_BAD_NUMBER"},
+     _nc_numbered("1001", "1001", "C3_BAD_NUMBER"), None),
+    ("cam_post", {"program_name": "1001", "scope": "Setup1", "post": "haas", "post_scope": "local",
+                  "output_folder": EXPORT_DIR + "/nc", "program_comment": "Failed-post retained comment"},
+     _refused("Program number", "is out of range", "cam_set_nc_comment(program='1001'",
+              "set_number='<number accepted by this post>'", "Existing-program configuration edits remain"), None),
+    ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "C3_BAD_NUMBER"), None),
+    ("cam_set_nc_comment", {"program": "1001", "comment": "BRACKET sweep"},
+     lambda p: p.get("set") is True and p.get("programs_changed") == 1
+     and [(r.get("program"), r.get("comment_before"), r.get("comment_after")) for r in p.get("programs") or []]
+     == [("1001", "Failed-post retained comment", "BRACKET sweep")], None),
+    ("cam_set_nc_comment", {"program": "1001", "set_number": "1001"},
+     _nc_numbered("1001", "C3_BAD_NUMBER", "1001"), None),
+    ("cam_get", {"include": ["nc_programs"]}, _nc_program_number("1001", "1001"), None),
+    ("cam_post", {"program_name": "1001"}, _posted_as_is("1001"), None),
     ("cam_post", {"scope": "Setup1", "post": EXPORT_DIR + "/no-such-folder/haas.cps",
                   "post_scope": "local", "output_folder": EXPORT_DIR + "/nc",
                   "program_name": "1004"},
@@ -3215,6 +4160,58 @@ def _planar_faces(count):
                          {"count": len(ms), "kinds": [m.get("kind") for m in ms]},
                          len(ms) == count and all(m.get("kind") == "planar_face" for m in ms))
     return check
+
+
+# A legacy swarf op of its own, deleted once read: its surface set is 'swarfSurfaces'.
+_SW_LEGACY_OP = "SwarfSurfacesLegacy"
+
+
+def _drafted_wall(p):
+    """find_geometry: the one planar face nearest the -Y wall's mid-height, a wall (not top/base)."""
+    m = (p.get("matches") or [None])[0]
+    pos = (m or {}).get("position") or [None, None, None]
+    return _measured("the drafted -Y wall face", m,
+                     bool(m) and m.get("kind") == "planar_face" and _num(pos[2])
+                     and 1.0 < pos[2] < _SW_H - 1.0)
+
+
+def _swarf_surfaces_read(_ctx):
+    """Read the legacy swarf op's swarfSurfaces entities natively: area and centroid in mm."""
+    script = """import adsk.core, adsk.cam, json
+
+def run(context):
+    app = adsk.core.Application.get()
+    cam = adsk.cam.CAM.cast(app.activeDocument.products.itemByProductType('CAMProductType'))
+    ops = [s.allOperations.item(j) for s in cam.setups for j in range(s.allOperations.count)
+           if s.allOperations.item(j).name == NAME]
+    assert len(ops) == 1
+    p = ops[0].parameters.itemByName('swarfSurfaces')
+    faces = list(p.value.value) if p is not None else []
+    print(json.dumps({'present': p is not None,
+        'advanced_present': ops[0].parameters.itemByName('advancedSwarfSurfaces') is not None,
+        'faces': [{'area_mm2': f.area * 100.0,
+                   'centroid_mm': [f.centroid.x * 10.0, f.centroid.y * 10.0, f.centroid.z * 10.0]}
+                  for f in faces]}))
+"""
+    return {"script": script.replace("NAME", repr(_SW_LEGACY_OP)), "read_only": True}
+
+
+def _swarf_surfaces_hold_the_wall(p):
+    """The native swarfSurfaces reads five entries: the selected wall twice, then the three others."""
+    wall = _RECALL.get("sw_wall") or {}
+    want = [wall.get("area")] + list(wall.get("position") or [])
+    rows = [[f.get("area_mm2")] + list(f.get("centroid_mm") or []) for f in p.get("faces") or []]
+    sound = len(want) == 4 and all(len(r) == 4 and all(_num(v) for v in r) for r in rows)
+
+    def same(a, b):
+        return all(_near(x, y, 0.01) for x, y in zip(a, b))
+    selected = [r for r in rows if sound and same(r, want)]
+    others = [r for r in rows if sound and not same(r, want)]
+    return _measured("swarfSurfaces holds the selected wall twice and the three other walls", p,
+                     p.get("present") is True and p.get("advanced_present") is False
+                     and sound and len(rows) == 5 and len(selected) == 2 and len(others) == 3
+                     and not any(same(a, b) for k, a in enumerate(others) for b in others[k + 1:])
+                     and all(1.0 < r[3] < _SW_H - 1.0 for r in others))
 
 
 def _face_facing(label, normal_reads):
@@ -3535,6 +4532,246 @@ def _requested_parameter_rows(payload):
     params = payload.get("parameters") or {}
     raw = params.get("requested_parameters") or []
     return params, raw, {row.get("requested_name"): row for row in raw}
+
+
+def _expressions_read(op, want, exact_operation=False):
+    """cam_get parameters: each named row of `op` reads the expression `want` maps it to."""
+    def check(p):
+        params, _raw, rows = _requested_parameter_rows(p)
+        got = {name: (rows.get(name) or {}).get("expression") for name in want}
+        return _measured(f"{op} rows read back", {"operation": params.get("operation"), "expressions": got},
+                         got == want and (not exact_operation or params.get("operation") == op))
+    return check
+
+
+# A setup of its own with no machine, deleted at the end with both operations: a parallel op whose
+# four-row 5-axis edit refuses and whose restore of a re-locked conditional row raises, and a
+# three_plus_two op whose roughingType write disables the stepover row it carries.
+_PE_SETUP = "PartialEditSetup"
+_PE_OP, _MD_OP = "PartialEdit5x", "ModeDiagnosticRough"
+_PE_ROWS = ["multiAxisMachiningType", "toolAxisMode", "tiltTool", "useShaftAndHolder"]
+_DR_OP = "DerivedRestore5x"
+_DR_LIBRARY = "systemlibraryroot://Samples/Milling Tools (Metric)"
+_DR_DERIVED = "(multiAxisMachiningType == 'four_axis') ? 'tilt_to_rotary_axis' : 'vertical'"
+
+
+def _derived_row_read(_ctx, operation=_DR_OP, parameters=None):
+    """Read one owned partial-edit operation's parameters, identity and error flag."""
+    script = """import adsk.core, adsk.cam, hashlib, json
+
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.isValid and app.activeDocument.dataFile is None
+    cam = adsk.cam.CAM.cast(app.activeDocument.products.itemByProductType('CAMProductType'))
+    setups = [s for s in cam.setups if s.name == SETUP]
+    assert len(setups) == 1
+    ops = [setups[0].allOperations.item(j) for j in range(setups[0].allOperations.count)
+           if setups[0].allOperations.item(j).name == NAME]
+    assert len(ops) == 1
+    op = ops[0]
+    rows = {}
+    for name in ROWS:
+        p = op.parameters.itemByName(name)
+        assert p is not None
+        rows[name] = {'expression':p.expression,'value':p.value.value,'error':p.error,
+                      'enabled':p.isEnabled,'editable':p.isEditable}
+    tool = json.loads(op.tool.toJson())
+    assert isinstance(tool,dict) and tool
+    result = {'operation':op.name,'id':op.operationId,'has_error':op.hasError,'parameters':rows,
+              'tool_sha256':hashlib.sha256(json.dumps(tool,sort_keys=True).encode()).hexdigest()}
+    if 'toolAxisMode' in rows:
+        result.update({key:rows['toolAxisMode'][key] for key in ('value','expression','error')})
+    if 'tiltToolMode' in rows:
+        result['tilt'] = rows['tiltToolMode']['value']
+    print(json.dumps(result))
+"""
+    names = parameters or ["multiAxisMachiningType", "toolAxisMode", "tiltToolMode"]
+    return {"script": script.replace("NAME", repr(operation)).replace("SETUP", repr(_PE_SETUP))
+            .replace("ROWS", repr(names)), "read_only": True}
+
+
+def _partial_snapshot_known(p, operation, names, allow_errors=False):
+    """Whether the independent operation snapshot has every required scalar and identity."""
+    rows = p.get("parameters") or {}
+    if (p.get("operation") != operation or type(p.get("id")) is not int or p["id"] < 0
+            or type(p.get("has_error")) is not bool or not isinstance(p.get("tool_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", p["tool_sha256"]) is None or set(rows) != set(names)):
+        return False
+    return all(isinstance(row.get("expression"), str) and isinstance(row.get("error"), str)
+               and (allow_errors or row["error"] == "")
+               and type(row.get("enabled")) is bool and type(row.get("editable")) is bool
+               and type(row.get("value")) in (str, bool, int, float)
+               and (type(row["value"]) is not float or math.isfinite(row["value"]))
+               for row in rows.values())
+
+
+def _partial_compound_restored(p):
+    """Verify the refused compound's identity, values and disclosed expression loss independently."""
+    before = _RECALL.get("partial_edit_before") or {}
+    rows, prior = p.get("parameters") or {}, before.get("parameters") or {}
+    names = _PE_ROWS + ["tiltToolMode"]
+    good = (_partial_snapshot_known(p, _PE_OP, names) and _partial_snapshot_known(before, _PE_OP, names)
+            and p.get("id") == before.get("id") and p.get("tool_sha256") == before.get("tool_sha256")
+            and p.get("operation") == _PE_OP and p.get("has_error") is False
+            and set(rows) == set(prior) == set(_PE_ROWS + ["tiltToolMode"]))
+    for name, row in prior.items():
+        after = rows.get(name) or {}
+        good = good and all(after.get(k) == row.get(k) for k in ("value", "error", "enabled", "editable"))
+        good = good and after.get("expression") == ("'vertical'" if name == "toolAxisMode" else row.get("expression"))
+    return _measured("compound refusal restored values and disclosed literal axis", p, good)
+
+
+def _partial_same_operation(p, key, value, expression, error):
+    """Verify a parameter edit against its independently retained operation and tool."""
+    before = _RECALL.get(key) or {}
+    names = ["multiAxisMachiningType", "toolAxisMode", "tiltToolMode"]
+    mode = (p.get("parameters") or {}).get("multiAxisMachiningType") or {}
+    return _measured("partial-edit independent operation state", p,
+                     _partial_snapshot_known(p, _DR_OP, names) and _partial_snapshot_known(before, _DR_OP, names)
+                     and p.get("id") == before.get("id") and p.get("operation") == before.get("operation")
+                     and p.get("tool_sha256") == before.get("tool_sha256")
+                     and p.get("has_error") is error and p.get("value") == value
+                     and p.get("expression") == expression and p.get("error") == ""
+                     and mode.get("expression") == "'five_axis'" and mode.get("value") == "five_axis")
+
+
+def _partial_existing_error_read(p, restored=False):
+    """Verify the nondefault edit of an already errored operation or its exact parameter restore."""
+    before = _RECALL.get("partial_mode_before") or {}
+    rows, prior = p.get("parameters") or {}, before.get("parameters") or {}
+    names = ["roughingType", "stepover"]
+    good = (_partial_snapshot_known(p, _MD_OP, names) and _partial_snapshot_known(before, _MD_OP, names)
+            and p["id"] == before["id"] and p["tool_sha256"] == before["tool_sha256"]
+            and p["has_error"] is before["has_error"] is True)
+    if restored:
+        good = good and rows == prior
+    else:
+        step = rows.get("stepover") or {}
+        good = good and rows.get("roughingType") == prior.get("roughingType")
+        good = good and step.get("expression") == "2.4 mm" and _near(step.get("value"), 0.24, 1e-9)
+    return _measured("edit and restore preserve the existing operation error", p, good)
+
+
+def _derived_row_reads(label, expression):
+    """The native read: value vertical, the given expression, no error, tiltToolMode automatic."""
+    def check(p):
+        return _measured(label, p,
+                         _partial_snapshot_known(p, _DR_OP, ["multiAxisMachiningType", "toolAxisMode", "tiltToolMode"])
+                         and (p["parameters"]["multiAxisMachiningType"]["expression"] == "'five_axis'")
+                         and (p["parameters"]["multiAxisMachiningType"]["value"] == "five_axis")
+                         and p.get("value") == "vertical" and p.get("expression") == expression
+                         and p.get("error") == "" and p.get("has_error") is False
+                         and p.get("tilt") == "automatic")
+    return check
+
+
+_PARTIAL_EDIT_ROWS = [
+    ("cam_create_setup", {"models": [_SW_COMP], "name": _PE_SETUP},
+     lambda p: p.get("created") is True and p.get("setup_name") == _PE_SETUP, None),
+    ("cam_get", {"include": ["strategies"], "setup": _PE_SETUP},
+     _offers(_PE_SETUP, "parallel", "three_plus_two"), None),
+    ("cam_create_operation", lambda c: {"setup": _PE_SETUP, "strategy": "parallel", "name": _PE_OP,
+                                        "tool_scope": "document", "generate": False,
+                                        "tool_index": _ctx_get(c, "sw_mill", "the flat mill's index")},
+     _op_created(_PE_SETUP, "parallel"), None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _PE_OP, _PE_ROWS + ["tiltToolMode"]),
+     lambda p: _partial_snapshot_known(p, _PE_OP, _PE_ROWS + ["tiltToolMode"])
+               and p.get("has_error") is False and p.get("value") == "vertical"
+               and p.get("expression") == _DR_DERIVED and p.get("tilt") == "automatic"
+               and p["parameters"]["multiAxisMachiningType"]["value"] == "three_axis"
+               and p["parameters"]["tiltTool"]["value"] is False
+               and p["parameters"]["useShaftAndHolder"]["value"] is False,
+     ("partial_edit_before", _recall("partial_edit_before", lambda p: p))),
+    ("cam_edit_operation", {"operation": _PE_OP, "parameters": {
+        "multiAxisMachiningType": "'five_axis'", "toolAxisMode": "'lead_lean'",
+        "tiltTool": "true", "useShaftAndHolder": "true"}},
+     _refused("Operation.hasError changed from False to True", "Restored the expression of 3 of 4", "1 came back by VALUE only",
+              "'toolAxisMode' reads value 'vertical'", "which was NOT restored",
+              "Operation.hasError reads False"), None),
+    # The derived expression is lost; its evaluated vertical value returned while the row was locked.
+    ("cam_get", {"include": ["parameters"], "operation": _PE_OP, "parameter_names": _PE_ROWS},
+     _expressions_read(_PE_OP, {"multiAxisMachiningType": "'three_axis'",
+                                "useShaftAndHolder": "tiltTool",
+                                "tiltTool": "false",
+                                "toolAxisMode": "'vertical'"}), None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _PE_OP, _PE_ROWS + ["tiltToolMode"]),
+     Independent(_partial_compound_restored, ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("cam_create_operation", lambda c: {"setup": _PE_SETUP, "strategy": "three_plus_two",
+                                        "name": _MD_OP, "tool_scope": "document", "generate": False,
+                                        "tool_index": _ctx_get(c, "sw_mill", "the flat mill's index")},
+     _op_created(_PE_SETUP, "three_plus_two"), None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _MD_OP, ["roughingType", "stepover"]),
+     lambda p: _partial_snapshot_known(p, _MD_OP, ["roughingType", "stepover"])
+               and p.get("has_error") is True
+               and p["parameters"]["roughingType"]["expression"] == "'offset'"
+               and not _near(p["parameters"]["stepover"]["value"], 0.24, 1e-9),
+     ("partial_mode_before", _recall("partial_mode_before", lambda p: p))),
+    ("cam_edit_operation", {"operation": _MD_OP, "parameters": {"stepover": "2.4 mm"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "2.4 mm", None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _MD_OP, ["roughingType", "stepover"]),
+     Independent(_partial_existing_error_read, ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("cam_edit_operation", lambda c: {"operation": _MD_OP, "parameters": {"stepover":
+        _ctx_get(c, "partial_mode_before", "the operation's prior stepover")["parameters"]["stepover"]["expression"]}},
+     lambda p: p.get("edited") is True, None),
+    ("sys_execute_script", lambda c: _derived_row_read(c, _MD_OP, ["roughingType", "stepover"]),
+     Independent(lambda p: _partial_existing_error_read(p, restored=True), ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("cam_edit_operation", {"operation": _MD_OP,
+                            "parameters": {"roughingType": "'adaptive'", "stepover": "1.5 mm"}},
+     _refused("Maximum Stepover", "reads isEnabled false", "Rolled back all 2"), None),
+    ("cam_get", {"include": ["parameters"], "operation": _MD_OP,
+                 "parameter_names": ["roughingType"]},
+     _expressions_read(_MD_OP, {"roughingType": "'offset'"}), None),
+    # Lead/lean without tilt takes the write; the original conditional cannot be assigned as a choice.
+    ("cam_create_operation", {"setup": _PE_SETUP, "strategy": "parallel", "name": _DR_OP,
+                              "tool_library_url": _DR_LIBRARY, "tool_index": 22, "generate": False},
+     lambda p: _op_created(_PE_SETUP, "parallel")(p)
+               and "6mm Flat Endmill" in (p.get("tool") or ""), None),
+    ("cam_edit_operation", {"operation": _DR_OP,
+                            "parameters": {"multiAxisMachiningType": "'five_axis'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'five_axis'", None),
+    ("sys_execute_script", _derived_row_read,
+     _derived_row_reads("toolAxisMode holds its derived default before the edit", _DR_DERIVED),
+     ("derived_edit_before", _recall("derived_edit_before", lambda p: p))),
+    ("cam_edit_operation", {"operation": _DR_OP, "parameters": {"toolAxisMode": "'lead_lean'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'lead_lean'", None),
+    ("sys_execute_script", _derived_row_read,
+     Independent(lambda p: _partial_same_operation(p, "derived_edit_before", "lead_lean", "'lead_lean'", False)
+                            and p.get("tilt") == "from_point", ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("cam_edit_operation", {"operation": _DR_OP, "parameters": {"toolAxisMode": _DR_DERIVED}},
+     _refused("Could not set 'toolAxisMode'", "Invalid enumeration value", "Already applied: none"), None),
+    ("sys_execute_script", _derived_row_read,
+     lambda p: _partial_same_operation(p, "derived_edit_before", "lead_lean", "'lead_lean'", False)
+                and p.get("tilt") == "from_point", None),
+    ("cam_edit_operation", {"operation": _DR_OP, "parameters": {"toolAxisMode": "'vertical'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'vertical'", None),
+    ("sys_execute_script", _derived_row_read,
+     Independent(lambda p: _partial_same_operation(p, "derived_edit_before", "vertical", "'vertical'", False)
+                            and p.get("tilt") == "automatic", ["cam_edit_operation"], "tool:sys_execute_script"), None),
+    ("cam_create_operation", {"setup": _PE_SETUP, "strategy": "parallel", "name": "RestoreNames5x",
+                              "tool_library_url": _DR_LIBRARY, "tool_index": 3, "generate": False},
+     lambda p: _op_created(_PE_SETUP, "parallel")(p)
+               and "6mm Ball Endmill" in (p.get("tool") or ""), None),
+    ("cam_edit_operation", {"operation": "RestoreNames5x",
+                            "parameters": {"multiAxisMachiningType": "'five_axis'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'five_axis'", None),
+    ("cam_edit_operation", {"operation": "RestoreNames5x",
+                            "parameters": {"toolAxisMode": "'lead_lean'"}},
+     lambda p: p.get("edited") is True and p["changed"][0].get("after") == "'lead_lean'", None),
+    ("cam_get", {"include": ["parameters"], "operation": "RestoreNames5x",
+                 "parameter_names": ["leadAngle", "leanAngle"]},
+     _expressions_read("RestoreNames5x", {"leadAngle": "0deg", "leanAngle": "0deg"}, exact_operation=True), None),
+    ("cam_edit_operation", {"operation": "RestoreNames5x", "parameters": {
+        "tiltToolMode": "'automatic'", "leadAngle": "10 deg", "leanAngle": "5 deg",
+        "shaftClearance": "0.5 mm", "holderClearance": "3 mm"}},
+     _refused("does not accept a write to: tiltToolMode, shaftClearance, holderClearance",
+              "WROTE 2 parameter(s) on the operation and then restored each one",
+              "'leadAngle' reads '0deg', 'leanAngle' reads '0deg'"), None),
+    ("cam_get", {"include": ["parameters"], "operation": "RestoreNames5x",
+                 "parameter_names": ["leadAngle", "leanAngle"]},
+     _expressions_read("RestoreNames5x", {"leadAngle": "0deg", "leanAngle": "0deg"}, exact_operation=True), None),
+    ("cam_delete", {"entity": _PE_SETUP},
+     lambda p: p.get("deleted") is True and p.get("entity_type") == "setup", None),
+]
 
 
 def _valid_unavailable_page(page, expected_offset):
@@ -3893,7 +5130,7 @@ def _posted_turning(setup, program):
 # ACT 7c: the cameo the extension strategies are machined on, built while Design is still the
 # active workspace. The sketch and the component ride the sketch phase; what stays here is the
 # drafted extrude and the measurement that says the fixture came out as authored.
-_SWARF_RIG = [
+_SWARF_FRUSTUM = [
     ("model_create_component", {"name": _SW_COMP, "activate": True}, _made_component, None),
     ("sketch_create", {"plane": "xy", "name": _SW_SKETCH}, "ok", None),
     ("sketch_add_geometry", {"geometry": [{"kind": "rectangle",
@@ -3908,6 +5145,9 @@ _SWARF_RIG = [
                        "taper_deg": -12, "operation": "new"}, _extruded, None),
     ("design_activate_component", {"occurrence": "root"}, "ok", None),
     ("model_inspect", {"target": _SW_COMP + ":1"}, _frustum_measured, None),
+]
+
+_SWARF_RIG = _SWARF_FRUSTUM + [
     # THE DIHEDRAL BENCH, built beside it: an L prism is the one shape whose edge census is known by
     # hand - 18 edges, of which exactly the one at the reflex corner is concave - so the edge_filter
     # path has a body to classify. Nothing later reads this body.
@@ -3994,6 +5234,25 @@ _CAM_EXTENSION = [
                                         "generate": False},
      _op_created(_SW_SETUP, "swarf"),
      ("swarf_op", _recall("swarf_op", lambda p: p["operation"]))),
+    # surface_target='swarf' on a legacy swarf op lands on the 'swarfSurfaces' set it carries,
+    # judged by a native read of that set; the op is deleted again before anything generates.
+    ("cam_create_operation", lambda c: {"setup": _SW_SETUP, "strategy": "swarf",
+                                        "name": _SW_LEGACY_OP, "tool_scope": "document",
+                                        "tool_index": _ctx_get(c, "sw_mill",
+                                                               "the flat mill's index"),
+                                        "generate": False},
+     _op_created(_SW_SETUP, "swarf"), None),
+    ("find_geometry", {"target": _SW_COMP, "kind": "planar_face", "max_results": 1,
+                       "nearest_to": [_SW_CX, _SW_CY - _SW_BASE_Y / 2 + _SW_INSET / 2, _SW_H / 2]},
+     _drafted_wall, ("sw_wall", _recall("sw_wall", lambda p: p["matches"][0]))),
+    ("cam_select_geometry", lambda c: {"operation": _SW_LEGACY_OP, "selection": "surfaces",
+                                       "surface_target": "swarf", "generate": False,
+                                       "handles": [_ctx_get(c, "sw_wall", "the wall")["handle"]]},
+     lambda p: p.get("surface_param") == "swarfSurfaces" and p.get("selections") == 1
+     and p.get("assigned") == 1 and p.get("stored") == 5
+     and "swarfSurfaces reads back 5 entries for the 1 assigned" in (p.get("note") or ""), None),
+    ("sys_execute_script", _swarf_surfaces_read, _swarf_surfaces_hold_the_wall, None),
+    ("cam_delete", {"entity": _SW_LEGACY_OP}, _op_deleted(_SW_LEGACY_OP), None),
     # the named feeds/speeds recipe, pointed at while there is no toolpath to lose: assigning a
     # preset INVALIDATES a valid operation's toolpath.
     ("cam_edit_operation", lambda c: {"operation": _ctx_get(c, "swarf_op", "the swarf op"),
@@ -4155,6 +5414,7 @@ _CAM_EXTENSION = [
     ("cam_delete", lambda c: {"entity": _ctx_get(c, "corner_op", "the corner op")},
      lambda p: p["deleted"] is True and p["entity"] == _RECALL.get("corner_op")
      and p["entity_type"] == "operation", None),
+] + _PARTIAL_EDIT_ROWS + [
     # THE SIMULTANEOUS STRATEGIES, in a setup of their own: the rail program spans the swarf setup
     # and the cameo's plain milling one, and the 3-axis post it is written through refuses a 5-axis
     # toolpath - so these three ride a setup that program never reaches.
@@ -4294,20 +5554,8 @@ _CAM_SCOPE = [
 ]
 
 
-# ACT 10d: THE SECOND SETUP ON THE PART - the bracket turned over and machined from underneath,
-# with a WCS of its own. It opens with the two reads taken on the finished rail job, which the
-# extension act's own capability gates: where the extension is not entitled those two rows do not
-# run, and the flip setup below them does.
+# ACT 10d: the bracket turned over and machined from underneath, with a WCS of its own.
 _CAM_SECOND_SETUP = [
-    ("cam_get_status", {"target": _SW_SETUP}, _needs(MACHINING_EXTENSION, _first_generation), None),
-    # THE NON-EMPTY ORACLE, per operation: the rails cut only on one side of their own direction,
-    # and machining time is the only read that tells a cutting toolpath from an empty one.
-    ("cam_get", {"include": ["time"], "setup": _SW_SETUP},
-     _needs(MACHINING_EXTENSION, _cuts(_SW_SETUP, "swarf_op")), None),
-    # the same oracle over the simultaneous setup: every one of its three operations carries its own
-    # machining time above zero, so none of them generated into air.
-    ("cam_get", {"include": ["time"], "setup": _MX_SETUP},
-     _needs(MACHINING_EXTENSION, _all_cut(_MX_SETUP, 3)), None),
     # back to the real part for the flip: a second setup on the SAME model, cut from the other
     # side, which is how a part with features on two faces is actually run.
     _watch([PART_COMP + ":1"]),
@@ -4473,6 +5721,15 @@ _CAM_SECOND_SETUP = [
 # suppression takes out of it. The rail half of it rides the capability tier; the part's own two
 # setups are posted whatever this installation is entitled to, so the sweep always ends on a post.
 _CAM_MULTI_POST = [
+    ("cam_get_status", {"target": _SW_SETUP}, _needs(MACHINING_EXTENSION, _first_generation), None),
+    # THE NON-EMPTY ORACLE, per operation: the rails cut only on one side of their own direction,
+    # and machining time is the only read that tells a cutting toolpath from an empty one.
+    ("cam_get", {"include": ["time"], "setup": _SW_SETUP},
+     _needs(MACHINING_EXTENSION, _cuts(_SW_SETUP, "swarf_op")), None),
+    # the same oracle over the simultaneous setup: every one of its three operations carries its own
+    # machining time above zero, so none of them generated into air.
+    ("cam_get", {"include": ["time"], "setup": _MX_SETUP},
+     _needs(MACHINING_EXTENSION, _all_cut(_MX_SETUP, 3)), None),
     # REFUSED: the rail toolpath posted through a 3-axis machine configuration. The refusal carries
     # the platform's own cause, and it is what makes the suppression below a step with a reason
     # rather than a precaution. Only the cause is asserted - the rollback's own sentence is a
@@ -4598,3 +5855,505 @@ _CAM_GREEN = [
     ("cam_get_status", {"target": "Setup2"}, _all_current("setup 'Setup2'", exactly=4), None),
     ("cam_get_status", {}, _all_current("the document"), None),
 ]
+
+
+def _lookup_guarded(payload):
+    """Require native correlation guards, exact-address controls and unchanged rejected state."""
+    return _measured("bounded native lookup and correlation checks", payload,
+                     payload.get("passed") is True and payload.get("checks")
+                     and all(value is True for value in payload["checks"].values()))
+
+
+def _lookup_library_args(_ctx):
+    """Probe capped library names and exact URLs through public CAM handlers."""
+    script = """import adsk.core, adsk.cam, json, os, sys, uuid
+
+def run(context):
+    ct = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_edit_tools'))
+    cp = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools.cam_post'))
+    cc = next(m for n,m in sys.modules.items() if n.endswith('.mcpServer.tools._cam_common'))
+    cam = adsk.cam.CAM.cast(adsk.core.Application.get().activeProduct)
+    assert cam is not None
+    libraries = adsk.cam.CAMManager.get().libraryManager.toolLibraries
+    root = libraries.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)
+    assets = list(libraries.childAssetURLs(root))
+    assert len(assets) > 1
+    asset = assets[0]
+    hidden_asset = assets[1]
+    assert hidden_asset.toString() != asset.toString()
+    native_tool_lib = libraries.toolLibraryAtURL(asset)
+    native_tool_count = native_tool_lib.count
+    assert type(native_tool_count) is int and native_tool_count >= 0
+    native_first = native_tool_lib.item(0) if native_tool_count else None
+    native_description = cc.safe(
+        lambda: native_first.parameters.itemByName('tool_description').value.value)
+    native_diameter = cc.safe(
+        lambda: native_first.parameters.itemByName('tool_diameter').value.value)
+    def outcome(result):
+        text = (result.get('content') or [{}])[0].get('text', '')
+        try:
+            payload = json.loads(text)
+        except Exception:
+            payload = text
+        return {'is_error': result.get('isError'), 'payload': payload}
+    def state():
+        setups = []
+        target = None
+        for i in range(cam.setups.count):
+            setup = cam.setups.item(i)
+            operations = []
+            for j in range(setup.allOperations.count):
+                op = setup.allOperations.item(j)
+                op_name = cc.safe(lambda op=op: op.name)
+                operations.append(op_name)
+                if (setup.name == 'LookupGuardSetup'
+                        and op_name == 'LookupGuardOperation'):
+                    target = {'id': cc.safe(lambda op=op: op.operationId),
+                              'has_toolpath': cc.safe(lambda op=op: op.hasToolpath),
+                              'toolpath_valid': cc.safe(lambda op=op: op.isToolpathValid)}
+            setups.append({'name': cc.safe(lambda setup=setup: setup.name),
+                           'operations': operations})
+        nc_names = [cc.safe(lambda i=i: cam.ncPrograms.item(i).name)
+                    for i in range(cam.ncPrograms.count)]
+        return {'nc_program_count': cam.ncPrograms.count,
+                'nc_program_names': nc_names, 'target': target,
+                'tool_count': cam.documentToolLibrary.count, 'setups': setups}
+    original = ct.library_assets
+    post_cap = cp._POST_MAX_ASSETS['fusion']
+    checks = {}
+    post_name = 'CodexLookupCap' + uuid.uuid4().hex[:10]
+    output_folder = os.path.join(OUTPUT_ROOT, post_name)
+    assert not os.path.exists(output_folder)
+    try:
+        ct.library_assets = lambda lib, url: cc.library_assets(lib, url, max_assets=1)
+        tool_before = outcome(ct.handler(action='list', scope='fusion', library=asset.toString()))
+        tool_refused = outcome(ct.handler(action='list', scope='fusion', library=asset.leafName))
+        tool_unknown = outcome(ct.handler(action='list', scope='fusion', library='SweepLookupMissing'))
+        tool_exact = outcome(ct.handler(action='list', scope='fusion', library=asset.toString()))
+        tool_hidden = outcome(ct.handler(action='list', scope='fusion', library=hidden_asset.toString()))
+        checks['hidden_tool_exact_url_refusal'] = (tool_hidden['is_error'] is True
+            and all(text in str(tool_hidden['payload']) for text in (
+                'absence is unknown', 'Choose an enumerated library URL',
+                'URLs outside this walk cannot be resolved'))
+            and 'Pass an exact library' not in str(tool_hidden['payload']))
+        checks['tool_library_census_unchanged'] = ([u.toString() for u in libraries.childAssetURLs(root)]
+            == [u.toString() for u in assets])
+        public_first = ((tool_before['payload'].get('tools') or [{}])[0]
+                        if isinstance(tool_before['payload'], dict) else {})
+        checks['tool_exact_baseline_read'] = (tool_before['is_error'] is False
+            and isinstance(tool_before['payload'], dict)
+            and tool_before['payload'].get('tool_count') == native_tool_count
+            and native_tool_count == len(tool_before['payload'].get('tools', []))
+            and (native_tool_count == 0 or (
+                public_first.get('index') == 0
+                and public_first.get('description') == native_description
+                and public_first.get('diameter_mm') == (
+                    round(native_diameter * 10.0, 4)
+                    if isinstance(native_diameter, (int, float)) else None))))
+        checks['tool_name_refused_by_public_handler'] = (tool_refused['is_error'] is True
+            and 'was capped' in str(tool_refused['payload']))
+        checks['tool_missing_name_unknown'] = (tool_unknown['is_error'] is True
+            and 'absence is unknown' in str(tool_unknown['payload']).lower())
+        checks['tool_exact_url_within_cap_window'] = (tool_exact['is_error'] is False
+            and tool_exact['payload'] == tool_before['payload'])
+
+        posts = cp._post_library()
+        post_root = posts.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)
+        post_assets = list(posts.childAssetURLs(post_root))
+        assert len(post_assets) > 1
+        post = post_assets[0]
+        hidden_post = post_assets[1]
+        assert hidden_post.toString() != post.toString()
+        cp._POST_MAX_ASSETS['fusion'] = 1
+        before_post = state()
+        assert all(setup['name'] and all(setup['operations'])
+                   for setup in before_post['setups'])
+        guard_setups = [setup for setup in before_post['setups']
+                        if setup['name'] == 'LookupGuardSetup']
+        assert len(guard_setups) == 1
+        assert len(guard_setups[0]['operations']) == 1
+        guard_operation = before_post['target']
+        assert (guard_operation is not None and guard_operation['id'] is not None
+                and isinstance(guard_operation['has_toolpath'], bool)
+                and isinstance(guard_operation['toolpath_valid'], bool))
+        assert before_post['nc_program_count'] == 0 and before_post['nc_program_names'] == []
+        post_refused = outcome(cp.handler(scope='LookupGuardOperation', post=post.leafName,
+            post_scope='fusion', output_folder=output_folder, program_name=post_name))
+        after_name = state()
+        post_unknown = outcome(cp.handler(scope='LookupGuardOperation', post='SweepLookupMissing',
+            post_scope='fusion', output_folder=output_folder, program_name=post_name))
+        after_unknown = state()
+        exact_post = outcome(cp.handler(scope='LookupGuardOperation', post=post.toString(),
+            post_scope='fusion', output_folder=output_folder, program_name=post_name))
+        after_exact = state()
+        hidden_post_result = outcome(cp.handler(scope='LookupGuardOperation', post=hidden_post.toString(),
+            post_scope='fusion', output_folder=output_folder, program_name=post_name))
+        after_hidden = state()
+        checks['hidden_post_exact_url_refusal'] = (hidden_post_result['is_error'] is True
+            and all(text in str(hidden_post_result['payload']) for text in (
+                'absence is unknown', 'Choose an enumerated post URL',
+                'Enumerated post URLs:', post.toString(),
+                'URLs outside this walk cannot be resolved'))
+            and 'Pass an exact post' not in str(hidden_post_result['payload']))
+        checks['hidden_post_refusal_no_program_or_output'] = (after_hidden == before_post
+            and not os.path.exists(output_folder))
+        checks['post_library_census_unchanged'] = ([u.toString() for u in posts.childAssetURLs(post_root)]
+            == [u.toString() for u in post_assets])
+        checks['post_name_refused_by_public_handler'] = (post_refused['is_error'] is True
+            and 'search was capped' in str(post_refused['payload']))
+        checks['post_name_refusal_no_program_or_output'] = (after_name == before_post
+            and not os.path.exists(output_folder))
+        checks['post_missing_name_unknown'] = (post_unknown['is_error'] is True
+            and 'absence is unknown' in str(post_unknown['payload']).lower()
+            and after_unknown == before_post)
+        checks['post_exact_url_within_cap_window_reached_readiness_guard'] = (exact_post['is_error'] is True
+            and 'No valid toolpaths to post' in str(exact_post['payload']))
+        checks['post_exact_readiness_refusal_no_program_or_output'] = (after_exact == before_post
+            and not os.path.exists(output_folder))
+    finally:
+        ct.library_assets = original
+        cp._POST_MAX_ASSETS['fusion'] = post_cap
+    checks['diagnostic_caps_restored'] = ct.library_assets is original and cp._POST_MAX_ASSETS['fusion'] == post_cap
+    print(json.dumps({'passed': all(checks.values()), 'checks': checks,
+        'diagnostic_asset_cap': 1, 'tool_url': asset.toString(), 'post_url': post.toString(),
+        'tool_public_baseline': tool_before, 'tool_name_refusal': tool_refused,
+        'tool_missing_name': tool_unknown, 'tool_exact_recovery': tool_exact,
+        'hidden_tool_url': hidden_asset.toString(), 'hidden_tool_refusal': tool_hidden,
+        'hidden_post_url': hidden_post.toString(), 'hidden_post_refusal': hidden_post_result,
+        'post_after_hidden': after_hidden,
+        'post_name_refusal': post_refused, 'post_missing_name': post_unknown,
+        'post_exact_readiness': exact_post, 'post_before': before_post,
+        'post_after_name': after_name, 'post_after_unknown': after_unknown,
+        'post_after_exact': after_exact,
+        'post_exact_url_scope': 'within cap window only; readiness refusal, not successful posting'}))
+"""
+    script = script.replace("OUTPUT_ROOT", repr(EXPORT_DIR))
+    return {"script": script, "read_only": False}
+
+
+
+
+
+_SEED_PARAMETER_READ = """def seed_parameters(tool):
+    rows = {}
+    for name in ('tool_number', 'tool_diameterOffset', 'tool_lengthOffset'):
+        parameter = tool.parameters.itemByName(name)
+        assert parameter is not None, name
+        rows[name] = {'expression': parameter.expression, 'value': parameter.value.value}
+    return rows
+
+"""
+
+
+def _seed_library_before(_ctx):
+    """Read the shipped seed and a complete direct-root census before create or reuse."""
+    script = """import adsk.core, adsk.cam, json
+
+def run(context):
+    app = adsk.core.Application.get()
+    assert app.activeDocument.dataFile is None
+    libs = adsk.cam.CAMManager.get().libraryManager.toolLibraries
+    root = libs.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)
+    source_url = 'systemlibraryroot://Samples/Cutting Tools (Metric)'
+    shipped = list(libs.childAssetURLs(root))
+    assert len(shipped) <= 2048
+    matches = [u for u in shipped if u.toString() == source_url]
+    assert len(matches) == 1
+    source = libs.toolLibraryAtURL(matches[0])
+    assert source is not None and source.count > 0
+    local = libs.urlByLocation(adsk.cam.LibraryLocations.LocalLibraryLocation)
+    assets = list(libs.childAssetURLs(local))
+    assert len(assets) <= 256
+    name = OWNED_NAME
+    urls = [u.toString() for u in assets]
+    names = [u.leafName for u in assets]
+    assert all(isinstance(v, str) and v.strip() for v in urls + names)
+    assert len(set(urls)) == len(urls) and all('%' not in v for v in names)
+    named = [u for u in assets if name.lower() in {
+        u.leafName.strip().lower(), u.leafName.strip().lower().rpartition('.')[0]}]
+    assert len(named) <= 1
+    existing = libs.toolLibraryAtURL(named[0]) if named else None
+    assert not named or (existing is not None and type(existing.count) is int and existing.count == 1)
+    assert named or len(assets) < 256
+    empty = adsk.cam.ToolLibrary.createEmpty()
+    assert empty is not None and empty.count == 0
+    print(json.dumps({'owned_name': name, 'source_url': source_url,
+        'source_seed': json.loads(source.item(0).toJson()),
+        'source_parameters': seed_parameters(source.item(0)),
+        'local_urls': urls, 'local_names': names, 'local_root': local.toString(),
+        'owned_url': named[0].toString() if named else None,
+        'owned_seed': json.loads(existing.item(0).toJson()) if named else None,
+        'owned_parameters': seed_parameters(existing.item(0)) if named else None,
+        'empty_is_none': empty is None, 'empty_bool': bool(empty), 'empty_count': empty.count}))
+"""
+    script = script.replace("def run(context):", _SEED_PARAMETER_READ + "def run(context):")
+    return {"script": script.replace("OWNED_NAME", repr(RETAINED_LIBRARY_NAME)), "read_only": True}
+
+
+def _seed_library_after(_ctx, count=1):
+    """Read the exact returned URL independently and census the retained owned asset."""
+    before = _RECALL["seed_library_before"]
+    reply = _RECALL["seed_library_reply"]
+    script = """import adsk.core, adsk.cam, json
+
+def run(context):
+    libs = adsk.cam.CAMManager.get().libraryManager.toolLibraries
+    url = RETURNED_URL
+    stored = libs.toolLibraryAtURL(adsk.core.URL.create(url))
+    assert stored is not None and type(stored.count) is int and stored.count == EXPECTED_COUNT
+    source = libs.toolLibraryAtURL(adsk.core.URL.create(SOURCE_URL))
+    assert source is not None and source.count > 0
+    local = libs.urlByLocation(adsk.cam.LibraryLocations.LocalLibraryLocation)
+    assets = list(libs.childAssetURLs(local))
+    assert len(assets) <= 256
+    before = BEFORE_URLS
+    added = [{'url': u.toString(), 'name': u.leafName} for u in assets if u.toString() not in before]
+    print(json.dumps({'url': url, 'count': stored.count, 'is_none': stored is None,
+        'stored_seed': json.loads(stored.item(0).toJson()) if stored.count else None,
+        'stored_parameters': seed_parameters(stored.item(0)) if stored.count else None,
+        'source_seed': json.loads(source.item(0).toJson()),
+        'source_parameters': seed_parameters(source.item(0)),
+        'local_urls': [u.toString() for u in assets], 'added': added,
+        'retained_url': url, 'cleanup_attempted': False}))
+"""
+    script = (script.replace("EXPECTED_COUNT", repr(count)).replace("RETURNED_URL", repr(reply["url"]))
+              .replace("SOURCE_URL", repr(before["source_url"]))
+              .replace("BEFORE_URLS", repr(before["local_urls"])))
+    script = script.replace("def run(context):", _SEED_PARAMETER_READ + "def run(context):")
+    return {"script": script, "read_only": True}
+
+
+def _seed_library_equal(source, stored):
+    """Compare complete seed JSON allowing only numeric serialization roundoff."""
+    if type(source) in (int, float) and type(stored) in (int, float):
+        return (math.isfinite(source) and math.isfinite(stored)
+                and abs(source - stored) <= max(1e-12, 1e-12 * max(abs(source), abs(stored))))
+    if type(source) is not type(stored):
+        return False
+    if isinstance(source, dict):
+        return source.keys() == stored.keys() and all(_seed_library_equal(source[k], stored[k]) for k in source)
+    if isinstance(source, list):
+        return len(source) == len(stored) and all(_seed_library_equal(a, b) for a, b in zip(source, stored))
+    return source == stored
+
+
+def _seed_library_parameters(seed, parameters):
+    """Require readable numeric tool numbering and both measured direct-reference offsets."""
+    if not isinstance(seed, dict) or not isinstance(parameters, dict):
+        return False
+    post = seed.get("post-process")
+    guid = seed.get("guid")
+    names = ("tool_number", "tool_diameterOffset", "tool_lengthOffset")
+    if (not isinstance(post, dict) or not isinstance(guid, str) or not guid.strip()
+            or set(parameters) != set(names)):
+        return False
+    number = post.get("number")
+    if type(number) not in (int, float) or not math.isfinite(number):
+        return False
+    for name, field in zip(names, ("number", "diameter-offset", "length-offset")):
+        row = parameters[name]
+        if not isinstance(row, dict) or set(row) != {"expression", "value"}:
+            return False
+        expression, value = row["expression"], row["value"]
+        if (not isinstance(expression, str) or not expression.strip()
+                or type(value) not in (int, float) or not math.isfinite(value)
+                or not _seed_library_equal(value, post.get(field)) or value != number):
+            return False
+        if name == "tool_number":
+            try:
+                if float(expression) != value:
+                    return False
+            except ValueError:
+                return False
+        elif expression.strip() != "tool_number":
+            return False
+    return True
+
+
+def _seed_library_add_signature(source, stored, parameters):
+    """Check the full copied JSON, declared numbering and a separately validated new identity."""
+    if not _seed_library_parameters(stored, parameters) or not isinstance(source, dict):
+        return False
+    source_guid, stored_guid = source.get("guid"), stored["guid"]
+    if (not isinstance(source_guid, str) or not source_guid.strip()
+            or stored_guid.strip().casefold() == source_guid.strip().casefold()
+            or not isinstance(source.get("post-process"), dict)):
+        return False
+    expected = dict(source, guid=stored_guid)
+    expected["post-process"] = dict(source["post-process"], number=1,
+                                   **{"diameter-offset": 1, "length-offset": 1})
+    return _seed_library_equal(expected, stored)
+
+
+def _seed_library_added(p):
+    """Require the one empty-target addition with its deliberate free-number assignment."""
+    assigned = p.get("assigned_tool_numbers")
+    return (type(p.get("added")) is int and p["added"] == 1
+            and type(p.get("tool_count")) is int and p["tool_count"] == 1
+            and isinstance(assigned, list) and len(assigned) == 1
+            and type(assigned[0]) is int and assigned[0] == 1
+            and p.get("verified_in_memory_only") is False)
+
+
+def _seed_library_stored(p, after_add=False):
+    """Require exact stored content, unchanged source and only the selected asset addition."""
+    before, reply = _RECALL["seed_library_before"], _RECALL["seed_library_reply"]
+    added = p.get("added")
+    created = reply["created_this_run"]
+    urls = p.get("local_urls")
+    expected_urls = set(before["local_urls"]) | ({reply["url"]} if created else set())
+    source_parameters = p.get("source_parameters")
+    stored_parameters = p.get("stored_parameters")
+    if after_add:
+        content_matches = (_seed_library_added(_RECALL.get("seed_library_add_reply", {}))
+                           and _seed_library_add_signature(before["source_seed"],
+                                                           p.get("stored_seed"), stored_parameters))
+    else:
+        expected = before["source_seed"] if created else before["owned_seed"]
+        content_matches = (_seed_library_equal(expected, p.get("stored_seed"))
+                           and _seed_library_parameters(p.get("stored_seed"), stored_parameters)
+                           and (created or _seed_library_equal(before["owned_parameters"], stored_parameters)))
+    return _measured("seeded library exact URL and complete stored content", p,
+        type(p.get("count")) is int and p["count"] == reply.get("tool_count") == 1 and p.get("is_none") is False
+        and p.get("url") == reply.get("url") == p.get("retained_url")
+        and _seed_library_equal(before["source_seed"], p.get("source_seed"))
+        and _seed_library_parameters(p.get("source_seed"), source_parameters)
+        and _seed_library_equal(before["source_parameters"], source_parameters) and content_matches
+        and isinstance(urls, list) and all(isinstance(url, str) and url for url in urls)
+        and len(urls) == len(set(urls)) and set(urls) == expected_urls
+        and isinstance(added, list)
+        and (len(added) == 1 and isinstance(added[0], dict) and added[0].get("url") == reply["url"]
+             and isinstance(added[0].get("name"), str)
+             and added[0]["name"].strip().lower() in (before["owned_name"].lower(), before["owned_name"].lower() + ".json")
+             if created else added == [] and before["owned_url"] == reply["url"])
+        and p.get("cleanup_attempted") is False)
+
+
+def _seed_library_ready(p):
+    """Refuse unknown, ambiguous or mismatched retained input before selecting any mutation."""
+    urls, names = p.get("local_urls"), p.get("local_names")
+    existing = p.get("owned_url")
+    valid = (p.get("owned_name") == RETAINED_LIBRARY_NAME and isinstance(urls, list)
+             and isinstance(names, list) and len(urls) == len(names) <= 256
+             and all(isinstance(value, str) and value.strip() for value in urls + names)
+             and len(set(urls)) == len(urls) and all('%' not in name for name in names)
+             and "owned_url" in p and _seed_library_parameters(p.get("source_seed"), p.get("source_parameters"))
+             and isinstance(p.get("source_url"), str) and bool(p["source_url"].strip())
+             and p.get("empty_is_none") is False and p.get("empty_bool") is False
+             and type(p.get("empty_count")) is int and p["empty_count"] == 0)
+    if valid:
+        candidates = [url for url, name in zip(urls, names) if RETAINED_LIBRARY_NAME.lower()
+                      in {name.strip().lower(), name.strip().lower().rpartition('.')[0]}]
+        valid = (isinstance(existing, str) and existing in urls and candidates == [existing]
+                 and (_seed_library_equal(p["source_seed"], p.get("owned_seed"))
+                      or _seed_library_add_signature(p["source_seed"], p.get("owned_seed"), p.get("owned_parameters")))
+                 and _seed_library_parameters(p.get("owned_seed"), p.get("owned_parameters"))
+                 if existing is not None else not candidates and len(urls) < 256
+                 and p.get("owned_seed") is None and p.get("owned_parameters") is None)
+    return _measured("fixed retained library input", p, valid)
+
+
+def _seed_library_select_args(_ctx, reuse_only=False):
+    """Select the acquired exact URL or create the one admitted fixed-name namespace."""
+    before = _RECALL["seed_library_before"]
+    if not _seed_library_ready(before):
+        raise ValueError("fixed retained library input is incomplete or mismatched")
+    if before["owned_url"] is not None:
+        return {"action": "list", "scope": "local", "library": before["owned_url"]}
+    if reuse_only:
+        raise ValueError("retained library disappeared before the second invocation; no create fallback")
+    return {"action": "create_library", "scope": "local", "library": RETAINED_LIBRARY_NAME,
+            "add_tools": [{"library_url": before["source_url"], "index": 0}]}
+
+
+def _seed_library_selected(p):
+    """Validate real create/list fields without fabricating a created-library reply on reuse."""
+    before = _RECALL["seed_library_before"]
+    if type(p.get("tool_count")) is not int or p["tool_count"] != 1:
+        return False
+    if before["owned_url"] is not None:
+        return (isinstance(p.get("tools"), list) and len(p["tools"]) == 1
+                and isinstance(p["tools"][0], dict) and type(p["tools"][0].get("index")) is int
+                and p["tools"][0]["index"] == 0)
+    return (p.get("created_library") == RETAINED_LIBRARY_NAME and p.get("scope") == "local"
+            and isinstance(p.get("url"), str) and bool(p["url"].strip()))
+
+
+def _seed_library_selection(p):
+    """Retain the actual public reply and the separately acquired selected identity."""
+    if not _seed_library_selected(p):
+        raise ValueError("retained library create/list reply is incomplete")
+    existing = _RECALL["seed_library_before"]["owned_url"]
+    return {"raw_reply": p, "url": existing if existing is not None else p["url"],
+            "tool_count": p["tool_count"], "created_this_run": existing is None}
+
+
+def _seed_library_empty(p):
+    """Require a stored empty asset at the same URL without collateral additions or removals."""
+    before, reply = _RECALL["seed_library_before"], _RECALL["seed_library_reply"]
+    expected = set(before["local_urls"]) | ({reply["url"]} if reply["created_this_run"] else set())
+    return _measured("stored empty retained library", p,
+        type(p.get("count")) is int and p["count"] == 0 and p.get("is_none") is False
+        and p.get("url") == reply["url"] == p.get("retained_url") and p.get("stored_seed") is None
+        and p.get("stored_parameters") is None
+        and _seed_library_equal(before["source_seed"], p.get("source_seed"))
+        and _seed_library_parameters(p.get("source_seed"), p.get("source_parameters"))
+        and _seed_library_equal(before["source_parameters"], p.get("source_parameters"))
+        and isinstance(p.get("local_urls"), list) and all(isinstance(url, str) and url for url in p["local_urls"])
+        and len(p["local_urls"]) == len(set(p["local_urls"]))
+        and set(p["local_urls"]) == expected and p.get("cleanup_attempted") is False)
+
+
+def _seeded_library_list(count):
+    """A public list of the seeded library by the url its create reply published."""
+    return ("cam_edit_tools", lambda c: {"action": "list", "scope": "local",
+                                         "library": _RECALL["seed_library_reply"]["url"]},
+            lambda p: p.get("tool_count") == count, None)
+
+
+# The retained test namespace ends with one seed. A second invocation must acquire and reuse it.
+_SEEDED_LIBRARY_ROWS = [
+    ("sys_execute_script", _seed_library_before,
+     _seed_library_ready,
+     ("seed_library_before", _recall("seed_library_before", lambda p: p))),
+    ("cam_edit_tools", {"action": "create_library", "scope": "local",
+                        "library": "FWSeedGuardRefused", "add_tools": [{"from_type": "flat end mill"}]},
+     _refused("takes exactly 'library_url'", "action='add' only", "Nothing was created"), None),
+    ("cam_edit_tools", _seed_library_select_args, _seed_library_selected,
+     ("seed_library_reply", _recall("seed_library_reply", _seed_library_selection))),
+    _seeded_library_list(1),
+    ("sys_execute_script", _seed_library_after, _seed_library_stored, None),
+    ("cam_edit_tools", lambda c: {"action": "remove", "scope": "local",
+      "library": _RECALL["seed_library_reply"]["url"], "remove_indices": [0]},
+     lambda p: p.get("removed") == 1 and p.get("tool_count") == 0, None),
+    _seeded_library_list(0),
+    ("sys_execute_script", lambda c: _seed_library_after(c, count=0), _seed_library_empty, None),
+    ("cam_edit_tools", lambda c: {"action": "add", "scope": "local",
+      "library": _RECALL["seed_library_reply"]["url"],
+      "add_tools": [{"library_url": _RECALL["seed_library_before"]["source_url"], "index": 0}]},
+     _seed_library_added,
+     ("seed_library_add_reply", _recall("seed_library_add_reply", lambda p: p))),
+    _seeded_library_list(1),
+    ("sys_execute_script", _seed_library_after, lambda p: _seed_library_stored(p, after_add=True), None),
+    ("sys_execute_script", _seed_library_before, _seed_library_ready,
+     ("seed_library_before", _recall("seed_library_before", lambda p: p))),
+    ("cam_edit_tools", lambda c: _seed_library_select_args(c, reuse_only=True), _seed_library_selected,
+     ("seed_library_reply", _recall("seed_library_reply", _seed_library_selection))),
+    ("sys_execute_script", _seed_library_after, _seed_library_stored, None),
+]
+
+
+_CAM_LOOKUP_GUARDS = [
+    ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
+    ("cam_create_setup", {"name": "LookupGuardSetup", "models": ["LookupGuard:1"]},
+     lambda p: p.get("created") is True and p.get("model_count") == 1, None),
+    ("cam_edit_tools", {"action": "add", "add_tools": [{"from_type": "flat end mill",
+       "diameter": "6 mm", "description": "SweepLookup", "product_id": "SweepLookup"}]},
+     lambda p: p.get("added") == 1 and p.get("tool_count") == 1, None),
+    ("cam_create_operation", {"setup": "LookupGuardSetup", "strategy": "face", "generate": False,
+       "tool_scope": "document", "tool_index": 0, "name": "LookupGuardOperation"},
+     lambda p: p.get("operation") == "LookupGuardOperation" and p.get("generation_started") is False, None),
+    ("sys_execute_script", _lookup_library_args, _lookup_guarded, None),
+]
+
+_CAM_LOOKUP_GUARDS += _SEEDED_LIBRARY_ROWS

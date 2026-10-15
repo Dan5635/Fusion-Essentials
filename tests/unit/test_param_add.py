@@ -4,8 +4,11 @@ add rolls back a parameter that introduces a NEW timeline error, and publishes t
 as the parameter reads it rather than as it was asked for. The fakes below model a tiny timeline
 (items with healthState) and a userParameters collection that supports add/itemByName/deleteMe.
 """
+from conftest import install as _install_design
 
 from types import SimpleNamespace
+
+import pytest
 
 import adsk.core
 
@@ -41,7 +44,7 @@ def _design(user_params, timeline, all_params=()):
 
 
 def _stub_design(monkeypatch, design):
-    monkeypatch.setattr(params._common, "design", lambda: design)
+    _install_design(params, design)
     # the add path uses adsk.core.ValueInput.createByString; the string it carries is what the new
     # parameter's expression reads back as.
     monkeypatch.setattr(adsk.core.ValueInput, "createByString",
@@ -88,6 +91,18 @@ class TestAddHandler:
         assert "rolled back" in res["message"]
         assert up.itemByName("BadP") is None          # removed again
 
+    @pytest.mark.parametrize("args,fragment", [
+        ({"name": 5, "expression": "1 mm"}, "name must be a string; received 5."),
+        ({"name": "W", "expression": 25}, "expression must be a string; received 25."),
+        ({"name": "W", "expression": "1 mm", "unit": None}, "unit must be a string; received None."),
+        ({"name": "W", "expression": "1 mm", "comment": 7}, "comment must be a string; received 7.")])
+    def test_a_non_string_single_field_is_refused_naming_it(self, monkeypatch, args, fragment):
+        up = FakeUserParameters([])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        res = params.handler(**args)
+        assert res["isError"] is True and fragment in res["message"]
+        assert "No parameter added" in res["message"] and up._added == []
+
     def test_a_rollback_that_does_not_delete_says_the_parameter_may_remain(self, monkeypatch):
         tl = make_timeline("A")
         up = BreakingUserParameters([], timeline=tl)
@@ -116,6 +131,21 @@ class TestAddHandler:
 
 
 class TestAddBatch:
+    @pytest.mark.parametrize("specs,fragment", [
+        ([{"name": "Prefix", "expression": "1 mm"}, "oops"], "params[1] must be a dict"),
+        ([{"name": "Prefix", "expression": "1 mm"},
+          {"name": "Bad", "expression": 123}], "params[1].expression must be a string"),
+        ([{"name": "Prefix", "expression": "1 mm"}, {"name": "Missing"}],
+         "params[1] is missing 'expression'"),
+    ])
+    def test_malformed_batch_is_preflighted_before_any_add(self, monkeypatch, specs, fragment):
+        up = FakeUserParameters([])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        response = params.handler(params=specs)
+        assert response["isError"] is True and fragment in response["message"]
+        assert "No parameters added" in response["message"]
+        assert up._added == [] and up.count == 0
+
     # Adding N parameters is ONE batch call, not N separate calls.
     def test_batch_adds_all(self, monkeypatch):
         up = FakeUserParameters([])
@@ -135,14 +165,26 @@ class TestAddBatch:
         up = FakeUserParameters([])
         design = _design(up, make_timeline("A"))
         _stub_design(monkeypatch, design)
-        # 2nd entry is missing an expression -> that entry errors, the batch reports which index
+        # A blank required value is known before the batch starts, so no prefix is added.
         res = params.handler(params=[
             {"name": "Good", "expression": "1 mm"},
             {"name": "Bad", "expression": ""},
         ])
         assert res["isError"] is True
-        assert "Bad" in res["message"] and "[1]" in res["message"]
-        assert up.itemByName("Good") is not None        # the earlier good one is kept
+        assert "params[1].expression is empty" in res["message"]
+        assert "No parameters added" in res["message"]
+        assert up.itemByName("Good") is None
+
+    def test_native_duplicate_refusal_keeps_the_honest_completed_prefix_count(self, monkeypatch):
+        up = FakeUserParameters([FakeUserParameter(name="Existing", expression="2 mm")])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        response = params.handler(params=[
+            {"name": "GoodPrefix", "expression": "1 mm"},
+            {"name": "Existing", "expression": "3 mm"},
+        ])
+        assert response["isError"] is True
+        assert "already exists" in response["message"] and "1 added before this" in response["message"]
+        assert up.itemByName("GoodPrefix") is not None
 
     def test_single_param_path_still_works(self, monkeypatch):
         up = FakeUserParameters([])
@@ -150,6 +192,30 @@ class TestAddBatch:
         _stub_design(monkeypatch, design)
         out = _payload(params.handler(name="Solo", expression="9 mm"))
         assert out["added"] is True and up.itemByName("Solo") is not None
+
+    @pytest.mark.parametrize("bad", ["false", "true", 0, 1, None])
+    @pytest.mark.parametrize("prefix", [False, True])
+    def test_malformed_favorite_refuses_entire_batch_before_any_add(self, monkeypatch, bad, prefix):
+        up = FakeUserParameters([FakeUserParameter(name="Witness", expression="10 mm")])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        specs = ([{"name": "Good", "expression": "1 mm"}] if prefix else [])
+        specs.append({"name": "Bad", "expression": "2 mm", "favorite": bad})
+        response = params.handler(params=specs)
+        assert response["isError"] is True
+        assert f"params[{int(prefix)}].favorite=" in response["message"]
+        assert "JSON true or false" in response["message"] and "No parameters added" in response["message"]
+        assert up._added == [] and up.count == 1 and up.itemByName("Witness").expression == "10 mm"
+
+    def test_boolean_and_omitted_batch_favorites_keep_actual_readback(self, monkeypatch):
+        up = FakeUserParameters([])
+        _stub_design(monkeypatch, _design(up, make_timeline("A")))
+        result = _payload(params.handler(params=[
+            {"name": "Default", "expression": "2 mm"},
+            {"name": "On", "expression": "2 mm", "favorite": True},
+            {"name": "Off", "expression": "2 mm", "favorite": False}]))
+        assert result["added_count"] == 3
+        assert [r["favorite"] for r in result["results"]] == [False, True, False]
+        assert [up.itemByName(name).isFavorite for name in ("Default", "On", "Off")] == [False, True, False]
 
 
 class TextRefusingUserParameters(FakeUserParameters):
@@ -213,14 +279,13 @@ class TestTextParameter:
         assert "QUOTED" not in res["message"]
 
     def test_a_non_string_unit_in_a_batch_errors_instead_of_raising(self, monkeypatch):
-        # 'params' items are plain objects in the schema, so a unit reaches the add as any JSON
-        # value a caller sends. Whatever the add then does, building the failure message is the
-        # last step and may not itself raise - an exception out of the handler is not a payload.
+        # Batch units are checked as pure request data before any earlier parameter can land.
         up = UnitRefusingUserParameters([])
         _stub_design(monkeypatch, _design(up, make_timeline("A")))
         res = params.handler(params=[{"name": "Loose", "expression": "1", "unit": 5}])
         assert res["isError"] is True
-        assert "Loose" in res["message"]
+        assert "params[0].unit must be a string" in res["message"]
+        assert up._added == []
 
 
 class TestAddFavorite:

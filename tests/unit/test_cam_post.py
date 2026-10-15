@@ -14,7 +14,7 @@ program's parameters, writing (or not writing) a file there.
 """
 
 import itertools
-import json
+import pytest
 import os
 import types
 
@@ -74,6 +74,7 @@ class _NCProgram:
         self._cam = cam
         self.operations = None
         self.postConfiguration = None
+        self.machine = None
         self.parameters = _make_params(missing)
         self.deleted = False
         self.hasError = has_error
@@ -331,9 +332,61 @@ def _install(monkeypatch, cam, valid=1):
     return cam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
+
+
+@pytest.fixture
+def failed_reused_post(monkeypatch, tmp_path):
+    old_setup, requested = _Setup("Old", [_Op("OldFace")]), _Setup("New", [_Op("NewFace")])
+    cam = _install(monkeypatch, _CAM([old_setup, requested], writes=False, existing=["JOB1"]))
+    program = cam.ncPrograms.itemByName("JOB1")
+    old_post = types.SimpleNamespace(description="Old post")
+    monkeypatch.setattr(program, "operations", [old_setup])
+    monkeypatch.setattr(program, "postConfiguration", old_post)
+    monkeypatch.setattr(program.parameters.itemByName(cp._P_FOLDER), "expression", "'" + tmp_path.as_posix() + "'")
+    monkeypatch.setattr(program.parameters.itemByName(cp._P_COMMENT), "expression", "'Old comment'")
+    monkeypatch.setattr(cp, "_post_log_errors", lambda *_: [])
+    return cam, program, old_setup, requested, old_post, _write_cps(tmp_path), tmp_path
+
+
+@pytest.fixture
+def reused_failure_exit(failed_reused_post, monkeypatch, request):
+    cam, program, old_setup, requested, old_post, cps, directory = failed_reused_post
+    case = request.param
+    folder = program.parameters.itemByName(cp._P_FOLDER)
+    unit = program.parameters.itemByName(cp._P_UNIT)
+    if case == "membership":
+        monkeypatch.setattr(type(program), "operations", property(
+            lambda self: self.__dict__["operations"],
+            lambda self, value: self.__dict__.__setitem__("operations", [])), raising=False)
+    elif case in ("folder", "units"):
+        get_param = program.parameters.itemByName
+        missing = cp._P_FOLDER if case == "folder" else cp._P_UNIT
+        monkeypatch.setattr(program.parameters, "itemByName",
+                            lambda name: None if name == missing else get_param(name))
+    elif case == "fail_mode":
+        monkeypatch.setattr(cp, "_refresh_generate_flat_scope",
+                            lambda *_: ({"flat_setups_regenerated": 1}, None))
+        monkeypatch.setattr(cp._export, "applied_pair", lambda *_: (None, False))
+    elif case == "post_exception":
+        def raised(_program):
+            raise RuntimeError("post kaboom")
+        monkeypatch.setattr(cam, "_do_post", raised)
+    elif case == "partial_file":
+        def partial(_program):
+            (directory / "changed" / "partial.nc").write_text("%\nG0 X0 Y0\n%\n")
+            return False
+        monkeypatch.setattr(cam, "_do_post", partial)
+    elif case in ("operations_exception", "post_config_exception"):
+        field = "operations" if case == "operations_exception" else "postConfiguration"
+        def raised_assignment(self, value):
+            if field == "operations":
+                self.__dict__[field] = value
+            raise RuntimeError("assignment kaboom")
+        monkeypatch.setattr(type(program), field, property(
+            lambda self: self.__dict__[field], raised_assignment), raising=False)
+    (directory / "changed").mkdir()
+    return case, failed_reused_post, folder, unit
 
 
 # -- guards --------------------------------------------------------------------
@@ -561,6 +614,31 @@ def _fusion_lib(names, root="fusion://root"):
 class TestFusionPostScope:
     """The lathe and mill-turn posts live in the library this installation ships; post_scope='fusion'
     is the scope that resolves them."""
+
+    @pytest.mark.parametrize("name", ["fanuc turning", "missing", "fusion://root/haas turning.cps"])
+    def test_capped_name_refuses_before_program_creation(self, monkeypatch, tmp_path, name):
+        lib = _fusion_lib(["fanuc turning.cps", "haas turning.cps"])
+        cam = _install(monkeypatch, _CAM([_Setup("S1", [_Op("Face1")])]))
+        monkeypatch.setattr(cp, "_post_library", lambda: lib)
+        monkeypatch.setitem(cp._POST_MAX_ASSETS, "fusion", 1)
+        result = cp.handler(post=name, post_scope="fusion", output_folder=str(tmp_path),
+                            program_name="1001")
+        assert result["isError"] is True and "absence is unknown" in result["message"]
+        assert "Enumerated post URLs: fusion://root/fanuc turning.cps" in result["message"]
+        assert "Choose an enumerated post URL instead" in result["message"]
+        assert "URLs outside this walk cannot be resolved" in result["message"]
+        assert "Pass an exact post asset url" not in result["message"]
+        assert cam.ncPrograms.count == 0 and cam.posted == []
+
+    def test_seen_exact_post_url_works_despite_cap(self, monkeypatch, tmp_path):
+        lib = _fusion_lib(["fanuc turning.cps", "haas turning.cps"])
+        cam = _install(monkeypatch, _CAM([_Setup("S1", [_Op("Face1")])]))
+        monkeypatch.setattr(cp, "_post_library", lambda: lib)
+        monkeypatch.setitem(cp._POST_MAX_ASSETS, "fusion", 1)
+        data = _payload(cp.handler(post="fusion://root/fanuc turning.cps", post_scope="fusion",
+                                   output_folder=str(tmp_path), program_name="1001"))
+        assert data["post_config"] == "fusion://root/fanuc turning.cps"
+        assert cam.ncPrograms.count == 1
 
     def test_fusion_resolves_a_shipped_post_by_case_folded_name(self, monkeypatch, tmp_path):
         # THE fusion bite: the name matches an asset leafName under Fusion360LibraryLocation, the
@@ -921,6 +999,135 @@ class TestOverwriteGuard:
 
 # -- the honesty gate: a real file must land -----------------------------------
 
+class _MachinelessProgram(_NCProgram):
+    """A program whose machine assignment does not hold."""
+    machine = property(lambda self: None, lambda self, value: None)
+
+
+def _additive_setup(name="Print", machine=None):
+    setup = _Setup(name, [_Op("Additive Toolpath1")])
+    setup.operationType = cp.adsk.cam.OperationTypes.AdditiveOperation
+    setup.machine = machine
+    return setup
+
+
+_FFF = types.SimpleNamespace(id="cf37", vendor="Autodesk", model="Generic FFF Machine")
+
+
+class TestAdditiveSetupTakesItsMachine:
+    def _post(self, monkeypatch, tmp_path, rig, **kw):
+        program_class = kw.pop("program_class", None)
+        cam = _install(monkeypatch, _CAM(rig, program_class=program_class))
+        kw.setdefault("scope", rig[0].name)
+        kw.setdefault("program_name", "1001")
+        res = cp.handler(post=str(_write_cps(tmp_path)), output_folder=str(tmp_path), **kw)
+        return cam, res
+
+    def test_one_additive_setup_posts_with_its_own_machine_on_the_program(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)])
+        data = _payload(res)
+        assert cam.posted[0].machine is _FFF and data["machine"] == "Autodesk Generic FFF Machine"
+
+    def test_the_setups_list_with_one_additive_setup_does_the_same(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
+                              scope="", setups=["Print"])
+        assert cam.posted[0].machine is _FFF and _payload(res)["machine"]
+
+    def test_a_program_that_does_not_keep_the_machine_is_an_error_and_is_removed(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
+                              program_class=_MachinelessProgram)
+        assert res["isError"] is True and "machine is unverified" in res["message"]
+        assert "Posting was not attempted" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_an_additive_setup_with_no_machine_is_refused_before_the_post(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=None)])
+        assert res["isError"] is True and "cam_edit_setup(machine=" in res["message"]
+        assert "Posting was not attempted" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_a_machine_whose_identity_does_not_read_is_unverified_not_absent(self, monkeypatch, tmp_path):
+        nameless = types.SimpleNamespace(id=None, vendor="Autodesk", model="Generic FFF Machine")
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=nameless)])
+        assert res["isError"] is True and "did not read its identity" in res["message"]
+        assert "reads no machine" not in res["message"] and "Posting was not attempted" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_a_failed_post_on_a_reused_program_names_the_machine_among_what_stays(self, monkeypatch, tmp_path):
+        cam = _install(monkeypatch, _CAM([_additive_setup(machine=_FFF)], writes="failed", existing=("JOB",)))
+        res = cp.handler(post=str(_write_cps(tmp_path)), output_folder=str(tmp_path), program_name="JOB",
+                         scope="Print", overwrite=True)
+        assert res["isError"] is True and "machine configuration" in res["message"]
+        assert cam.ncPrograms._items[0].machine is _FFF
+
+    def test_a_milling_setup_is_posted_without_a_machine_as_before(self, monkeypatch, tmp_path):
+        milling = _Setup("S1", [_Op("Face1")])
+        milling.machine = _FFF
+        cam, res = self._post(monkeypatch, tmp_path, [milling])
+        data = _payload(res)
+        assert cam.posted[0].machine is None and "machine" not in data
+
+    def test_two_setups_are_posted_without_a_single_machine(self, monkeypatch, tmp_path):
+        one, two = _additive_setup("PrintA", _FFF), _additive_setup("PrintB", _FFF)
+        cam, res = self._post(monkeypatch, tmp_path, [one, two], scope="", setups=["PrintA", "PrintB"])
+        assert cam.posted[0].machine is None and "machine" not in _payload(res)
+
+    def test_additive_operation_takes_its_owning_setups_machine(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
+                              scope="Additive Toolpath1", program_name="1002")
+        assert cam.posted[0].machine is _FFF
+        assert _payload(res)["machine"] == "Autodesk Generic FFF Machine"
+
+    def test_same_named_operation_uses_the_resolved_owners_machine(self, monkeypatch, tmp_path):
+        other = types.SimpleNamespace(id="different", vendor="Other", model="FFF")
+        one, two = _additive_setup("PrintA", _FFF), _additive_setup("PrintB", other)
+        cam, res = self._post(monkeypatch, tmp_path, [one, two],
+                              scope="PrintB / Additive Toolpath1", program_name="1002")
+        assert cam.posted[0].operations == [two.allOperations.item(0)]
+        assert cam.posted[0].machine is other
+        assert _payload(res)["machine"] == "Other FFF"
+
+    def test_operation_with_unreadable_owner_refuses_before_post(self, monkeypatch, tmp_path):
+        cam = _install(monkeypatch, _CAM([_additive_setup(machine=_FFF)]))
+        monkeypatch.setattr(cp._cam_common, "owning_setup", lambda node: None)
+        res = cp.handler(scope="Additive Toolpath1", post=str(_write_cps(tmp_path)),
+                         output_folder=str(tmp_path), program_name="1002")
+        assert res["isError"] is True and "no readable owning setup" in res["message"]
+        assert cam.ncPrograms.create_calls == 0 and cam.ncPrograms.add_calls == 0
+        assert cam.posted == []
+
+    def test_operation_with_unreadable_owner_type_refuses_before_program_creation(self, monkeypatch,
+                                                                                   tmp_path):
+        setup = _additive_setup(machine=_FFF)
+        setup.operationType = None
+        cam = _install(monkeypatch, _CAM([setup]))
+        res = cp.handler(scope="Additive Toolpath1", post=str(_write_cps(tmp_path)),
+                         output_folder=str(tmp_path), program_name="1002")
+        assert res["isError"] is True and "no readable operation type" in res["message"]
+        assert cam.ncPrograms.create_calls == 0 and cam.ncPrograms.add_calls == 0
+        assert cam.posted == []
+
+    def test_additive_operation_with_missing_machine_refuses_before_post(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=None)],
+                              scope="Additive Toolpath1", program_name="1002")
+        assert res["isError"] is True and "cam_edit_setup(machine=" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_additive_operation_machine_write_must_read_back(self, monkeypatch, tmp_path):
+        cam, res = self._post(monkeypatch, tmp_path, [_additive_setup(machine=_FFF)],
+                              scope="Additive Toolpath1", program_name="1002",
+                              program_class=_MachinelessProgram)
+        assert res["isError"] is True and "machine is unverified" in res["message"]
+        assert cam.posted == [] and cam.ncPrograms._items == []
+
+    def test_milling_operation_does_not_inherit_its_setups_machine(self, monkeypatch, tmp_path):
+        milling = _Setup("Mill", [_Op("Face1")])
+        milling.machine = _FFF
+        cam, res = self._post(monkeypatch, tmp_path, [milling],
+                              scope="Face1", program_name="1002")
+        assert cam.posted[0].machine is None and "machine" not in _payload(res)
+
+
 class TestPostWritesFile:
     def test_posts_document_and_reports_written_file(self, monkeypatch, tmp_path):
         cam = _install(monkeypatch, _CAM([_Setup("S1", [_Op("Face1")])]))
@@ -998,6 +1205,80 @@ class TestPostWritesFile:
         assert res["isError"] is True
         assert cam.ncPrograms.count == 1                    # still there
         assert cam.ncPrograms.itemByName("JOB1").deleted is False
+
+    def test_failed_reconfigure_names_retained_configuration(self, failed_reused_post):
+        cam, program, _old, requested, old_post, cps, directory = failed_reused_post
+        output = str(directory / "changed")
+        result = cp.handler(program_name="JOB1", scope="New", post=str(cps),
+                            output_folder=output, program_comment="Retained comment", overwrite=True)
+        assert result["isError"] is True and "usable NC file" in result["message"]
+        assert "Existing-program configuration edits remain" in result["message"]
+        assert "operations, post configuration, output folder" in result["message"]
+        assert "cam_get(include=['nc_programs'])" in result["message"]
+        assert cam.ncPrograms.itemByName("JOB1") is program and program.deleted is False
+        assert program.operations == [requested] and program.postConfiguration is not old_post
+        assert _unq(program.parameters.itemByName(cp._P_FOLDER).expression) == output.replace("\\", "/")
+        assert _unq(program.parameters.itemByName(cp._P_COMMENT).expression) == "Retained comment"
+
+    @pytest.mark.parametrize("reused_failure_exit", [
+        "membership", "folder", "units", "fail_mode", "post_exception", "partial_file",
+    ], indirect=True)
+    def test_reconfigure_failure_exits_disclose_retained_values(self, reused_failure_exit):
+        case, state, folder, unit = reused_failure_exit
+        cam, program, _old, requested, old_post, cps, directory = state
+        result = cp.handler(program_name="JOB1", scope="New", post=str(cps),
+                            output_folder=str(directory / "changed"),
+                            program_comment="Retained comment", overwrite=True,
+                            units="mm" if case == "units" else "document")
+        if case == "partial_file":
+            data = _payload(result)
+            assert data["partial"] is True and data["posted"] is False and data["file_count"] == 1
+            message = data["note"]
+        else:
+            assert result["isError"] is True
+            message = result["message"]
+            expected = {"membership": "ZERO operations", "folder": "no 'nc_program_output_folder'",
+                        "units": "no 'nc_program_unit'", "fail_mode": "fail-on-post behavior",
+                        "post_exception": "Post processing raised: post kaboom"}
+            assert expected[case] in message
+        assert "Existing-program configuration edits remain where applied" in message
+        assert "operations, post configuration, output folder or comment" in message
+        assert "cam_get(include=['nc_programs'])" in message
+        assert cam.ncPrograms.itemByName("JOB1") is program and program.deleted is False
+        assert program.operations == ([] if case == "membership" else [requested])
+        assert program.postConfiguration is not old_post
+        assert _unq(folder.expression) == (directory if case == "folder" else directory / "changed").as_posix()
+        assert _unq(program.parameters.itemByName(cp._P_COMMENT).expression) == "Retained comment"
+        assert unit.value.value == "$doc"
+
+    @pytest.mark.parametrize("reused_failure_exit", [
+        "operations_exception", "post_config_exception",
+    ], indirect=True)
+    def test_assignment_exception_discloses_only_possible_partial_reconfiguration(self, reused_failure_exit):
+        _case, state, folder, _unit = reused_failure_exit
+        cam, program, _old, requested, old_post, cps, directory = state
+        result = cp.handler(program_name="JOB1", scope="New", post=str(cps),
+                            output_folder=str(directory / "changed"),
+                            program_comment="Retained comment", overwrite=True)
+        assert result["isError"] is True and "assignment kaboom" in result["message"]
+        assert "Reconfiguration may be partial" in result["message"]
+        assert "Existing-program configuration edits remain where applied" in result["message"]
+        assert "cam_get(include=['nc_programs'])" in result["message"]
+        assert cam.ncPrograms.itemByName("JOB1") is program and program.deleted is False
+        assert program.operations == [requested] and program.postConfiguration is old_post
+        assert _unq(folder.expression) == directory.as_posix()
+        assert _unq(program.parameters.itemByName(cp._P_COMMENT).expression) == "Old comment"
+        assert cam.posted == []
+
+    def test_failed_as_is_post_does_not_claim_configuration_edits(self, failed_reused_post):
+        cam, program, old_setup, _requested, old_post, _cps, directory = failed_reused_post
+        result = cp.handler(program_name="JOB1")
+        assert result["isError"] is True and "usable NC file" in result["message"]
+        assert "configuration edits" not in result["message"]
+        assert cam.ncPrograms.itemByName("JOB1") is program and program.deleted is False
+        assert program.operations == [old_setup] and program.postConfiguration is old_post
+        assert _unq(program.parameters.itemByName(cp._P_FOLDER).expression) == directory.as_posix()
+        assert _unq(program.parameters.itemByName(cp._P_COMMENT).expression) == "Old comment"
 
     def test_missing_output_folder_param_is_error(self, monkeypatch, tmp_path):
         # Without nc_program_output_folder the file can't be aimed at out_dir - fail loudly, name it,
@@ -1180,7 +1461,7 @@ class TestPostLog:
 
     def test_a_bare_macos_temp_dir_finds_the_logs_under_its_neutron_tree(self, monkeypatch, tmp_path):
         # macOS: the process temp dir is $TMPDIR itself, and the logs sit in $TMPDIR/Neutron.
-        (tmp_path / "Neutron").mkdir()
+        (tmp_path / "Neutron" / "Fusion360CAM").mkdir(parents=True)
         root = cp._cam_log_root(str(tmp_path))
         assert root == str(tmp_path / "Neutron" / "Fusion360CAM")
         self._make_log(tmp_path / "Neutron" / "Fusion360CAM", "1002",
@@ -1190,6 +1471,12 @@ class TestPostLog:
         assert any("requires a machine configuration" in e
                    for e in cp._post_log_errors("1002", 0.0))
 
+    def test_a_neutron_folder_holding_no_cam_tree_leaves_the_plain_root(self, tmp_path):
+        # Windows 2706.0.116: the bare temp dir holds Neutron and Fusion360CAM side by side.
+        (tmp_path / "Neutron").mkdir()
+        (tmp_path / "Fusion360CAM").mkdir()
+        assert cp._cam_log_root(str(tmp_path)) == str(tmp_path / "Fusion360CAM")
+
     def test_a_failed_post_reads_its_log_from_the_climbed_root(self, monkeypatch, tmp_path):
         root = tmp_path / "Fusion360CAM"
         self._make_log(root, "1002", "Error: This postprocessor requires a machine configuration "
@@ -1198,10 +1485,8 @@ class TestPostLog:
         assert any("requires a machine configuration" in e
                    for e in cp._post_log_errors("1002", 0.0))
 
-    def test_a_program_number_refusal_names_the_non_numeric_name_that_was_sent(self, monkeypatch,
-                                                                                tmp_path):
-        # the post's own line is the only thing that says a number was wanted here; the clause
-        # relays it and names the value that was not one.
+    def test_a_new_program_number_refusal_recommends_recreating_with_an_accepted_number(
+            self, monkeypatch, tmp_path):
         root = tmp_path / "Fusion360CAM"
         self._make_log(root, "FinishPass",
                        "Error: Program number 'NaN' is out of range. Please enter 1-99999.\n")
@@ -1210,12 +1495,12 @@ class TestPostLog:
         res = cp.handler(post=str(_write_cps(tmp_path)), output_folder=str(tmp_path),
                          program_name="FinishPass")
         assert res["isError"] is True
-        assert "PROGRAM NUMBER" in res["message"] and "'FinishPass'" in res["message"]
-        assert "numeric program_name" in res["message"]
+        assert "program number" in res["message"].lower()
+        assert "program_name that is a number accepted by this post" in res["message"]
+        assert "cam_set_nc_comment(program='FinishPass'" not in res["message"]
 
-    def test_a_numeric_name_earns_no_number_clause(self, monkeypatch, tmp_path):
-        # the boundary: the same log line against a name that IS a number - telling that caller to
-        # pass a number names a remedy they already took.
+    def test_a_numeric_name_still_gets_a_remedy_when_the_post_log_rejects_its_number(
+            self, monkeypatch, tmp_path):
         root = tmp_path / "Fusion360CAM"
         self._make_log(root, "1001", "Error: Program number '1001' is out of range.\n")
         monkeypatch.setattr(cp, "_CAM_LOG_ROOT", str(root))
@@ -1223,7 +1508,71 @@ class TestPostLog:
         res = cp.handler(post=str(_write_cps(tmp_path)), output_folder=str(tmp_path),
                          program_name="1001")
         assert res["isError"] is True and "out of range" in res["message"]
-        assert "numeric program_name" not in res["message"]
+        assert "number accepted by this post" in res["message"]
+
+    def test_reused_program_looks_up_log_and_recommends_set_number_by_listing(
+            self, monkeypatch, tmp_path):
+        root = tmp_path / "Fusion360CAM"
+        self._make_log(root, "C3_BAD_NUMBER", "Error: Program number is out of range.\n")
+        monkeypatch.setattr(cp, "_CAM_LOG_ROOT", str(root))
+        setup = _Setup("S1", [_Op("Face1")])
+        cam = _install(monkeypatch, _CAM([setup], writes="failed", existing=["FinishPass"]))
+        program = cam.ncPrograms.itemByName("FinishPass")
+        program.operations = [setup]
+        program.postConfiguration = types.SimpleNamespace(description="Test post")
+        program.parameters.itemByName(cp._P_FOLDER).expression = cp._quote(str(tmp_path))
+        program.parameters.itemByName(cp._P_NUMBER).expression = cp._quote("C3_BAD_NUMBER")
+
+        res = cp.handler(program_name="FinishPass")
+
+        assert res["isError"] is True
+        assert "Program number is out of range" in res["message"]
+        assert "cam_set_nc_comment(program='FinishPass', " in res["message"]
+        assert "set_number='<number accepted by this post>'" in res["message"]
+        assert "cam_post(program_name='FinishPass')" in res["message"]
+        assert cam.ncPrograms.count == 1
+        assert cam.ncPrograms.itemByName("FinishPass") is program
+        assert _unq(program.parameters.itemByName(cp._P_NUMBER).expression) == "C3_BAD_NUMBER"
+
+    def test_partial_post_keeps_program_number_remedy_in_final_note(self, monkeypatch, tmp_path):
+        root = tmp_path / "Fusion360CAM"
+        self._make_log(root, "C3_BAD_NUMBER", "Error: Program number is out of range.\n")
+        monkeypatch.setattr(cp, "_CAM_LOG_ROOT", str(root))
+        setup = _Setup("S1", [_Op("Face1")])
+        cam = _install(monkeypatch, _CAM([setup], writes=True, returns=False,
+                                         existing=["FinishPass"]))
+        program = cam.ncPrograms.itemByName("FinishPass")
+        program.operations = [setup]
+        program.postConfiguration = types.SimpleNamespace(description="Test post")
+        program.parameters.itemByName(cp._P_FOLDER).expression = cp._quote(str(tmp_path))
+        program.parameters.itemByName(cp._P_NUMBER).expression = cp._quote("C3_BAD_NUMBER")
+
+        data = _payload(cp.handler(program_name="FinishPass"))
+
+        assert data["partial"] is True
+        assert "Program number is out of range" in data["note"]
+        assert "cam_set_nc_comment(program='FinishPass'" in data["note"]
+        assert "cam_post(program_name='FinishPass')" in data["note"]
+
+    def test_as_is_post_keeps_file_but_marks_unread_program_number_partial(
+            self, monkeypatch, tmp_path):
+        setup = _Setup("S1", [_Op("Face1")])
+        cam = _install(monkeypatch, _CAM([setup], existing=["FinishPass"],
+                                         missing=(cp._P_NUMBER,)))
+        program = cam.ncPrograms.itemByName("FinishPass")
+        program.operations = [setup]
+        program.postConfiguration = types.SimpleNamespace(description="Test post")
+        program.parameters.itemByName(cp._P_FOLDER).expression = cp._quote(str(tmp_path))
+        def _post_without_number(program):
+            (tmp_path / "FinishPass.nc").write_text("valid mock output")
+            return True
+        cam._do_post = _post_without_number
+
+        data = _payload(cp.handler(program_name="FinishPass"))
+
+        assert data["posted"] is True and data["file_count"] == 1
+        assert data["program_number"] is None and data["partial"] is True
+        assert "Stored emitted program number is unavailable" in data["note"]
 
     def test_failed_stub_is_error_with_the_log_reason_not_listed_as_a_deliverable(self, monkeypatch, tmp_path):
         # A '.failed' stub is the ONLY thing the post wrote -> no deliverable NC file -> error that
@@ -1490,3 +1839,83 @@ class TestMembershipReadBack:
         assert data["membership_verified"] is True
         assert "membership_note" not in data and "Membership read-back:" not in data["note"]
 
+
+
+def test_flat_post_timeout_keeps_future_and_refuses_post(monkeypatch):
+    op = _Op("Laser")
+    setup = FakeSetup("Sheet", ops=[op])
+    cam = types.SimpleNamespace(generateToolpath=lambda selected: types.SimpleNamespace(
+        isGenerationCompleted=False, numberOfOperations=1))
+    monkeypatch.setattr(cp._cam_common, "refresh_flat_setup_models", lambda _: (1, None))
+    monkeypatch.setattr(cp._cam_common, "register_future", lambda *a, **k: ("gen-flat", 1))
+    monkeypatch.setattr(cp, "active_document_handle", lambda: "coupon-doc")
+    times = iter((0.0, 31.0))
+    monkeypatch.setattr(cp.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(cp.adsk.core.ObjectCollection, "create", staticmethod(_make_object_collection))
+    out, reason = cp._refresh_generate_flat_scope(cam, [op])
+    assert out is None and "No NC file was posted" in reason
+    assert "gen-flat" in reason
+
+
+def test_flat_post_rejects_failed_selected_op_without_waiting(monkeypatch):
+    good, bad = _Op("Perimeter"), _Op("Slot")
+    setup = FakeSetup("Sheet", ops=[good, bad])
+    launches = []
+    cam = types.SimpleNamespace(generateToolpath=lambda selected: launches.append(list(selected)) or
+                                types.SimpleNamespace(isGenerationCompleted=True,
+                                                      numberOfOperations=2))
+    monkeypatch.setattr(cp._cam_common, "refresh_flat_setup_models", lambda _: (1, None))
+    monkeypatch.setattr(cp._cam_common, "register_future", lambda *a, **k: ("gen-flat", 2))
+    monkeypatch.setattr(cp, "active_document_handle", lambda: "coupon-doc")
+    monkeypatch.setattr(cp.adsk.core.ObjectCollection, "create", staticmethod(_make_object_collection))
+    setup.operationType = cp.adsk.cam.OperationTypes.JetOperation
+    facts = lambda op, cam: {"name": op.name, "strategy": "profile2d",
+                             "operation_state": 0 if op.name == "Perimeter" else 1,
+                             "has_toolpath": op.name == "Perimeter",
+                             "is_toolpath_valid": op.name == "Perimeter",
+                             "has_error": op.name == "Slot", "is_suppressed": False,
+                             "nonfinite_toolpath": False}
+    monkeypatch.setattr(cp._cam_common, "op_state_facts", facts)
+    monkeypatch.setattr(cp._cam_common, "is_empty_toolpath", lambda _: False)
+    monkeypatch.setattr(cp.time, "sleep", lambda _: (_ for _ in ()).throw(AssertionError("late wait")))
+    out, reason = cp._refresh_generate_flat_scope(cam, [setup])
+    assert out is None and "Slot" in reason and "No NC file was posted" in reason
+    assert launches == [[good, bad]]
+
+
+def test_successful_flat_post_generation_releases_hidden_future(monkeypatch):
+    op = _Op("Laser")
+    setup = FakeSetup("Sheet", ops=[op])
+    cam = types.SimpleNamespace(generateToolpath=lambda selected: types.SimpleNamespace(
+        isGenerationCompleted=True, numberOfOperations=1))
+    monkeypatch.setattr(cp._cam_common, "refresh_flat_setup_models", lambda _: (1, None))
+    monkeypatch.setattr(cp, "active_document_handle", lambda: "coupon-doc")
+    monkeypatch.setattr(cp.adsk.core.ObjectCollection, "create", staticmethod(_make_object_collection))
+    monkeypatch.setattr(cp._cam_common, "op_state_facts", lambda op, cam: {
+        "name": op.name, "strategy": "profile2d", "operation_state": 0,
+        "has_toolpath": True, "is_toolpath_valid": True, "has_error": False,
+        "is_suppressed": False, "nonfinite_toolpath": False})
+    monkeypatch.setattr(cp._cam_common, "is_empty_toolpath", lambda _: False)
+    def register(*args, **kwargs):
+        cp._cam_common._GENERATIONS["gen-flat"] = {
+            "target": "selected flat operation", "started_at": cp.time.time()}
+        return "gen-flat", 1
+    monkeypatch.setattr(cp._cam_common, "register_future", register)
+    try:
+        out, reason = cp._refresh_generate_flat_scope(cam, [op])
+        assert reason is None and out["flat_operations_ready"] == 1
+        assert "gen-flat" not in cp._cam_common._GENERATIONS
+    finally:
+        cp._cam_common._GENERATIONS.pop("gen-flat", None)
+
+
+def test_flat_post_direct_milling_setup_reaches_model_refresh(monkeypatch):
+    setup = FakeSetup("Flat Mill", ops=[], models=[])
+    refreshed = []
+    monkeypatch.setattr(cp._cam_common, "refresh_flat_setup_models",
+                        lambda target: refreshed.append(target) or (1, None))
+    monkeypatch.setattr(cp, "active_document_handle", lambda: "coupon-doc")
+    result, reason = cp._refresh_generate_flat_scope(types.SimpleNamespace(), [setup])
+    assert reason is None
+    assert refreshed == [setup]
+    assert result["flat_models_refreshed"] == 1

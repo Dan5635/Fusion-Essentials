@@ -15,6 +15,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import error, ok, safe, scale
+from ._common import normalize_include as _normalize_include
 from ._assembly_detail import (_MEMBER_CAP, _all_occurrence_rows, _contact_analysis, _contact_rows,
                                _health, _health_fields, _joint_frame, _joint_origin_rows,
                                _limit_facts, _motion_axes, _occ_record, _relation_rows,
@@ -56,7 +57,7 @@ _POSES_NOTE = ("Occurrence rows carry identity, ground flags, body_count and joi
 
 # ONE joint row. The payload's 'frame' key is minted here and its value built in _assembly_detail -
 # a frame publisher is classified by the tool module that mints the key (test_frame_disclosure.py).
-def _joint_record(design, j, inv_k):
+def _joint_record(design, j, inv_k, placements=None):
     mt = safe(lambda: j.jointMotion.jointType)
     friendly, dof = _MOTION.get(mt, ("?", None))
     rec = {"name": safe(lambda: j.name), "type": friendly, "dof": dof}
@@ -70,6 +71,15 @@ def _joint_record(design, j, inv_k):
                              if safe(lambda: j.occurrenceOne) else None)
     rec["occurrence_two"] = (safe(lambda: j.occurrenceTwo.name)
                              if safe(lambda: j.occurrenceTwo) else None)
+    rec["occurrence_one_path"] = safe(lambda: j.occurrenceOne.fullPathName)
+    rec["occurrence_two_path"] = safe(lambda: j.occurrenceTwo.fullPathName)
+    placed = _joints.joint_placements(design, j) if placements is None else placements
+    if placed:
+        rec["owner_component"] = safe(lambda: j.parentComponent.name)
+        rec["placements"] = [{"placement": p,
+                              "occurrence_one_path": safe(lambda x=x: x.occurrenceOne.fullPathName),
+                              "occurrence_two_path": safe(lambda x=x: x.occurrenceTwo.fullPathName)}
+                             for p, x in placed]
     # Suppression is DISCLOSED, not folded into healthy - a suppressed joint is inert, not broken.
     # BOTH flags OR'd: Joint.isSuppressed keeps reading False when the suppression was set on the
     # TIMELINE item. read_flag, so two unreadable flags stay unstated.
@@ -95,14 +105,6 @@ def _joint_record(design, j, inv_k):
     return rec
 
 
-def _normalize_include(include):
-    if include in (None, "", []):
-        return []
-    if isinstance(include, str):
-        return [s.strip().lower() for s in include.split(",") if s.strip()]
-    return [str(s).strip().lower() for s in include]
-
-
 def handler(units: str = "mm", include=None, include_joints: bool = True,
             max_occurrences: int = _MAX_OCCURRENCES_DEFAULT,
             max_joints: int = _MAX_JOINTS_DEFAULT,
@@ -121,9 +123,9 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
     if bad:
         return error(f"Unknown include {bad}. Valid: {', '.join(_SLICES)}.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     root = design.rootComponent
     with_poses = "poses" in inc
 
@@ -131,18 +133,29 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
     # include_joints gates only what is EMITTED, so joint_count and broken_joints stay honest with
     # it false.
     joints = []
-    occ_joints = {}
+    joint_memberships = []
+    joint_membership_unread = False
+    unread_half = object()
     for j in _joints.all_joints(design):
-        rec = _joint_record(design, j, inv_k)
+        placement_diagnostics = []
+        placements = _joints.joint_placements(design, j, diagnostics=placement_diagnostics)
+        if placement_diagnostics:
+            joint_membership_unread = True
+        rec = _joint_record(design, j, inv_k, placements)
         joints.append(rec)
-        for key in ("occurrence_one", "occurrence_two"):
-            nm = rec.get(key)
-            if nm:
-                occ_joints.setdefault(nm, []).append(rec["name"])
+        # Keep the native placed halves; matching a path cannot distinguish colliding instances.
+        for view in [j] + [proxy for _path, proxy in placements]:
+            for attr in ("occurrenceOne", "occurrenceTwo"):
+                occurrence = safe(lambda view=view, attr=attr: getattr(view, attr), unread_half)
+                if occurrence is unread_half:
+                    joint_membership_unread = True
+                elif occurrence is not None:
+                    if not isinstance(rec["name"], str) or not rec["name"]:
+                        joint_membership_unread = True
+                    else:
+                        joint_memberships.append((occurrence, rec["name"]))
 
-    # Cap the JOINTS array reported to the caller; occ_joints (the cross-index) was built from the
-    # FULL walk above, and broken_joints/health below reads the FULL 'joints' list, so capping here
-    # only bounds the emitted array - it never hides a health problem.
+    # The output cap does not limit membership or health checks across the full joint walk.
     joint_total = len(joints)
     cap_j = max(1, int(max_joints))
     joints_out = joints[:cap_j]
@@ -160,7 +173,8 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
                                                 "parent_path": safe(lambda: root.name),
                                                 "detail": detail}))
             continue
-        rec = _occ_record(occ, inv_k, occ_joints, include_joints, with_pose=with_poses)
+        rec = _occ_record(occ, inv_k, joint_memberships, include_joints,
+                          with_pose=with_poses, membership_unread=joint_membership_unread)
         if rec["grounded"]:
             grounded_names.append(rec["name"])
         occurrences.append(rec)
@@ -265,8 +279,9 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
     # sub-assembly appears nowhere in it, and its position (drifted or not) is unreadable here.
     if "all_occurrences" in inc:
         cap_ao = max(1, int(max_all_occurrences))
-        ao_rows, ao_walk = _all_occurrence_rows(occ_walk, inv_k, cap_ao, occ_joints, include_joints,
-                                                with_poses)
+        ao_rows, ao_walk = _all_occurrence_rows(
+            occ_walk, inv_k, cap_ao, joint_memberships, include_joints, with_poses,
+            membership_unread=joint_membership_unread)
         ao_total = ao_walk.total
         out["all_occurrences"] = ao_rows
         # null, never 0: a census nothing could be read from is UNKNOWN, and publishing 0 beside
@@ -301,6 +316,9 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
         out["joint_origins"] = jo_rows
         out["joint_origin_count"] = jo_total
         out["joint_origins_truncated"] = jo_total > len(jo_rows)
+        if any(r["consumed_by"] is None for r in jo_rows):
+            out["note"] += (" consumed_by=null: an origin or joint-half identity could not be read; "
+                            "re-read assembly_get.")
         if out["joint_origins_truncated"]:
             out["note"] += (f" joint_origins was capped at {cap_jo} of {jo_total}; raise "
                             "max_joint_origins to see the rest.")
@@ -409,13 +427,17 @@ def handler(units: str = "mm", include=None, include_joints: bool = True,
                         "see the rest.")
     if joints_truncated:
         out["note"] += (f" joints was capped at {cap_j} of {joint_total}; raise max_joints to see the rest.")
+    if include_joints and any(row.get("joints_unverified") for row in
+                              occurrences_out + out.get("all_occurrences", [])):
+        out["note"] += (" joints_unverified=true means native occurrence membership could not be established; "
+                        "that row's joints list may be incomplete.")
     return ok(out)
 
 
 TOOL_DESCRIPTION = (
-    "Read the active assembly's kinematic state: per top-level occurrence, identity, ground flags, "
-    "body count and joints, plus the design's joint list. Check is_healthy first; the note names "
-    "the include= slices this call omitted."
+    "Read assembly occurrences, grounding, body counts, joints and health. "
+    "Check is_healthy first; the note lists omitted include= slices. "
+    "Joint occurrence_one_path/occurrence_two_path are placed full paths."
 )
 
 tool = (

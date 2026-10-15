@@ -3,45 +3,50 @@
 
 """The act program: the ordered acts, the passes they run through, and the ledger tables.
 
-`_ACT_PROGRAM` is (name, precondition, narrative, fallback) per act - a precondition read that
-ERRORS routes that act to its fallback fixture. It is hoisted, laid out and framed at import
-through verify_layout.py, and `ACTS` is the result run() walks. `STEPS` is the flat union the
-completeness lint reads, `STORY` the per-tool shot-list note the receipt carries, `EXCLUDED` the
-tools deliberately not driven unattended, `PENDING` the honest todo.
+`_ACT_PROGRAM` holds each act's precondition, narrative and fallback. Layout and framing run at
+import; hoisted sketch rows return to their consuming act. `ACTS` keeps the judged rows, while
+`FAMILY_PROGRAM` assigns them to owned documents. `STEPS` is the flat completeness union.
 """
 
 from verify_acts_cam import (
     CAM_SETUP, FLIP_SETUP, MACHINING_EXTENSION, _CAM, _CAM_DELIVER, _CAM_EXTENSION,
-    _CAM_FB_DELIVER, _CAM_GREEN, _CAM_MULTI_POST, _CAM_SCOPE, _CAM_SECOND_SETUP, _CAM_STORY,
+    _CAM_FB_DELIVER, _CAM_GREEN, _CAM_LOOKUP_GUARDS, _CAM_MULTI_POST, _CAM_SCOPE, _CAM_SECOND_SETUP, _CAM_STORY,
     _CAM_TEMPLATE_CLEANUP, _CAM_TEMPLATE_MODES, _MX_SETUP, _SW_SETUP, _SW_SETUP2, _SWARF_RIG,
     _TEMPLATE_GENERATE_SETUP)
 from verify_acts_cloud import (
-    _CLOUD_CAM_PERSISTENCE, _CLOUD_DATA, _CLOUD_DOC, _CLOUD_DRAWING, _CLOUD_LINK)
+    _CLOUD_CAM_PERSISTENCE, _CLOUD_COMPONENT_COPY, _CLOUD_CONFIGURE, _CLOUD_DATA, _CLOUD_DOC,
+    _CLOUD_DRAWING, _CLOUD_LINK)
 from verify_acts_census import (
     HUB_POCKET_SETUP, _CENSUS_EXT, _CENSUS_EXT_READ, _CENSUS_LONG, _CENSUS_LONG_READ, _CENSUS_MILL,
     _CENSUS_MILL_READ, _CENSUS_POCKET, _CENSUS_POCKET_READ, _CENSUS_TURN, _CENSUS_TURN_READ)
-from verify_acts_doc import _FINALE, _OVERTURE, _SHOWCASE
+from verify_acts_doc import _FINALE, _OVERTURE, _SHOWCASE, _SMALL_EDITS
+from verify_acts_derive_edit import _DERIVE_EDITS
 from verify_acts_dump import _HUB_CONTOUR, _HUB_DUMP, _MX_DUMP
 from verify_acts_hub import (
-    HUB_MILL_SETUP, HUB_ROT_SETUP, HUB_TURN_SETUP, _HUB, _HUB_ADDITIVE, _HUB_JOB, _HUB_ROTARY,
+    HUB_MILL_SETUP, HUB_ROT_SETUP, HUB_TURN_SETUP, _FFF_EXPORT, _HUB, _HUB_ADDITIVE, _HUB_JOB, _HUB_ROTARY,
     _HUB_ROTARY_READ, _HUB_TURNED_READ)
 from verify_acts_mesh import _MACHINING, _MESH, _NESTING
 from verify_acts_model import (
     _DETAILS, _DETAILS_FB, _RESIZE, _RESIZE_FB, _SOLIDS, _SOLIDS_FB)
 from verify_acts_motion import _MOTION, _VISE
+from verify_acts_render import _RENDER_JPEG, _RENDER_NAMED, _RENDER_READ, _RENDER_START, _RENDER_TIFF
+from verify_acts_render import _RENDER_TRANSPARENT
 from verify_acts_sketch import _SKELETON, _SKETCHWORK
-from verify_core import CLOUD_LINK_CRASH_REVIEW, CLOUD_TIER, _DWELL, _PLANE_VIEW, _SKETCH_PLANE
+from verify_acts_sheet import (_SHEET, _SHEET_CAM_READ, _SHEET_DRAWING,
+                               _SHEET_CLEANUP, _SHEET_SELECTED, _SHEET_POSITIONS,
+                               _SHEET_CAM_REFRESH, _SHEET_CAM_RESTORE)
+from verify_acts_sheet_flange import _SHEET_FLANGE
+from verify_families import (
+    ACT_PRODUCER_CONDITIONAL_OVERRIDES, ACT_PRODUCER_OVERRIDES,
+    FAMILY_DEPENDENCIES, FAMILY_GROUPS, FAMILY_SLOTS,
+    PRODUCER_ROWS, PRODUCER_SLOTS, family_names, fixture_steps)
+from verify_core import CLOUD_LINK_CRASH_REVIEW, CLOUD_TIER, _DWELL, _PLANE_VIEW, _SKETCH_PLANE, _watch
 from verify_layout import (
-    _CHUNK_OF, _COMPONENTS, _PATTERNED, _PLACED_BOX, _SLOTS, _framed, _place_points, _place_slots,
-    _place_walk, _placed, _sketch_reading_order, _sketches_first)
+    _CHUNK_OF, _COMPONENTS, _PATTERNED, _PLACED_BOX, _SLOTS, _family_slots, _framed,
+    _place_points, _place_walk, _placed, _sketch_reading_order, _sketches_first)
 
 
-# --- the build, as ACTS: one machinable part, end to end, in one unsaved document --------------
-# The sweep is a STORY, not a scratch pile: a bracket is drawn from one driving length, turned
-# solid (stepped top, radiused pocket, through bores, a counterbored pattern, a boss, broken
-# edges), detailed, re-driven parametrically, sized into a billet, clamped in a modelled vise,
-# photographed, machined and discarded. Every covered tool's receipt step is woven into that story
-# where it fits; where it does not, a CAMEO fixture rides inside the SAME document.
+# --- the judged acts: family fixtures locally produce the inputs each narrative consumes --------
 #
 # Each ACT is a dict: name, precondition, narrative, fallback.
 #   precondition: (tool, args) - a live read gating the narrative (the geometry it consumes exists),
@@ -74,8 +79,8 @@ _ACT_PROGRAM = [
     # RE-DRIVE, while the part is still alone: the billet is sized from the part it ENDS UP as, so
     # the resize runs before the fixture rather than inside it.
     ("ACT 6 - RESIZE", ("model_inspect", {"target": "Bracket:1"}), _RESIZE, _RESIZE_FB),
-    # NEST. Away from the acts that recompute the part, because the arrange solver restructures
-    # what it nests under Envelope occurrences.
+    # NEST. Away from the acts that recompute the part: the arrange feature adds Arrange/Envelope
+    # occurrences.
     ("ACT 6b - NESTING", None, _NESTING, []),
     # ASSEMBLE. The billet the part is cut from, and the vise that closes on it - the story's one
     # real mechanism, driven on camera. Its fallback is empty: every tool it drives is also driven
@@ -171,6 +176,7 @@ _ACT_PROGRAM = [
     # and the arrange/orient/support families - built and taken back out, so the whole-document
     # tallies the later CAM acts read are the ones the milling and turning jobs leave.
     ("ACT 10c15 - CAM: THE ADDITIVE BUILD", None, _HUB_ADDITIVE, []),
+    ("ACT 10c16 - CAM: FFF EXPORT", None, _FFF_EXPORT, []),
     # The last two acts machine the PART - the flip setup and the program that spans it and the
     # first - so each is gated on the job ACT 10a built, and falls back to nothing rather than to a
     # scratch world: every tool they drive is driven again by the scratch-stock fallbacks above, so
@@ -191,41 +197,99 @@ _ACT_PROGRAM = [
     ("ACT 11b2 - CLOUD: LINK GUARD REVIEW", None, _CLOUD_LINK, []),
     ("ACT 11c - CLOUD: THE DRAWING", None, _CLOUD_DRAWING, []),
     ("ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE", None, _CLOUD_CAM_PERSISTENCE, []),
+    ("ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS", None, _CLOUD_CONFIGURE, []),
+    ("ACT 11f - CLOUD: DERIVE EDITS", None, _DERIVE_EDITS, []),
+    ("ACT 11h - CLOUD: COMPONENT COPY", None, _CLOUD_COMPONENT_COPY, []),
+    ("ACT 12 - SHEET METAL COUPON", None, _SHEET, []),
+    ("ACT 12b - SHEET METAL LASER OUTPUT", None, _SHEET_CAM_READ, []),
+    ("ACT 12b1 - SHEET METAL SOURCE UPDATE", None, _SHEET_CAM_REFRESH, []),
+    ("ACT 12b2 - SHEET METAL CAM RESTORE", None, _SHEET_CAM_RESTORE, []),
+    ("ACT 12c - SHEET METAL DRAWING", None, _SHEET_DRAWING, []),
+    ("ACT 12d - SHEET METAL CLEANUP", None, _SHEET_CLEANUP, []),
+    ("ACT 12e - SHEET METAL SELECTED BEND", None, _SHEET_SELECTED, []),
+    ("ACT 12f - SHEET METAL FOLD POSITIONS", None, _SHEET_POSITIONS, []),
+    ("ACT 12g - SHEET METAL FLANGE FAMILY", None, _SHEET_FLANGE, []),
+    ("ACT 13 - SMALL EDIT SAFETY", None, _SMALL_EDITS, None),
+    ("ACT 14 - LOOKUP TARGETING", None, _CAM_LOOKUP_GUARDS, None),
+    ("ACT 15 - RENDER: LOCAL START", None, _RENDER_START, None),
+    ("ACT 15 - RENDER: LOCAL JPEG", None, _RENDER_JPEG, None),
+    ("ACT 15 - RENDER: LOCAL TIFF", None, _RENDER_TIFF, None),
+    ("ACT 15 - RENDER: LOCAL NAMED", None, _RENDER_NAMED, None),
+    ("ACT 15 - RENDER: LOCAL TRANSPARENT", None, _RENDER_TRANSPARENT, None),
+    ("ACT 15 - RENDER: SCENE + CANVAS", None, _RENDER_READ, None),
     ("FINALE", None, _FINALE, None),
 ]
 
-# Every sketch that can be drawn on bare origin planes is drawn in ACT 1c, before anything is
-# solid - the acts after it model, they do not sketch. The acts named here keep their own steps: the
-# two sketch acts are already sketch-first, the OVERTURE has no geometry, the vise draws every
-# profile on a datum plane derived from the part it is being built around, and the hub's
-# constraints and dimensions stay behind the curves they close, which the hoist would carry away.
-_SKETCH_PHASE, _ACT_PROGRAM = _sketches_first(
-    _ACT_PROGRAM, after=("ACT 0 - OVERTURE", "ACT 1 - SKETCH + PARAMETERS", "ACT 1b - SKETCH TOOLS",
-                         "ACT 7 - THE VISE", "ACT 8b - THE HUB"))
-_ACT_PROGRAM = (_ACT_PROGRAM[:3]
-                + [("ACT 1c - EVERY OTHER SKETCH", None, _SKETCH_PHASE, [])]
-                + _ACT_PROGRAM[3:])
-
-# Every act runs through the layout pass and then the framing pass, so a part added to the story
-# later gets a slot of its own and a camera row without anyone remembering to give it either. Only
-# the narrative is laid out: a fallback act rebuilds a story-less world at the origin, and the two
-# never run together.
-_SLOTS.update(_place_slots(_ACT_PROGRAM))
-
-# ...then walk the sketch phase in reading order. This runs AFTER the cells are dealt because it
-# needs to know which sketches got one: an origin-anchored sketch has no cell and sits a metre from
-# the field, so it is drawn with the others of its kind rather than in the middle of a row. The
-# re-order preserves the packer's order over the placed chunks, so _SLOTS stays true.
-_ACT_PROGRAM = [(name, pre, (_sketch_reading_order(narr, _SLOTS) if "ACT 1c" in name else narr), fb)
-                for name, pre, narr, fb in _ACT_PROGRAM]
+# Keep the sketch pass's measured activation and camera checks, then return each block to its
+# consuming act. A family can create only its own profiles in its own document.
+_SKETCH_HOIST_EXCLUDED = (
+    "ACT 0 - OVERTURE", "ACT 1 - SKETCH + PARAMETERS", "ACT 1b - SKETCH TOOLS",
+    "ACT 7 - THE VISE", "ACT 8b - THE HUB",
+    "ACT 12 - SHEET METAL COUPON", "ACT 12b - SHEET METAL LASER OUTPUT",
+    "ACT 12b1 - SHEET METAL SOURCE UPDATE", "ACT 12b2 - SHEET METAL CAM RESTORE",
+    "ACT 12c - SHEET METAL DRAWING", "ACT 12d - SHEET METAL CLEANUP",
+    "ACT 12e - SHEET METAL SELECTED BEND", "ACT 12f - SHEET METAL FOLD POSITIONS",
+    "ACT 12g - SHEET METAL FLANGE FAMILY")
 
 
-def _placed_boxes(program, slots):
+def _sketch_owners(program):
+    """Map sketch names to owner acts, refusing names shared across acts."""
+    owners = {}
+    for name, _pre, narrative, _fallback in program:
+        if name in _SKETCH_HOIST_EXCLUDED:
+            continue
+        for step in narrative:
+            if step[0] == "sketch_create" and isinstance(step[1], dict) and step[1].get("name"):
+                sketch = step[1]["name"]
+                if sketch in owners and owners[sketch] != name:
+                    raise ValueError("sketch " + repr(sketch) + " belongs to two acts")
+                owners[sketch] = name
+    return owners
+
+
+def _sketch_blocks(phase, owners):
+    """Return sketch phase rows grouped under their original act."""
+    owned, pending, block, owner = {}, [], [], None
+    for step in phase:
+        if step[0] in ("model_create_component", "design_activate_component"):
+            pending.append(step)
+            continue
+        if step[0] == "sketch_create":
+            if block:
+                owned.setdefault(owner, []).extend(block)
+            owner = owners[step[1]["name"]]
+            block, pending = pending + [step], []
+        else:
+            block.append(step)
+    owned.setdefault(owner, []).extend(block + pending)
+    return owned
+
+
+def _family_sources(acts, sketches):
+    """Return each family's own authored rows and fixture producers."""
+    owners = family_names(acts)
+    sources = {family: [] for family, _prefixes in FAMILY_GROUPS}
+    for family in sources:
+        setup = fixture_steps(family, raw=True)
+        if setup:
+            sources[family].append((family + " setup", None, setup, []))
+    for name, pre, narrative, fallback in acts:
+        family = owners[name]
+        before = fixture_steps(family, before_act=name, raw=True)
+        if before:
+            sources[family].append((name + " setup", None, before, []))
+        if sketches.get(name):
+            sources[family].append((name + " sketches", None, sketches[name], []))
+        sources[family].append((name, pre, narrative, fallback))
+    return sources
+
+
+def _placed_boxes(program, slots, home=None):
     """{chunk: [x0, x1, y0, y1]} once every chunk is in its slot - what the framing pass reads to
     tell whether the next subject is already on screen."""
     box = {}
     for _name, _pre, narr, _fb in program:
-        for step, chunk, _cursor, frame in _place_walk(_placed(narr, slots), home_out=_CHUNK_OF):
+        for step, chunk, _cursor, frame in _place_walk(_placed(narr, slots), home_out=home):
             if chunk is None or not isinstance(step[1], dict):
                 continue
             for x, y in _place_points(step[1], frame, step[0]):
@@ -239,18 +303,186 @@ def _placed_boxes(program, slots):
     return {c: [v if v is not None else 0.0 for v in b] for c, b in box.items()}
 
 
-_PLACED_BOX.update(_placed_boxes(_ACT_PROGRAM, _SLOTS))
-_COMPONENTS.update(s[1]["name"] for _n, _p, narr, _f in _ACT_PROGRAM for s in narr
-                   if s[0] == "model_create_component" and isinstance(s[1], dict) and s[1].get("name"))
-_PATTERNED.update(c for _n, _p, narr, _f in _ACT_PROGRAM
-                  for st, c, _cur, _fr in _place_walk(narr)
-                  if st[0].startswith("model_pattern_") and c)
-_SKETCH_PLANE.update({s[1]["name"]: s[1].get("plane") for _n, _p, narr, _f in _ACT_PROGRAM
-                      for s in narr if s[0] == "sketch_create" and isinstance(s[1], dict)
-                      and s[1].get("name") and s[1].get("plane") in _PLANE_VIEW})
+def _family_frame_layout(program, slots):
+    """Return frame inputs from only one family's rows and local producers."""
+    home = {}
+    boxes = _placed_boxes(program, slots, home)
+    components = {step[1]["name"] for _name, _pre, rows, _fb in program for step in rows
+                  if step[0] == "model_create_component" and isinstance(step[1], dict)
+                  and step[1].get("name")}
+    patterned = {chunk for _name, _pre, rows, _fb in program
+                 for step, chunk, _cursor, _frame in _place_walk(rows)
+                 if step[0].startswith("model_pattern_") and chunk}
+    planes = {step[1]["name"]: step[1]["plane"]
+              for _name, _pre, rows, _fb in program for step in rows
+              if step[0] == "sketch_create" and isinstance(step[1], dict)
+              and step[1].get("name") and step[1].get("plane") in _PLANE_VIEW}
+    return {"home": home, "boxes": boxes, "components": components,
+            "patterned": patterned, "planes": planes}
 
-ACTS = [(name, pre, _framed(_placed(narr, _SLOTS)), _framed(fb) if fb is not None else fb)
-        for name, pre, narr, fb in _ACT_PROGRAM]
+
+_HOIST_FRAMES = {
+    "ACT 2 - SOLIDS": {
+        "SweepProf": (["SweepPath", "SweepProf"], "iso-top-right"),
+        "PvBlkS": (["PvBlkS", "SweepPath", "SweepProf", "SweepProfWide", "SweepPathArc"],
+                   "iso-top-right"),
+        "PrecisionLug": (["PrecisionLug", "SweepPath", "SweepProf", "SweepProfWide",
+                          "SweepPathArc", "PvBlkS"], "iso-top-right"),
+        "LoftBase": (["LoftBase"], "top"),
+        "Spine": (["Spine", "GuideBase", "LoftBase"], "top"),
+        "BayS": (["BayS", "Plate-upper", "Plate-lower", "Spine", "DupeMark", "GuideBase",
+                  "LoftBase"], "top"),
+    },
+    "ACT 3 - SURFACES": {
+        "SH2": (["SH1", "SH2", "SRevSplineS"], "iso-top-right"),
+        "BlendA": (["BlendA"], "top"),
+    },
+    "ACT 5 - DETAILS": {
+        "EmbossBlockS": (["EmbossBlockS"], "top"),
+        "PipeSplitPath": (["PipeSplitS", "PipeSplitPath"], "top"),
+    },
+    "ACT 7b - MOTION BENCH": {
+        "BallProf": (["BallProf"], "front"),
+        "TorusProf": (["TorusProf"], "front"),
+        "GrpBS": (["GrpAS", "GrpBS"], "top"),
+        "PinS": (["PinS"], "top"),
+        "JBaseS": (["JBaseS", "AsbPinS"], "top"),
+    },
+}
+
+
+def _checked_sketch_frames(owner, rows, slots, layout):
+    """Place hoisted sketches and attach their authored checked camera frames."""
+    from verify_core import declared_allows, step_conditions, condition_expect
+    out, framed, known, excluded = [], set(), set(), set()
+    specs = _HOIST_FRAMES.get(owner, {})
+    for step in _placed(rows, slots):
+        out.append(step)
+        if not declared_allows(step[2]):
+            if step[0] == "sketch_create" and isinstance(step[1], dict):
+                excluded.add(step[1]["name"])
+            continue
+        if step[0] == "model_create_component" and isinstance(step[1], dict):
+            known.update((step[1]["name"], step[1]["name"] + ":1"))
+        elif step[0] == "sketch_create" and isinstance(step[1], dict):
+            known.add(step[1]["name"])
+        if (step[0] not in ("sketch_add_geometry", "sketch_add_3d_line")
+                or not isinstance(step[1], dict)):
+            continue
+        sketch = step[1].get("sketch_name")
+        if sketch not in specs or sketch in framed:
+            continue
+        focus, orientation = specs[sketch]
+        if not set(focus) <= known:
+            raise ValueError("sketch frame has absent local focus: " + repr(sketch))
+        camera = _watch(list(focus), planes=layout["planes"])
+        out.append((camera[0], dict(camera[1], orientation=orientation),
+                    condition_expect(step_conditions(step[2]), camera[2]), camera[3]))
+        framed.add(sketch)
+    if framed != set(specs) - excluded:
+        raise ValueError("sketch frames missing local rows: " + repr(sorted(set(specs) - framed)))
+    return out
+
+
+def compile_program(raw_program):
+    """Compile owned acts from independent family geometry and frame inputs."""
+    from verify_core import tiered
+    raw_program = [(name, pre, tiered(narr), tiered(fb) if fb is not None else fb)
+                   for name, pre, narr, fb in raw_program]
+    owners = family_names(raw_program)
+    phases, kept_by_name, raw_sketches = {}, {}, {}
+    for family, _prefixes in FAMILY_GROUPS:
+        family_acts = [act for act in raw_program if owners[act[0]] == family]
+        sketch_owners = _sketch_owners(family_acts)
+        phase, kept = _sketches_first(family_acts, after=_SKETCH_HOIST_EXCLUDED)
+        phases[family] = phase
+        kept_by_name.update((act[0], act) for act in kept)
+        raw_sketches.update((name, rows) for name, rows in
+                            _sketch_blocks(phase, sketch_owners).items() if name is not None)
+    kept_program = [kept_by_name[act[0]] for act in raw_program]
+    raw_sources = _family_sources(kept_program, raw_sketches)
+    slots = {family: _family_slots(family, source)
+             for family, source in raw_sources.items()}
+    local_rows = {name: _sketch_reading_order(rows, slots[owners[name]])
+        for name, rows in raw_sketches.items()}
+    sources = _family_sources(kept_program, local_rows)
+    frames = {family: _family_frame_layout(source, slots[family])
+              for family, source in sources.items()}
+    local_sketches = {name: _checked_sketch_frames(name, rows, slots[owners[name]],
+                                                   frames[owners[name]])
+                      for name, rows in local_rows.items()}
+    acts = [(name, pre, local_sketches.get(name, []) +
+             _framed(_placed(narr, slots[owners[name]]), frames[owners[name]]),
+             _framed(fb, frames[owners[name]]) if fb is not None else fb)
+            for name, pre, narr, fb in kept_program]
+    return {"acts": acts, "kept": kept_program, "phases": phases,
+            "sketches": local_sketches, "slots": slots, "frames": frames,
+            "sources": sources}
+
+
+_RAW_ACT_PROGRAM = _ACT_PROGRAM
+
+
+def cache_baseline_plan(acts, families, fixture_provider, selected, potential_names, support_routes=()):
+    """Freeze placed conditional lanes and each fixture branch without evaluating row arguments."""
+    selected = None if selected is None else frozenset(selected)
+    potential_names = frozenset(potential_names)
+    frozen_acts = tuple((name, pre, tuple(narrative),
+                         None if fallback is None else tuple(fallback))
+                        for name, pre, narrative, fallback in acts)
+    initial, before, opening, workspace = {}, {}, {}, {}
+    potential, admitted_families = [], set()
+    bootstrap = frozenset(("sketch", "sheet_coupon", "sheet_positions", "sheet_flange"))
+    for name, pre, narrative, fallback in frozen_acts:
+        if selected is not None and name not in selected:
+            continue
+        family = families.get(name)
+        if family is not None:
+            if family not in initial:
+                initial[family] = tuple(fixture_provider(family))
+                opening[family] = () if family in bootstrap else (("doc_new", {}, "ok", None),)
+                workspace[family] = () if family in bootstrap else (
+                    ("view_switch_workspace", {"workspace": "design"}, "ok", None),)
+            before[name] = {
+                entitled: tuple(fixture_provider(family, before_act=name, entitled=entitled))
+                for entitled in (False, True)}
+        if name not in potential_names:
+            continue
+        potential.extend(narrative)
+        potential.extend(fallback or ())
+        if pre is not None:
+            potential.append((pre[0], pre[1], "ok", None))
+        if family is not None:
+            if family not in admitted_families:
+                potential.extend(opening[family])
+                potential.extend(workspace[family])
+                potential.extend(initial[family])
+                admitted_families.add(family)
+            # Registration is conservative over the two runtime entitlement branches.
+            potential.extend(before[name][False])
+            potential.extend(before[name][True])
+    return {"acts": frozen_acts, "initial": initial, "before": before,
+            "opening": opening, "workspace": workspace, "potential_rows": tuple(potential),
+            "support_routes": tuple(support_routes)}
+
+
+_COMPILED = compile_program(_RAW_ACT_PROGRAM)
+_ACT_PROGRAM = _COMPILED["kept"]
+_SKETCH_PHASE = [step for family, _prefixes in FAMILY_GROUPS
+                 for step in _COMPILED["phases"][family]]
+_LOCAL_SKETCHES = _COMPILED["sketches"]
+_FAMILY_FRAME = _COMPILED["frames"]
+FAMILY_SLOTS.update(_COMPILED["slots"])
+ACTS = _COMPILED["acts"]
+
+# Diagnostic maps are unions; compilation above reads only family-local inputs.
+for _layout in _FAMILY_FRAME.values():
+    _CHUNK_OF.update(_layout["home"])
+    _PLACED_BOX.update(_layout["boxes"])
+    _COMPONENTS.update(_layout["components"])
+    _PATTERNED.update(_layout["patterned"])
+    _SKETCH_PLANE.update(_layout["planes"])
+FAMILY_PROGRAM = family_names(ACTS)
 
 # The CAPABILITY each act declares. An act whose capability the start-of-run probe did not read as
 # ENTITLED is not run at all: its steps land in the receipt's skipped(<capability> not entitled)
@@ -259,11 +491,17 @@ ACTS = [(name, pre, _framed(_placed(narr, _SLOTS)), _framed(fb) if fb is not Non
 # thing one row at a time through verify_core.Needs; the probe per capability name lives in
 # verify_core.CAPABILITY_PROBES.
 ACT_NEEDS = {
+    "ACT 14 - LOOKUP TARGETING": ("native_script", "cloud_tier", "library_writes",
+                                   "preference_writes", "addin_reload"),
+    "ACT 12c - SHEET METAL DRAWING": CLOUD_TIER,
     "ACT 11a - CLOUD: THE DATA MODEL": CLOUD_TIER,
     "ACT 11b - CLOUD: THE SAVED DOCUMENT": CLOUD_TIER,
     "ACT 11b2 - CLOUD: LINK GUARD REVIEW": CLOUD_LINK_CRASH_REVIEW,
     "ACT 11c - CLOUD: THE DRAWING": CLOUD_TIER,
     "ACT 11d - CLOUD: CAM TEMPLATE PERSISTENCE": CLOUD_TIER,
+    "ACT 11e - CLOUD: CONFIGURATION COLUMN REFUSALS": CLOUD_TIER,
+    "ACT 11f - CLOUD: DERIVE EDITS": CLOUD_TIER,
+    "ACT 11h - CLOUD: COMPONENT COPY": CLOUD_TIER,
     "ACT 10c - CAM: EXTENSION STRATEGIES": MACHINING_EXTENSION,
     "ACT 10c11 - CAM: THE EXTENSION FAMILIES": MACHINING_EXTENSION,
     "ACT 10c12 - CAM: THE EXTENSION FAMILIES READ": MACHINING_EXTENSION,
@@ -277,6 +515,9 @@ ACT_NEEDS = {
 # leaves several generating gets each certified in turn. An act the capability tier held back polls
 # nothing, because nothing in it launched.
 POLL_AFTER = {
+    "ACT 12b - SHEET METAL LASER OUTPUT": {"narrative": "SM Sweep Laser Setup", "fallback": []},
+    "ACT 12b1 - SHEET METAL SOURCE UPDATE": {"narrative": "SM Sweep Laser Setup", "fallback": []},
+    "ACT 12 - SHEET METAL COUPON": {"narrative": "SM Sweep Laser Setup", "fallback": []},
     "ACT 10a - CAM: JOB + GENERATE": {"narrative": CAM_SETUP, "fallback": "Setup1"},
     # 10b ends on the Setup2 launch, so its boundary certifies that generation before the next act's
     # CAM writes start - a write landing while a generation free-runs is what parks the process. The
@@ -331,6 +572,33 @@ POLL_AFTER = {
     "ACT 10e - CAM: MULTI-SETUP POST": {"narrative": "document", "fallback": [], "max_polls": 160},
 }
 
+ACT_DEPENDENCIES = {}
+for _act in ACTS:
+    _name, _precondition, _narrative, _fallback = _act
+    _family = FAMILY_PROGRAM[_name]
+    _family_dep = FAMILY_DEPENDENCIES[_family]
+    _producers = tuple(dict.fromkeys(
+        tuple(_family_dep["producers"]) + ACT_PRODUCER_OVERRIDES.get(_name, ())))
+    _slots = tuple(dict.fromkeys(slot for producer in _producers
+                                 for slot in PRODUCER_SLOTS[producer]))
+    _workspace_steps = (_narrative or []) + (_fallback or [])
+    _workspaces = tuple(dict.fromkeys(
+        step[1].get("workspace") for step in _workspace_steps
+        if step[0] == "view_switch_workspace" and isinstance(step[1], dict)))
+    ACT_DEPENDENCIES[_name] = {
+        "family": _family,
+        "producers": tuple(_producers),
+        "conditional_producers": ACT_PRODUCER_CONDITIONAL_OVERRIDES.get(_name, {}),
+        "slots": _slots,
+        "requires": _family_dep["requires"],
+        "provides": _family_dep["provides"],
+        "workspace": " -> ".join(_workspaces) or "inherited",
+        "camera": _family_dep["camera"],
+        "precondition": _precondition[0] if _precondition else None,
+        "entitlement": ACT_NEEDS.get(_name),
+        "generation": POLL_AFTER.get(_name),
+    }
+
 # STEPS: the flat union of every act's narrative + fallback steps - the coverage ledger the
 # completeness lint reads (every registered tool must appear as some step's tool). run() iterates
 # ACTS (choosing narrative or fallback per act); STEPS exists so the lint sees the whole surface.
@@ -339,13 +607,31 @@ STEPS = [s for _, _, narr, fb in ACTS for s in (list(narr) + list(fb or []))
 
 # STORY: each covered tool's ledger shot-list note - the receipt doubles as the demo's shot list.
 STORY = {
-    "doc_new": "open the one document the whole story lives in",
+    "render_create": "launch a local PNG job and a locked in-canvas render on an owned coupon",
+    "render_get": "read the terminal local job and its PNG independently; read scene and canvas state",
+    "render_edit": "edit and read back scene fields, reset, activate Render, save canvas and stop unlocked",
+    "sheet_get": "read scoped rules, sheet body ownership and flat presence on the coupon",
+    "sheet_edit_rule": "copy a library rule locally, then change K and read its numeric settings",
+    "sheet_convert": "convert the 1.5 mm blank and check body state plus applied rule thickness",
+    "sheet_create_fold": "fold the intended interior line 90 deg and measure formed height",
+    "sheet_create_flat_pattern": "create one flat, read its source and nonempty volume",
+    "sheet_create_flange": ("add native edge flanges off two rim edges and an inner-height one, "
+                            "each landed bend-face growth checked and the bbox growth independently "
+                            "read; a curved-face edge refused"),
+    "sheet_create_hem": ("close a flat hem on a rim edge with its grown bend faces and volume; "
+                         "a rope hem missing its dimensions refused naming them"),
+    "sheet_create_rip": ("split a filleted, shelled corner by face and by edge, each a landed "
+                         "volume drop; the same edge's two vertices refused"),
+    "sheet_create_join_by_bend": "bridge two plates' rim edges into one body with a new bend",
+    "doc_new": "open a local document for the current sweep family",
     "workspace_orient": ("orient: read the empty design before building; and the entitlement block "
                          "as the CAM job opens - exactly the four sentinel strategies, each "
                          "answering its own isGenerationAllowed flag rather than reading null. It "
                          "is the same read the run's capability probe takes, which is what routes "
                          "the extension acts to skipped(machining_extension not entitled) instead "
-                         "of into the refusal an unlicensed installation answers them with"),
+                         "of into the refusal an unlicensed installation answers them with; and "
+                         "on the joint bench a parent-locked part counted apart from grounded, "
+                         "against assembly_get's rows"),
     "sys_capability_map": "survey the server's tool families at cold start",
     "sys_find_tool": ("search the surface for the revolve verb - a registry read, so it carries no "
                       "'active_document' stamp (design_get's final read is the other half)"),
@@ -437,7 +723,8 @@ STORY = {
                    "sketch recipes' own bar; and the keyway slot's own census, where WHICH of its "
                    "three lines is the construction spine is read off the sketch rather than "
                    "counted on (a solid side line is vertical too and spans the same length, so a "
-                   "dimension addressed at one lands the slot half a width off)"),
+                   "dimension addressed at one lands the slot half a width off); a dimension row "
+                   "names the points the sketch_dimension call was given"),
     "sketch_delete_entity": ("delete a helper constraint; count drops - then a sketch text by its "
                              "index, the deleted string reported back, and the empty index refused"),
     "model_construction": ("offset the step floor the pocket is cut from and the top the boss stands on; an AXIS on a cameo bore whose published handle the circular pattern turns about; a plane at 30 deg about a bench bore's own axis (origin pinned to the axis) and a plane through a cap vertex; then the ON-PATH surface on one measured 30 mm cap edge - a proportional plane and point reading their ratio back with no extent published, an absolute placement inside the path, one before the start and one far past the end (both accepted, both disclosed against the measured length), the boundary exactly at the length, an expression placement whose model parameter is named for param_set, a to-object plane carrying distance AND offset off the path and a second one landing inside a two-edge chained path, and the summed length of that chain; the out-of-range proportional value and to_object on the point kind refused. Then the datum bench - one bored block carrying every reference the remaining modes read: a plane swung 30 deg about a top edge, one spanning three corners, one splitting the block at mid-height, one spanning two coplanar edges and one resting tangent on the bore wall; an axis on an edge, one spanning two corners and one along the top face's own normal; and points at the bore centre, at a corner where two edges meet, at the three world planes' shared origin and where an edge pierces XY. The world axis and the coordinate point are refused up front - both are setByLine/setByPoint, direct-edit-only, and this design is parametric. And the hub's own datum: the axis plane swung 30 deg about the SHAFT WALL, whose frame maps its +X onto world Z alone - which is what lets the inclined flat be drawn in depths and radii measured from the hub's axis rather than from the datum's parametric origin"),
@@ -476,7 +763,8 @@ STORY = {
                    "and point_tangent read back; a direction start on open sketch curves and on "
                    "profiles, each start_angle set to 30 deg widening the body's box; and a loft "
                    "on two strip-edge rails at rail_continuity g1 and a g0 twin, read back"),
-    "model_sweep": "sweep a round section along its own path",
+    "model_sweep": ("sweep profile and solid sections; verify placed straight-sweep material, then "
+                    "retire an empty curved solid sweep with unchanged history, sketches and control bodies"),
     "model_draft": "draft a cameo face",
     "model_mirror": ("mirror a cameo body, then the emboss block's own timeline FEATURE with the "
                      "body/volume census read back, then a join whose isCombine is read off the "
@@ -486,16 +774,10 @@ STORY = {
     "model_replace_face": ("replace a scratch block's top face with an open sheet above it, the "
                            "measured volume move pinning the effect; a solid face as the target "
                            "refused"),
-    "model_pipe": ("run a hollow pipe along its path with the wall read back off the feature (and "
-                   "NO capped_ends claim - the face collections that would answer that read empty "
-                   "on this build), then a half-path pipe whose bounding box proves the extent is a "
-                   "FRACTION, a CUT scoped to a named body where the note says the scope is what "
-                   "was REQUESTED because participantBodies cannot be read back, and the two "
-                   "chaining fixtures: ONE seed handle chains across TANGENT junctions and stops "
-                   "where that continuity breaks - several edges on an open run bounded by sharp "
-                   "corners, and all eight of a closed tangent loop (which reports itself closed) "
-                   "- so what a seed produces is the BUILT path's own count and nothing about the "
-                   "request predicts it; the reverse extent refused on an open path"),
+    "model_pipe": ("build hollow and partial-length pipes, prove a scoped cut removes material, "
+                   "retire a scoped cut with no effect while preserving history/body/sketch controls, "
+                   "and retain a disjoint join's extra body; verify path chaining and refuse reverse "
+                   "extent on an open path"),
     "model_pattern_rectangular": "rectangular-pattern a cameo body",
     "model_pattern_circular": ("circular-pattern a cameo body about a world axis, then about a "
                                "construction axis by handle and by name with the resolved label "
@@ -505,7 +787,7 @@ STORY = {
                            "off the feature's own patternElements, then along TWO connected edge "
                            "handles - a list is used EXACTLY, with no chaining, and the label says "
                            "which of the two path rules ran"),
-    "assembly_edit_relations": ("suppress/unsuppress a scratch rigid group, re-value the bench link with was_reversed disclosed, and meet the measured set_occurrences refusal in the words that make it a fact - the build it was measured on and the platform sentence it would raise - with the group's members re-read unchanged afterwards"),
+    "assembly_edit_relations": ("suppress/unsuppress a rigid group, re-value a motion link, refuse one-member replacement, then replace two members with independent membership, health and restored-marker reads"),
     "assembly_edit_contacts": ("build a contact set from two story parts, meet the single-member refusal, re-member it, rename it reading the landed name back, suppress round-trip, switch contact analysis on and back off, then delete it"),
     "model_hole": ("drill a cameo mounting hole, then the three additive placements - centred on "
                    "its rim, on an edge at middle and at start, and by plane offsets; a circular "
@@ -661,7 +943,12 @@ STORY = {
                      "which is what says nothing has been cut across it"),
     "sketch_edit_curve": ("trim, extend, split, fillet, chamfer and offset on one scratch sketch "
                           "per action, with length read-backs; split's two halves must carry "
-                          "distinct ids; a chamfer across an offset pair refused"),
+                          "distinct ids; constrain both halves separately and compare sketch_get's "
+                          "labels with endpoint-selected identities, preserving endpoints, control "
+                          "line and history; a chamfer across an offset pair refused; an offset "
+                          "picked on each side of an open chain's first and second line and of a "
+                          "closed loop, and one past a fillet's radius, the new lines read back "
+                          "by coordinates on the pick's side"),
     "model_scale": ("uniform x8 and per-axis x*y*z scales with ratio read-backs; unresolvable, "
                     "length, and angle expressions refused; a bare unitless parameter accepted; "
                     "a vertex-anchored scale"),
@@ -782,10 +1069,18 @@ STORY = {
                              "suppress carries a census_caveat naming 1 collapsed group while "
                              "design_get's group= listing shows both members suppressed. The "
                              "creased Form's suppress and unsuppress name exactly its fillet. "
+                             "action='reorder' moves a sketch drawn after its sweep to sit before "
+                             "it, by the call the editors' refusal names, read back on design_get's "
+                             "timeline; a sketch projecting the sweep's edge is refused with Fusion's "
+                             "CIRCULAR_DEPENDENCY and every row stays where it was; an earlier item "
+                             "moves later; a direct move after the last row refuses unchanged, then "
+                             "its two-move remedy makes the item last, read back after each move. "
                              "SKIPPED(rig): the AMBIGUOUS-name refusal itself needs two same-named "
                              "timeline features, and no tool on this surface renames a feature, so "
                              "the sweep cannot mint the pair"),
-    "param_set": "bump PartLen +33%, measure the part grew with it, then restore it",
+    "param_set": ("bump PartLen +33%, measure the part grew with it, then restore it; drive a "
+                  "sketch dimension, then a user parameter feeding two sketches, each reply naming "
+                  "the moved point and the line end it sits at, checked on sketch_get's positions"),
     "param_delete": "delete a scratch parameter",
     "view_switch_workspace": "switch to Manufacture, then back to Design",
     "cam_get": ("read the CAM job structure, and the recorded-probing slice on a job nothing has "
@@ -1044,7 +1339,9 @@ STORY = {
                    "(sys_find_tool, which never touches the design, carries no such stamp), the "
                    "timeline slice the 'name@index' feature form is addressed from, plus the "
                    "material/appearance catalog at both zoom levels - the library census and one "
-                   "paged library; an unloaded library name refused"),
+                   "paged library; an unloaded library name refused; read signed, two-sided, symmetric "
+                   "and through-all Extrude definitions in mm/cm/in, plus partial Sweep definition "
+                   "when path/participants need edit context, with unchanged timeline and material"),
     "drawing_create": ("meet every guard the drawing generator sits behind, each settled before the "
                        "tool reaches for a cloud source: the shaded style with no member to set, "
                        "the two centre annotations with no enum family on this build, a tangent-edge "
@@ -1065,14 +1362,19 @@ STORY = {
                          "why it is a post-run beat and not a row in an act"),
     # THE OPT-IN CLOUD TIER (ACT 11a-c). Every row below runs only where cloud_config names a hub,
     # and an unconfigured run reports each of these tools skipped(cloud_tier not entitled).
+    "design_configure": ("saved public create/add B; unknown expression and wrong-unit setter failures "
+                         "remove the fresh column with public IDs, complete parameters/material/history "
+                         "and separate source/witness geometry unchanged; legal active-B13 drives the "
+                         "actual 10x8x13 mm solid while the witness stays exact. Cell values are not "
+                         "exposed by public reads; the scratch cloud file is retained."),
     "data_get": ("the hub this run is signed in to and the configured project listed in it - the "
                  "row that puts on the ledger WHICH hub the artifacts were made in; then the "
                  "uploaded file's own record (where it sits, and whether the cloud has finished "
                  "with it - what the drawing generator needs true of its source); and the two "
                  "read-backs standing apart from the deletes' own reports: the run folder addressed "
                  "DIRECTLY, where the project answers that it holds no such subfolder - a refusal a "
-                 "budget cut cannot produce - and the configured folder's own file listing, scoped "
-                 "to that folder and failing on any listing that did not fully read"),
+                 "budget cut cannot produce - and four exact owned lineages queried after their "
+                 "deletes, each requiring an independent not-found refusal"),
     "data_create_folder": ("a run-stamped folder under the configured one and a move target inside "
                            "it, each re-listed under the parent asked for with NOTHING auto-created "
                            "on the way there - a run that had to invent the operator's folder is "
@@ -1150,10 +1452,10 @@ STORY = {
 # the policy-excluded bucket; PENDING (below) is the separate "not scripted yet" bucket - the ledger
 # keeps that distinction honest.
 EXCLUDED = {
-    "sys_execute_script": ("gated off by design; the sweep proves the typed surface suffices - and "
-                           "with it the beat for its DRAWING-document error tail (a raise inside a "
+    "sys_execute_script": ("excluded as a general tool capability; controlled native fixtures may "
+                           "use it when enabled. Its DRAWING-document error tail is not covered (a raise inside a "
                            "drawing ends with 'Re-read the sheets before assuming this call changed "
-                           "nothing.', a design one does not), which would need this tool driven "
+                           "nothing.', a design one does not); that needs this tool driven "
                            "against two document kinds"),
     "sys_reload_addin": ("restarts the server, so no STEP can follow it - the run drives it as a "
                          "post-run beat instead (reload_smoke), and this row is what stands when "
@@ -1161,15 +1463,14 @@ EXCLUDED = {
                          "down-then-up watch or the sys_find_tool smoke did not come back"),
     "sys_request_selection": "waits on a human pick (user-present tier)",
     "design_set_mode": "irreversible parametric->direct conversion; not run unattended",
-    "design_configure": "configuration table needs a SAVED document (a DataFile to carry it); opt-in tier - the appearance/material columns need that document too, and a body's material reads back only after the geometry catches up with the activation",
     # The rest of the cloud tier. The tools that write into an operator's hub are DRIVEN by ACT 11a-c
     # behind the cloud_tier capability, so an unconfigured run reports them skipped(cloud_tier not
     # entitled) rather than listed here; these two are not driven even with a config.
     "data_create_project": ("mints a real project in the operator's hub - the config names an "
                             "EXISTING project, and a project is not this tier's to create"),
-    "data_switch_hub": ("closes every open document, the story document among them - the cloud_tier "
-                        "probe refuses a config naming a hub other than the active one instead of "
-                        "switching to it"),
+    "data_switch_hub": ("actual switching requires an operator-admitted alternate hub and document "
+                        "census; the cloud act tests the dirty-cloud preflight with native documents "
+                        "and a trapped diagnostic target, without switching hubs"),
 }
 
 # Registered tools NOT yet scripted into STEPS - the honest "todo" ledger. SHRINK-ONLY: scripting a

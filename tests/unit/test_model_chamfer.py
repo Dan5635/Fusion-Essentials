@@ -1,4 +1,6 @@
 """Unit tests for model_chamfer.py - the three chamfer definitions and their read-backs."""
+import live_api_facts as _api_facts
+_HEALTHY = _api_facts.ENUMS["fusion.FeatureHealthStates"]["HealthyFeatureHealthState"]
 
 import math
 import pytest
@@ -58,91 +60,76 @@ def make_body(name, edge_kinds, volume=None, area=None):
     return body
 
 
-class FakeFilletInput:
-    """FilletFeatureInput. Each add*EdgeSet returns True (the API returns a bool), and the arity of
-    each matches the real one - addVariableRadiusEdgeSet has NO isTangentChain argument, and its
-    positions/radii are plain Python lists (a vector argument): an ObjectCollection raises live, so
-    it raises here."""
-
-    def __init__(self):
-        self.edge_set = None
-        self.variable_set = None
-        self.chord_set = None
-        self.refuse = False
-
-    def addConstantRadiusEdgeSet(self, edges, val, tangent):
-        self.edge_set = (edges, val, tangent)
-        return not self.refuse
-
-    def addVariableRadiusEdgeSet(self, tangentEdges, startRadius, endRadius, positions, radii):
-        for name, arg in (("positions", positions), ("radii", radii)):
-            if not isinstance(arg, list):
-                raise TypeError(f"in method 'FilletFeatureInput_addVariableRadiusEdgeSet', "
-                                f"argument '{name}' is not a vector")
-        self.variable_set = (tangentEdges, startRadius, endRadius, positions, radii)
-        return not self.refuse
-
-    def addChordLengthEdgeSet(self, edges, chordLength, tangent):
-        self.chord_set = (edges, chordLength, tangent)
-        return not self.refuse
-
-
-class FakeRuleFilletInput:
-    """RuleFilletFeatureInput. setByAllEdges/setByBetweenFacesOrFeatures take plain Python lists of
-    faces (not an ObjectCollection) and return a bool; radius and topologyType are settable."""
-
-    def __init__(self):
-        self.all_edges = None
-        self.between = None
-        self.radius = None
-        self.topologyType = None
-        self.refuse = False
-
-    def _check(self, name, arg):
-        if not isinstance(arg, list):
-            raise TypeError(f"in method 'RuleFilletFeatureInput_{name}', argument is not a vector")
-
-    def setByAllEdges(self, facesOrFeatures):
-        self._check("setByAllEdges", facesOrFeatures)
-        self.all_edges = facesOrFeatures
-        return not self.refuse
-
-    def setByBetweenFacesOrFeatures(self, one, two):
-        self._check("setByBetweenFacesOrFeatures", one)
-        self._check("setByBetweenFacesOrFeatures", two)
-        self.between = (one, two)
-        return not self.refuse
-
-
 # The sentinel a fresh ChamferFeatureInput carries, so "never assigned" is distinguishable from
 # "assigned Fusion's own default member".
 _UNSET_CORNER = "corner:api-default"
 
 
+# What the stand-in edge-set class and a fake distance-and-angle edge set both answer as their
+# type. INJECTED: any string the two agree on; the live objectType is not measured here.
+_ANGLE_SET = "fake::DistanceAndAngleChamferEdgeSet"
+_EQUAL_SET = "fake::EqualDistanceChamferEdgeSet"
+
+
+class _AngleSetClass:
+    """adsk.fusion.DistanceAndAngleChamferEdgeSet at classType(); it has no measured shape."""
+
+    @staticmethod
+    def classType():
+        return _ANGLE_SET
+
+
+@pytest.fixture(autouse=True)
+def _angle_set_class(monkeypatch):
+    import adsk.fusion
+    monkeypatch.setattr(adsk.fusion, "DistanceAndAngleChamferEdgeSet", _AngleSetClass,
+                        raising=False)
+
+
+class FakeChamferEdgeSets:
+    """ChamferFeatureInput.chamferEdgeSets; it has no measured shape. Each add takes the binding's
+    arity, files what it was sent on the owning input and answers its documented bool."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def addEqualDistanceChamferEdgeSet(self, edges, distance, isTangentChain):
+        own = self._owner
+        own.sent_edges, own.tangent, own.distance = edges, isTangentChain, distance
+        return own.refuse != "equal"
+
+    def addTwoDistancesChamferEdgeSet(self, edges, distanceOne, distanceTwo, isFlipped,
+                                      isTangentChain):
+        own = self._owner
+        own.sent_edges, own.tangent, own.flipped = edges, isTangentChain, isFlipped
+        own.two_distances = (distanceOne, distanceTwo)
+        return own.refuse != "two"
+
+    def addDistanceAndAngleChamferEdgeSet(self, edges, distance, angle, isFlipped,
+                                          isTangentChain):
+        own = self._owner
+        own.sent_edges, own.tangent, own.flipped = edges, isTangentChain, isFlipped
+        own.distance_and_angle = (distance, angle)
+        return own.refuse != "angle"
+
+
 class FakeChamferInput:
-    """ChamferFeatureInput. Each setTo* returns its documented bool, and cornerType is a PROPERTY -
-    so the SWIG trap applies to it: an assignment the proxy drops leaves the API default in place
-    and only a read-back tells. `swallow_corner_set` models that."""
+    """ChamferFeatureInput as createInput2 answers it: chamferEdgeSets, and cornerType - a PROPERTY,
+    so an assignment the SWIG proxy drops leaves the API default in place (`swallow_corner_set`).
+    It carries no setTo* of its own, so a call to one fails the test."""
 
     swallow_corner_set = False
 
-    def __init__(self, edges, tangent):
-        self.edges = edges
-        self.tangent = tangent
+    def __init__(self):
+        self.sent_edges = None
+        self.tangent = None
+        self.flipped = None
         self.distance = None
         self.two_distances = None
         self.distance_and_angle = None
-        self.refuse = None            # the name of the setTo* that answers False
+        self.refuse = None            # the name of the add that answers False
         self._corner = _UNSET_CORNER
-    def setToEqualDistance(self, val):
-        self.distance = val
-        return self.refuse != "equal"
-    def setToTwoDistances(self, val1, val2):
-        self.two_distances = (val1, val2)
-        return self.refuse != "two"
-    def setToDistanceAndAngle(self, distance, angle):
-        self.distance_and_angle = (distance, angle)
-        return self.refuse != "angle"
+        self.chamferEdgeSets = FakeChamferEdgeSets(self)
 
     @property
     def cornerType(self):
@@ -155,24 +142,21 @@ class FakeChamferInput:
 
 
 class FakeCountingFeature:
-    """A created CHAMFER feature at the read-backs the live one answers: .faces.count, the health
-    pair, and the tangent-chain flag - which a ChamferFeature carries on ITSELF while its edge set
-    reads False whether the chamfer chained or not. `cut_edges` is the set the seeds RESOLVED to,
-    which reads only behind a timelineObject.rollTo."""
-    # What a ChamferEdgeSet answers either way - so reading the flag off there is reading a
-    # constant, not the chamfer's setting.
-    EDGE_SET_FLAG = False
+    """An injected feature exposes health, face count and the first edge set's resolved seeds."""
+    # What a ChamferFeature built from edge sets answers either way - so reading the flag off the
+    # feature is reading a constant, not the chamfer's setting.
+    FEATURE_FLAG = True
 
-    def __init__(self, name, faces, health=0, message="", tangent=None, cut_edges=None):
+    def __init__(self, name, faces, health=_HEALTHY, message="", tangent=None, cut_edges=None):
         self.name = name
         self.faces = _NamedCollection([None] * faces)
         self.healthState = health
         self.errorOrWarningMessage = message
         self.deleted = False
-        self.isTangentChain = True if tangent is None else tangent
+        self.isTangentChain = self.FEATURE_FLAG
         self.timelineObject = FakeTimelineObject(name=name)
         edge_set = types.SimpleNamespace(
-            isTangentChain=self.EDGE_SET_FLAG,
+            isTangentChain=True if tangent is None else tangent,
             edges=_NamedCollection([None] * (faces if cut_edges is None else cut_edges)))
         self.edgeSets = _NamedCollection([edge_set])
     def deleteMe(self):
@@ -180,70 +164,29 @@ class FakeCountingFeature:
         return True
 
 
-class FakeFilletFeatures:
-    def __init__(self):
-        self.last = None
-        self.rule_last = None
-        # default created feature answers only .name (no .faces/.edges - the attribute-silent case)
-        self.result = type("F", (), {"name": "Fillet1"})()
-        self.rule_result = FakeCountingFeature("RuleFillet1", faces=4)
-        self.rule_settings_override = None   # set to model a radius/topology that did not land
-        # applied when a feature is added, so a test can model the geometry actually moving
-        self.on_add = None
-        self.refuse_edge_set = False
-    def createInput(self):
-        self.last = FakeFilletInput()
-        self.last.refuse = self.refuse_edge_set
-        return self.last
-    def add(self, inp):
-        if self.on_add:
-            self.on_add()
-        return self.result
-    def createRuleFilletInput(self):
-        self.rule_last = FakeRuleFilletInput()
-        self.rule_last.refuse = self.refuse_edge_set
-        return self.rule_last
-    def addRuleFillet(self, inp):
-        if self.on_add:
-            self.on_add()
-        # A live RuleFilletFeature reports what it applied through ruleFilletSettings; the fake
-        # echoes the input unless a test overrides it to model a setter the API ignored.
-        if self.rule_result is not None and self.rule_settings_override is None:
-            applied = getattr(inp.radius, "value", inp.radius)
-            self.rule_result.ruleFilletSettings = type(
-                "S", (), {"radius": type("V", (), {"value": applied})(),
-                          "topologyType": inp.topologyType})()
-        elif self.rule_result is not None:
-            self.rule_result.ruleFilletSettings = self.rule_settings_override
-        return self.rule_result
-
-
 class FakeChamferFeatures:
-    """A live ChamferFeature reports what it BUILT, and that is the only signal a wrong corner type
-    or angle leaves - all three corner types build the same face count. So the created feature
-    carries cornerType, and (for a distance-and-angle chamfer) chamferType plus a
-    chamferTypeDefinition whose .distance/.angle are ModelParameters in CM and RADIANS. The fake
-    echoes what the input took; the *_override knobs model the platform building something else."""
+    """The feature and first edge set echo the input; override knobs inject a different result.
+    Supported edge sets expose type, distance and angle at the timeline end.
+    The fake models metadata; native body reads establish the corner's geometry."""
 
     def __init__(self):
         self.last = None
         self.result = type("F", (), {"name": "Chamfer1"})()
-        self.refuse = None            # 'equal' | 'two' | 'angle' - which setTo* answers False
+        self.refuse = None            # 'equal' | 'two' | 'angle' - which add answers False
         self.added = 0
         self.corner_override = None       # (value,) - what the FEATURE reports instead
         self.definition_override = None   # (distance_cm, angle_rad) - ditto, or False for absent
-        self.chamfer_type_override = None
-        # The cm an EQUAL-DISTANCE chamfer's own definition reports; None leaves the feature
-        # answering no definition at all, which is how the read degrades when nothing answers.
+        self.chamfer_type_override = None  # (objectType,) - the type the edge set reports instead
+        # The cm an EQUAL-DISTANCE chamfer's own edge set reports; None leaves the feature
+        # answering no distance at all, which is how the read degrades when nothing answers.
         self.equal_distance_cm = None
         # applied when a feature is added, so a test can model the geometry actually moving
         self.on_add = None
-    def createInput(self, edges, tangent):
-        self.last = FakeChamferInput(edges, tangent)
+    def createInput2(self):
+        self.last = FakeChamferInput()
         self.last.refuse = self.refuse
         return self.last
     def add(self, inp):
-        import adsk.fusion
         self.added += 1
         if self.on_add:
             self.on_add()
@@ -252,27 +195,29 @@ class FakeChamferFeatures:
         if self.corner_override is not False:      # False = the feature does not answer cornerType
             self.result.cornerType = (self.corner_override[0] if self.corner_override
                                       else inp.cornerType)
+        built = None
         if inp.distance_and_angle is not None:
-            self.result.chamferType = (
-                self.chamfer_type_override[0] if self.chamfer_type_override
-                else getattr(adsk.fusion.ChamferTypes, "DistanceAndAngleChamferType"))
-            if self.definition_override is False:
-                self.result.chamferTypeDefinition = None
-            else:
+            built = {"objectType": (self.chamfer_type_override[0] if self.chamfer_type_override
+                                    else _ANGLE_SET)}
+            if self.definition_override is not False:
                 dist_cm, angle_rad = (self.definition_override or
                                       (inp.distance_and_angle[0][1], inp.distance_and_angle[1][1]))
-                self.result.chamferTypeDefinition = type("D", (), {
-                    "distance": type("P", (), {"value": dist_cm})(),
-                    "angle": type("P", (), {"value": angle_rad})()})()
+                built.update(distance=types.SimpleNamespace(value=dist_cm),
+                             angle=types.SimpleNamespace(value=angle_rad))
         elif self.equal_distance_cm is not None:
-            self.result.chamferTypeDefinition = type("D", (), {
-                "distance": type("P", (), {"value": self.equal_distance_cm})()})()
+            built = {"objectType": _EQUAL_SET,
+                     "distance": types.SimpleNamespace(value=self.equal_distance_cm)}
+        if built is not None:
+            # A counting feature already carries its edge set; the bare default gets one here.
+            if getattr(self.result, "edgeSets", None) is None:
+                self.result.edgeSets = _NamedCollection([types.SimpleNamespace()])
+            vars(self.result.edgeSets.item(0)).update(built)
         return self.result
 
 
 def _component(bodies, ff, cf):
-    """The active component: its bodies, plus the fillet/chamfer feature collections the handler
-    builds through."""
+    """The active component: its bodies, plus the chamfer feature collection the handler builds
+    through. No chamfer call reaches the fillet collection, so `ff` is None here."""
     comp = MakeComp(name="Comp")
     comp.bRepBodies = _NamedCollection(bodies)
     comp.features = type("F", (), {"filletFeatures": ff, "chamferFeatures": cf})()
@@ -280,7 +225,7 @@ def _component(bodies, ff, cf):
 
 
 def _install(bodies):
-    ff = FakeFilletFeatures(); cf = FakeChamferFeatures()
+    ff = None; cf = FakeChamferFeatures()
     install(fl, make_design(comp=_component(bodies, ff, cf)))
     import adsk.fusion, adsk.core
     # BodyRef(kind='solid') does isinstance(body, adsk.fusion.BRepBody) + checks isSolid — make the
@@ -315,7 +260,7 @@ def _install_handles(handle_map, timeline=None):
     """Install a design whose findEntityByToken resolves `handle_map` - the seam a face/edge handle
     list reads through before its isinstance(BRepEdge/BRepFace) gate. `timeline` is the marker the
     resolved-edge-set read rolls and puts back."""
-    ff = FakeFilletFeatures(); cf = FakeChamferFeatures()
+    ff = None; cf = FakeChamferFeatures()
     install(fl, make_design(comp=_component([], ff, cf), tokens=handle_map, timeline=timeline))
     import adsk.fusion, adsk.core
     adsk.fusion.BRepEdge = BRepEdge
@@ -344,9 +289,8 @@ def _parametric(monkeypatch, installer, *args, engine=None, **kw):
 
 
 class TestTangentChainTargeting:
-    """The measurement this exists for: one 1 mm chamfer seeded from ONE handle on a
-    tangent-continuous rim created 8 faces, four of them on the OPPOSITE rim. A chamfer reports its
-    own isTangentChain (its edge set reads False either way), so that is the read-back."""
+    """A supported chamfer's first edge set distinguishes chaining on from off.
+    The feature-level flag reads True for both requests; geometry needs a separate body read."""
 
     def _seeded(self, cut_edges, faces=1, tangent=None, marker_at=2):
         ff, cf = _install_handles({"E1": _edge_ent(), "E2": _edge_ent()},
@@ -355,7 +299,7 @@ class TestTangentChainTargeting:
                                         cut_edges=cut_edges)
         return cf
 
-    def test_the_requested_flag_reaches_create_input(self):
+    def test_the_requested_flag_reaches_the_edge_set(self):
         cf = self._seeded(cut_edges=1, tangent=False)
         _payload(fl.handler(edges=["E1"], distance=1, tangent_chain=False))
         assert cf.last.tangent is False
@@ -363,10 +307,9 @@ class TestTangentChainTargeting:
         _payload(fl.handler(edges=["E1"], distance=1))
         assert cf.last.tangent is True
 
-    def test_the_flag_is_read_off_the_feature_not_its_edge_set(self):
-        # A ChamferEdgeSet's isTangentChain is a CONSTANT False, so reading it there reports every
-        # chamfer as unchained - and the mismatch gate then rolls back the default call that did
-        # exactly what the platform does.
+    def test_the_flag_is_read_off_the_edge_set_not_the_feature(self):
+        # Supported features report isTangentChain True for both requests.
+        # The edge set distinguishes them; a feature-level read falsely refuses an unchained cut.
         for asked in (True, False):
             self._seeded(cut_edges=1, tangent=asked)
             out = _payload(fl.handler(edges=["E1"], distance=1, tangent_chain=asked))
@@ -394,6 +337,17 @@ class TestTangentChainTargeting:
         res = fl.handler(edges=["E1", "E2"], distance=1, tangent_chain=False)
         assert res["isError"] is True and "PARTIALLY applied" in res["message"]
         assert "resolved to 1" in res["message"] and cf.result.deleted is True
+
+    def test_a_repeated_handle_is_one_edge_not_a_partial_application(self):
+        one = _edge_ent(token="physical")
+        _, cf = _install_handles({"E1": one},
+                                 timeline=make_timeline("Extrude1", "Chamfer1", marker=2))
+        one.assemblyContext = None
+        one.body.parentComponent = fl._inputs._common.design().rootComponent
+        cf.result = FakeCountingFeature("Chamfer1", faces=1, tangent=False, cut_edges=1)
+        out = _payload(fl.handler(edges=["E1", "E1"], distance=.5, tangent_chain=False))
+        assert cf.last.sent_edges.count == out["edges_cut"] == 1 and out["edges_requested"] == 2
+        assert out["edge_selection"] == "1 edge seed(s) from handles" and cf.result.deleted is False
 
 
 class TestGuards:
@@ -445,9 +399,12 @@ class TestChamfer:
     def test_two_distance_chamfer(self):
         _, cf = _install([make_body("B", [True, True])])
         out = _payload(fl.handler(body_name="B", distance=2, distance_two=4, units="mm", edge_filter="all"))
-        # setToTwoDistances used (not equal-distance), both scaled to cm
+        # the two-distance edge set (not equal-distance), both scaled to cm
         assert cf.last.two_distances == (("real", 0.2), ("real", 0.4))
         assert cf.last.distance is None
+        # the two trailing booleans are isFlipped then isTangentChain; swapped, the default
+        # chain request would flip the sides
+        assert cf.last.flipped is False and cf.last.tangent is True
         assert out["distance_two"] == 4
 
     def test_equal_distance_when_no_second(self):
@@ -477,18 +434,18 @@ class TestChamfer:
 
 class TestDistanceAndAngle:
 
-    """The third chamfer definition: setToDistanceAndAngle(distance, angle)."""
+    """The third chamfer definition: a distance-and-angle edge set."""
 
-    def test_angle_routes_to_set_to_distance_and_angle(self):
+    def test_angle_routes_to_the_distance_and_angle_edge_set(self):
         _, cf = _install([make_body("B", [True, True])])
         out = _payload(fl.handler(body_name="B", distance=2, angle_deg=30, units="mm",
                                            edge_filter="all"))
         distance, angle = cf.last.distance_and_angle
         assert distance == ("real", pytest.approx(0.2))          # 2 mm -> cm
-        # Measured live: a REAL ValueInput angle is read as RADIANS - setToDistanceAndAngle(0.3,
-        # radians(30)) cut legs of 0.3 cm and 0.1732 cm (= 0.3*tan(30)).
+        # The binding reads a REAL ValueInput angle as RADIANS.
         assert angle == ("real", pytest.approx(0.5235987755982988))
         assert cf.last.distance is None and cf.last.two_distances is None
+        assert cf.last.flipped is False and cf.last.tangent is True
         assert out["angle_deg"] == 30 and "distance_two" not in out
 
     def test_the_angle_is_not_scaled_by_the_length_units(self):
@@ -538,7 +495,7 @@ class TestDistanceAndAngle:
 
 class TestCornerType:
 
-    """ChamferFeatureInput.cornerType - a PROPERTY on the classic input, so it goes through the
+    """ChamferFeatureInput.cornerType - a PROPERTY on the input, so it goes through the
     set-then-read-back a SWIG proxy demands."""
 
     def test_the_map_carries_the_apis_own_member_spelling(self):
@@ -617,7 +574,7 @@ class TestChamferReadsBackWhatItBuilt:
         got = adsk.fusion.ChamferCornerTypes.ChamferCornerType
         assert f"reads back {got}" in res["message"]          # what the feature says
         assert f"'blend' ({want})" in res["message"]          # what was asked for
-        assert cf.result.deleted is True and "rolled back" in res["message"]
+        assert cf.result.deleted is True and "Deleting it returned True." in res["message"]
 
     def test_a_feature_reporting_a_different_angle_errors_and_rolls_back(self):
         _, cf = _install([make_body("B", [True])])
@@ -627,7 +584,7 @@ class TestChamferReadsBackWhatItBuilt:
                                   edge_filter="all")
         assert res["isError"] is True
         assert "angle reads back 30.0 deg" in res["message"] and "requested 45.0" in res["message"]
-        assert cf.result.deleted is True and "rolled back" in res["message"]
+        assert cf.result.deleted is True and "Deleting it returned True." in res["message"]
 
     def test_a_feature_reporting_a_different_distance_errors_and_rolls_back(self):
         _, cf = _install([make_body("B", [True])])
@@ -641,7 +598,7 @@ class TestChamferReadsBackWhatItBuilt:
 
     def test_a_feature_built_as_another_definition_errors(self):
         # A distance-and-angle request that fell back to equal-distance would still read a
-        # plausible distance; chamferType is what names the definition that got built.
+        # plausible distance; the edge set's own type is what names the definition that got built.
         _, cf = _install([make_body("B", [True])])
         cf.result = FakeCountingFeature("Chamfer1", faces=1)
         cf.chamfer_type_override = ("equal-distance-type",)
@@ -668,12 +625,22 @@ class TestChamferReadsBackWhatItBuilt:
     def test_an_unreadable_definition_is_flagged_never_echoed(self):
         _, cf = _install([make_body("B", [True])])
         cf.result = FakeCountingFeature("Chamfer1", faces=1)
-        cf.definition_override = False        # the feature answers no chamferTypeDefinition
+        cf.definition_override = False        # the edge set answers no distance or angle
         out = _payload(fl.handler(body_name="B", distance=2, angle_deg=45, units="mm",
                                            edge_filter="all"))
         assert "angle_deg" not in out                      # never echoed as if confirmed
         assert out["angle_deg_unverified"] is True and out["distance_unverified"] is True
         assert "could NOT be read back" in out["note"]
+
+    def test_an_edge_set_answering_no_type_is_flagged_not_called_another_definition(self):
+        # No type to compare is not a different type: the chamfer stays, its kind unconfirmed.
+        _, cf = _install([make_body("B", [True])])
+        cf.result = FakeCountingFeature("Chamfer1", faces=1)
+        cf.chamfer_type_override = (None,)
+        out = _payload(fl.handler(body_name="B", distance=2, angle_deg=45, units="mm",
+                                  edge_filter="all"))
+        assert out["chamfer_type_unverified"] is True and out["angle_deg"] == 45.0
+        assert cf.result.deleted is False
 
     def test_an_unreadable_corner_type_is_flagged_never_echoed(self):
         _, cf = _install([make_body("B", [True])])

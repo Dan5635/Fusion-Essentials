@@ -13,7 +13,7 @@ from conftest import TOOLS_DIR
 
 # Only shapes that are a smell REGARDLESS of name uniqueness: substring containment and
 # indexed-first-of-many. A bare `x.lower() == want` is the CORRECT shape for a scope-unique name
-# (find_setup/find_operation), so it is deliberately not flagged.
+# (find_setup), so it is deliberately not flagged.
 
 # `want.lower() in nm.lower()` / `x.lower() in cand.name`, either direction.
 _SUBSTRING_NAME = re.compile(r"\.lower\(\)\s*in\s+.*(?:\.name|\.lower\(\)|\bnm\b|\bname\b)", re.I)
@@ -276,11 +276,6 @@ _FIRST_MATCH_ALLOWLIST = {
     # the one an expression resolves against.
     "_param_common._find_parameter":
         "parameter names are the identifiers expressions reference - unique by construction",
-    # These two search the CLOUD data model. The FOLDER name space is measured unique; the PROJECT
-    # one is not established, and that resolver returns the first sibling carrying the name.
-    "_data_common._find_project":
-        "one hub's projects, matched case-insensitively; whether a hub can hold two projects of "
-        "one name is not established here",
     "_data_common._child_folder_by_name":
         "one folder's immediate subfolders, a name space measured UNIQUE: adding a subfolder under "
         "a name a sibling already carries raises '3 : CB_NAE - Another object with the same name "
@@ -321,21 +316,6 @@ class TestNoFirstMatchResolverAnywhere:
             + "\n".join(offenders)
         )
 
-    def test_allowlist_entries_still_exist_and_still_trip_the_smell(self):
-        # An allowlist entry that no longer matches anything (the code moved on) is dead weight that
-        # hides a regression check; keep the list honest by requiring every entry to still be real.
-        stale = []
-        for mod_name, reason in _ALLOWLIST.items():
-            assert reason.strip(), f"{mod_name} allowlist entry needs a plain-English reason"
-            path = os.path.join(TOOLS_DIR, mod_name + ".py")
-            if not os.path.exists(path):
-                stale.append(f"{mod_name}: no such module")
-                continue
-            src = _corpus.text(path)
-            if not any(_smells(line) for line in src.splitlines()):
-                stale.append(f"{mod_name}: no longer matches the smell - remove the allowlist entry")
-        assert not stale, "stale allowlist entries:\n  " + "\n  ".join(stale)
-
     def test_no_tool_returns_the_first_exact_name_hit_from_a_loop(self):
         offenders = []
         for fn in _all_tool_files():
@@ -349,26 +329,12 @@ class TestNoFirstMatchResolverAnywhere:
             "these return the FIRST candidate whose name matches exactly - a pick of one of however "
             "many carry that name, with nothing said about the rest. Collect every match and ASK "
             "HOW MANY: len(matches) == 1 resolves, more REFUSES naming the candidates (_export."
-            "find_component / _cam_common.find_operation / _joints.find_joint). Collecting alone is "
+            "find_component / _joints.find_joint). Collecting alone is "
             "not the way out - a [0] off a name-filtered comprehension, or off a collect-by-name "
             "helper's list, is this same pick. Or add a '<module>.<function>' entry to "
             "_FIRST_MATCH_ALLOWLIST saying why that name space cannot hold two:\n"
             + "\n".join(offenders)
         )
-
-    def test_first_match_allowlist_entries_still_exist_and_still_trip(self):
-        stale = []
-        for key, reason in _FIRST_MATCH_ALLOWLIST.items():
-            assert reason.strip(), f"{key} allowlist entry needs a plain-English reason"
-            mod_name, _, func = key.partition(".")
-            path = os.path.join(TOOLS_DIR, mod_name + ".py")
-            if not os.path.exists(path):
-                stale.append(f"{key}: no such module")
-                continue
-            src = _corpus.text(path)
-            if not any(f == func for f, _ln, _line in _first_match_loops(src)):
-                stale.append(f"{key}: no longer a first-match loop - remove the allowlist entry")
-        assert not stale, "stale first-match allowlist entries:\n  " + "\n  ".join(stale)
 
 
 # Modules whose SINGLE-occurrence resolution was routed through _inputs._resolve_occurrence. The

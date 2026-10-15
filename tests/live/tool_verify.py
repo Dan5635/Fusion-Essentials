@@ -1,68 +1,11 @@
 # Copyright (c) Fusion-Essentials contributors
 # Dual-licensed under the MIT and Apache-2.0 licenses; see LICENSE-MIT and LICENSE-APACHE.
 
-"""Live tool verification: every registered tool called at least once against LIVE Fusion.
+"""Run owned Fusion families and maintain source-bound portable receipts.
 
-A deterministic script of direct tools/call requests (no LLM, no SDK) walking a dependency DAG
-that builds its own world in a scratch document and tears it down. The gate: a ledger with zero
-unexplained rows - every tool is pass / expected-refusal / skipped(reason).
-
-The sweep is the END-TO-END STORY the evals grade agents on, in one document: a parametric
-machined BRACKET is cast, turned solid (stepped top, radiused pocket, through bores, a
-counterbored mounting pattern, a boss, a broken edge), detailed, resized off its one driving
-length, sized into a billet and clamped in a modelled VISE (slider jaw, lead screw on a motion
-link, grip proven by measure), photographed, and finally machined - four operations on the REAL
-part in the REAL fixture, generated to completion (an empty toolpath fails the run), NC posted.
-Cameo fixtures for families with no home on the part ride the same document.
-
-The run is not capped by wall clock - what it costs is reported per act and per tool, and a program
-that outgrows one 600 s shell call is walked in CHUNKS that share one receipt (``--run``/``--resume``
-below). A run with zero FAIL/blocked steps writes ``tests/live/VERIFIED_TOOLS.md`` - the tracked receipt: the
-per-tool ledger stamped with a SHA-256 of the ``commands/mcpServer/`` source tree, binding that
-run to the exact tool source it exercised. ``--check`` recomputes the hash offline (no Fusion
-needed) and fails on any difference, so a green suite cannot ride on a live run that never saw
-the current code. The hash is of the WORKING TREE while Fusion runs its LOADED copy of the
-add-in: after editing source, reload the add-in before re-running, or the receipt stamps code
-the session never executed.
-
-Run:  py -3 tests/live/tool_verify.py            (requires Fusion running + the add-in enabled)
-      py -3 tests/live/tool_verify.py --check    (no Fusion: exit 1 when VERIFIED_TOOLS.md is missing
-                                                  or its source hash differs from the tree)
-      py -3 tests/live/tool_verify.py --json     (also write tests/live/results/verify-<ts>.json)
-      py -3 tests/live/tool_verify.py --keep-open  (leave the story document open for inspection)
-      py -3 tests/live/tool_verify.py --acts "ACT 10a..ACT 10e"  (walk only those acts against the
-                                                  document a --keep-open run left open; no receipt)
-      py -3 tests/live/tool_verify.py --run r1 --acts "ACT 0 - OVERTURE..ACT 9 - THE SHOWCASE"
-      py -3 tests/live/tool_verify.py --run r1 --resume   (the same run, chunk by chunk: each chunk
-                                                  saves ctx/ledger/acts-done and leaves the document
-                                                  open, and the receipt stamps once the whole
-                                                  program has run under that id)
-      py -3 tests/live/tool_verify.py --run r1 --resume --acts "ACT 10c4 - CAM: THE HUB JOB"
-                                                  (a DEVELOPMENT walk: the named acts run again
-                                                  against that run's world with its saved ctx, an
-                                                  edited source is fine, no receipt, state untouched)
-
-Steps are DATA (see STEPS): each row is (tool, args, expect) where args may be a dict or a
-callable(ctx) reading what earlier steps stored, and expect is "ok", "refused" (a deliberate
-guard check whose error must name the offense), ``_refused("fragment", ...)`` - the same
-deliberate refusal, with each fragment required IN the error text (a guard that starts refusing
-for a different reason is a FAIL, not a silent pass) - or a callable(payload) -> bool - a VALUE
-PREDICATE run on an ok result (falsy = FAIL); that is how grip contact and machine assignment
-are asserted, not just call success. Extend coverage by adding rows, not code.
-
-The expectation's SHAPE is also what buckets the tool in the receipt: a passing value predicate
-earns 'covered', a passing bare "ok" earns only 'called' (see ``predicate_kind``), so the count
-line separates the tools whose effect was read back from the tools that merely did not fail.
-
-WHERE THE ROWS ARE. This module is the surface every consumer imports; the harness itself is its
-siblings, and a step is edited in the one it belongs to:
-
-  verify_core.py      the wire, the step kinds, the value predicates, the scratch fixtures
-  verify_layout.py    the sketch hoist, the slot packer, the framing pass
-  verify_acts_doc.py / _sketch / _model / _motion / _mesh / _cam / _hub / _cloud   the step rows
-  cloud_config.py     the OPT-IN cloud tier's local config (gitignored); absent, the tier is skipped
-  verify_program.py   the ordered acts, run through those passes, plus STEPS/STORY/EXCLUDED
-  verify_runner.py    run/run_steps/judged_steps and the receipt (source_hash, --check)
+Full runs bootstrap; --families refreshes whole families, while --acts writes evidence only.
+--check validates current family closures on one Fusion build without requiring Fusion.
+Usage and coverage accounting are documented in tests/README.md.
 """
 
 import argparse
@@ -75,6 +18,18 @@ import time   # noqa: F401 - surface: a consumer stubs tool_verify.time.sleep
 # the modules below would not import. Every consumer reaches them through this one.
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import machine_config  # noqa: E402
+
+if __name__ == "__main__":
+    machine_config.configure_cli(sys.argv[1:])
+    if not ({"--check", "--help", "-h"} & set(sys.argv[1:])):
+        machine_config.require()
+
+import cloud_config  # noqa: E402
+
+if __name__ == "__main__":
+    cloud_config.bootstrap(sys.argv[1:])
 
 import verify_core  # noqa: E402
 
@@ -90,7 +45,7 @@ from verify_core import (  # noqa: F401
     _unparked, _PUSH_OPS, _INSPECT_OPS, _is_inspect, _ARG_LOAD_OPS, _arg_load_sites,
     _TRUTHY_ONLY_CALLS, _callee_name, _inspects_argument, _inspects_payload, predicate_kind,
     EXPORT_DIR, SVG_PATH, SVG96_PATH, write_png, MARKER_PNG, _fg, _fgn, _prof, _matched, _face_up_at,
-    _PATH_LABEL, _path_count, _measured,
+    _PATH_LABEL, _path_count, _measured, _bound_on_harness,
     _RECALL, _recall, _SVG96_MM, _SVG96_TOL, _svg96_extent, _repair_no_op, _made_component,
     _made_component_inactive, _PLANE_NORMAL_AXIS, _datum_plane, _dim_measures, _datum,
     _result_bodies, _extruded, _revolved, _swept, _lofted, _material_assigned, _gap_measured,
@@ -117,15 +72,14 @@ from verify_layout import (  # noqa: F401
     _DRIFT_CHUNKS, _DRIFT_TOL_MM, layout_drift_mm, layout_placed_as_measured, drift_row,
     _FRAME_PATTERN_WIDEN, _framed, _frame_box, _frame_cluster, _expand, _inside,
     _frame_neighbourhood, _PLACE_PAIRS, _PLACE_DELTA_TOOLS, _PLACE_XYZ, _PLACE_POINTS,
-    _PLACE_NAMES, _PLACE_FRAMES, _PLACE_WITH, _JOINT_GROUPS, _JOINT_FAMILY, _PLACE_ANCHORED,
-    _ORIGIN_RELATIVE_TOOLS, _PIN_HALF, _FIELD_X0, _FIELD_Y0, _FIELD_WIDTH, _FIELD_GUTTER,
-    _place_owner, _place_num, _place_points, _place_walk, _place_shift, _place_slots, _placed,
+    _PLACE_NAMES, _PLACE_FRAMES, _JOINT_GROUPS, _JOINT_FAMILY,
+    _place_owner, _place_num, _place_points, _place_walk, _place_shift, _placed,
     _px, _py, _SLOTS)
 
 from verify_acts_doc import (  # noqa: F401
     _OVERTURE, _SHOWCASE, _FINALE, _RELOAD_PROBE_GAP_S, _RELOAD_PROBE_TIMEOUT_S,
     _RELOAD_DOWN_POLLS, _RELOAD_UP_POLLS, _RELOAD_SMOKE_QUERY, _server_answers, _poll_health,
-    reload_smoke)
+    _health_bound, reload_smoke)
 
 from verify_acts_sketch import _SKELETON, _SKETCHWORK  # noqa: F401
 
@@ -145,21 +99,29 @@ from verify_acts_cam import (  # noqa: F401
 from verify_acts_cloud import (  # noqa: F401
     RUN_FOLDER, MOVED_FOLDER, SOURCE_DOC, COPY_DOC, HOST_DOC, RUN_PATH, MOVED_PATH,
     RESTORE_VERSION, _CLOUD_DATA, _CLOUD_DOC, _CLOUD_LINK, _CLOUD_DRAWING,
-    _lit, _files_gone, _xrefs)
+    _CLOUD_COMPONENT_COPY,
+    _lit, _xrefs)
 
 from verify_acts_hub import (  # noqa: F401
     HUB_COMP, HUB_MILL_SETUP, HUB_TURN_SETUP, _HUB, _HUB_JOB, _fully_constrained, _hub_box,
     _hub_setups, _hub_tools_landed, _rim_edge, _threaded, _tilt_frame, _tilt_v)
+from verify_acts_render import _RENDER_READ, _RENDER_START, poll_render_job  # noqa: F401
+from verify_family_switch import family_switch_smoke  # noqa: F401
 
 from verify_program import (  # noqa: F401
-    _ACT_PROGRAM, _SKETCH_PHASE, _placed_boxes, ACTS, ACT_NEEDS, POLL_AFTER, STEPS, STORY,
+    _ACT_PROGRAM, _SKETCH_PHASE, _placed_boxes, ACTS, FAMILY_PROGRAM,
+    ACT_DEPENDENCIES, ACT_NEEDS, POLL_AFTER, STEPS, STORY,
     EXCLUDED, PENDING)
+from verify_families import (  # noqa: F401
+    ACT_PRODUCER_OVERRIDES, FAMILY_DEPENDENCIES, PRODUCER_ROWS, PRODUCER_SLOTS)
 
 from verify_runner import (  # noqa: F401
     source_hash, _STAMP_RE, write_verified, check, _shoot, run_steps, judged_steps,
     _precondition_holds, _one_act, select_acts, run, RESULTS_DIR, run_state_path,
     save_run_state, load_run_state, resume_refusal, develop_refusal, _document_now)
-from verify_core import attestation_identity  # noqa: F401
+from verify_core import attestation_identity, Independent, independent_targets  # noqa: F401
+
+FAMILY_RECEIPTS = True
 
 # The patchable surface is patched ON THIS MODULE (a consumer stubs tool_verify.call,
 # tool_verify.ACTS, tool_verify.source_hash), so the runner and the post-act hook read
@@ -169,37 +131,48 @@ verify_core.bind_facade(globals())
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument("--config", metavar="PATH",
+                    help="required machine configuration; overrides FUSION_ESSENTIALS_SWEEP_CONFIG")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--full-scope", action="store_true",
+                    help="with --check: require full admitted recorded scope; quarantine stays excluded")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--accept-open-work", action="store_true",
+                    help="explicitly accept already-modified open documents; owned resume handles alone are exempt")
     ap.add_argument("--keep-open", action="store_true",
-                    help="leave the story document open at the end instead of discarding it")
+                    help="leave only the last requested family's scratch document open for inspection")
     ap.add_argument("--shots", metavar="DIR", default=None,
                     help="write a PNG of the framed view after every framing row, so the framing "
                          "can be judged by looking instead of by trusting its ratio")
     ap.add_argument("--trace", action="store_true",
                     help="print each step (flushed) before it runs, so a Fusion crash names its killer")
     ap.add_argument("--acts", metavar="SPEC", default=None,
-                    help="walk only these acts, in ACTS order, against the document a prior "
-                         "--keep-open run left open: a comma list of act names as printed in the "
-                         "log (\"ACT 10a\", \"FINALE\"), each one act or an \"A..B\" range. Writes "
-                         "no receipt")
+                    help="run the complete owned families containing these named acts, each in "
+                         "fresh scratch documents with local inputs; comma lists and A..B ranges "
+                         "are accepted. Writes dated evidence, never a receipt")
     ap.add_argument("--run", metavar="ID", default=None, dest="run_id",
-                    help="walk the program under this RUN ID, saving the ctx, the ledger so far and "
-                         "the acts done to tests/live/results/run-<ID>.json after every act. A "
-                         "chunk that does not finish the program leaves the document open and "
-                         "writes no receipt")
+                    help="run the full family chain under this ID, saving act progress and exact "
+                         "document ownership to tests/live/results/run-<ID>.json after every act; "
+                         "incomplete chunks write no receipt")
+    ap.add_argument("--families", metavar="NAMES", default=None,
+                    help="refresh whole comma-separated family receipts after a new full bootstrap; "
+                         "all aggregate closures must match and share one Fusion build")
     ap.add_argument("--resume", action="store_true",
-                    help="carry on the --run ID from where its last chunk stopped, against the "
-                         "document that chunk left open. The receipt is stamped once the whole "
-                         "program has run under that id, from the union of its chunks. With "
-                         "--acts it is a development walk: the named acts run again against that "
-                         "run's world with its saved ctx, no receipt, state untouched")
+                    help="continue an unselected full --run ID from its owned-family checkpoint; "
+                         "old single-document checkpoints and --resume --acts are refused")
+    ap.add_argument("--continue-families", action="store_true",
+                    help="continue independent families after a logical failure and certified cleanup; "
+                         "fresh run only; any failure forbids receipts")
     args = ap.parse_args()
     shots = args.shots
     if shots:
         os.makedirs(shots, exist_ok=True)
     if args.resume and not args.run_id:
         sys.exit("--resume needs the run it continues: --run <id> --resume")
-    sys.exit(check() if args.check else run(args.json, keep_open=args.keep_open, trace=args.trace,
+    if args.full_scope and not args.check:
+        sys.exit("--full-scope needs --check")
+    sys.exit(check(full_scope=args.full_scope) if args.check else run(args.json, keep_open=args.keep_open, trace=args.trace,
                                             shots_dir=shots, acts_spec=args.acts,
-                                            run_id=args.run_id, resume=args.resume))
+                                            run_id=args.run_id, resume=args.resume,
+                                            families_spec=args.families,
+                                            continue_families=args.continue_families, accept_open_work=args.accept_open_work))

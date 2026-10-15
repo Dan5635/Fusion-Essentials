@@ -6,21 +6,15 @@ it is CONFIRMED by - a delete "proved" against a second, differently-built view 
 this whole chain exists to prevent.
 """
 
-import json
 
 import pytest
 
-from conftest import FakeOperation, FakeSetup, load_tool, make_cam
+from conftest import FakeOperation, FakeSetup, load_tool, make_cam, payload as _payload
 
 ct = load_tool("cam_delete_template")
 cs = load_tool("cam_save_template")
 
 _LOCAL = ct._location_enum("local")
-
-
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
 
 
 class _Tmpl:

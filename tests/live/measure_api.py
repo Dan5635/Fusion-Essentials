@@ -4,16 +4,17 @@
 """Live API measurement: every API fact the unit-test fakes need, measured from LIVE Fusion.
 
 The unit suite proves tool logic against fakes. This tool is where the fakes' API facts COME
-FROM: each measurement row checks a claim against a running Fusion, and a fully-PASSING run
-generates ``tests/live_api_facts.py`` - enum values, behavior flags, and the version stamp -
-which conftest imports to populate the mock adsk modules and the shared fakes. The mocks are fed
-by measurement, not by hand; VERIFIED_API_FACTS.md is the human-readable ledger of the same run.
+FROM: each measurement row checks a claim against a running Fusion, and a run where every row
+lands PASS or CARRIED (a gated row's last entitled measurement, dated) generates
+``tests/live_api_facts.py`` - enum values, behavior flags, and the version stamp - which conftest
+imports to populate the mock adsk modules and the shared fakes. The mocks are fed by measurement,
+not by hand; VERIFIED_API_FACTS.md is the human-readable ledger of the same run.
 
 Run:  py -3 tests/live/measure_api.py          (Fusion running + add-in enabled +
                                                 allow_execute_api_script on)
       py -3 tests/live/measure_api.py --check  (no measuring: exit 1 when the stamp does not
                                                 match the installed Fusion or any row is
-                                                not PASS)
+                                                neither PASS nor CARRIED)
       py -3 tests/live/measure_api.py --json   (also archive results to tests/live/results/)
 
 ROWS are DATA: id, claim, encoded_in (the fake carrying the claim), a script body, and an
@@ -44,7 +45,7 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from verify_core import (  # noqa: E402  direct wire/health helpers; no facade binding
-    attestation_identity, call, health_gate, reap_harness_assets, registered_tools)
+    attestation_identity, call, health_gate, registered_tools)
 import cloud_config  # noqa: E402  the operator's hub/project/folder, never a literal in this file
 CLOUD_PROJECT = cloud_config.PROJECT
 
@@ -66,7 +67,7 @@ _ATTESTATION_FIELDS = ("implementation_fingerprint", "schema_fingerprint",
 # (...Options.create()) carrying no int member at all: the sweep row reports such a name as
 # not-an-enum and the generated facts file records it in NOT_ENUMS, so only a name that does not
 # RESOLVE fails the row.
-_ENUM_FAMILY_RE = re.compile(r"adsk\.(core|fusion|cam|drawing)\.([A-Za-z]*(?:Types|States?|Modes|Methods|Directions|Locations|Positions|Alignments?|Sizes|Formats|Operations|Options))\b")
+_ENUM_FAMILY_RE = re.compile(r"adsk\.(core|fusion|cam|drawing)\.([A-Za-z]*(?:Types|States?|Modes|Methods|Directions|Locations|Positions|Alignments?|Sizes|Formats|Operations|Options|Shapes|Placements))\b")
 # A family reached only through _drawing_common.enum_value("<Family>", "<member>") never appears as
 # a literal adsk.drawing.<Family> in tool source, so the textual scan above cannot see it - the
 # STRING argument is the real reference. enum_value resolves exclusively against adsk.drawing.
@@ -255,28 +256,22 @@ def _form_edit_close_body(payload):
 
 
 def _delete_suppressed_close_body(payload):
-    """The closing script of the suppressed-tail row: deleteMe on the suppressed Form, one call
-    after its suppress, and the removed set read against the set suppressed with it."""
+    """The closing script of the suppressed-tail row: deleteMe on the suppressed Form one call after
+    its suppress removes that Form and its Shell (their tokens no longer resolve) and exactly two
+    timeline items - tokens and a count, since other rows' Forms share the run scratch."""
     state = _form_state(payload)
     return ("    STATE = " + repr(state) + "\n"
             "    hits = des.findEntityByToken(STATE['token']) if STATE.get('token') else []\n"
             "    ff = hits[0] if len(hits) == 1 else None\n"
-            "    tl = des.timeline\n"
-            "    before = [tl.item(i).name for i in range(tl.count)]\n"
+            "    n0 = des.timeline.count\n"
             "    deleted = ff.deleteMe() if ff is not None else None\n"
-            "    removed = sorted(set(before) - set(tl.item(i).name for i in range(tl.count)))\n"
-            "    emit(deleted is True and removed == STATE.get('suppressed'),\n"
-            "         'form-delete-suppressed-tail: deleteMe ' + str(deleted) + ' removed '\n"
-            "         + str(removed) + ', suppressed with it ' + str(STATE.get('suppressed')))\n")
-
-
-def _workspace_next_script(row_id, want):
-    """The second script of a workspace row: the active workspace, read one call later, is `want`."""
-    def body(_payload):
-        return ("    ws = app.userInterface.activeWorkspace.id\n"
-                "    emit(ws == " + repr(want) + ",\n"
-                "         '" + row_id + ": the next script reads workspace ' + ws)\n")
-    return body
+            "    removed = n0 - des.timeline.count\n"
+            "    form_gone = not des.findEntityByToken(STATE.get('token', ''))\n"
+            "    shell_gone = not des.findEntityByToken(STATE.get('shell_token', ''))\n"
+            "    emit(deleted is True and form_gone and shell_gone and removed == 2,\n"
+            "         'form-delete-suppressed-tail: deleteMe ' + str(deleted) + ' form_gone '\n"
+            "         + str(form_gone) + ' shell_gone ' + str(shell_gone) + ' removed '\n"
+            "         + str(removed) + ' timeline items (expect 2)')\n")
 
 
 def _self_intersecting_cage():
@@ -304,12 +299,12 @@ def _self_intersect_refused(is_error, payload):
 
 
 def _self_intersect_edit(is_error, payload):
-    """workspace_orient's in_form_edit agrees with the state form_create's reply claimed."""
+    """workspace_orient's design.mode agrees with the state form_create's reply claimed."""
     design = (payload.get("design") or {}) if not is_error and isinstance(payload, dict) else {}
-    edit, said = design.get("in_form_edit") is True, _SELF_INTERSECT_SAID.get("state")
+    edit, said = design.get("mode") == "direct", _SELF_INTERSECT_SAID.get("state")
     agrees = (said == "open" and edit) or (said == "removed" and not edit)
-    return agrees, ("workspace_orient in_form_edit " + str(edit) + " after a reply saying "
-                    + str(said))
+    return agrees, ("workspace_orient design.mode " + str(design.get("mode"))
+                    + " after a reply saying " + str(said))
 
 
 def _self_intersect_close_body(payload):
@@ -448,6 +443,671 @@ def run(context):
 
 
 ROWS = [
+    {
+        "id": "sheet-rule-initialization-and-copy",
+        "claim": ("A new sheet-metal component initializes a design-local active rule; "
+                  "addByCopy then creates an editable local rule whose length expressions evaluate in cm"),
+        "encoded_in": ("model_create_component.py sheet_metal; sheet_get.py rules; "
+                       "sheet_edit_rule.py design-local copy and evaluated fields"),
+        "body": """
+    root = des.rootComponent
+    occ = root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    active = occ.component.activeSheetMetalRule
+    local = des.designSheetMetalRules
+    library = des.librarySheetMetalRules.itemByName("Steel (mm)")
+    copied = local.addByCopy(library, "Measured sheet rule")
+    copied.thickness.expression = "1.5 mm"
+    copied.bendRadius.expression = "2 mm"
+    copied.gap.expression = "0.5 mm"
+    copied.kFactor = 0.4
+    names = [r.name for r in local]
+    landed = (copied.thickness.value, copied.bendRadius.value,
+              copied.gap.value, copied.kFactor)
+    emit(active is not None and active.name in names and copied.name in names
+         and abs(landed[0] - 0.15) < 1e-7 and abs(landed[1] - 0.2) < 1e-7
+         and abs(landed[2] - 0.05) < 1e-7 and abs(landed[3] - 0.4) < 1e-7,
+         "sheet-rule-initialization-and-copy: active=" + repr(active.name if active else None)
+         + " local=" + repr(names) + " thickness/radius/gap/k=" + repr(landed))
+""",
+    },
+    {
+        "id": "sheet-convert-measured-thickness",
+        "claim": ("findThicknessAtFace returns (success, thickness_cm); converting an ordinary "
+                  "slab reports its actual active design rule and sheet state, with the measured thickness"),
+        "encoded_in": ("sheet_convert.py thickness preflight and applied-rule readback; "
+                       "sheet_get.py body sheet state"),
+        "body": """
+    root = des.rootComponent
+    root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    rule = des.designSheetMetalRules.addByCopy(
+        des.librarySheetMetalRules.itemByName("Steel (mm)"), "Measured convert rule")
+    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    comp = occ.component
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(8, 4, 0))
+    comp.features.extrudeFeatures.addSimple(
+        sk.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    body = comp.bRepBodies.item(0)
+    top = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+           and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 30]
+    assert len(top) == 1
+    before = body.isSheetMetal
+    measured = body.findThicknessAtFace(top[0])
+    changed = body.convertToSheetMetal(top[0], rule)
+    active = comp.activeSheetMetalRule
+    local_names = [r.name for r in des.designSheetMetalRules]
+    emit(before is False and measured[0] is True and abs(measured[1] - 0.15) < 1e-7
+         and changed is True and body.isSheetMetal is True and active is not None
+         and active.name in local_names and abs(active.thickness.value - measured[1]) < 1e-7,
+         "sheet-convert-measured-thickness: found=" + repr(measured)
+         + " converted=" + repr(changed) + " sheet=" + repr(body.isSheetMetal)
+         + " applied=" + repr(active.name if active else None)
+         + " applied_cm=" + repr(active.thickness.value if active else None))
+""",
+    },
+    {
+        "id": "sheet-fold-flat-unfold-refold-primitive",
+        "claim": ("The center bend-line member creates a 90 deg FoldFeature; FlatPattern binds "
+                  "the folded body; an UnfoldFeature given every cylinder face and RefoldFeature "
+                  "retain their association"),
+        "encoded_in": ("sheet_create_fold.py bend-line add and angle readback; "
+                       "sheet_create_flat_pattern.py source and solid readback; "
+                       "sheet_create_unfold.py bendFaces collection; sheet_create_refold.py association"),
+        "body": """
+    import math
+    root = des.rootComponent
+    root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    rule = des.designSheetMetalRules.addByCopy(
+        des.librarySheetMetalRules.itemByName("Steel (mm)"), "Measured bend rule")
+    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    comp = occ.component
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(8, 4, 0))
+    comp.features.extrudeFeatures.addSimple(
+        sk.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    body = comp.bRepBodies.item(0)
+    top = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+           and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 30]
+    assert len(top) == 1 and body.convertToSheetMetal(top[0], rule)
+    body = comp.bRepBodies.item(0)
+    top = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+           and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 30]
+    assert len(top) == 1
+    line_sketch = comp.sketches.add(top[0])
+    line = line_sketch.sketchCurves.sketchLines.addByTwoPoints(
+        adsk.core.Point3D.create(2.5, 0, 0), adsk.core.Point3D.create(2.5, 4, 0))
+    fold_input = comp.features.foldFeatures.createInput(top[0])
+    accepted = fold_input.bendLines.add(
+        line, adsk.core.ValueInput.createByReal(math.pi / 2),
+        adsk.fusion.FoldBendLinePositionTypes.CenterFoldBendLinePositionType, True)
+    fold = comp.features.foldFeatures.add(fold_input)
+    angle = fold.bendLines.item(0).bendAngle.value
+    body = comp.bRepBodies.item(0)
+    stationary = [f for f in body.faces
+                  if f.geometry.objectType == adsk.core.Plane.classType()
+                  and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 20]
+    assert len(stationary) == 1
+    flat = comp.createFlatPattern(stationary[0])
+    flat_volume = flat.flatBody.volume
+    flat_solid = flat.flatBody.isSolid
+    same_source = flat.foldedBody.entityToken == body.entityToken
+    unfold_input = comp.features.unfoldFeatures.createInput(stationary[0])
+    unfold_input.bendFaces = [f for f in body.faces
+                              if f.geometry.objectType == adsk.core.Cylinder.classType()]
+    unfold = comp.features.unfoldFeatures.add(unfold_input)
+    flattened_z = body.boundingBox.maxPoint.z - body.boundingBox.minPoint.z
+    refold = comp.features.refoldFeatures.add(
+        comp.features.refoldFeatures.createInput(unfold))
+    restored_z = body.boundingBox.maxPoint.z - body.boundingBox.minPoint.z
+    linked = refold.unfoldFeature.entityToken == unfold.entityToken
+    emit(bool(accepted) and abs(angle - math.pi / 2) < 1e-7
+         and comp.flatPattern is not None and same_source and flat_solid
+         and flat_volume > 0
+         and linked and unfold.refoldFeature is not None
+         and flattened_z < 0.2 and restored_z > flattened_z,
+         "sheet-fold-flat-unfold-refold-primitive: angle=" + repr(angle)
+         + " flat_volume=" + repr(flat_volume) + " source=" + repr(same_source)
+         + " unfolded_z=" + repr(flattened_z) + " refolded_z=" + repr(restored_z)
+         + " association=" + repr(linked))
+""",
+    },
+    {
+        "id": "sheet-bend-census-base-vs-converted",
+        "claim": ("BRepBody.getBendFaces() answers a one-bend inner/outer census, each a vector with "
+                  "no count/item members, on a body built by createBaseFlangeInput once it carries an "
+                  "edge flange, and isUnfoldAllBends unfolds that body flat with the census reading 0 "
+                  "after; on a body convertToSheetMetal made and folded, the same call answers empty "
+                  "vectors beside its two cylinder faces, and an explicit bendFaces list unfolds it "
+                  "flat - each unfold refolded before the next, since a pending unfold blocks any other"),
+        "encoded_in": "sheet_create_unfold.py all_bends branch (explicit coaxial wall pairs, no bend-registry read before the unfold)",
+        "body": """
+    import math
+    root = des.rootComponent
+    # The base flange lands in the ACTIVE component, so its component is activated for the add;
+    # every sheet component here keeps its own default rule (a convert refuses any other).
+    occ = root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    occ.activate()
+    comp = occ.component
+    sk = comp.sketches.add(root.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(8, 4, 0))
+    ff = comp.features.flangeFeatures
+    ff.add(ff.createBaseFlangeInput([sk.profiles.item(0)]))
+    base_body = comp.bRepBodies.item(0)
+    T = base_body.boundingBox.maxPoint.z
+    edge = [e for e in base_body.edges
+            if e.geometry.curveType == adsk.core.Curve3DTypes.Line3DCurveType
+            and abs(e.length - 4.0) < 1e-6 and abs(e.startVertex.geometry.x - 8.0) < 1e-6
+            and abs(e.endVertex.geometry.x - 8.0) < 1e-6 and e.startVertex.geometry.z > 0.01][0]
+    ff.add(ff.createEdgeFlangeInput([edge], adsk.core.ValueInput.createByString("10 mm")))
+    base_body = comp.bRepBodies.item(0)
+    base_census_before = base_body.getBendFaces()
+    base_before_ok = (isinstance(base_census_before, (list, tuple)) and len(base_census_before) == 3
+                      and not hasattr(base_census_before[1], "count")
+                      and not hasattr(base_census_before[1], "item")
+                      and len(base_census_before[1]) == 1)
+    top = [f for f in base_body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+           and abs(f.pointOnFace.z - T) < 1e-7 and f.area > 20][0]
+    unfold_in = comp.features.unfoldFeatures.createInput(top)
+    unfold_in.isUnfoldAllBends = True
+    unfold_feat = comp.features.unfoldFeatures.add(unfold_in)
+    base_body = comp.bRepBodies.item(0)
+    base_census_after = base_body.getBendFaces()
+    base_after_ok = (isinstance(base_census_after, (list, tuple)) and len(base_census_after) == 3
+                     and len(list(base_census_after[1])) == 0
+                     and abs(base_body.boundingBox.maxPoint.z - T) < 1e-6)
+    # A pending (un-refolded) unfold anywhere blocks every later unfold with CIRCULAR_DEPENDENCY
+    # (measured), so each unfold here is refolded before the next.
+    comp.features.refoldFeatures.add(comp.features.refoldFeatures.createInput(unfold_feat))
+    des.activateRootComponent()
+
+    def converted_plate(y0):
+        o = root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+        c = o.component
+        s = c.sketches.add(root.xYConstructionPlane)
+        s.sketchCurves.sketchLines.addTwoPointRectangle(
+            adsk.core.Point3D.create(0, y0, 0), adsk.core.Point3D.create(8, y0 + 4, 0))
+        c.features.extrudeFeatures.addSimple(
+            s.profiles.item(0), adsk.core.ValueInput.createByReal(T),
+            adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        b = c.bRepBodies.item(0)
+        t = [f for f in b.faces if f.geometry.objectType == adsk.core.Plane.classType()
+             and abs(f.pointOnFace.z - T) < 1e-7 and f.area > 20][0]
+        assert b.convertToSheetMetal(t, c.activeSheetMetalRule)
+        b = c.bRepBodies.item(0)
+        t = [f for f in b.faces if f.geometry.objectType == adsk.core.Plane.classType()
+             and abs(f.pointOnFace.z - T) < 1e-7 and f.area > 20][0]
+        ls = c.sketches.add(t)
+        line = ls.sketchCurves.sketchLines.addByTwoPoints(
+            ls.modelToSketchSpace(adsk.core.Point3D.create(4.0, y0, T)),
+            ls.modelToSketchSpace(adsk.core.Point3D.create(4.0, y0 + 4, T)))
+        fi = c.features.foldFeatures.createInput(t)
+        fi.bendLines.add(line, adsk.core.ValueInput.createByReal(math.pi / 2),
+                         adsk.fusion.FoldBendLinePositionTypes.CenterFoldBendLinePositionType, True)
+        c.features.foldFeatures.add(fi)
+        b = c.bRepBodies.item(0)
+        st = [f for f in b.faces if f.geometry.objectType == adsk.core.Plane.classType()
+              and abs(f.pointOnFace.z - T) < 1e-7 and f.area > 10][0]
+        return o, c, b, st
+
+    _occ2, comp2, conv_body, stationary = converted_plate(10.0)
+    conv_census = conv_body.getBendFaces()
+    conv_census_ok = (isinstance(conv_census, (list, tuple)) and len(conv_census) == 3
+                      and not hasattr(conv_census[1], "count")
+                      and not hasattr(conv_census[1], "item")
+                      and len(conv_census[1]) == 0)
+    conv_cyls = len([f for f in conv_body.faces
+                     if f.geometry.objectType == adsk.core.Cylinder.classType()])
+    explicit_in = comp2.features.unfoldFeatures.createInput(stationary)
+    explicit_in.bendFaces = [f for f in conv_body.faces
+                             if f.geometry.objectType == adsk.core.Cylinder.classType()]
+    explicit_feat = comp2.features.unfoldFeatures.add(explicit_in)
+    explicit_ok = (explicit_feat is not None
+                   and explicit_feat.healthState == adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
+                   and abs(comp2.bRepBodies.item(0).boundingBox.maxPoint.z - T) < 1e-6)
+    comp2.features.refoldFeatures.add(comp2.features.refoldFeatures.createInput(explicit_feat))
+    emit(base_before_ok and unfold_feat is not None and base_after_ok
+         and conv_census_ok and conv_cyls == 2 and explicit_ok,
+         "sheet-bend-census-base-vs-converted: base=" + repr((base_before_ok, base_after_ok))
+         + " converted=" + repr((conv_census_ok, conv_cyls, explicit_ok)))
+""",
+    },
+    {
+        "id": "sheet-flange-native-edge",
+        "claim": ("createEdgeFlangeInput on a rim edge, added with its own defaults (no property "
+                  "assigned), lands ONE EdgeFlangeFeature at OuterFaces/StartEdge/mitered/unflipped, "
+                  "distance measured as the outer height at 90 deg, and its flat pattern's developed "
+                  "length matches E = H - (R+T) + pi/2 (R + K T)"),
+        "encoded_in": "sheet_create_flange.py edge-kind createEdgeFlangeInput call and its effect reads",
+        "body": """
+    import math
+    root = des.rootComponent
+    root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    rule = des.designSheetMetalRules.addByCopy(
+        des.librarySheetMetalRules.itemByName("Steel (mm)"), "Measured edge-flange rule")
+    rule.thickness.expression = "1.5 mm"
+    rule.bendRadius.expression = "2 mm"
+    rule.gap.expression = "0.5 mm"
+    rule.kFactor = 0.42
+    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    comp = occ.component
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(8, 4, 0))
+    comp.features.extrudeFeatures.addSimple(
+        sk.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    body = comp.bRepBodies.item(0)
+    top = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+           and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 20]
+    assert len(top) == 1 and body.convertToSheetMetal(top[0], rule)
+    body = comp.bRepBodies.item(0)
+    edge = [e for e in body.edges
+            if e.geometry.curveType == adsk.core.Curve3DTypes.Line3DCurveType
+            and abs(e.length - 4.0) < 1e-6
+            and abs(e.startVertex.geometry.x - 8.0) < 1e-6 and abs(e.endVertex.geometry.x - 8.0) < 1e-6
+            and abs(e.startVertex.geometry.z - 0.15) < 1e-6]
+    assert len(edge) == 1, len(edge)
+    faces_before = body.faces.count
+    cyls_before = len([f for f in body.faces if f.geometry.objectType == adsk.core.Cylinder.classType()])
+    ff = comp.features.flangeFeatures
+    inp = ff.createEdgeFlangeInput([edge[0]], adsk.core.ValueInput.createByString("20 mm"))
+    angle_before = inp.angle
+    heightDatumType_default = inp.heightDatumType
+    bendPositionType_default = inp.bendPositionType
+    isMitered_default = inp.isMiteredCorners
+    isFlipped_default = inp.isFlipped
+    feat = ff.add(inp)
+    body = comp.bRepBodies.item(0)
+    faces_after = body.faces.count
+    cyls_after = len([f for f in body.faces if f.geometry.objectType == adsk.core.Cylinder.classType()])
+    healthy = feat.healthState == adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
+    def_type = feat.definitionType
+    def_class = feat.definition.objectType
+    bbox = body.boundingBox
+    max_x, max_z = bbox.maxPoint.x, bbox.maxPoint.z
+    R, T, K = 0.2, 0.15, 0.42
+    E = 2.0 - (R + T) + (math.pi / 2) * (R + K * T)
+    flat = comp.createFlatPattern(top[0])
+    fb = flat.flatBody.boundingBox
+    flat_x_extent = fb.maxPoint.x - fb.minPoint.x
+    flat_healthy = flat.flatBody.isSolid
+    emit(healthy and angle_before is None
+         and def_type == adsk.fusion.FlangeFeatureDefinitionTypes.EdgeFlangeFeatureDefinitionType
+         and def_class.endswith("EdgeFlangeFeatureDefinition")
+         and faces_after - faces_before == 8 and cyls_after - cyls_before == 2
+         and abs(max_x - 8.35) < 1e-4 and abs(max_z - 2.0) < 1e-4
+         and body.isSheetMetal is True and flat_healthy
+         and abs(flat_x_extent - (8 + E)) < 1e-4
+         and heightDatumType_default == adsk.fusion.FlangeHeightDatumTypes.OuterFacesFlangeHeightDatumType
+         and bendPositionType_default == adsk.fusion.BendPositionTypes.StartEdgeBendPositionType
+         and isMitered_default is True and isFlipped_default is False,
+         "sheet-flange-native-edge: faces=" + repr((faces_before, faces_after))
+         + " cyls=" + repr((cyls_before, cyls_after)) + " bbox=" + repr((max_x, max_z))
+         + " defaults=" + repr((heightDatumType_default, bendPositionType_default,
+                                isMitered_default, isFlipped_default))
+         + " flat_x=" + repr(flat_x_extent) + " E=" + repr(E))
+""",
+    },
+    {
+        "id": "sheet-rule-copy-on-new-component",
+        "claim": ("A second addNewSheetMetalComponent copies a fresh library-default 'Steel (mm)' "
+                  "rule beside an already-edited design-local rule of the same name: the two "
+                  "compare UNEQUAL, itemByName answers the FIRST, and isDefault RAISES on any "
+                  "design rule; assigning the existing rule to the new component takes (read-back "
+                  "equal, the copy's isUsed flips False) and the copy's deleteMe() then returns "
+                  "True and removes it; a direct addByCopy under that same used name instead RAISES "
+                  "'Invalid name, rule already exists' and lands nothing"),
+        "encoded_in": "model_create_component.py sheet_metal adopt path and the rule ref kind",
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        des = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
+        root = des.rootComponent
+        occ1 = root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+        occ1.activate()
+        occ1.component.activeSheetMetalRule.thickness.expression = "1.2 mm"
+        before_count = des.designSheetMetalRules.count
+        occ2 = root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+        after_count = des.designSheetMetalRules.count
+        copy_rule = occ2.component.activeSheetMetalRule
+        item0, item1 = des.designSheetMetalRules.item(0), des.designSheetMetalRules.item(1)
+        matches_item1 = copy_rule == item1
+        items_differ = item0 != item1
+        by_name_is_item0 = des.designSheetMetalRules.itemByName("Steel (mm)") == item0
+        try:
+            item0.isDefault
+            is_default_raised = False
+        except Exception:
+            # A raise inside a design script rolls back the WHOLE run, so this read is caught locally.
+            is_default_raised = True
+        try:
+            des.designSheetMetalRules.addByCopy(
+                des.librarySheetMetalRules.itemByName("Steel (mm)"), "Steel (mm)")
+            dup_raised, dup_message = False, None
+        except Exception as e:
+            # Same rollback risk as isDefault above - caught so the run continues past the probe.
+            dup_raised, dup_message = True, str(e)
+        occ2.component.activeSheetMetalRule = item0
+        readback_ok = occ2.component.activeSheetMetalRule == item0
+        copy_unused = copy_rule.isUsed is False
+        deleted = copy_rule.deleteMe()
+        final_count = des.designSheetMetalRules.count
+        emit(before_count == 1 and after_count == 2 and matches_item1 and items_differ
+             and by_name_is_item0 and is_default_raised and readback_ok and copy_unused
+             and deleted is True and final_count == 1
+             and dup_raised and dup_message is not None
+             and "Invalid name, rule already exists" in dup_message,
+             "sheet-rule-copy-on-new-component: counts=" + repr((before_count, after_count, final_count))
+             + " compare=" + repr((matches_item1, items_differ, by_name_is_item0))
+             + " isDefault_raised=" + repr(is_default_raised)
+             + " readback=" + repr(readback_ok) + " isUsed=" + repr(copy_unused)
+             + " deleted=" + repr(deleted) + " addByCopy_dup=" + repr((dup_raised, dup_message)))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
+        "id": "sheet-hem-position-types",
+        "claim": ("HemFeatureInput.setFlatHem accepts only the StartEdge and TangentToSide "
+                  "BendPositionTypes members; the other three raise 'Invalid bendPositionType'"),
+        "encoded_in": "sheet_create_hem.py position Choice",
+        "body": """
+    root = des.rootComponent
+    root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    rule = des.designSheetMetalRules.addByCopy(
+        des.librarySheetMetalRules.itemByName("Steel (mm)"), "Measured hem rule")
+    rule.thickness.expression = "1.5 mm"
+    rule.bendRadius.expression = "2 mm"
+    rule.gap.expression = "0.5 mm"
+    rule.kFactor = 0.42
+    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    comp = occ.component
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(8, 4, 0))
+    comp.features.extrudeFeatures.addSimple(
+        sk.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    body = comp.bRepBodies.item(0)
+    top = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+           and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 30]
+    assert len(top) == 1 and body.convertToSheetMetal(top[0], rule)
+    edge = [e for e in body.edges if e.geometry.curveType == adsk.core.Curve3DTypes.Line3DCurveType
+            and abs(e.startVertex.geometry.x - 8) < 1e-7
+            and abs(e.endVertex.geometry.x - 8) < 1e-7][0]
+    positions = [n for n in dir(adsk.fusion.BendPositionTypes) if n.endswith("BendPositionType")]
+    results = {}
+    for name in positions:
+        member = getattr(adsk.fusion.BendPositionTypes, name)
+        hem_in = comp.features.hemFeatures.createHemFeatureInput()
+        try:
+            accepted = hem_in.setFlatHem(edge, adsk.core.ValueInput.createByReal(1.0), False, member)
+            results[name] = ("ok", bool(accepted))
+        except Exception as exc:
+            results[name] = ("raised", "Invalid bendPositionType" in str(exc))
+    working = sorted(n for n, r in results.items() if r[0] == "ok" and r[1])
+    emit(len(working) == 2 and all("StartEdge" in n or "TangentToSide" in n for n in working)
+         and all(r == ("raised", True) for n, r in results.items() if n not in working),
+         "sheet-hem-position-types: results=" + repr(results) + " working=" + repr(working))
+""",
+    },
+    {
+        "id": "sheet-hem-flat-lands",
+        "claim": ("A flat hem added with StartEdgeBendPositionType reads definitionType "
+                  "FlatHemFeatureDefinitionType, adds 2 cylinder faces and grows the volume; the "
+                  "setter raises of the position-types row poison a later add in the same script, "
+                  "so this add runs alone"),
+        "encoded_in": "sheet_create_hem.py kind read-back and effect gate",
+        "body": """
+    root = des.rootComponent
+    root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    rule = des.designSheetMetalRules.addByCopy(
+        des.librarySheetMetalRules.itemByName("Steel (mm)"), "Measured hem rule")
+    rule.thickness.expression = "1.5 mm"
+    rule.bendRadius.expression = "2 mm"
+    rule.gap.expression = "0.5 mm"
+    rule.kFactor = 0.42
+    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    comp = occ.component
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(8, 4, 0))
+    comp.features.extrudeFeatures.addSimple(
+        sk.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    body = comp.bRepBodies.item(0)
+    top = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+           and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 30]
+    assert len(top) == 1 and body.convertToSheetMetal(top[0], rule)
+    body = comp.bRepBodies.item(0)
+    edge = [e for e in body.edges if e.geometry.curveType == adsk.core.Curve3DTypes.Line3DCurveType
+            and abs(e.startVertex.geometry.x - 8) < 1e-7 and abs(e.endVertex.geometry.x - 8) < 1e-7
+            and abs(e.startVertex.geometry.z - 0.15) < 1e-7 and abs(e.endVertex.geometry.z - 0.15) < 1e-7][0]
+    hem_in = comp.features.hemFeatures.createHemFeatureInput()
+    accepted = hem_in.setFlatHem(edge, adsk.core.ValueInput.createByReal(1.0), False,
+                                 adsk.fusion.BendPositionTypes.StartEdgeBendPositionType)
+    faces_before, cyl_before, vol_before = body.faces.count, 0, body.volume
+    hem = comp.features.hemFeatures.add(hem_in)
+    body = comp.bRepBodies.item(0)
+    cyl_after = len([f for f in body.faces if f.geometry.objectType == adsk.core.Cylinder.classType()])
+    def_type = hem.definitionType
+    emit(bool(accepted) and def_type == adsk.fusion.HemFeatureDefinitionTypes.FlatHemFeatureDefinitionType
+         and cyl_after - cyl_before == 2 and body.faces.count > faces_before and body.volume > vol_before,
+         "sheet-hem-flat-lands: accepted=" + repr(accepted) + " def_type=" + repr(def_type)
+         + " cylinders=" + repr((cyl_before, cyl_after)) + " faces=" + repr((faces_before, body.faces.count))
+         + " volume=" + repr((vol_before, body.volume)))
+""",
+    },
+    {
+        "id": "sheet-rip-modes",
+        "claim": ("RipFeatures.setByFace and setAlongEdge both land healthy features that shrink "
+                  "volume on a filleted, shelled, converted box (a between-points refusal ends the "
+                  "script even inside a try, so the tool's refusal rows live in the sweep act)"),
+        "encoded_in": "sheet_create_rip.py mode dispatch and volume-drop effect gate",
+        "body": """
+    root = des.rootComponent
+    root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    rule = des.designSheetMetalRules.addByCopy(
+        des.librarySheetMetalRules.itemByName("Steel (mm)"), "Measured rip rule")
+    rule.thickness.expression = "1.5 mm"
+    rule.bendRadius.expression = "2 mm"
+    rule.gap.expression = "0.5 mm"
+    rule.kFactor = 0.42
+    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    comp = occ.component
+    sk = comp.sketches.add(comp.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(6, 6, 0))
+    comp.features.extrudeFeatures.addSimple(
+        sk.profiles.item(0), adsk.core.ValueInput.createByReal(4.0),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    body = comp.bRepBodies.item(0)
+    verticals = [e for e in body.edges
+                 if e.geometry.curveType == adsk.core.Curve3DTypes.Line3DCurveType
+                 and abs(e.length - 4.0) < 1e-6]
+    assert len(verticals) == 4
+    edge_coll = adsk.core.ObjectCollection.create()
+    for e in verticals:
+        edge_coll.add(e)
+    fillet_in = comp.features.filletFeatures.createInput()
+    fillet_in.edgeSetInputs.addConstantRadiusEdgeSet(edge_coll, adsk.core.ValueInput.createByReal(0.4), True)
+    comp.features.filletFeatures.add(fillet_in)
+    body = comp.bRepBodies.item(0)
+    top = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+           and abs(f.pointOnFace.z - 4.0) < 1e-6 and f.area > 30]
+    assert len(top) == 1
+    shell_coll = adsk.core.ObjectCollection.create()
+    shell_coll.add(top[0])
+    shell_in = comp.features.shellFeatures.createInput(shell_coll, False)
+    shell_in.insideThickness = adsk.core.ValueInput.createByReal(0.15)
+    comp.features.shellFeatures.add(shell_in)
+    body = comp.bRepBodies.item(0)
+    bottom = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+              and abs(f.pointOnFace.z) < 1e-6 and f.area > 30]
+    assert len(bottom) == 1 and body.convertToSheetMetal(bottom[0], rule)
+    cyls = [f for f in body.faces if f.geometry.objectType == adsk.core.Cylinder.classType()
+            and abs(f.geometry.radius - 0.4) < 1e-6]
+    assert len(cyls) == 4
+    vol_before_face = body.volume
+    rip_in = comp.features.ripFeatures.createRipFeatureInput()
+    rip_in.setByFace(cyls[0])
+    rip_face = comp.features.ripFeatures.add(rip_in)
+    vol_after_face = body.volume
+    face_healthy = rip_face.healthState == adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
+    face_shrank = vol_after_face < vol_before_face
+    body = comp.bRepBodies.item(0)
+    remaining = [f for f in body.faces if f.geometry.objectType == adsk.core.Cylinder.classType()
+                 and abs(f.geometry.radius - 0.4) < 1e-6]
+    other_edge = None
+    if remaining:
+        for e in remaining[0].edges:
+            if (e.geometry.curveType == adsk.core.Curve3DTypes.Line3DCurveType
+                    and abs(e.length - 4.0) < 1e-6):
+                other_edge = e
+                break
+    vol_before_edge = body.volume
+    rip_in2 = comp.features.ripFeatures.createRipFeatureInput()
+    rip_in2.setAlongEdge(other_edge, adsk.core.ValueInput.createByReal(0.1))
+    rip_edge = comp.features.ripFeatures.add(rip_in2)
+    vol_after_edge = body.volume
+    edge_healthy = rip_edge.healthState == adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
+    edge_shrank = vol_after_edge < vol_before_edge
+    body = comp.bRepBodies.item(0)
+    emit(face_healthy and face_shrank and edge_healthy and edge_shrank and body.isSheetMetal,
+         "sheet-rip-modes: face=" + repr((face_healthy, face_shrank))
+         + " edge=" + repr((edge_healthy, edge_shrank)) + " sheet=" + repr(body.isSheetMetal)
+         + " volumes=" + repr((vol_before_face, vol_after_face, vol_after_edge)))
+""",
+    },
+    {
+        "id": "sheet-join-by-bend-merges",
+        "claim": ("joinByBendFeatureInput.bendRadiusOverride.setOverride('5 mm') merges two bodies "
+                  "into one, adds 2 cylinder faces, healthy, and lands isOverridden=True with "
+                  "bendRadius 0.5 cm (5 mm read in the document's mm units); a SECOND join with no "
+                  "override requested lands isOverridden=False, bendRadius=None, and the rule's own "
+                  "2 mm radius on the merged body's new cylinder faces"),
+        "encoded_in": "sheet_create_join_by_bend.py bendRadiusOverride set and read-back gate",
+        "body": """
+    root = des.rootComponent
+    root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    rule = des.designSheetMetalRules.addByCopy(
+        des.librarySheetMetalRules.itemByName("Steel (mm)"), "Measured join rule")
+    rule.thickness.expression = "1.5 mm"
+    rule.bendRadius.expression = "2 mm"
+    rule.gap.expression = "0.5 mm"
+    rule.kFactor = 0.42
+    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    comp = occ.component
+    skA = comp.sketches.add(comp.xYConstructionPlane)
+    skA.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(10, 4, 0))
+    comp.features.extrudeFeatures.addSimple(
+        skA.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    plateA = comp.bRepBodies.item(0)
+    topA = [f for f in plateA.faces if f.geometry.objectType == adsk.core.Plane.classType()
+            and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 30]
+    assert len(topA) == 1 and plateA.convertToSheetMetal(topA[0], rule)
+    plane_in = comp.constructionPlanes.createInput()
+    plane_in.setByOffset(comp.yZConstructionPlane, adsk.core.ValueInput.createByReal(12.0))
+    skB = comp.sketches.add(comp.constructionPlanes.add(plane_in))
+    skB.sketchCurves.sketchLines.addTwoPointRectangle(
+        skB.modelToSketchSpace(adsk.core.Point3D.create(12, 0, 1.0)),
+        skB.modelToSketchSpace(adsk.core.Point3D.create(12, 4, 4.0)))
+    comp.features.extrudeFeatures.addSimple(
+        skB.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    plateB = comp.bRepBodies.item(1)
+    topB = sorted([f for f in plateB.faces if f.geometry.objectType == adsk.core.Plane.classType()
+                   and f.area > 10], key=lambda f: -f.area)[:1]
+    # The first convert invalidates the rule handle it was given ("reference lost"); the second
+    # convert takes the component's active rule, which that convert installed.
+    assert len(topB) == 1 and plateB.convertToSheetMetal(topB[0], comp.activeSheetMetalRule)
+    def rim_edge(plate, x, z):
+        return [e for e in plate.edges
+                if e.geometry.curveType == adsk.core.Curve3DTypes.Line3DCurveType
+                and abs(e.length - 4.0) < 1e-6
+                and abs(e.startVertex.geometry.x - x) < 1e-6 and abs(e.endVertex.geometry.x - x) < 1e-6
+                and abs(e.startVertex.geometry.z - z) < 1e-6 and abs(e.endVertex.geometry.z - z) < 1e-6]
+    edgeA = rim_edge(plateA, 10, 0.15)
+    edgeB = rim_edge(plateB, 12, 1.0)
+    assert len(edgeA) == 1 and len(edgeB) == 1, (len(edgeA), len(edgeB))
+    bodies_before = comp.bRepBodies.count
+    cyls_before = len([f for f in edgeA[0].body.faces
+                       if f.geometry.objectType == adsk.core.Cylinder.classType()])
+    join_in = comp.features.joinByBendFeatures.createInput(edgeA[0], edgeB[0])
+    override_accepted = join_in.bendRadiusOverride.setOverride(
+        adsk.core.ValueInput.createByString("5 mm"))
+    override_now = join_in.bendRadiusOverride.isOverridden
+    join = comp.features.joinByBendFeatures.add(join_in)
+    bodies_after = comp.bRepBodies.count
+    merged = comp.bRepBodies.item(0)
+    cyls_after = len([f for f in merged.faces
+                      if f.geometry.objectType == adsk.core.Cylinder.classType()])
+    healthy = join.healthState == adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
+    landed_override = join.bendRadiusOverride
+    landed_radius_cm = landed_override.bendRadius.value if landed_override.isOverridden else None
+
+    # No-override leg: a second, independent pair of plates joined with no radius requested.
+    skC = comp.sketches.add(comp.xYConstructionPlane)
+    skC.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 20, 0), adsk.core.Point3D.create(10, 24, 0))
+    comp.features.extrudeFeatures.addSimple(
+        skC.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    plateC = comp.bRepBodies.item(comp.bRepBodies.count - 1)
+    topC = [f for f in plateC.faces if f.geometry.objectType == adsk.core.Plane.classType()
+            and abs(f.pointOnFace.z - 0.15) < 1e-7 and f.area > 30]
+    assert len(topC) == 1 and plateC.convertToSheetMetal(topC[0], comp.activeSheetMetalRule)
+    plane_in2 = comp.constructionPlanes.createInput()
+    plane_in2.setByOffset(comp.yZConstructionPlane, adsk.core.ValueInput.createByReal(12.0))
+    skD = comp.sketches.add(comp.constructionPlanes.add(plane_in2))
+    skD.sketchCurves.sketchLines.addTwoPointRectangle(
+        skD.modelToSketchSpace(adsk.core.Point3D.create(12, 20, 1.0)),
+        skD.modelToSketchSpace(adsk.core.Point3D.create(12, 24, 4.0)))
+    comp.features.extrudeFeatures.addSimple(
+        skD.profiles.item(0), adsk.core.ValueInput.createByReal(0.15),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    plateD = comp.bRepBodies.item(comp.bRepBodies.count - 1)
+    topD = sorted([f for f in plateD.faces if f.geometry.objectType == adsk.core.Plane.classType()
+                   and f.area > 10], key=lambda f: -f.area)[:1]
+    assert len(topD) == 1 and plateD.convertToSheetMetal(topD[0], comp.activeSheetMetalRule)
+    edgeC = rim_edge(plateC, 10, 0.15)
+    edgeD = rim_edge(plateD, 12, 1.0)
+    assert len(edgeC) == 1 and len(edgeD) == 1, (len(edgeC), len(edgeD))
+    plateC_name = plateC.name
+    cyls_before2 = len([f for f in edgeC[0].body.faces
+                        if f.geometry.objectType == adsk.core.Cylinder.classType()])
+    join_in2 = comp.features.joinByBendFeatures.createInput(edgeC[0], edgeD[0])
+    join2 = comp.features.joinByBendFeatures.add(join_in2)
+    healthy2 = join2.healthState == adsk.fusion.FeatureHealthStates.HealthyFeatureHealthState
+    merged2 = comp.bRepBodies.itemByName(plateC_name)
+    cyls_after2 = len([f for f in merged2.faces
+                       if f.geometry.objectType == adsk.core.Cylinder.classType()])
+    default_override = join2.bendRadiusOverride
+    default_isOverridden, default_radius = default_override.isOverridden, default_override.bendRadius
+    default_cyl_radii = [f.geometry.radius for f in merged2.faces
+                         if f.geometry.objectType == adsk.core.Cylinder.classType()]
+    default_radius_lands = any(abs(r - 0.2) < 1e-6 for r in default_cyl_radii)
+
+    emit(bodies_before == 2 and bodies_after == 1 and (cyls_after - cyls_before) == 2 and healthy
+         and override_accepted is True and override_now is True
+         and landed_override.isOverridden is True
+         and landed_radius_cm is not None and abs(landed_radius_cm - 0.5) < 1e-6
+         and healthy2 and (cyls_after2 - cyls_before2) == 2
+         and default_isOverridden is False and default_radius is None and default_radius_lands,
+         "sheet-join-by-bend-merges: bodies=" + repr((bodies_before, bodies_after))
+         + " cylinders=" + repr((cyls_before, cyls_after)) + " healthy=" + repr(healthy)
+         + " override=" + repr((override_accepted, override_now))
+         + " landed_radius_cm=" + repr(landed_radius_cm)
+         + " default_leg=" + repr((default_isOverridden, default_radius, default_radius_lands)))
+""",
+    },
     {
         "id": "save-image-options-defaults",
         "claim": ("SaveImageFileOptions.create(path) initializes width/height to 0 and "
@@ -696,6 +1356,54 @@ ROWS = [
          + str(sym_v) + " oneT=" + str(one_v) + " two=" + str(two_a) + "/" + str(two_b)
          + " cut_into_box=" + str(cut_v) + " neg=" + str(neg_v)
          + " (expect 1.0 / 1.0 / 1.0,0.5 / 0.3 / -1.5)")
+""",
+    },
+    {
+        "id": "extrude-throughall-retired-negative-flag-reads-false",
+        "claim": ("A one-sided through-all cut built with the retired ExtrudeFeatureInput."
+                  "setAllExtent(NegativeExtentDirection) reads extentOne.isPositiveDirection False "
+                  "with its bore wall on the negative side; setOneSideExtent(ThroughAll, Positive) "
+                  "at its edit position makes the flag read True and moves the wall to the "
+                  "positive side"),
+        "encoded_in": ("model_extrude's one-sided through_all 'direction' read-back; "
+                       "model_edit_extrude._side; tests/unit/test_model_extrude.py TestThroughAll"),
+        "need_box": True,
+        "body": """
+    root = des.rootComponent
+    feats = root.features.extrudeFeatures
+    V = adsk.core.ValueInput
+    plane_in = root.constructionPlanes.createInput()
+    plane_in.setByOffset(root.xYConstructionPlane, V.createByReal(0.5))
+    sk = root.sketches.add(root.constructionPlanes.add(plane_in))
+    sk.sketchCurves.sketchCircles.addByCenterRadius(adsk.core.Point3D.create(0.5, 0.5, 0.0), 0.1)
+    cut_in = feats.createInput(sk.profiles.item(0), adsk.fusion.FeatureOperations.CutFeatureOperation)
+    set_ok = cut_in.setAllExtent(adsk.fusion.ExtentDirections.NegativeExtentDirection)
+    cut_in.participantBodies = [body]
+    cut = feats.add(cut_in)
+    def wall():
+        target = cut.bodies.item(0)
+        faces = [target.faces.item(j) for j in range(target.faces.count)]
+        return [[round(f.boundingBox.minPoint.z, 6), round(f.boundingBox.maxPoint.z, 6)]
+                for f in faces if f.geometry.objectType == "adsk::core::Cylinder"]
+    before_flag, before_wall = cut.extentOne.isPositiveDirection, wall()
+    tl = des.timeline
+    end = tl.markerPosition
+    rolled = cut.timelineObject.rollTo(True)
+    prior = list(cut.participantBodies)
+    moved = cut.setOneSideExtent(adsk.fusion.ThroughAllExtentDefinition.create(),
+                                 adsk.fusion.ExtentDirections.PositiveExtentDirection,
+                                 V.createByString("0 deg"))
+    cut.participantBodies = prior
+    tl.markerPosition = end
+    after_flag, after_wall = cut.extentOne.isPositiveDirection, wall()
+    near = lambda got, want: (len(got) == 1 and abs(got[0][0] - want[0]) < 1e-6
+                              and abs(got[0][1] - want[1]) < 1e-6)
+    emit(set_ok is True and rolled is True and moved is True and before_flag is False
+         and after_flag is True and near(before_wall, (0.0, 0.5)) and near(after_wall, (0.5, 1.0)),
+         "extrude-throughall-retired-negative-flag-reads-false: set " + str(set_ok)
+         + " flag " + str(before_flag) + " wall_z " + str(before_wall) + "; after positive edit "
+         + str(moved) + " flag " + str(after_flag) + " wall_z " + str(after_wall)
+         + " (expect False [0, 0.5] then True [0.5, 1.0])")
 """,
     },
     {
@@ -992,6 +1700,35 @@ ROWS = [
 """,
     },
     {
+        "id": "profile-token-names-outer-plus-islands",
+        "claim": ("Design.findEntityByToken(Profile.entityToken) hit count on native profiles: a "
+                  "component's 2-loop profile answers 2 (itself and its island), a component's "
+                  "single-loop profile answers 1, and a ROOT 2-loop profile answers 0"),
+        "encoded_in": ("commands/mcpServer/tools/_inputs.py _pick_profile_hit and _refind_profile; "
+                       "tests/unit/test_inputs.py TestProfileTokenAnsweringSeveralProfiles"),
+        "body": """
+    root = des.rootComponent
+    P = adsk.core.Point3D.create
+    comp = root.occurrences.addNewComponent(adsk.core.Matrix3D.create()).component
+    ring_sk = comp.sketches.add(comp.xYConstructionPlane)
+    ring_sk.sketchCurves.sketchLines.addTwoPointRectangle(P(0, 0, 0), P(4, 4, 0))
+    ring_sk.sketchCurves.sketchLines.addTwoPointRectangle(P(1, 1, 0), P(3, 3, 0))
+    one_sk = comp.sketches.add(comp.xYConstructionPlane)
+    one_sk.sketchCurves.sketchLines.addTwoPointRectangle(P(6, 0, 0), P(8, 2, 0))
+    root_sk = root.sketches.add(root.xYConstructionPlane)
+    root_sk.sketchCurves.sketchCircles.addByCenterRadius(P(0, 10, 0), 2.0)
+    root_sk.sketchCurves.sketchCircles.addByCenterRadius(P(0, 10, 0), 1.0)
+    def hits(sk, loops):
+        profs = [sk.profiles.item(i) for i in range(sk.profiles.count)]
+        named = [p for p in profs if p.profileLoops.count == loops]
+        return len(des.findEntityByToken(named[0].entityToken)) if len(named) == 1 else None
+    counts = [hits(ring_sk, 2), hits(one_sk, 1), hits(root_sk, 2)]
+    emit(counts == [2, 1, 0],
+         "profile-token-names-outer-plus-islands: component 2-loop / component 1-loop / root "
+         "2-loop hits = " + repr(counts) + " (expect [2, 1, 0])")
+""",
+    },
+    {
         "id": "allcomponents-design-only",
         "claim": "allComponents lives on Design (Component has none) and is counted AND iterable",
         "encoded_in": "tests/fakes/design.py MakeDesign.allComponents (the Component shape dump carries no allComponents, which is what keeps MakeComp from offering one)",
@@ -1167,120 +1904,64 @@ ROWS = [
 """,
     },
     {
-        "id": "camera-viewextents-is-linear-not-area",
-        "claim": "Camera.viewExtents is a LINEAR extent, not an area: with the LIMITING screen axis held fixed, a model N times taller fits to a value ~N times larger, not ~N squared. The SDK words it 'the area of the view', which is why this is measured rather than read",
-        "encoded_in": "view_set.py _frame_ratio (the ratio multiplies viewExtents unsquared) and its point-of-use comment; view_screenshot.py's zoom, which scales the same property; test_view_set.py TestFocusFraming ratio expectations",
-        "facts_on_pass": {"behavior.camera_view_extents_is_linear": True},
+        "id": 'camera-supported-orthographic-pair',
+        "claim": 'An orthographic getExtents returns success plus two cm lengths; setExtents returns true and reads both requested sides on the detached camera.',
+        "encoded_in": '_view_common.py _extents/scale_view/restore_camera; tests/fakes/geometry.py Camera',
         "body": """
-    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
-    try:
-        des = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
-        root = des.rootComponent
-        vp = app.activeViewport
-
-        # A 1 cm square post of a given height. Growing only the HEIGHT, on a front camera, on a
-        # viewport wider than it is tall, keeps BOTH fits limited by the same screen axis - which
-        # is the whole point: a first attempt at this row left the camera wherever the document had
-        # it, so an iso-ish view spread the growth across both screen axes and the ratio came back
-        # 5.22, neither linear (10.98) nor area (120.6). A ratio is only meaningful between two fits
-        # limited by the SAME axis (which the sibling row measures).
-        def post(height):
-            sk = root.sketches.add(root.xYConstructionPlane)
-            sk.sketchCurves.sketchLines.addTwoPointRectangle(
-                adsk.core.Point3D.create(0.0, 0.0, 0.0), adsk.core.Point3D.create(1.0, 1.0, 0.0))
-            root.features.extrudeFeatures.addSimple(
-                sk.profiles.item(0), adsk.core.ValueInput.createByReal(height),
-                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-
-        def spans():
-            bb = root.boundingBox
-            return (bb.maxPoint.x - bb.minPoint.x, bb.maxPoint.z - bb.minPoint.z,
-                    (bb.maxPoint.z + bb.minPoint.z) / 2.0)
-
-        def fit_front():
-            across, up, mid = spans()
-            cam = vp.camera                      # front: x across the screen, z up it
-            cam.upVector = adsk.core.Vector3D.create(0.0, 0.0, 1.0)
-            cam.target = adsk.core.Point3D.create(0.5, 0.0, mid)
-            cam.eye = adsk.core.Point3D.create(0.5, -100.0, mid)
-            cam.isFitView = True
-            vp.camera = cam
-            return vp.camera.viewExtents
-
-        post(2.0)
-        w0, h0, _ = spans()
-        e0 = fit_front()
-        post(20.0)                               # same 1 cm footprint, ten times taller
-        w1, h1, _ = spans()
-        e1 = fit_front()
-        aspect = float(vp.width) / vp.height
-        model_ratio = h1 / h0
-        ext_ratio = e1 / e0
-        # both fits must be HEIGHT-limited or the comparison is meaningless - assert it, do not
-        # assume it, since that assumption is exactly what the first version of this row got wrong
-        height_limited = (w0 / h0) < aspect and (w1 / h1) < aspect
-        emit(height_limited and abs(ext_ratio - model_ratio) < model_ratio * 0.2,
-             "camera-viewextents-is-linear-not-area: height " + ("%.3f" % h0) + "->" + ("%.3f" % h1)
-             + " (x" + ("%.2f" % model_ratio) + ") extents " + ("%.3f" % e0) + "->" + ("%.3f" % e1)
-             + " (x" + ("%.2f" % ext_ratio) + ") area_would_be x"
-             + ("%.1f" % (model_ratio * model_ratio))
-             + " height_limited=" + repr(height_limited) + " aspect=" + ("%.3f" % aspect))
-    finally:
-        tmp.close(False)
+    import json, math
+    cam = app.activeViewport.camera
+    cam.cameraType = adsk.core.CameraTypes.OrthographicCameraType
+    if cam.cameraType != adsk.core.CameraTypes.OrthographicCameraType:
+        raise RuntimeError("orthographic camera preparation did not read back")
+    pair = (3.8, 3.2)
+    observed = []
+    passed = True
+    for factor in (1.0, 2.0, 1.0):
+        requested = tuple(v * factor for v in pair)
+        print("OBS before setExtents " + repr(requested))
+        returned = cam.setExtents(*requested)
+        print("OBS before getExtents")
+        raw = cam.getExtents()
+        values = list(raw)
+        observed.append(dict(requested=requested, setter=returned,
+                             container=type(raw).__name__, arity=len(values), values=values))
+        passed = passed and type(returned) is bool and returned is True
+        passed = passed and len(values) == 3 and values[0] is True
+        passed = passed and len(values) == 3 and all(
+            type(v) is float and math.isfinite(v) and abs(v - want) <= 1e-6
+            for v, want in zip(values[1:], requested))
+    emit(passed, "camera-supported-orthographic-pair: " + json.dumps(observed))
 """,
     },
     {
-        "id": "camera-viewextents-follows-limiting-axis",
-        "claim": "Camera.viewExtents after a fit tracks whichever SCREEN AXIS limited that fit - measured on two models on one front camera: a TALL post fits to its height, a WIDE slab to its width - so it is neither the view width nor the view height, and a framing ratio cannot be taken against a world box's own spans",
-        "encoded_in": "view_set.py _frame_ratio, which reconstructs the FRAME from the viewport aspect (vp.width/vp.height) instead of dividing by the world box; test_view_set.py test_a_flat_world_is_measured_against_the_frame_not_its_own_height",
-        "facts_on_pass": {"behavior.camera_view_extents_follows_limiting_axis": True},
+        "id": 'camera-supported-perspective-extents-outcome',
+        "claim": 'CameraTypes.PerspectiveCameraType is 1; a perspective Camera getExtents and setExtents raise, measured separately on a detached camera.',
+        "perspective_type": 1,
+        "encoded_in": '_view_common.py _extents/scale_view/show_extent; tests/fakes/geometry.py Camera',
         "body": """
-    def fit_front(across_cm, up_cm):
-        # One temp document per shape: a second body in the same root would sit inside the fit and
-        # both models would be framed at once.
-        tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
-        try:
-            d = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
-            root = d.rootComponent
-            sk = root.sketches.add(root.xYConstructionPlane)
-            sk.sketchCurves.sketchLines.addTwoPointRectangle(
-                adsk.core.Point3D.create(0.0, 0.0, 0.0),
-                adsk.core.Point3D.create(across_cm, 1.0, 0.0))
-            root.features.extrudeFeatures.addSimple(
-                sk.profiles.item(0), adsk.core.ValueInput.createByReal(up_cm),
-                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-            vp = app.activeViewport
-            cam = vp.camera                   # front: x runs across the screen, z up it
-            cam.eye = adsk.core.Point3D.create(across_cm / 2.0, -50.0, up_cm / 2.0)
-            cam.target = adsk.core.Point3D.create(across_cm / 2.0, 0.0, up_cm / 2.0)
-            cam.upVector = adsk.core.Vector3D.create(0.0, 0.0, 1.0)
-            cam.isFitView = True
-            vp.camera = cam
-            bb = root.boundingBox
-            return (bb.maxPoint.x - bb.minPoint.x, bb.maxPoint.z - bb.minPoint.z,
-                    vp.camera.viewExtents, float(vp.width) / vp.height)
-        finally:
-            tmp.close(False)
-
-    # A TALL post (1 cm across, 10 cm up) and a WIDE slab (10 across, 1 up) on the same front
-    # camera. The two fits are limited by DIFFERENT screen axes, which is what tells a value that
-    # follows the limiting axis apart from one that always reports the same axis - one model
-    # cannot: a height-limited fit reads the same either way.
-    across_t, up_t, ext_t, aspect = fit_front(1.0, 10.0)
-    across_w, up_w, ext_w, _aspect2 = fit_front(10.0, 1.0)
-    # the limiting axis is asserted, not assumed: a model narrower than the frame is height-limited
-    tall_by_height = (across_t / up_t) < aspect
-    wide_by_width = (across_w / up_w) > aspect
-    tracks_up = abs(ext_t - up_t) < up_t * 0.3 and ext_t > across_t * 2.0
-    tracks_across = abs(ext_w - across_w) < across_w * 0.3 and ext_w > up_w * 2.0
-    emit(tall_by_height and wide_by_width and tracks_up and tracks_across,
-         "camera-viewextents-follows-limiting-axis: aspect=" + ("%.3f" % aspect)
-         + " tall across=" + ("%.2f" % across_t) + " up=" + ("%.2f" % up_t)
-         + " extents=" + ("%.3f" % ext_t)
-         + "; wide across=" + ("%.2f" % across_w) + " up=" + ("%.2f" % up_w)
-         + " extents=" + ("%.3f" % ext_w)
-         + "; tall_by_height=" + repr(tall_by_height) + " wide_by_width=" + repr(wide_by_width)
-         + " tracks_up=" + repr(tracks_up) + " tracks_across=" + repr(tracks_across))
+    import json, os
+    path = "__FE_CAMERA_MARKER_PATH__"
+    nonce = "__FE_CAMERA_NONCE__"
+    scratch = "__FE_CAMERA_SCRATCH__"
+    source_sha = "__FE_CAMERA_SOURCE_SHA__"
+    member = "__FE_CAMERA_MEMBER__"
+    def record(phase, **fields):
+        data = dict(row_id="camera-supported-perspective-extents-outcome", nonce=nonce,
+                    scratch=scratch, source_sha256=source_sha, member=member, phase=phase)
+        data.update(fields)
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(data, stream); stream.flush(); os.fsync(stream.fileno())
+    assert member in ("getExtents", "setExtents") and not os.path.exists(path)
+    cam = app.activeViewport.camera
+    cam.cameraType = adsk.core.CameraTypes.PerspectiveCameraType
+    if (cam.cameraType != adsk.core.CameraTypes.PerspectiveCameraType
+            or cam.objectType != "adsk::core::Camera"):
+        raise RuntimeError("perspective camera preparation did not read back")
+    record("ready", camera_type=cam.cameraType,
+           expected_type=adsk.core.CameraTypes.PerspectiveCameraType, object_type=cam.objectType)
+    returned = cam.getExtents() if member == "getExtents" else cam.setExtents(7.0, 5.0)
+    record("returned", returned_type=type(returned).__name__)
+    emit(False, "perspective " + member + " returned without the required native rejection")
 """,
     },
     {
@@ -1895,7 +2576,7 @@ ROWS = [
     },
     {
         "id": "enum-joint-types",
-        "claim": "JointTypes ints: Rigid=0 Revolute=1 Slider=2 Cylindrical=3 PinSlot=4 Planar=5 Ball=6 (Inferred=7 also exists)",
+        "claim": "JointTypes ints: Rigid=0 Revolute=1 Slider=2 Cylindrical=3 PinSlot=4 Planar=5 Ball=6 - no InferredJointType member on 2706 (the member, Joints.createInferredJointInput and InferredJointInput are all gone)",
         "encoded_in": "tests/unit/test_assembly_get.py joint-type labels",
         "body": """
     J = adsk.fusion.JointTypes
@@ -1903,8 +2584,7 @@ ROWS = [
     emit(J.RigidJointType == 0 and J.RevoluteJointType == 1 and J.SliderJointType == 2
          and J.CylindricalJointType == 3 and J.PinSlotJointType == 4
          and J.PlanarJointType == 5 and J.BallJointType == 6,
-         "enum-joint-types: rigid=" + str(J.RigidJointType) + " ... ball=" + str(J.BallJointType)
-         + " inferred=" + str(J.InferredJointType))
+         "enum-joint-types: rigid=" + str(J.RigidJointType) + " ... ball=" + str(J.BallJointType))
 """,
     },
     {
@@ -2363,18 +3043,16 @@ ROWS = [
     },
     {
         "id": "form-edit-typed-reads",
-        "claim": ("With a Form edit left open by script, the typed reads say so instead of calling "
-                  "the design a healthy direct one: workspace_orient reads design.in_form_edit true, "
-                  "parameters null and is_healthy null; design_get reads in_form_edit true and "
-                  "timeline_healthy null; form_get reads complete false; design_delete_feature and "
-                  "form_create refuse naming the open edit; workspace_orient's timeline_rolled_back "
-                  "is null and its workspace is not Design; design_get's mode slice publishes every "
-                  "can value null; design_set_mode refuses naming Finish Form. The edit then "
-                  "finishes on the Form's token and the timeline reads its count from before the "
-                  "typed calls - so form_create's refusal came before any FormFeatures.add()"),
-        "encoded_in": ("_inputs.py in_form_edit and ModeGuard; _design_common.py no_timeline_reason "
-                       "and get_mode_handler; workspace_orient.py, design_get.py, design_set_mode.py, "
-                       "form_get.py, form_create.py"),
+        "claim": ("With a Form edit left open by script, designType reads direct at once while the "
+                  "workspace switch to TSplineEnvironment is queue-ordered and unbounded "
+                  "(activeCommand SelectCommand, activeEditObject the Component, "
+                  "formFeatures.count 0, no isEditing on the feature), so the typed reads report "
+                  "mode 'direct' with null timeline counts and unknown health unless an independent "
+                  "failure is observed, and claim no edit; form_create "
+                  "refuses because the design reads direct; the edit then finishes on the Form's "
+                  "token and the timeline reads its count from before the typed calls"),
+        "encoded_in": ("_inputs.py current_design_type; _design_common.py no_timeline_reason and "
+                       "get_mode_handler; workspace_orient.py, design_get.py, form_create.py"),
         "body_fn": lambda: _form_script(_box_tsm(), """
     import json
     if not parametric(des):
@@ -2390,32 +3068,23 @@ ROWS = [
 """),
         "wire_checks": [
             ("workspace_orient", {}, _payload_check(
-                "workspace_orient in_form_edit, null parameters and is_healthy",
-                lambda p: (p.get("design") or {}).get("in_form_edit") is True
+                "workspace_orient direct mode, null parameters/history, qualified health",
+                lambda p: (p.get("design") or {}).get("mode") == "direct"
                 and "parameters" in (p.get("design") or {})
                 and (p.get("design") or {}).get("parameters") is None
-                and (p.get("health") or {}).get("is_healthy") is None
-                and "timeline_rolled_back" in (p.get("health") or {})
-                and (p.get("health") or {}).get("timeline_rolled_back") is None
-                and isinstance(p.get("workspace"), str) and p.get("workspace") != "Design")),
+                and all(k in (p.get("health") or {}) and p["health"][k] is None for k in (
+                    "timeline_features", "timeline_errors", "timeline_warnings", "timeline_suppressed",
+                    "timeline_markers", "timeline_rolled_back"))
+                and "is_healthy" in (p.get("health") or {})
+                and p["health"]["is_healthy"] is (False if any(p["health"].get(k) for k in (
+                    "broken_joints", "broken_relations", "out_of_date_references", "unresolved_references")) else None)
+                and "not observed zero/healthy history" in p.get("note", ""))),
             ("design_get", {}, _payload_check(
-                "design_get in_form_edit and null timeline_healthy",
-                lambda p: p.get("in_form_edit") is True and p.get("timeline_healthy") is None)),
-            ("design_get", {"include": ["mode"]}, _payload_check(
-                "design_get mode_detail.can values all null",
-                lambda p: isinstance((p.get("mode_detail") or {}).get("can"), dict)
-                and bool(p["mode_detail"]["can"])
-                and all(v is None for v in p["mode_detail"]["can"].values()))),
-            ("design_set_mode", {"target": "direct", "confirm_history_loss": True},
-             _refusal_check("design_set_mode", "Finish Form")),
-            ("form_get", {}, _payload_check(
-                "form_get complete false",
-                lambda p: p.get("in_form_edit") is True and p.get("complete") is False)),
-            ("design_delete_feature", {"feature": "Form1"}, _refusal_check(
-                "design_delete_feature", "Finish Form")),
+                "design_get design_type direct",
+                lambda p: p.get("design_type") == "direct")),
             ("form_create", {"primitive": {"shape": "box", "size": [10, 10, 10],
                                            "spans": [1, 1, 1]}},
-             _refusal_check("form_create", "A Form edit is open")),
+             _refusal_check("form_create", "parametric")),
         ],
         "script_after_fn": _form_edit_close_body,
     },
@@ -2466,60 +3135,6 @@ ROWS = [
 """),
     },
     {
-        "id": "form-create-keeps-form-workspace",
-        "claim": ("With the Form workspace left active and no edit open (a Form edit pumped into it, "
-                  "then finished through the API), a Form made and finished through the API leaves "
-                  "it: the NEXT script reads TSplineEnvironment - a create keeps the workspace it "
-                  "began in"),
-        "encoded_in": "form_create.py (no workspace restore)",
-        "body_fn": lambda: _form_script(_box_tsm(), """
-    if not parametric(des):
-        emit(False, "form-create-keeps-form-workspace: the run scratch is not parametric")
-    else:
-        ui = app.userInterface
-        first, took = load(des.rootComponent)
-        reopened = bool(first.startEdit())
-        for _ in range(30):
-            adsk.doEvents()
-            if ui.activeWorkspace.id == "TSplineEnvironment":
-                break
-        closed = bool(first.finishEdit())
-        start = ui.activeWorkspace.id
-        ff, took_b = load(des.rootComponent)
-        emit(took and reopened and closed and took_b and start == "TSplineEnvironment",
-             "form-create-keeps-form-workspace: edit reopened " + str(reopened) + " and finished "
-             + str(closed) + ", workspace at the create " + start + ", the Form loaded and "
-             + "finished " + str(took_b))
-"""),
-        "script_after_fn": _workspace_next_script("form-create-keeps-form-workspace",
-                                                  "TSplineEnvironment"),
-    },
-    {
-        "id": "form-finish-workspace-next-script",
-        "claim": ("Started from the Design workspace, a Form made and its edit finished through the "
-                  "API leaves Design: the NEXT script reads FusionSolidEnvironment - a create keeps "
-                  "the workspace it began in, which is why form_create does not switch it back"),
-        "encoded_in": "form_create.py (no workspace restore)",
-        "body_fn": lambda: _form_script(_box_tsm(), """
-    if not parametric(des):
-        emit(False, "form-finish-workspace-next-script: the run scratch is not parametric")
-    else:
-        ui = app.userInterface
-        before = ui.activeWorkspace.id
-        if before != "FusionSolidEnvironment":
-            ui.workspaces.itemById("FusionSolidEnvironment").activate()
-            for _ in range(10):
-                adsk.doEvents()
-        start = ui.activeWorkspace.id
-        ff, took = load(des.rootComponent)
-        emit(took and start == "FusionSolidEnvironment",
-             "form-finish-workspace-next-script: the Form loaded and finished " + str(took)
-             + ", workspace before it " + before + ", at the create " + start)
-"""),
-        "script_after_fn": _workspace_next_script("form-finish-workspace-next-script",
-                                                  "FusionSolidEnvironment"),
-    },
-    {
         "id": "form-delete-suppressed-tail",
         "claim": ("deleteMe on a SUPPRESSED Form, run one call after its suppress, removes exactly "
                   "the items suppressed with it: a Shell on the Form's body goes off with the "
@@ -2541,13 +3156,14 @@ ROWS = [
         coll.add(top)
         sh_in = root.features.shellFeatures.createInput(coll, False)
         sh_in.insideThickness = adsk.core.ValueInput.createByReal(0.1)
-        root.features.shellFeatures.add(sh_in)
+        sh = root.features.shellFeatures.add(sh_in)
         tl = des.timeline
         was = set(tl.item(i).name for i in range(tl.count) if tl.item(i).isSuppressed)
         ff.isSuppressed = True
         off = sorted(tl.item(i).name for i in range(tl.count)
                      if tl.item(i).isSuppressed and tl.item(i).name not in was)
-        print("FORMSTATE " + json.dumps({"token": ff.entityToken, "suppressed": off}))
+        print("FORMSTATE " + json.dumps({"token": ff.entityToken, "shell_token": sh.entityToken,
+                                         "suppressed": off}))
         emit(took and len(off) == 2, "form-delete-suppressed-tail: suppressed " + str(off))
 """),
         "script_after_fn": _delete_suppressed_close_body,
@@ -2962,7 +3578,7 @@ ROWS = [
     },
     {
         "id": "shape-dump-drawing-world",
-        "claim": "The row makes and removes its OWN source, so nothing it measures depends on what a project happens to hold: it adds a scratch design carrying one placed box, saves it into the configured cloud project (named by the tests/live cloud config) under the MeasureDrawingSource stem plus its own clock, takes that document's DataFile as the createDrawingInput source, and in a finally closes the document and deletes the file BY THE CLOUD ID that save settled under - never by name, so a file this run did not create is never the one deleted. Right after saveAs the DataFile's id is the LOCAL cache path - the cloud urn: id lands asynchronously, about two seconds - so the row pumps doEvents under a 20 second clock bound until the urn: form answers and FAILS naming the timeout if it never does. Before saving, ONE listing of that folder's own dataFiles (never recursive) COUNTS the entries standing under that stem and deletes none of them - they are another run's or the operator's - and with no settled id the removal deletes nothing at all. That listing LAGS its own writes and deletes, which also makes deleteMe RAISE InternalValidationError while a just-closed file is still settling, so the removal pumps doEvents and retries under a clock bound - measured taking two or three attempts. DrawingManager.get() answers a DrawingManager and createDrawingInput answers a CreateDrawingInput whose customSize hands out a CustomSheetSize already carrying a positive width and height and at least two zones each way, so 'a DEFAULT CustomSheetSize' is read rather than assumed. The deleting of the source is reported but does NOT gate the row: a False leaves the file standing and the detail names it. The eleven document-side types (DrawingDocument, Drawing, Sheets, Sheet, Views, View, DrawingSketches, DrawingSketch, Images, DrawingExportManager, DocumentSettings) come off their CLASS objects: adsk.core.DocumentTypes carries no drawing member at all, so documents.add cannot make one, and DrawingManager.createDrawing would mint a SECOND cloud file, which this row does not call. The class dump rests on the class-dir-equals-instance-dir-minus-'this' reading, re-measured here on CreateDrawingInput, which the row holds both of. The collection types are named Views/Images, NOT DrawingViews/DrawingImages, and the settings type is DocumentSettings - the labels are what the fake-shape lint maps a fake onto, so each live one is read back rather than assumed",
+        "claim": "The row makes and removes its OWN source, so nothing it measures depends on what a project happens to hold: it adds a scratch design carrying one placed box, saves it into the configured cloud project (named by the tests/live cloud config) under the MeasureDrawingSource stem plus its own clock, takes that document's DataFile as the createDrawingInput source, and in a finally closes the document and deletes the file BY THE CLOUD ID that save settled under - never by name, so a file this run did not create is never the one deleted. Right after saveAs the DataFile's id is the LOCAL cache path - the cloud urn: id lands asynchronously, about two seconds - so the row pumps doEvents under a 20 second clock bound until the urn: form answers and FAILS naming the timeout if it never does. Before saving, ONE listing of that folder's own dataFiles (never recursive) COUNTS the entries standing under that stem and deletes none of them - they are another run's or the operator's - and with no settled id the removal deletes nothing at all. That listing LAGS its own writes and deletes, which also makes deleteMe RAISE InternalValidationError while a just-closed file is still settling, so the removal pumps doEvents and retries under a clock bound - measured taking two or three attempts. DrawingManager.get() answers a DrawingManager and createDrawingInput answers a CreateDrawingInput whose customSize hands out a CustomSheetSize already carrying a positive width and height and at least two zones each way, so 'a DEFAULT CustomSheetSize' is read rather than assumed. The deleting of the source is reported but does NOT gate the row: a False leaves the file standing and the detail names it. The eleven document-side types (DrawingDocument, Drawing, Sheets, Sheet, Views, View, DrawingSketches, DrawingSketch, Images, DrawingExportManager, DocumentSettings) come off their CLASS objects: adsk.core.DocumentTypes carries no drawing member at all, so documents.add cannot make one, and DrawingManager.createDrawing would mint a SECOND cloud file, which this row does not call. The class dump rests on the class-dir-equals-instance-dir-minus-'this' reading, re-measured here on CreateDrawingInput, which the row holds both of. The collection types are named Views/Images, NOT DrawingViews/DrawingImages, and the settings type is DocumentSettings - the labels are what the fake-shape lint maps a fake onto, so each live one is read back rather than assumed. adsk.drawing DOES define DrawingDimensions (a real class, outside this document-side dump), so the absence check below covers only DrawingViews, DrawingView, DrawingImages and DrawingDocumentSettings",
         "encoded_in": ("tests/fakes/drawing.py's drawing world - FakeDrawingDocument, FakeDrawing, "
                        "FakeSheets/FakeSheet, FakeViews/FakeView, FakeDrawingSketches/"
                        "FakeDrawingSketch, FakeImages, FakeDrawingExportManager, "
@@ -3076,8 +3692,9 @@ ROWS = [
         counts.append(dump_shape(name, getattr(adsk.drawing, name)))
     doc_types = [n for n in dir(adsk.core.DocumentTypes) if not n.startswith("_")]
     no_drawing_doc_type = not [n for n in doc_types if "Drawing" in n]
-    aliases = ("DrawingViews", "DrawingView", "DrawingImages", "DrawingDimensions",
-               "DrawingDocumentSettings")
+    # DrawingDimensions is a REAL adsk.drawing class on 2706 (measured) - it left this absence
+    # list; the other four names still resolve to nothing.
+    aliases = ("DrawingViews", "DrawingView", "DrawingImages", "DrawingDocumentSettings")
     no_drawing_aliases = not any(hasattr(adsk.drawing, n) for n in aliases)
     # None means no CreateDrawingInput was reachable to take the reading on: the gate wants True,
     # so a source that never saved or never settled FAILS the row instead of passing it on the
@@ -3279,6 +3896,13 @@ ROWS = [
                        "segment, value, tolerance and display-settings fakes; "
                        "_pmi.walk_annotations, _pmi.build_segments and _pmi.annotation_record "
                        "read these types live"),
+        "entitlement": "design_manufacturing_extension",
+        "owns_shapes": [
+            "PMIAnnotations", "PMILeaderLineNotes", "PMILeaderLineNoteInput", "PMILeaderLineNote",
+            "PMIHoleThreadNotes", "PMIHoleThreadNoteInput", "PMIHoleThreadNote", "PMISegmentVector",
+            "PMITextSegment", "PMISymbolSegment", "PMILineBreakSegment", "PMIGeometricValue",
+            "PMIGeometricValueTolerance", "PMIDisplaySettings",
+        ],
         "body": """
     tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
     try:
@@ -6636,10 +7260,12 @@ ROWS = [
                   "sits in a FRESH setup: a tool-less op added under the harness raises a modal "
                   "'Failed to generate toolpath - no tool selected' dialog that parks the thread"),
         "encoded_in": ("cam_select_geometry._SURFACE_TARGET_PARAM's 'swarf' entry "
-                       "(advancedSwarfSurfaces) with _surface_params' isEditable filter, which "
+                       "(advancedSwarfSurfaces, then swarfSurfaces, the first present) with "
+                       "_surface_params' isEditable filter, which "
                        "make surface_target='swarf' the one settable role here; and _apply_curve's "
                        "no-curve-parameter refusal, which is what a chain/face selection meets on "
                        "this strategy and which hands back the surface set instead"),
+        "entitlement": "design_manufacturing_extension",
         "needs": "cam",
         "body": """
     cam, setup = cam_measure_setup()
@@ -6703,6 +7329,7 @@ ROWS = [
                        "morph/project chain reaches the drive curves rather than the boundary; "
                        "tests/unit/test_cam_select_geometry.py's operation fakes, which name the "
                        "parameters each strategy carries"),
+        "entitlement": "design_manufacturing_extension",
         "needs": "cam",
         "body": """
     cam, setup = cam_measure_setup()
@@ -7105,14 +7732,16 @@ ROWS = [
     },
     {
         "id": "cam-suppress-clears-fault-channel",
-        "claim": ("Suppressing an ERRORED operation CLEARS its fault channel: an op faulted by a "
+        "claim": ("Suppressing an ERRORED operation KEEPS its fault channel: an op faulted by a "
                   "bottom height above its top reads hasError True with operationState 3, and "
-                  "with isSuppressed set True the same op reads hasError False, error '' and "
-                  "operationState 2 - the error text is gone from the op, not carried beside the "
-                  "suppression. A hasError still True under suppression refutes. The row restores "
-                  "the op: the fault is corrected and regenerated clean before it returns"),
-        "encoded_in": ("_cam_common.op_primary_state / op_state_facts, which bucket a suppressed "
-                       "op before reading its error; cam_inspect_toolpaths' suppressed split"),
+                  "with isSuppressed set True the same op reads hasError True, the SAME error "
+                  "text and operationState 2 - only the state and isSuppressed move; the fault "
+                  "is not cleared. A hasError reading False under suppression refutes. The row "
+                  "restores the op: the fault is corrected and regenerated clean before it "
+                  "returns"),
+        "encoded_in": ("_cam_common.op_state_tally / toolpath_present_tally, which read "
+                       "isSuppressed BEFORE hasError so a suppressed op's stale fault never "
+                       "counts as errored; op_primary_state already read the flag first"),
         "needs": "cam",
         "body": """
     import time as _t
@@ -7139,7 +7768,8 @@ ROWS = [
         emit(False, "cam-suppress-clears-fault-channel: fault generation did not complete in 60s"
              " - inconclusive (fault restored), rerun")
         return
-    faulted = (op.hasError, op.operationState, (op.error or "").strip().splitlines() or [""])
+    faulted_error = op.error
+    faulted = (op.hasError, op.operationState, (faulted_error or "").strip().splitlines() or [""])
     op.isSuppressed = True
     cleared = (op.hasError, op.error, op.operationState, op.isSuppressed)
     op.isSuppressed = False
@@ -7149,13 +7779,13 @@ ROWS = [
              " 60s - Face1 LEFT ERRORED, rerun before any machining-time row")
         return
     clean = op.hasError is False and op.operationState == 0 and op.hasToolpath is True
-    emit(faulted[0] is True and faulted[1] == 3 and cleared[0] is False and cleared[1] == ""
-         and cleared[2] == 2 and cleared[3] is True and clean,
+    emit(faulted[0] is True and faulted[1] == 3 and cleared[0] is True
+         and cleared[1] == faulted_error and cleared[2] == 2 and cleared[3] is True and clean,
          "cam-suppress-clears-fault-channel: faulted=(hasError " + repr(faulted[0])
          + ", state " + str(faulted[1]) + ", error " + repr(faulted[2][0][:40])
          + ") suppressed=(hasError " + repr(cleared[0]) + ", error " + repr(cleared[1])
          + ", state " + str(cleared[2]) + ", isSuppressed " + repr(cleared[3])
-         + ") (expect False / '' / 2 / True) restored_clean=" + repr(clean))
+         + ") (expect True / same text / 2 / True) restored_clean=" + repr(clean))
 """,
     },
     {
@@ -7405,6 +8035,232 @@ ROWS = [
 """,
     },
     {
+        "id": "cam-op-valid-until-check-validity",
+        "claim": ("A user parameter driving the model a face op selects can grow the model without "
+                  "its operation's operationState moving off IsValid (0), even across five "
+                  "doEvents() pumps - CAM.checkValidity() is what re-checks it, and does so "
+                  "SYNCHRONOUSLY: it returns None and operationState reads OutOfDate (1) on the "
+                  "very next line, no poll needed. The row restores the parameter and regenerates "
+                  "clean before it returns"),
+        "encoded_in": "_cam_common.get_cam sync and cam_get / cam_get_status readiness",
+        "needs": "cam",
+        "body": """
+    import time as _t
+    cam, setup = cam_measure_setup()
+    op = None
+    for x in setup.allOperations:
+        o = adsk.cam.Operation.cast(x)
+        if o is not None and o.name == "Face1":
+            op = o
+    def _generate(o):
+        f = cam.generateToolpath(o)
+        n = 0
+        while not f.isGenerationCompleted and n < 600:
+            adsk.doEvents()
+            _t.sleep(0.1)
+            n += 1
+        return f.isGenerationCompleted
+    # In the Manufacture workspace activeProduct is the CAM product; the design comes off the document.
+    des = adsk.fusion.Design.cast(
+        adsk.core.Application.get().activeDocument.products.itemByProductType("DesignProductType"))
+    ext = None
+    for e in des.rootComponent.features.extrudeFeatures:
+        if e.bodies.count and e.bodies.item(0).name == "CamMeasureBox":
+            ext = e
+    if ext is None:
+        emit(False, "cam-op-valid-until-check-validity: CamMeasureBox extrude not found -"
+             " inconclusive")
+        return
+    # A NAMED parameter driving the box's height, bound once and reused on a rerun.
+    up = des.userParameters.itemByName("camMeasureBoxHeight")
+    if up is None:
+        up = des.userParameters.add("camMeasureBoxHeight",
+                                    adsk.core.ValueInput.createByReal(1.5), "cm", "")
+        ext.extentOne.distance.expression = "camMeasureBoxHeight"
+    if not _generate(op):
+        emit(False, "cam-op-valid-until-check-validity: baseline generation did not complete in"
+             " 60s - inconclusive")
+        return
+    before_state = op.operationState
+    up.expression = "2.5 cm"
+    for _ in range(5):
+        adsk.doEvents()
+    mid_state = op.operationState
+    ran = cam.checkValidity()
+    after_state = op.operationState
+    up.expression = "1.5 cm"
+    if not _generate(op):
+        emit(False, "cam-op-valid-until-check-validity: restore generation did not complete in"
+             " 60s - Face1 LEFT STALE, rerun before any other cam row")
+        return
+    emit(before_state == 0 and mid_state == 0 and ran is None and after_state == 1,
+         "cam-op-valid-until-check-validity: before=" + str(before_state)
+         + " mid(after 5 pumps)=" + str(mid_state) + " checkValidity()=" + repr(ran)
+         + " after=" + str(after_state) + " (expect 0 / 0 / None / 1)")
+""",
+    },
+    {
+        "id": "cam-flat-check-validity-needs-flat-recompute",
+        "claim": ("A sheet-metal flat pattern recomputes LAZILY: after its driving user parameter "
+                  "changes, a cutting operation on the flat body keeps operationState IsValid (0) "
+                  "through cam.checkValidity(); on a fresh change, reading the flat body's OWN "
+                  "revisionId (comp.flatPattern.flatBody) before the first check forces the "
+                  "recompute and that check flips it to OutOfDate (1), while reading the setup's "
+                  "model proxy (Setup.models.item(0).revisionId) does not. A flat pattern made after "
+                  "the CAM product exists binds to a JetOperation setup only after a Design -> "
+                  "Manufacture workspace round-trip ('Used entity could not be matched in "
+                  "manufacturing tree' before it). This is why a synced readiness read reported "
+                  "'ready to post' right after a parametric edit: its checkValidity ran before the "
+                  "flat recomputed"),
+        "encoded_in": "_cam_common.get_cam sync branch (flat touch before checkValidity)",
+        "needs": "cam",
+        "body": """
+    import time as _t
+    # In the Manufacture workspace activeProduct is the CAM product; the design comes off the document.
+    des = adsk.fusion.Design.cast(
+        adsk.core.Application.get().activeDocument.products.itemByProductType("DesignProductType"))
+    root = des.rootComponent
+    occ = root.occurrences.addNewSheetMetalComponent(adsk.core.Matrix3D.create())
+    occ.activate()
+    comp = occ.component
+    w = des.userParameters.add("flatCheckW", adsk.core.ValueInput.createByString("60 mm"), "mm", "")
+    sk = comp.sketches.add(root.xYConstructionPlane)
+    sk.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(6, 4, 0))
+    long_lines = [c for c in sk.sketchCurves.sketchLines
+                  if abs(c.startSketchPoint.geometry.y - c.endSketchPoint.geometry.y) < 1e-9]
+    if not long_lines:
+        emit(False, "cam-flat-check-validity-needs-flat-recompute: no horizontal rectangle edge"
+             " found - inconclusive")
+        return
+    dim = sk.sketchDimensions.addDistanceDimension(
+        long_lines[0].startSketchPoint, long_lines[0].endSketchPoint,
+        adsk.fusion.DimensionOrientations.HorizontalDimensionOrientation,
+        adsk.core.Point3D.create(3, -1, 0), True)
+    dim.parameter.expression = "flatCheckW"
+    ff = comp.features.flangeFeatures
+    ff.add(ff.createBaseFlangeInput([sk.profiles.item(0)]))
+    base_body = comp.bRepBodies.item(0)
+    T = base_body.boundingBox.maxPoint.z
+    top_edges = [e for e in base_body.edges
+                 if e.geometry.curveType == adsk.core.Curve3DTypes.Line3DCurveType
+                 and abs(e.length - 6.0) < 1e-4 and e.startVertex.geometry.z > 0.01
+                 and e.endVertex.geometry.z > 0.01]
+    if len(top_edges) != 2:
+        emit(False, "cam-flat-check-validity-needs-flat-recompute: expected 2 top edges of"
+             " length 6 cm, found " + str(len(top_edges)) + " - inconclusive")
+        return
+    ff.add(ff.createEdgeFlangeInput(top_edges, adsk.core.ValueInput.createByString("20 mm")))
+    body = comp.bRepBodies.item(0)
+    base_top = [f for f in body.faces if f.geometry.objectType == adsk.core.Plane.classType()
+                and abs(f.pointOnFace.z - T) < 1e-6 and f.area > 15]
+    if len(base_top) != 1:
+        emit(False, "cam-flat-check-validity-needs-flat-recompute: base top face not found"
+             " uniquely - inconclusive")
+        return
+    flat = comp.createFlatPattern(base_top[0])
+
+    # A flat pattern made AFTER the CAM product exists is "not matched in the manufacturing tree"
+    # until the workspace round-trips Design -> Manufacture (measured); the harness entered
+    # Manufacture at its world setup, so the row round-trips before binding.
+    ui = adsk.core.Application.get().userInterface
+    ui.workspaces.itemById("FusionSolidEnvironment").activate()
+    ui.workspaces.itemById("CAMEnvironment").activate()
+    # A cutting (Jet) setup on the component's flat body, the binding cam_create_setup makes; a
+    # laser sample tool from the shipped Cutting Tools library drives a profile2d op on the flat's
+    # silhouette, as cam_select_geometry(selection='silhouette') does.
+    cam, _existing = cam_measure_setup()
+    libs = adsk.cam.CAMManager.get().libraryManager.toolLibraries
+    tool = None
+    for a in libs.childAssetURLs(libs.urlByLocation(adsk.cam.LibraryLocations.Fusion360LibraryLocation)):
+        if "Cutting Tools (Metric)" in a.leafName:
+            lib = libs.toolLibraryAtURL(a)
+            for i in range(lib.count):
+                if "laser" in (lib.item(i).parameters.itemByName("tool_type").value.value or ""):
+                    tool = lib.item(i)
+                    break
+    if tool is None:
+        emit(False, "cam-flat-check-validity-needs-flat-recompute: no laser sample tool in"
+             " Cutting Tools (Metric) - inconclusive")
+        return
+    flat_body = comp.flatPattern.flatBody
+    si = cam.setups.createInput(adsk.cam.OperationTypes.JetOperation)
+    si.models = [flat_body]
+    setup2 = cam.setups.add(si)
+    if setup2.models.count != 1:
+        emit(False, "cam-flat-check-validity-needs-flat-recompute: the flat body did not land as"
+             " the setup's model - inconclusive")
+        return
+    opin = setup2.operations.createInput("profile2d")
+    opin.tool = tool
+    op = setup2.operations.add(opin)
+    op.name = "FlatCheckCut"
+    pv = op.parameters.itemByName("contours").value
+    cs = pv.getCurveSelections()
+    sel = cs.createNewSilhouetteSelection()
+    sel.inputGeometry = [setup2.models.item(0)]
+    pv.applyCurveSelections(cs)
+
+    def _generate(o):
+        f = cam.generateToolpath(o)
+        n = 0
+        while not f.isGenerationCompleted and n < 600:
+            adsk.doEvents()
+            _t.sleep(0.1)
+            n += 1
+        return f.isGenerationCompleted
+
+    if not _generate(op):
+        emit(False, "cam-flat-check-validity-needs-flat-recompute: baseline generation did not"
+             " complete in 60s - inconclusive")
+        return
+    # A setup bound right after the round-trip lands NoToolpath (3) on its first generation or
+    # two (one on a warmed session, two on a freshly launched one - measured), and the next one
+    # lands a path; up to three retries are allowed before the baseline read, and reported.
+    retries = 0
+    while op.operationState == 3 and retries < 3:
+        retries += 1
+        if not _generate(op):
+            emit(False, "cam-flat-check-validity-needs-flat-recompute: baseline regeneration "
+                 + str(retries) + " did not complete in 60s - inconclusive")
+            return
+    baseline_state = op.operationState
+
+    # (a) a check before the flat recomputed leaves the op valid
+    w.expression = "66 mm"
+    cam.checkValidity()
+    stale_state = op.operationState
+    if not _generate(op):
+        emit(False, "cam-flat-check-validity-needs-flat-recompute: second generation did not"
+             " complete in 60s - inconclusive")
+        return
+    resettled_state = op.operationState
+
+    # (b) reading the flat body BEFORE the first check forces the recompute that check sees
+    w.expression = "70 mm"
+    _ = comp.flatPattern.flatBody.revisionId
+    cam.checkValidity()
+    after_flat_read = op.operationState
+    if not _generate(op):
+        emit(False, "cam-flat-check-validity-needs-flat-recompute: third generation did not"
+             " complete in 60s - inconclusive")
+        return
+
+    # (c) reading the setup's model proxy does not recompute the flat
+    w.expression = "74 mm"
+    _ = setup2.models.item(0).revisionId
+    cam.checkValidity()
+    after_proxy_read = op.operationState
+
+    emit(baseline_state == 0 and stale_state == 0
+         and resettled_state == 0 and after_flat_read == 1 and after_proxy_read == 0,
+         "cam-flat-check-validity-needs-flat-recompute: baseline=" + str(baseline_state)
+         + " stale_check=" + str(stale_state)
+         + " resettled=" + str(resettled_state) + " after_flat_read=" + str(after_flat_read)
+         + " after_proxy_read=" + str(after_proxy_read) + " (expect 0/0/0/1/0)")
+""",
+    },
+    {
         "id": "pattern-elements-count-equals-quantity",
         "claim": ("A circular pattern made with quantity 6 answers patternElements.count == 6 and "
                   "leaves 6 bodies, and a 2 x 3 rectangular pattern answers 6: the element count "
@@ -7447,6 +8303,85 @@ ROWS = [
         emit(circ == 6 and bodies == 6 and rect == 6,
              "pattern-elements-count-equals-quantity: circular quantity 6 -> elements "
              + str(circ) + " bodies " + str(bodies) + " | rectangular 2x3 -> elements " + str(rect))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
+        "id": "rigid-group-set-occurrences-rolled-back",
+        "claim": "RigidGroup.setOccurrences replaces two root members when rolled before its row; end restoration reads exact members, healthy and unsuppressed.",
+        "encoded_in": "assembly_edit_relations._do_set_occurrences; test_assembly_edit_relations._EditableGroup",
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        des = adsk.fusion.Design.cast(tmp.products.itemByProductType('DesignProductType'))
+        root = des.rootComponent
+        occs = []
+        for i in range(3):
+            matrix = adsk.core.Matrix3D.create()
+            matrix.translation = adsk.core.Vector3D.create(i * 4, 0, 0)
+            occ = root.occurrences.addNewComponent(matrix)
+            sk = occ.component.sketches.add(occ.component.xYConstructionPlane)
+            sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0,0,0), adsk.core.Point3D.create(.4,.4,0))
+            occ.component.features.extrudeFeatures.addSimple(sk.profiles.item(0), adsk.core.ValueInput.createByReal(1),
+                                                           adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+            occs.append(occ)
+        initial = adsk.core.ObjectCollection.create()
+        initial.add(occs[0]); initial.add(occs[1])
+        rg = root.rigidGroups.add(initial, False)
+        end = des.timeline.count
+        rolled = rg.timelineObject.rollTo(True)
+        at = des.timeline.markerPosition
+        wanted = adsk.core.ObjectCollection.create()
+        wanted.add(occs[0]); wanted.add(occs[2])
+        returned = rg.setOccurrences(wanted, False)
+        des.timeline.markerPosition = end
+        actual = sorted(o.entityToken for o in rg.occurrences)
+        expected = sorted(o.entityToken for o in (occs[0], occs[2]))
+        emit(rolled is True and at == rg.timelineObject.index and returned is True
+             and actual == expected and des.timeline.markerPosition == end
+             and rg.isSuppressed is False and rg.timelineObject.healthState == 0,
+             'rigid-group-set-occurrences-rolled-back: members=' + repr(actual)
+             + ' expected=' + repr(expected) + ' marker=' + str(des.timeline.markerPosition))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
+        "id": "circular-occurrence-pattern-owns-no-body",
+        "claim": "Circular occurrence patterns hold an iterable OccurrenceVector per element, no result bodies, distinct occurrence poses and zero element translations.",
+        "encoded_in": "_assert.PatternElementsPlaced._occurrence_poses; test_assert_kinds._OccurrenceVector and _OccurrenceElement",
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        des = adsk.fusion.Design.cast(tmp.products.itemByProductType('DesignProductType'))
+        root = des.rootComponent
+        matrix = adsk.core.Matrix3D.create()
+        matrix.translation = adsk.core.Vector3D.create(4, 0, 0)
+        seed = root.occurrences.addNewComponent(matrix)
+        sk = seed.component.sketches.add(seed.component.xYConstructionPlane)
+        sk.sketchCurves.sketchLines.addTwoPointRectangle(adsk.core.Point3D.create(0,0,0), adsk.core.Point3D.create(1,1,0))
+        seed.component.features.extrudeFeatures.addSimple(sk.profiles.item(0), adsk.core.ValueInput.createByReal(1),
+                                                        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        coll = adsk.core.ObjectCollection.create()
+        coll.add(seed)
+        features = root.features.circularPatternFeatures
+        inp = features.createInput(coll, root.zConstructionAxis)
+        inp.quantity = adsk.core.ValueInput.createByReal(5)
+        inp.totalAngle = adsk.core.ValueInput.createByString('360 deg')
+        feature = features.add(inp)
+        poses, zero, vector_only = [], True, True
+        for i in range(feature.patternElements.count):
+            el = feature.patternElements.item(i)
+            occs = list(el.occurrences)
+            vector_only = vector_only and not hasattr(el.occurrences, 'count') and len(occs) == 1
+            poses.extend(tuple(round(v, 6) for v in o.transform2.asArray()) for o in occs)
+            t = el.transform.translation
+            zero = zero and abs(t.x) + abs(t.y) + abs(t.z) < 1e-9
+        emit(feature.bodies.count == 0 and feature.patternElements.count == len(poses) == len(set(poses)) == 5
+             and zero and vector_only,
+             'circular-occurrence-pattern-owns-no-body: bodies=' + str(feature.bodies.count)
+             + ' poses=' + repr(poses) + ' zero=' + str(zero) + ' vector=' + str(vector_only))
     finally:
         tmp.close(False)
 """,
@@ -7520,6 +8455,172 @@ ROWS = [
              + " | at end " + str(at_end) + " -> movetoNextStep " + str(next_ok)
              + " marker " + str(after_next)
              + " | at 0 -> moveToPreviousStep " + str(prev_ok) + " marker " + str(after_prev))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
+        "id": "timeline-reorder-past-end-raises",
+        "claim": ("reorder(-1) and reorder(timeline.count) on a non-last item raise featureAtIndex "
+                  "('2 : InternalValidationError : featureAtIndex') and leave the order and the "
+                  "marker unchanged, so no reorder places an item after the last row"),
+        "encoded_in": ("design_edit_timeline.py _do_reorder pre-call gate (_last_refusal); "
+                       "tests/unit/test_design_edit_timeline.py _Movable.reorder"),
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        des = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
+        root = des.rootComponent
+        P = adsk.core.Point3D.create
+        for x in (0, 3):
+            sk = root.sketches.add(root.xYConstructionPlane)
+            sk.sketchCurves.sketchLines.addTwoPointRectangle(P(x, 0, 0), P(x + 1, 1, 0))
+            root.features.extrudeFeatures.addSimple(
+                sk.profiles.item(0), adsk.core.ValueInput.createByReal(1.0),
+                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        tl = des.timeline
+        def order():
+            return [tl.item(i).name for i in range(tl.count)]
+        item = tl.item(1)
+        results = []
+        for idx in (-1, tl.count):
+            before, marker = order(), tl.markerPosition
+            raised = None
+            try:
+                item.reorder(idx)
+            except Exception as e:
+                raised = str(e)
+            results.append((idx, raised, order() == before, tl.markerPosition == marker))
+        emit(all(r[1] is not None and "featureAtIndex" in r[1] and r[2] and r[3] for r in results),
+             "timeline-reorder-past-end-raises: count " + str(tl.count) + ", second row | "
+             + " | ".join("reorder(" + str(i) + ") raised " + repr(e) + " order kept " + str(o)
+                          + " marker kept " + str(m) for i, e, o, m in results))
+    finally:
+        tmp.close(False)
+""",
+    },
+    {
+        "id": "addexistingcomponent-lands-composed-with-first-occurrence",
+        "claim": ("Occurrences.addExistingComponent(comp, M) does not land the new occurrence at M "
+                  "once `comp` has a placed occurrence. With H and W the world poses of the "
+                  "occurrence root.allOccurrencesByComponent lists first for the host and for "
+                  "`comp` (H identity for the root): a DIRECT design lands the local transform at "
+                  "inv(H).M.W; a PARAMETRIC design lands it at inv(H).W.H.inv(W).M, which is M "
+                  "itself in the root. An identity M lands at inv(H).W in both. Passing "
+                  "H.M.inv(W) (direct) or inv(inv(H).W.H.inv(W)).M (parametric) lands at M"),
+        "encoded_in": ("design_add_instance.py _cells_to_pass; "
+                       "tests/unit/test_design_add_instance.py _placed"),
+        "body": """
+    import math
+    def pose(deg, axis, t):
+        m = adsk.core.Matrix3D.create()
+        m.setToRotation(math.radians(deg), adsk.core.Vector3D.create(*axis),
+                        adsk.core.Point3D.create(0.0, 0.0, 0.0))
+        m.translation = adsk.core.Vector3D.create(*t)
+        return m
+    def mul(*ms):
+        out = ms[-1].copy()
+        for m in reversed(ms[:-1]):
+            out.transformBy(m)
+        return out
+    def inv(m):
+        out = m.copy()
+        out.invert()
+        return out
+    def same(a, b):
+        return all(abs(x - y) < 1e-6 for x, y in zip(a.asArray(), b.asArray()))
+    H = pose(40.0, (1.0, 0.0, 0.0), (-3.0, 7.0, 0.5))
+    W = pose(70.0, (0.0, 1.0, 0.0), (4.0, 2.0, 1.0))
+    M = pose(-45.0, (0.0, 0.0, 1.0), (-5.0, -2.0, 3.0))
+    I = adsk.core.Matrix3D.create()
+    shift = mul(inv(H), W, H, inv(W))
+
+    def legs(direct):
+        tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+        try:
+            d = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
+            if direct:
+                d.designType = adsk.fusion.DesignTypes.DirectDesignType
+            root = d.rootComponent
+            host = root.occurrences.addNewComponent(H)
+            src = root.occurrences.addNewComponent(W)
+            comp, inner = src.component, host.component.occurrences
+            def first():
+                return root.allOccurrencesByComponent(comp).item(0).transform2.copy()
+            in_root = root.occurrences.addExistingComponent(comp, M).transform
+            in_host = inner.addExistingComponent(comp, M).transform
+            F = first()
+            walk_first_is_nested = same(F, mul(H, in_host)) and not same(F, W)
+            plain = root.occurrences.addExistingComponent(comp, I).transform
+            plain_host = inner.addExistingComponent(comp, I).transform
+            fixed_root = root.occurrences.addExistingComponent(
+                comp, mul(M, inv(F)) if direct else M).transform
+            fixed_host = inner.addExistingComponent(
+                comp, mul(H, M, inv(F)) if direct
+                else mul(inv(mul(inv(H), F, H, inv(F))), M)).transform
+            return (same(in_root, mul(M, W) if direct else M),
+                    same(in_host, mul(inv(H), M, W) if direct else mul(shift, M)),
+                    walk_first_is_nested, same(plain, F), same(plain_host, mul(inv(H), F)),
+                    same(fixed_root, M), same(fixed_host, M))
+        finally:
+            tmp.close(False)
+
+    direct, parametric = legs(True), legs(False)
+    emit(all(v is True for v in direct + parametric),
+         "addexistingcomponent-lands-composed-with-first-occurrence: direct=" + str(direct)
+         + " parametric=" + str(parametric) + " for (root rule, host rule, nested occurrence "
+         "became walk-first, root identity lands at W, host identity at inv(H).W, compensated root at M, "
+         "compensated host at M)")
+""",
+    },
+    {
+        "id": "pinslot-custom-rotation-z-slide-reads-back-x",
+        "claim": ("Joint.setAsPinSlotJointMotion(CustomJointDirection, slide, axisEntity) answers "
+                  "True for every frame slide, yet a ZAxisJointDirection slide reads back "
+                  "slideDirection XAxisJointDirection - also when the slide read Y before the call "
+                  "- while X and Y read back as given. The slide vector is perpendicular to the "
+                  "custom rotation entity in each case and no custom slide entity is set"),
+        "encoded_in": ("joint_edit.py slide read-back after a pin_slot set; "
+                       "tests/fakes/joints.py FakeJoint.setAsPinSlotJointMotion"),
+        "body": """
+    tmp = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    try:
+        d = adsk.fusion.Design.cast(tmp.products.itemByProductType("DesignProductType"))
+        root = d.rootComponent
+        JD = adsk.fusion.JointDirections
+        def box(x):
+            m = adsk.core.Matrix3D.create()
+            m.translation = adsk.core.Vector3D.create(x, 0.0, 0.0)
+            occ = root.occurrences.addNewComponent(m)
+            sk = occ.component.sketches.add(occ.component.xYConstructionPlane)
+            sk.sketchCurves.sketchLines.addTwoPointRectangle(
+                adsk.core.Point3D.create(0, 0, 0), adsk.core.Point3D.create(2, 2, 0))
+            occ.component.features.extrudeFeatures.addSimple(
+                sk.profiles.item(0), adsk.core.ValueInput.createByReal(1.0),
+                adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+            return adsk.fusion.JointGeometry.createByPoint(occ.bRepBodies.item(0).vertices.item(0))
+        ji = root.joints.createInput(box(0.0), box(10.0))
+        ji.setAsPinSlotJointMotion(JD.CustomJointDirection, JD.XAxisJointDirection,
+                                   root.yConstructionAxis)
+        joint = root.joints.add(ji)
+        axes = (root.xConstructionAxis, root.yConstructionAxis, root.zConstructionAxis)
+        asked = (JD.YAxisJointDirection, JD.ZAxisJointDirection, JD.XAxisJointDirection,
+                 JD.ZAxisJointDirection)
+        results = []
+        for entity in axes:
+            for slide in asked:
+                joint.timelineObject.rollTo(True)
+                answered = joint.setAsPinSlotJointMotion(JD.CustomJointDirection, slide, entity)
+                d.timeline.moveToEnd()
+                m = joint.jointMotion
+                dot = m.slideDirectionVector.dotProduct(m.rotationAxisVector)
+                results.append((slide, answered, m.slideDirection, abs(dot) < 1e-9,
+                                m.customSlideDirectionEntity is None, int(joint.healthState)))
+        want = lambda s: JD.XAxisJointDirection if s == JD.ZAxisJointDirection else s
+        emit(all(a is True and got == want(s) and perp and plain and health == 0
+                 for s, a, got, perp, plain, health in results),
+             "pinslot-custom-rotation-z-slide-reads-back-x: (asked, answered, read) per custom "
+             "X/Y/Z entity = " + str([r[:3] for r in results]))
     finally:
         tmp.close(False)
 """,
@@ -7789,10 +8890,10 @@ ROWS = [
         "claim": ("form_create, handed the cage R2 measured finishEdit raising "
                   "ASM_TSP_BFTS_OUTPUT_BODY_SELF_INTERSECTS on (it passes the cage check), refuses "
                   "naming that message, and its reply matches what the call left: 'The Form was "
-                  "removed' with workspace_orient reading no open Form edit and the design "
-                  "parametric at its timeline count from before the create, or 'still open' with "
-                  "in_form_edit true and the design reading direct. The detail records which; an "
-                  "open edit is left for the owner to close"),
+                  "removed' with workspace_orient reading the design parametric at its timeline "
+                  "count from before the create, or 'still open' with the design reading direct "
+                  "(designType is the only signal; nothing else discriminates the open edit). The "
+                  "detail records which; an open edit is left for the owner to close"),
         "encoded_in": ("_form_common.py finish_edit and create_form's open branch; "
                        "tests/unit/test_form_create.py"),
         # The CAM rows leave the scratch in Manufacture, where activeProduct is not a Design.
@@ -8041,6 +9142,61 @@ def _measure_dxf_units(row, scratch):
     return status, detail
 
 
+def _judge_camera_extents(marker, is_error, payload, expected):
+    """Return the verdict for one bound perspective member's exact native rejection."""
+    if not isinstance(marker, dict) or any(marker.get(k) != v for k, v in expected.items()):
+        return "ERROR", _dxf_probe_detail("camera_marker_identity_unproven", marker, payload)
+    if marker.get("phase") == "returned":
+        return "FAIL", _dxf_probe_detail("camera_member_returned", marker, payload)
+    if (marker.get("object_type") != "adsk::core::Camera"
+            or type(marker.get("camera_type")) is not int
+            or type(marker.get("expected_type")) is not int
+            or marker["expected_type"] != expected["camera_type"]):
+        return "ERROR", _dxf_probe_detail("perspective_preparation_unproven", marker, payload)
+    if marker.get("phase") != "ready":
+        return "ERROR", _dxf_probe_detail("camera_member_boundary_unproven", marker, payload)
+    if not is_error:
+        return "FAIL", _dxf_probe_detail("camera_member_did_not_raise", marker, payload)
+    if "RuntimeError: 3 : Camera type must be orthographic for extents" not in str(payload).splitlines():
+        return "ERROR", _dxf_probe_detail("different_camera_error", marker, payload)
+    return "PASS", _dxf_probe_detail("exact_camera_member_rejection", marker, payload)
+
+
+def _measure_camera_extents(row, scratch):
+    """Measure getter and setter in separate scripts with fresh bound boundary records."""
+    base_script = _compose(row)
+    source_sha = hashlib.sha256(base_script.encode("utf-8")).hexdigest()
+    probe_dir = os.path.join(REPO_ROOT, "outputs", "api-camera-extents", uuid.uuid4().hex)
+    os.makedirs(probe_dir, exist_ok=False)
+    outcomes = []
+    for member in ("getExtents", "setExtents"):
+        nonce = uuid.uuid4().hex
+        path = os.path.join(probe_dir, member + ".json")
+        expected = dict(row_id=row["id"], nonce=nonce, scratch=scratch,
+                        source_sha256=source_sha, member=member, camera_type=row["perspective_type"])
+        script = base_script
+        for token, value in (("MARKER_PATH", path), ("NONCE", nonce), ("SCRATCH", scratch),
+                             ("SOURCE_SHA", source_sha), ("MEMBER", member)):
+            script = script.replace('"__FE_CAMERA_' + token + '__"', repr(value))
+        if "__FE_CAMERA_" in script:
+            return "ERROR", _dxf_probe_detail("camera_placeholder_residual", None, script)
+        try:
+            is_error, payload = call("sys_execute_script", {
+                "script": script, "expect_document": scratch})
+        except Exception as exc:
+            return "ERROR", _dxf_probe_detail("camera_transport_exception", None, exc)
+        try:
+            with open(path, encoding="utf-8") as stream:
+                marker = json.load(stream)
+        except (OSError, ValueError):
+            marker = None
+        status, detail = _judge_camera_extents(marker, is_error, payload, expected)
+        outcomes.append(json.loads(detail))
+        if status != "PASS":
+            return status, json.dumps(outcomes, sort_keys=True)
+    return "PASS", "camera-supported-perspective-extents-outcome: " + json.dumps(outcomes, sort_keys=True)
+
+
 def _verdict_lines(payload):
     text = payload if isinstance(payload, str) else json.dumps(payload)
     return [ln.strip() for ln in text.splitlines() if ln.strip().startswith(("PASS ", "FAIL "))]
@@ -8239,11 +9395,10 @@ def _ledger_row(row, status="PASS", detail=""):
     return "| " + " | ".join(_ledger_fields(row, result)) + " |"
 
 
-def _accepted_ledger_fields(row):
-    """Every ledger projection a row may legitimately carry: PASS, or SKIP on a declared platform."""
-    return [_ledger_fields(row)] + [
-        _ledger_fields(row, "SKIP: " + _skip_detail(row, platform))
-        for platform in sorted(row.get("skip_on") or {})]
+def _accepted_ledger_fields(row, platform):
+    """The ledger projections a row may carry when checked on `platform`: PASS, or its SKIP there."""
+    skip = _skip_detail(row, platform)
+    return [_ledger_fields(row)] + ([_ledger_fields(row, "SKIP: " + skip)] if skip else [])
 
 
 def _ledger_projection(text):
@@ -8256,10 +9411,91 @@ def _ledger_projection(text):
     return projection
 
 
-def write_api_facts(facts, fusion_version, stamp_date, shapes=None):
-    """Generate tests/live_api_facts.py from a fully-PASSING run: 'enums.*' keys become ENUMS,
-    'not_enums.*' NOT_ENUMS, 'behavior.*' BEHAVIOR, dumped shapes SHAPES. conftest imports the
-    module to populate the mocks; the fake-shape lint checks SHARED fakes against SHAPES."""
+_ENTITLEMENTS = {"design_manufacturing_extension": "the Design/Manufacturing Extension"}
+
+_EXTENSION_REQUIRED_TEXT = "Manufacturing or Design Extension is required"
+_GEN_ALLOWED_EQ_RE = re.compile(r"isGenerationAllowed=(\S+)")
+_GEN_ALLOWED_LISTED_RE = re.compile(r"isGenerationAllowed is not True for ([\w=,\s]+?) -")
+_CARRIED_LABEL_RE = re.compile(r"^CARRIED: needs .+; measured (\S+) on (.+)$")
+
+
+def _listed_all_false(segment):
+    """True when every name=value pair in an isGenerationAllowed listing reads False."""
+    values = [pair.split("=", 1)[1] for pair in segment.split(",") if "=" in pair]
+    return bool(values) and all(v.strip() == "False" for v in values)
+
+
+def _entitlement_refusal(detail):
+    """True only for the measured Design/Manufacturing Extension refusal texts."""
+    if _EXTENSION_REQUIRED_TEXT in detail:
+        return True
+    m = _GEN_ALLOWED_EQ_RE.search(detail)
+    if m:
+        return m.group(1).rstrip(",") == "False"
+    m = _GEN_ALLOWED_LISTED_RE.search(detail)
+    return m is not None and _listed_all_false(m.group(1))
+
+
+def _carry_entitlements(results):
+    """Results with each gated refusal CARRIED under its standing row's entitled date and build."""
+    if not os.path.exists(LEDGER):
+        return results, {}
+    with open(LEDGER, encoding="utf-8") as fh:
+        old_text = fh.read()
+    old_cells = {proj[1]: proj[0] for proj in _ledger_projection(old_text)}
+    stamp = _STAMP_RE.search(old_text)
+    stamp_build, stamp_date = (stamp.group(1), stamp.group(2)) if stamp else (None, None)
+    carried, refusals = [], {}
+    for row, status, detail in results:
+        date_build = None
+        if row.get("entitlement") and status != "PASS" and _entitlement_refusal(detail):
+            old_cell = old_cells.get(row["id"])
+            if old_cell == "PASS" and stamp:
+                date_build = (stamp_date, stamp_build)
+            elif old_cell:
+                m = _CARRIED_LABEL_RE.match(old_cell)
+                if m:
+                    date_build = (m.group(1), m.group(2))
+        if date_build:
+            refusals[row["id"]] = detail
+            status = "CARRIED"
+            detail = "needs {0}; measured {1} on {2}".format(
+                _ENTITLEMENTS[row["entitlement"]], *date_build)
+        carried.append((row, status, detail))
+    return carried, refusals
+
+
+def _load_standing_facts_module():
+    """The standing tests/live_api_facts.py, loaded by path."""
+    spec = importlib.util.spec_from_file_location("_fe_measure_standing_facts", FACTS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _resolve_carried_shapes(carried):
+    """Carried rows' owned SHAPES from the standing module; ValueError names a missing one."""
+    owned = [(row, name) for row, _detail in carried for name in row.get("owns_shapes", [])]
+    if not owned:
+        return {}
+    try:
+        shapes = _load_standing_facts_module().SHAPES
+    except (OSError, SyntaxError, AttributeError) as exc:
+        raise ValueError(
+            "carried row {0} needs tests/live_api_facts.py, which failed to load: {1}".format(
+                owned[0][0]["id"], exc))
+    extra = {}
+    for row, name in owned:
+        if name not in shapes:
+            raise ValueError(
+                "carried row {0} owns {1}, which tests/live_api_facts.py lacks - "
+                "nothing to copy forward".format(row["id"], name))
+        extra[name] = list(shapes[name])
+    return extra
+
+
+def write_api_facts(facts, fusion_version, stamp_date, shapes=None, carried=()):
+    """Generate tests/live_api_facts.py from a PASSING-or-CARRIED run's shapes."""
     enums, behavior, not_enums = {}, {}, set()
     for key, value in facts.items():
         if key.startswith("enums."):
@@ -8271,7 +9507,8 @@ def write_api_facts(facts, fusion_version, stamp_date, shapes=None):
             behavior[key[len("behavior."):]] = value
     lines = [
         "# GENERATED by tests/live/measure_api.py against live Fusion - DO NOT EDIT.",
-        "# Regenerate: py -3 tests/live/measure_api.py (a fully-PASSING run rewrites this file).",
+        "# Regenerate: py -3 tests/live/measure_api.py (a run with every row PASS or CARRIED "
+        "rewrites this file).",
         '"""Measured adsk API facts. conftest populates the mock adsk modules and the shared fakes',
         'from these values, so the mocks carry measured data, not hand-typed claims. Each value is',
         'owned by the measurement row of the same name in tests/live/VERIFIED_API_FACTS.md."""',
@@ -8311,8 +9548,11 @@ def write_api_facts(facts, fusion_version, stamp_date, shapes=None):
         "",
         "# Live public attribute membership per adsk type (dir() of a real object) - the",
         "# fake-shape lint requires every SHARED fake attribute to exist here.",
-        "SHAPES = {",
     ]
+    for row, detail in carried:
+        lines.append("# CARRIED {0}: {1} - owns {2}".format(
+            row["id"], detail, ", ".join(row.get("owns_shapes", [])) or "(none)"))
+    lines.append("SHAPES = {")
     for tname in sorted(shapes or {}):
         lines.append('    "{0}": ['.format(tname))
         attrs = sorted(shapes[tname])
@@ -8343,9 +9583,11 @@ def write_ledger(results, fusion_version, stamp_date, source_hash, attestation):
         "no tool reads children. Each such cell says so in its own words, so the",
         "'encoded in' text is what tells you which kind of row you are reading.",
         "",
-        "A non-PASS row means the CLAIM no longer holds: update the fakes and their consumers, then",
-        "re-run to refresh the stamp. `--check` fails when the stamp differs from the installed",
-        "Fusion or any row is not PASS.",
+        "A row that is neither PASS nor CARRIED means the CLAIM no longer holds: update the fakes",
+        "and their consumers, then re-run to refresh the stamp. CARRIED means the row is gated by a",
+        "lapsed entitlement and stands on its last entitled measurement, whose date and build its",
+        "cell names. `--check` fails when the stamp differs from the installed Fusion or any row is",
+        "neither PASS nor CARRIED.",
         "",
         "Stamp: Fusion {0} | verified {1} | source {2}".format(
             fusion_version, stamp_date, source_hash),
@@ -8362,8 +9604,10 @@ def write_ledger(results, fusion_version, stamp_date, source_hash, attestation):
         fh.write("\n".join(lines) + "\n")
 
 
-def check():
-    """Stamp-vs-installed-Fusion gate; measures nothing. Exit 0 = current, 1 = stale or non-PASS."""
+def check(platform=None):
+    """Stamp gate; measures nothing. Exit 0 = current with every row PASS, CARRIED, or SKIP declared
+    for `platform` (the checking machine's sys.platform when not given)."""
+    platform = platform or sys.platform
     if not os.path.exists(LEDGER):
         print("VERIFIED_API_FACTS.md does not exist - run measure_api.py once against live Fusion.")
         return 1
@@ -8386,16 +9630,21 @@ def check():
     ] + [
         "non-PASS row: " + ln
         for ln in table_lines
-        if not ln.startswith(("| PASS ", "| SKIP: "))
+        if not ln.startswith(("| PASS ", "| CARRIED: ", "| SKIP: "))
     ]
     health = health_gate()
     current_attestation = _current_attestation(health)
     live = _fusion_version(health)
     projection = _ledger_projection(text)
-    if len(projection) != len(ROWS) or any(
-            got not in _accepted_ledger_fields(row) for got, row in zip(projection, ROWS)):
-        problems.append("ledger rows do not match the current ROWS registry (id/claim/source/order), "
-                        "or a row is SKIP that declares no skip_on for that platform")
+    if ([cells[1:] for cells in projection]
+            != [_ledger_fields(row)[1:] for row in ROWS]):
+        problems.append("ledger rows do not match the current ROWS registry (id/claim/source/order)")
+    else:
+        # A SKIP stands only on the platform its row declares: a darwin skip is no result here.
+        problems.extend(
+            "row {0} is SKIP, and declares no such skip_on for {1}".format(got[1], platform)
+            for got, row in zip(projection, ROWS)
+            if got[0].startswith("SKIP: ") and got not in _accepted_ledger_fields(row, platform))
     skipped = [got[1] for got in projection if got[0].startswith("SKIP: ")]
     if live != stamped_version:
         problems.append("stamp is Fusion {0} (verified {1}) but the installed Fusion is {2} - "
@@ -8415,10 +9664,13 @@ def check():
                   + ", ".join(runtime_differences))
     else:
         detail = "exact loaded implementation/schema identity matches the historical run"
-    print("contracts current: Fusion {0}, verified {1}, all rows PASS{2}; {3}".format(
-        live, stamped_date,
-        " except {0} skipped by platform ({1})".format(len(skipped), ", ".join(skipped))
-        if skipped else "", detail))
+    carried_ids = [proj[1] for proj in _ledger_projection(text) if proj[0].startswith("CARRIED: ")]
+    status_note = "all rows PASS" if not carried_ids else "PASS except CARRIED: " + ", ".join(carried_ids)
+    if skipped:
+        status_note = "{0}; {1} not run on {2}: {3}".format(
+            status_note.replace("all rows PASS", "PASS"), len(skipped), platform, ", ".join(skipped))
+    print("contracts current: Fusion {0}, verified {1}, {2}; {3}".format(
+        live, stamped_date, status_note, detail))
     return 0
 
 
@@ -8431,33 +9683,6 @@ def cloud_rows():
         if "CLOUD_PROJECT" in body:
             out.append(row["id"])
     return out
-
-
-_UNITS_SCRIPT = """import adsk.core, adsk.fusion
-def run(context):
-    prefs = adsk.fusion.FusionDefaultUnitsPreferences.cast(
-        adsk.core.Application.get().preferences.defaultUnitsPreferences.itemByName("Design"))
-    before = prefs.defaultUnitSystem
-    prefs.defaultUnitSystem = {target}
-    print("UNITS " + str(before) + " " + str(prefs.defaultUnitSystem))
-"""
-
-
-def _set_design_units(target):
-    """Set Fusion's Design default unit system; return (previous, now) ints or raise naming the reply."""
-    is_error, payload = call("sys_execute_script", {"script": _UNITS_SCRIPT.format(target=target)})
-    m = None if is_error else re.search(r"UNITS (\d+) (\d+)", str(payload))
-    if not m:
-        raise RuntimeError("setting the Design default unit system failed: " + str(payload))
-    return int(m.group(1)), int(m.group(2))
-
-
-def _restore_design_units(previous):
-    """Put the Design default unit system back, printing (not raising) when that fails."""
-    try:
-        _set_design_units(previous)
-    except Exception as exc:
-        print("Design default unit system NOT restored to {0}: {1}".format(previous, exc))
 
 
 def _skip_detail(row, platform):
@@ -8508,25 +9733,14 @@ def run_measurements(write_json, only=None):
     if "sys_execute_script" not in registered_tools(health):
         sys.exit("sys_execute_script is not registered - enable allow_execute_api_script in the "
                  "mcpServer settings and reload the add-in, then re-run.")
-    reap_harness_assets("before the run")
-    # The scratch and every document a row creates take the Design default: pin it to millimetres
-    # before any exists, so a unit read does not follow the operator's preference.
-    units_before, units_now = _set_design_units(
-        "adsk.fusion.UnitSystems.MillimeterGramUnitSystem")
-    print("Design default unit system pinned to {0} for the run (was {1})".format(
-        units_now, units_before))
-    try:
-        is_error, payload = call("doc_new", {})
-        if is_error:
-            sys.exit("doc_new refused: {0}".format(payload))
-        scratch = payload.get("document_handle") if isinstance(payload, dict) else None
-        if not isinstance(scratch, str) or not scratch.startswith("session:"):
-            sys.exit("doc_new made a document without an exact session handle - refusing to "
-                     "measure, because cleanup cannot safely identify the run's scratch. Close the "
-                     "new document by hand and re-run.")
-    except BaseException:
-        _restore_design_units(units_before)
-        raise
+    is_error, payload = call("doc_new", {})
+    if is_error:
+        sys.exit("doc_new refused: {0}".format(payload))
+    scratch = payload.get("document_handle") if isinstance(payload, dict) else None
+    if not isinstance(scratch, str) or not scratch.startswith("session:"):
+        sys.exit("doc_new made a document without an exact session handle - refusing to measure, "
+                 "because cleanup cannot safely identify the run's scratch. Close the new document "
+                 "by hand and re-run.")
     results = []
     facts = {}
     shapes = {}
@@ -8557,6 +9771,9 @@ def run_measurements(write_json, only=None):
             if row["id"] == "dxf-sketch-options-units-read-is-fatal":
                 status, detail = _measure_dxf_units(row, scratch)
                 payload = ""
+            elif row["id"] == "camera-supported-perspective-extents-outcome":
+                status, detail = _measure_camera_extents(row, scratch)
+                payload = ""
             else:
                 # wire_before / wire_after: the row's rig built and taken down through the tools,
                 # around the one script that measures it.
@@ -8586,9 +9803,7 @@ def run_measurements(write_json, only=None):
                 sys.exit("run scratch handle could not be activated after row; stopping subsequent rows")
             time.sleep(0.1)
     finally:
-        _restore_design_units(units_before)
         cleanup_ok = _close_scratch(scratch)
-        reap_harness_assets("after the run")
     if not cleanup_ok:
         print("Measurement evidence NOT published: scratch cleanup was not confirmed.")
         return 1
@@ -8607,6 +9822,14 @@ def run_measurements(write_json, only=None):
         print("Measurement evidence NOT published: " + identity_problem + " during the run.")
         return 1
     stamp_date = time.strftime("%Y-%m-%d")
+    # A gated row's entitlement refusal becomes CARRIED here, before the rewrite gate reads
+    # statuses - so a lapsed extension is not read as a fresh platform regression.
+    results, carried_refusals = _carry_entitlements(results)
+    for row, status, detail in results:
+        if status == "CARRIED":
+            print("  {0:6} {1:28} {2}".format("CARRIED", row["id"], detail[:90]))
+    carried = [(r, d) for r, s, d in results if s == "CARRIED"]
+    write_failed = False
     # The ledger and live_api_facts.py describe ONE run and are written on the same condition:
     # a partial or failing run leaves both at the last complete run, so the stamp never claims
     # rows a dead script channel prevented from executing.
@@ -8616,19 +9839,28 @@ def run_measurements(write_json, only=None):
         # all-PASS gate cannot see the difference between "skipped" and "absent".
         print("\n{0} and live_api_facts.py NOT rewritten - this was a --only run of {1} row(s). "
               "Run the full sweep to republish.".format(os.path.basename(LEDGER), len(results)))
-    elif all(s in ("PASS", "SKIP") for _, s, _ in results):
-        write_ledger(results, fusion_version, stamp_date, source_hash, pinned_attestation)
-        print("\nwrote {0} (stamp: Fusion {1}, {2})".format(LEDGER, fusion_version, stamp_date))
-        print("wrote {0} ({1} enum families, {2} not-an-enum families, {3} behavior flags, "
-              "{4} shaped types)".format(
-                  write_api_facts(facts, fusion_version, stamp_date, shapes),
-                  sum(1 for k in facts if k.startswith("enums.")) and len(
-                      {k.rsplit(".", 1)[0] for k in facts if k.startswith("enums.")}),
-                  sum(1 for k in facts if k.startswith("not_enums.")),
-                  sum(1 for k in facts if k.startswith("behavior.")),
-                  len(shapes)))
+    elif all(s in ("PASS", "CARRIED", "SKIP") for _, s, _ in results):
+        try:
+            extra_shapes = _resolve_carried_shapes(carried)
+        except ValueError as exc:
+            write_failed = True
+            print("\n{0} and live_api_facts.py NOT rewritten - {1}".format(
+                os.path.basename(LEDGER), exc))
+        else:
+            for name, attrs in extra_shapes.items():
+                shapes.setdefault(name, attrs)
+            write_ledger(results, fusion_version, stamp_date, source_hash, pinned_attestation)
+            print("\nwrote {0} (stamp: Fusion {1}, {2})".format(LEDGER, fusion_version, stamp_date))
+            print("wrote {0} ({1} enum families, {2} not-an-enum families, {3} behavior flags, "
+                  "{4} shaped types)".format(
+                      write_api_facts(facts, fusion_version, stamp_date, shapes, carried=carried),
+                      sum(1 for k in facts if k.startswith("enums.")) and len(
+                          {k.rsplit(".", 1)[0] for k in facts if k.startswith("enums.")}),
+                      sum(1 for k in facts if k.startswith("not_enums.")),
+                      sum(1 for k in facts if k.startswith("behavior.")),
+                      len(shapes)))
     else:
-        failed = [r["id"] for r, s, _ in results if s not in ("PASS", "SKIP")]
+        failed = [r["id"] for r, s, _ in results if s not in ("PASS", "CARRIED", "SKIP")]
         print("\n{0} and live_api_facts.py NOT rewritten - {1} non-PASS row(s): {2}".format(
             os.path.basename(LEDGER), len(failed), ", ".join(failed[:12])
             + (", ..." if len(failed) > 12 else "")))
@@ -8636,12 +9868,18 @@ def run_measurements(write_json, only=None):
         results_dir = os.path.join(os.path.dirname(LEDGER), "results")
         os.makedirs(results_dir, exist_ok=True)
         path = os.path.join(results_dir, "contracts-{0}.json".format(time.strftime("%Y%m%d-%H%M%S")))
+        rows_out = []
+        for r, s, d in results:
+            row_out = {"id": r["id"], "status": s, "detail": d}
+            if r["id"] in carried_refusals:
+                row_out["refusal"] = carried_refusals[r["id"]]
+            rows_out.append(row_out)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"fusion_version": fusion_version, "date": stamp_date,
-                       "rows": [{"id": r["id"], "status": s, "detail": d}
-                                for r, s, d in results]}, fh, indent=2)
+            json.dump({"fusion_version": fusion_version, "date": stamp_date, "rows": rows_out},
+                      fh, indent=2)
         print("wrote {0}".format(path))
-    return 1 if any(s not in ("PASS", "SKIP") for _, s, _ in results) else 0
+    return 1 if write_failed or any(
+        s not in ("PASS", "CARRIED", "SKIP") for _, s, _ in results) else 0
 
 
 if __name__ == "__main__":

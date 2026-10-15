@@ -229,9 +229,9 @@ def handler(bodies=None, factor=None, x_factor=None, y_factor=None, z_factor=Non
         return error("'factor' is required (the uniform scale factor), or give x_factor, y_factor "
                      "and z_factor together for a per-axis scale.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     # Checked before anything is created, so a bad expression refuses with nothing half-built.

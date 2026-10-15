@@ -5,7 +5,6 @@ exact display name - with more than one distinct match REFUSED and every candida
 carrying the address that reaches it.
 """
 
-import json
 import re
 
 import pytest
@@ -18,9 +17,7 @@ dcl = load_tool("doc_close")
 wg = load_tool("_write_guard")   # the shared one-open-document predicate
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── fakes for the app.documents tree ────────────────────────────────────────
@@ -134,6 +131,26 @@ class TestFindOpenDocument:
         found, _names, ambiguous = dm._find_open_document("urn:adsk.wipprod:dm.lineage:ZZZ")
         assert found is None
         assert ambiguous is False           # a URN that matches nothing is a miss, not an ambiguity
+
+
+class TestNamesDifferingOnlyByCase:
+    """A display name matches with letter case ignored, so two open documents whose names differ
+    only by case are one ambiguity to this resolve."""
+
+    def test_a_spelling_that_is_neither_twins_name_acts_on_neither(self, open_session):
+        # 'BRACKET' equals no open name exactly and folds onto both: a resolve that tried the exact
+        # spelling and then took the first folded hit would activate, or close, the saved one.
+        saved = _doc("Bracket", urn="urn:adsk.wipprod:dm.lineage:AAA")
+        unsaved = _doc("bracket")
+        open_session([saved, unsaved])
+        for tool, verb in ((da, "activate"), (dcl, "close")):
+            res = tool.handler(name="BRACKET")
+            text = res["content"][0]["text"]
+            assert res["isError"] is True, verb
+            assert "Bracket (urn:adsk.wipprod:dm.lineage:AAA)" in text
+            assert "bracket (no lineage URN - open:1)" in text
+        assert saved._activates == 0 and unsaved._activates == 0
+        assert saved._closes == [] and unsaved._closes == []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -635,3 +652,62 @@ class TestAnOpenIndexMissListsTheAddressesThatDoReach:
         assert "Untitled (no lineage URN - open:0)" in msg
         assert "Untitled (no lineage URN - open:2)" in msg
         assert "(unreadable slot) (no handle - the document did not read)" in msg
+
+
+# -- occurrence snapshots: a count, a pose or a volume that did not read is never a verdict -----
+
+
+def _snap_occ(path, cells=None):
+    import types
+    cells = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0] if cells is None else cells
+    occ = types.SimpleNamespace(transform2=types.SimpleNamespace(asArray=lambda: cells))
+    if path is not None:
+        occ.fullPathName = path
+    return occ
+
+
+def _snap_design(*occs, raises_at=None):
+    import types
+
+    def item(i):
+        if i == raises_at:
+            raise RuntimeError("4 : An API Object refers to a deleted Object")
+        return occs[i]
+    return types.SimpleNamespace(rootComponent=types.SimpleNamespace(
+        allOccurrences=types.SimpleNamespace(count=len(occs), item=item)))
+
+
+class TestOccurrenceSnapshots:
+    def test_one_match_among_an_unreadable_occurrence_is_no_count(self):
+        design = _snap_design(_snap_occ("A:1"), _snap_occ("B:1"), raises_at=1)
+        assert dm.path_count(design, "A:1") is None
+        assert "could not be shown unique" in dm.path_fault(design, "A:1")
+        assert dm.path_resolves(design, "A:1") is None
+
+    def test_an_occurrence_whose_path_does_not_read_withholds_the_count(self):
+        assert dm.path_count(_snap_design(_snap_occ("A:1"), _snap_occ(None)), "A:1") is None
+
+    def test_a_complete_census_counts_and_names_a_shared_path(self):
+        design = _snap_design(_snap_occ("A:1"), _snap_occ("A:1"), _snap_occ("B:1"))
+        assert dm.path_count(design, "A:1") == 2 and dm.path_fault(design, "B:1") == ""
+        assert dm.path_fault(design, "A:1") == "the path 'A:1' is not unique"
+        assert dm.path_resolves(design, "C:1") is False
+
+    def test_a_pose_with_a_non_finite_or_missing_cell_is_no_pose(self):
+        good = dm.occurrence_pose(_snap_occ("A:1"))
+        assert len(good) == 16
+        assert dm.occurrence_pose(_snap_occ("A:1", [float("nan")] + [0.0] * 15)) is None
+        assert dm.occurrence_pose(_snap_occ("A:1", [0.0] * 15)) is None
+        assert dm.same_pose(good, good) is True
+        assert dm.same_pose(good, good[:15]) is False and dm.same_pose(None, None) is False
+
+    def test_a_non_finite_volume_is_no_volume(self):
+        import types
+
+        def comp(*volumes):
+            held = [types.SimpleNamespace(volume=v) for v in volumes]
+            return types.SimpleNamespace(bRepBodies=types.SimpleNamespace(
+                count=len(held), item=lambda i: held[i]))
+        assert dm.component_solids(comp(1.5, 2.5)) == (2, 4.0)
+        assert dm.component_solids(comp(1.5, float("inf"))) == (2, None)
+        assert dm.component_solids(types.SimpleNamespace()) == (None, None)

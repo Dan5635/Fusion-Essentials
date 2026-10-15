@@ -6,8 +6,11 @@ optionally named and/or placed at x/y/z (a translation transform, scaled to cm),
 and optionally activated as the edit target. This is the prerequisite for
 modelling separate, jointable parts in an assembly.
 """
+from conftest import install as _install_design
 
-import json
+from types import SimpleNamespace
+
+import pytest
 
 from conftest import (FakeMatrix3D, FakeOccurrence, MakeComp, MakeDesign, _NamedCollection,
                       install, load_tool, make_occurrence)
@@ -162,11 +165,11 @@ class FakeDesign(MakeDesign):
         self.intent_sets.append(self._intent)
 
 
-def _parent_occurrence():
+def _parent_occurrence(path="Frame:1"):
     """The occurrence 'parent' resolves to, whose component receives the new child."""
-    comp = MakeComp(name="Frame")
+    comp = MakeComp(name=path.split(":")[0])
     comp.occurrences = FakeParentOccurrences()
-    return make_occurrence(path="Frame:1", component=comp)
+    return make_occurrence(path=path, component=comp)
 
 
 def _install(intent=None):
@@ -180,9 +183,7 @@ def _install(intent=None):
     return design
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── behaviour ────────────────────────────────────────────────────────────────
@@ -284,7 +285,7 @@ class TestCreateComponent:
 
     def test_no_active_design_errors(self, monkeypatch):
         _install()
-        monkeypatch.setattr(cc._common, "design", lambda: None)
+        _install_design(cc, None)
         res = cc.handler()
         assert res["isError"] is True and "No active design" in res["message"]
 
@@ -358,6 +359,29 @@ class TestNestedParent:
         assert "Nonexistent" in res["message"]
         # nothing was created on root as a fallback
         assert cc.app.activeProduct.rootComponent.occurrences.count == 0
+
+    def test_a_missed_parent_in_an_empty_design_says_to_omit_it_for_the_root(self):
+        design = _install()
+        res = cc.handler(name="Host", parent="root")
+        assert res["isError"] is True
+        assert "matching 'root'" in res["message"]
+        assert res["message"].endswith("To create at the root, omit 'parent'.")
+        assert design.rootComponent.occurrences.count == 0
+
+    def test_an_occurrence_named_root_is_still_the_parent(self):
+        design = _install()
+        named_root = _parent_occurrence(path="root:1")
+        design.rootComponent.allOccurrences = [named_root]
+        out = _payload(cc.handler(name="Child", parent="root"))
+        assert out["nested_in"] == "root:1"
+        assert design.rootComponent.occurrences.count == 0
+
+    def test_an_ambiguous_parent_is_not_told_to_omit_it(self):
+        design = _install()
+        design.rootComponent.allOccurrences = [_parent_occurrence(), _parent_occurrence()]
+        res = cc.handler(name="Child", parent="Frame:1")
+        assert res["isError"] is True
+        assert "2 occurrences" in res["message"] and "omit 'parent'" not in res["message"]
 
     def test_nested_path_constructed_when_proxy_unavailable(self):
         # If createForAssemblyContext yields no proxy, the handler still reports the nested path by
@@ -435,3 +459,202 @@ class TestPartNumber:
         assert out["part_number"] == "20260922204259123"     # the write failed, so unchanged
         assert "part_number_warning" in out
         assert "no permission" in out["part_number_warning"]
+
+
+@pytest.fixture
+def sheet_component_setup(monkeypatch):
+    design = _install()
+    occurrences = design.rootComponent.occurrences
+    def add_sheet(transform):
+        component = MakeComp(name="SheetPart")
+        component.activeSheetMetalRule = SimpleNamespace(name="Steel (mm)")
+        occ = _NewOccurrence(component=component)
+        occurrences._items.append(occ)
+        return occ
+    monkeypatch.setattr(occurrences, "addNewSheetMetalComponent", add_sheet, raising=False)
+    return design, occurrences
+
+
+def test_sheet_metal_mode_creates_native_ruled_component(sheet_component_setup):
+    design, occurrences = sheet_component_setup
+    out = _payload(cc.handler(name="Bracket", sheet_metal=True))
+    assert occurrences.count == 1
+    assert out["sheet_metal"] is True
+    assert out["active_sheet_metal_rule"] == "Steel (mm)"
+    assert "sheet_convert" in out["note"]
+
+
+def test_sheet_metal_create_reports_persisted_occurrence_if_rule_unreadable(sheet_component_setup,
+                                                                              monkeypatch):
+    design, occurrences = sheet_component_setup
+    def add_without_rule(transform):
+        occ = _NewOccurrence(component=MakeComp(name="Unruled"))
+        occurrences._items.append(occ)
+        return occ
+    monkeypatch.setattr(occurrences, "addNewSheetMetalComponent", add_without_rule)
+    result = cc.handler(sheet_metal=True)
+    assert result["isError"] is True
+    assert "Component1:1" in result["message"]
+    assert occurrences.count == 1
+
+
+# ── sheet_metal rule adoption: addNewSheetMetalComponent copies a fresh library-default rule only
+# when the design's same-named rule no longer matches the library default (measured); otherwise it
+# hands the existing rule back. The tool must fold a genuine copy in rather than duplicate the row.
+
+def _rule_fake(name, collection, delete_ok=True, **extra):
+    """A design sheet-metal rule: deleteMe() answers delete_ok, counts its own calls, and on True
+    removes itself from collection."""
+    rule = SimpleNamespace(name=name, delete_calls=0, **extra)
+    def _delete():
+        rule.delete_calls += 1
+        if delete_ok:
+            collection._items.remove(rule)
+        return delete_ok
+    rule.deleteMe = _delete
+    return rule
+
+
+class _RuleLockedComponent(MakeComp):
+    """A component whose activeSheetMetalRule assignment is silently ignored after the first set -
+    how Fusion no-ops an edit it refuses."""
+    def __setattr__(self, key, value):
+        if key == "activeSheetMetalRule" and hasattr(self, "activeSheetMetalRule"):
+            return
+        object.__setattr__(self, key, value)
+
+
+def _install_sheet_rules(before_rules, new_rule_delete_ok=True, new_rule_kfactor=0.9):
+    """A sheet-metal-ready design: before_rules pre-populate designSheetMetalRules; the fake add
+    appends a FRESH same-named copy, the measured shape once the design's rule is edited off default."""
+    design = _install()
+    collection = _NamedCollection(items=list(before_rules))
+    design.designSheetMetalRules = collection
+    occurrences = design.rootComponent.occurrences
+    def add_sheet(transform):
+        component = MakeComp(name="SheetPart")
+        new_rule = _rule_fake("Steel (mm)", collection, delete_ok=new_rule_delete_ok,
+                              kFactor=new_rule_kfactor)
+        collection._items.append(new_rule)
+        component.activeSheetMetalRule = new_rule
+        occ = _NewOccurrence(component=component)
+        occurrences._items.append(occ)
+        return occ
+    occurrences.addNewSheetMetalComponent = add_sheet
+    return design, collection
+
+
+class TestSheetMetalRuleAdoption:
+    def test_adopts_the_existing_rule_and_deletes_the_copy(self):
+        existing = _rule_fake("Steel (mm)", None, kFactor=0.5)
+        design, collection = _install_sheet_rules([existing])
+        out = _payload(cc.handler(name="Bracket", sheet_metal=True))
+        assert out["rule_adopted_existing"] is True
+        assert out["rule_copy_deleted"] is True
+        assert out["active_sheet_metal_rule"] == "Steel (mm)"
+        assert collection.count == 1
+        assert collection._items[0] is existing
+
+    def test_two_prior_same_named_rules_are_reported_ambiguous_not_silently_merged(self):
+        existing1 = _rule_fake("Steel (mm)", None, kFactor=0.5)
+        existing2 = _rule_fake("Steel (mm)", None, kFactor=0.7)
+        design, collection = _install_sheet_rules([existing1, existing2])
+        out = _payload(cc.handler(name="Bracket", sheet_metal=True))
+        assert out["rule_name_ambiguous"] == "Steel (mm)"
+        assert "rule_adopted_existing" not in out
+        assert collection.count == 3            # the copy is left in place, nothing merged blind
+        assert "sheet_get(include=['rules'])" in out["note"]
+
+    def test_a_copy_that_will_not_delete_is_an_error_not_a_false_ok(self):
+        existing = _rule_fake("Steel (mm)", None, kFactor=0.5)
+        design, collection = _install_sheet_rules([existing], new_rule_delete_ok=False)
+        result = cc.handler(name="Bracket", sheet_metal=True)
+        assert result["isError"] is True
+        assert "did not delete" in result["message"]
+        assert "deleteMe=False" in result["message"]
+        assert collection.count == 2             # the undeletable copy still there, not silently lost
+        assert design.rootComponent.occurrences.count == 1   # the component itself was still created
+
+    def test_a_delete_that_raises_names_the_exception_not_none(self):
+        existing = _rule_fake("Steel (mm)", None, kFactor=0.5)
+        design = _install()
+        collection = _NamedCollection(items=[existing])
+        design.designSheetMetalRules = collection
+        occurrences = design.rootComponent.occurrences
+        def add_sheet(transform):
+            component = MakeComp(name="SheetPart")
+            new_rule = SimpleNamespace(name="Steel (mm)", kFactor=0.9)
+            def _raise():
+                raise RuntimeError("rule is in use")
+            new_rule.deleteMe = _raise
+            collection._items.append(new_rule)
+            component.activeSheetMetalRule = new_rule
+            occ = _NewOccurrence(component=component)
+            occurrences._items.append(occ)
+            return occ
+        occurrences.addNewSheetMetalComponent = add_sheet
+        result = cc.handler(name="Bracket", sheet_metal=True)
+        assert result["isError"] is True
+        assert "rule is in use" in result["message"]
+        assert "deleteMe=None" not in result["message"]
+
+    def test_a_fresh_add_that_hands_back_an_already_known_rule_is_not_adopted_or_deleted(self):
+        # The 'is this rule already in before_rules' guard is what keeps this branch from adopting the
+        # rule INTO itself and then deleting the design's one live rule as its own "copy".
+        existing = _rule_fake("Steel (mm)", None, kFactor=0.5)
+        design = _install()
+        collection = _NamedCollection(items=[existing])
+        design.designSheetMetalRules = collection
+        occurrences = design.rootComponent.occurrences
+        def add_sheet(transform):
+            component = MakeComp(name="SheetPart")
+            component.activeSheetMetalRule = existing      # Fusion handed back the SAME object
+            occ = _NewOccurrence(component=component)
+            occurrences._items.append(occ)
+            return occ
+        occurrences.addNewSheetMetalComponent = add_sheet
+        out = _payload(cc.handler(name="Bracket", sheet_metal=True))
+        assert "rule_adopted_existing" not in out
+        assert "rule_added" not in out
+        assert "rule_name_ambiguous" not in out
+        assert existing.delete_calls == 0
+        assert collection.count == 1
+
+    def test_an_assign_that_does_not_take_is_an_error_naming_the_read_back_rule(self):
+        # The 'readback != existing' compare is what catches a setter that silently no-ops - without
+        # it, a component still carrying the undeleted copy would be reported adopted.
+        existing = _rule_fake("Steel (mm)", None, kFactor=0.5)
+        design = _install()
+        collection = _NamedCollection(items=[existing])
+        design.designSheetMetalRules = collection
+        occurrences = design.rootComponent.occurrences
+        def add_sheet(transform):
+            component = _RuleLockedComponent(name="SheetPart")
+            new_rule = _rule_fake("Steel (mm)", collection, kFactor=0.9)
+            collection._items.append(new_rule)
+            component.activeSheetMetalRule = new_rule       # takes - nothing set on it yet
+            occ = _NewOccurrence(component=component)
+            occurrences._items.append(occ)
+            return occ
+        occurrences.addNewSheetMetalComponent = add_sheet
+        result = cc.handler(name="Bracket", sheet_metal=True)
+        assert result["isError"] is True
+        assert "did not adopt" in result["message"] and "Steel (mm)" in result["message"]
+        assert collection.count == 2              # the copy was never reached for deletion
+
+    def test_an_unread_rule_census_skips_adoption_and_reports_it_not_rule_added(self):
+        design = _install()
+        occurrences = design.rootComponent.occurrences
+        def add_sheet(transform):
+            component = MakeComp(name="SheetPart")
+            component.activeSheetMetalRule = SimpleNamespace(name="Steel (mm)")
+            occ = _NewOccurrence(component=component)
+            occurrences._items.append(occ)
+            return occ
+        occurrences.addNewSheetMetalComponent = add_sheet
+        # design.designSheetMetalRules is absent entirely - the census read raises, not "empty".
+        out = _payload(cc.handler(name="Bracket", sheet_metal=True))
+        assert out["rule_census_unread"] is True
+        assert "rule_added" not in out
+        assert "rule_adopted_existing" not in out
+        assert "sheet_get(include=['rules'])" in out["note"]

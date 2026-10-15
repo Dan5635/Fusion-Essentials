@@ -15,9 +15,9 @@ def handler(name: str = "", favorite: bool = True) -> dict:
     name = (name or "").strip()
     if not name:
         return error("Provide 'name'.")
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     p = safe(lambda: design.userParameters.itemByName(name))
     if not p:
         return error(f"No USER parameter named '{name}'.")
@@ -25,7 +25,14 @@ def handler(name: str = "", favorite: bool = True) -> dict:
         p.isFavorite = bool(favorite)
     except Exception as e:
         return error(f"Could not set favorite on '{name}': {e}")
-    return ok({"name": name, "favorite": safe(lambda: p.isFavorite)})
+    now = _common.read_flag(lambda: p.isFavorite)
+    if now is None:
+        return error(f"Favorite on '{name}' could not be read after requesting {bool(favorite)}. "
+                     f"Read param_get(name='{name}') before retrying.")
+    if now != bool(favorite):
+        return error(f"Favorite on '{name}' reads {now} after requesting {bool(favorite)}. "
+                     f"Read param_get(name='{name}') before retrying.")
+    return ok({"name": name, "favorite": now})
 
 
 TOOL_DESCRIPTION = ("Toggle a user parameter's 'favorite' flag (whether it appears in the favorites "
@@ -47,7 +54,7 @@ item = Item.create_tool_item(
     verification=Verification(
         kind="effect", rung="value",
         evidence_test="tests/unit/test_param_set_favorite.py::TestFavoriteHandler"
-                      "::test_a_stuck_flag_is_published_as_it_reads_not_as_asked"))
+                      "::test_a_stuck_favorite_is_refused"))
 
 
 def register_tool():

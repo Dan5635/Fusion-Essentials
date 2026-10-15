@@ -5,14 +5,14 @@ name / component name / whole design), path defaulting + extension handling, the
 and per-format option knobs (STL binary/units, DXF construction/points/projected/units), and that the
 right ExportManager.create*Options call is used per format. No live Fusion - fakes mimic ExportManager.
 """
+from conftest import install as _install_design
 
-import json
 
 import pytest
 
 from conftest import (BRepBody, BRepEdge, BRepFace, FakeExportManager, FakeOccurrence, MakeComp,
-                      MakeDesign, Sketch, SketchCurves, _ExportOptions, _NamedCollection, install,
-                      load_tool)
+                      MakeDesign, Sketch, SketchCurves, _ExportOptions, _NamedCollection,
+                      assert_names_retained, install, load_tool)
 
 dx = load_tool("design_export")
 
@@ -46,9 +46,7 @@ def _install(monkeypatch, bodies=None, comp_name="Root", occurrences=(), compone
     return design, em, comp
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── format dispatch ──────────────────────────────────────────────────────────
@@ -1046,7 +1044,7 @@ class TestDxfWriterGuards:
         res = dx.handler(format="dxf", dxf_face="H" * 40, file_path=str(tmp_path / "p.dxf"))
         assert res["isError"] is True
         assert "nothing was written" in res["message"].lower()
-        assert "Scratch7" in res["message"] and "delete it manually" in res["message"]
+        assert "The scratch sketch was not removed" in assert_names_retained(res, "Scratch7")
 
     def test_a_written_dxf_whose_scratch_sketch_survives_says_so_in_the_note(self, tmp_path,
                                                                             monkeypatch):
@@ -1058,7 +1056,8 @@ class TestDxfWriterGuards:
         out = _payload(dx.handler(format="dxf", dxf_face="H" * 40,
                                   file_path=str(tmp_path / "p.dxf")))
         assert out["exported"] is True
-        assert "Scratch7" in out["note"] and "could not be removed" in out["note"]
+        assert "was not removed" in out["note"]
+        assert "design_delete_feature(feature='Scratch7')" in out["note"]
         assert "the design is unchanged" not in out["note"]
 
 
@@ -1545,6 +1544,6 @@ class TestResolveTargetExtra:
 
     def test_no_active_design_errors(self, tmp_path, monkeypatch):
         # design() returns None -> the no-design error, not a crash
-        monkeypatch.setattr(dx._common, "design", lambda: None)
+        _install_design(dx, None)
         res = dx.handler(format="step", file_path=str(tmp_path / "p.step"))
         assert res["isError"] is True and "no active design" in res["message"].lower()

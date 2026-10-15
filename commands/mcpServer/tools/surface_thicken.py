@@ -16,6 +16,7 @@ from . import _common
 from . import _inputs
 from . import _assert
 from ._surface_common import _any_solid, _created_bodies, _landed_length
+from ._view_common import same_body
 
 app = adsk.core.Application.get()
 
@@ -26,6 +27,50 @@ _THICKEN_TYPES = {
 }
 
 _THICKEN_FACES = _inputs.GeometryHandleList("faces", require="face", required=True)
+
+
+def _visibility(body):
+    """The body's two visibility flags, each None when it does not read."""
+    return {"light_bulb_on": _common.read_flag(lambda: body.isLightBulbOn),
+            "visible": _common.read_flag(lambda: body.isVisible)}
+
+
+def _sources(face_ents):
+    """[(body, row)] - one row per distinct source body: its name, face indices, visibility before."""
+    out = []
+    for i, face in enumerate(face_ents):
+        body = safe(lambda f=face: f.body)
+        hit = next((row for seen, row in out if same_body(seen, body)), None)
+        if hit is not None:
+            hit["face_indices"].append(i)
+        else:
+            out.append((body, {"body": safe(lambda b=body: b.name), "face_indices": [i],
+                               "before": _visibility(body)}))
+    return out
+
+
+def _source_disclosure(sources):
+    """(rows, sentences, complete): each source read again after the add, one sentence per flip."""
+    rows, text, complete = [], "", True
+    for body, row in sources:
+        row = dict(row, after=_visibility(body))
+        handle = safe(lambda b=body: b.entityToken)
+        occurrence = safe(lambda b=body: b.assemblyContext.fullPathName)
+        row.update({k: v for k, v in (("handle", handle), ("occurrence", occurrence)) if v})
+        rows.append(row)
+        if not row["body"] or None in (*row["before"].values(), *row["after"].values()):
+            complete = False
+        before, after = row["before"]["visible"], row["after"]["visible"]
+        if type(before) is bool and type(after) is bool and before != after:
+            state, action = ("hidden", "show") if before else ("shown", "hide")
+            label = (f"'{row['body'] or 'face %d source' % row['face_indices'][0]}'"
+                     + (f" in '{occurrence}'" if occurrence else ""))
+            text += (f" Source {label} became {state}. "
+                     + (f"Undo it with view_set(action='{action}', target=['{handle}'])."
+                        if handle else
+                        f"Read design_get(include=['tree'], tree_bodies=true), then "
+                        f"view_set(action='{action}', target=[<body handle>])."))
+    return rows, text, complete
 
 
 def handler(faces=None, thickness: float = 0.0, units: str = "mm",
@@ -44,14 +89,15 @@ def handler(faces=None, thickness: float = 0.0, units: str = "mm",
     if tt_key and tt_key not in _THICKEN_TYPES:
         return error(f"Unknown thicken_type '{thicken_type}'. Use: sharp, rounded.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     face_ents, ferr = _THICKEN_FACES.resolve(faces)
     if ferr:
         return error(ferr)
+    sources = _sources(face_ents) if op_key in ("new", "new_body") else []
     coll = adsk.core.ObjectCollection.create()
     for f in face_ents:
         coll.add(f)
@@ -79,9 +125,13 @@ def handler(faces=None, thickness: float = 0.0, units: str = "mm",
                 return error(terr)
         feature = comp.features.thickenFeatures.add(thk_input)
     except Exception as e:
-        return error(f"Thicken failed: {e}.")
+        hint = (" The selected faces face opposite ways; thicken each face in its own call with "
+                "chaining=false, or rebuild a symmetric revolve one-sided over the full angle."
+                if "INCONSISTENT_ORIENTATION" in str(e) else "")
+        return error(f"Thicken failed: {e}.{hint}")
     if not feature:
         return error(_common.no_feature_error(design, "Thicken"))
+    source_rows, flips, sources_read = _source_disclosure(sources)
 
     # Gate on the bodies owning the faces the feature CREATED, not feature.bodies - the latter also
     # lists a pre-existing source solid (see _created_bodies), which would call a failed thicken
@@ -98,11 +148,11 @@ def handler(faces=None, thickness: float = 0.0, units: str = "mm",
     if not bodies:
         return error("Thicken reported success but the feature owns no result body - no wall was "
                      "created, so there is nothing to read isSolid back off. "
-                     + _common.failed_effect_remedy(design, feature))
+                     + _common.failed_effect_remedy(design, feature) + flips)
     if any_solid is False:
         return error("Thicken reported success but no CREATED body reads isSolid=true - the wall "
                      "did not close into a solid. The feature remains in the timeline; inspect it "
-                     "with model_inspect or remove it with design_delete_feature.")
+                     "with model_inspect or remove it with design_delete_feature." + flips)
     # The solid gate above proves a solid wall LANDED; it says nothing about how thick it is, which
     # is why the wall's own thickness parameter is read back here. MEASURED: Fusion thickens the
     # requested value on EACH side, so thickness.value reads 2x the request when symmetric=true.
@@ -111,7 +161,7 @@ def handler(faces=None, thickness: float = 0.0, units: str = "mm",
     landed_total, rerr = _landed_length(lambda: feature.thickness.value, expect_cm, k,
                                         "wall", "thickness")
     if rerr:
-        return error(rerr + " " + _common.failed_effect_remedy(design, feature))
+        return error(rerr + " " + _common.failed_effect_remedy(design, feature) + flips)
     # The note states what the created body ACTUALLY read back - a hardcoded "isSolid=true" beside
     # an is_solid the payload could not read is the contradiction this wording exists to prevent.
     unverified = []
@@ -133,6 +183,11 @@ def handler(faces=None, thickness: float = 0.0, units: str = "mm",
         "symmetric": bool(symmetric),
         "note": note,
     }
+    if sources:
+        payload["note"] += flips
+        payload["source_visibility"] = source_rows
+        if not sources_read:
+            unverified.append("source_visibility")
     if landed_total is None:
         unverified.append("thickness")
         payload["note"] += " Not read back off the feature: thickness."

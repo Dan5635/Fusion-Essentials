@@ -20,6 +20,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from . import _drawing_common
+from ._common import ok, error
 
 app = adsk.core.Application.get()
 
@@ -157,7 +158,6 @@ def _clean_output(res: str) -> str:
 
 
 def _ok_result(cleaned: str) -> dict:
-    result = {"isError": False, "message": "Script executed successfully"}
     # The write guard merges acted_on into a printed JSON object, which buries an empty one.
     try:
         empty_object = json.loads(cleaned) == {}
@@ -167,8 +167,8 @@ def _ok_result(cleaned: str) -> dict:
         text = json.dumps({"printed": {}, "note": _EMPTY_OBJECT})
     else:
         text = cleaned or _NO_OUTPUT
-    result["content"] = [{"type": "text", "text": text}]
-    return result
+    return ok(content=[{"type": "text", "text": text}],
+              message="Script executed successfully")
 
 
 def _run_read_only(run_path: str) -> dict:
@@ -238,13 +238,7 @@ _EMPTY_OBJECT = "The script printed an empty JSON object; 'printed' holds it."
 
 def _refusal(text: str) -> dict:
     """The failure shape for a script that never ran: no rollback advice, nothing to re-read."""
-    # NOT _common.error: that mirrors one text into content AND message; here message stays terse
-    # while content carries the whole traceback.
-    return {
-    "content": [{"type": "text", "text": text}],
-    "isError": True,
-    "message": "Script execution failed",
-    }
+    return error(text, message="Script execution failed")
 
 
 def _error_result(text: str, mutated: bool = False) -> dict:

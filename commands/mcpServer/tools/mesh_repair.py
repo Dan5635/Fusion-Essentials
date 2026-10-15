@@ -82,9 +82,9 @@ def _moved_facts(before: dict, after: dict):
 def handler(mesh: str = "", repair_type: str = "", rebuild_method: str = "", density=None,
             offset=None, units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     vals, verr = _inputs.resolve_inputs(_SPEC, {
         "mesh": mesh, "repair_type": repair_type, "rebuild_method": rebuild_method,
@@ -190,7 +190,8 @@ def handler(mesh: str = "", repair_type: str = "", rebuild_method: str = "", den
     if not comparable and not volume_readable:
         return error(f"The {rtype} repair raised no error, but nothing could be read back off the "
                      "mesh afterwards (triangle/vertex counts, is_closed and volume are all "
-                     "unreadable) - the repair is UNVERIFIED, so it is reported as a failure.")
+                     "unreadable) - the repair is UNVERIFIED, so it is reported as a failure. "
+                     + _common.failed_effect_remedy(design, feat))
 
     # A repair that moved nothing is only a FAILURE when the mesh had that kind of defect to fix -
     # one_touch_fix on a clean closed box moves nothing and is correct to. is_closed is the only
@@ -200,7 +201,8 @@ def handler(mesh: str = "", repair_type: str = "", rebuild_method: str = "", den
         return error(f"The {rtype} repair reported success but the mesh is unchanged "
                      f"({before['triangle_count']} triangles, {before['vertex_count']} vertices) "
                      "and is STILL not watertight - the holes it was asked to close are still "
-                     "there. Try repair_type='rebuild', or check the mesh with mesh_get.")
+                     "there. Try repair_type='rebuild', or check the mesh with mesh_get. "
+                     + _common.failed_effect_remedy(design, feat))
 
     units_key = (vals["units"] or "mm").strip().lower()
     inv_scale = _common.CM_TO_UNIT[units_key]
@@ -233,9 +235,11 @@ def handler(mesh: str = "", repair_type: str = "", rebuild_method: str = "", den
                 payload[f"{key}_unverified"] = f"{key} could not be read back off the feature."
                 continue
             if abs(float(got) - float(want)) > 1e-6:
-                return error(f"The rebuild was created with {key} = {got}, but {want} was requested "
-                             f"- Fusion did not take the value. The mesh has been rebuilt at "
-                             f"{got}; re-run with a {key} the API accepts, or undo in Fusion.")
+                unit = f" {units_key}" if key == "offset" else ""
+                return error(f"The rebuild was created with {key} = {round(float(got) * scale, 6)}"
+                             f"{unit}, but {round(float(want) * scale, 6)}{unit} was requested - "
+                             f"Fusion did not take the value. Re-run with a {key} the API accepts. "
+                             + _common.failed_effect_remedy(design, feat))
             payload[key] = round(float(got) * scale, 6) if key == "offset" else float(got)
 
     note = "Mesh repaired. Re-read the body with mesh_get."

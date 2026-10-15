@@ -116,9 +116,9 @@ def handler(target: str = "", tools=None, operation: str = "join",
     if op_key not in _OPERATION_KEYS:
         return error(f"Unknown operation '{operation}'. Use: join, cut, intersect.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     tgt, terr = _TARGET.resolve(target)
@@ -222,13 +222,17 @@ def handler(target: str = "", tools=None, operation: str = "join",
                 and abs(after_volume_now - before_volume) <= _common.NO_VOLUME_CHANGE_CM3):
             clear = [f"'{n}' ({g:.1f} cm clear of the target)" if g is not None and g > 0 else f"'{n}'"
                      for n, g in zip(tool_names, tool_gaps)]
-            rolled_back = False if feature is None else bool(safe(lambda: feature.deleteMe(), False))
-            fate = ("the combine feature was rolled back, restoring the tool bodies" if rolled_back
-                    else ("the tool bodies were CONSUMED and could not be restored"
-                          if not keep_tools else "the tool bodies were kept"))
+            if feature is None:
+                fate = ("the tool bodies were CONSUMED and could not be restored"
+                        if not keep_tools else "the tool bodies were kept") + "."
+            else:
+                fate = _common.delete_failed_feature(design, feature)[1]
+                now = _common.body_count(host)
+                fate += (f" '{host_name}' holds {'an unread number of' if now is None else now} "
+                         f"bodies (was {'unread' if before_bodies is None else before_bodies}).")
             return error(f"This {op_key} changed NOTHING - '{target_name}' measures the same volume "
                          f"({before_volume} cm3) after the combine, which is what a tool that does "
-                         f"not overlap the target produces. Tools: {', '.join(clear)}; {fate}. "
+                         f"not overlap the target produces. Tools: {', '.join(clear)}. {fate} "
                          "Move the tool into the target (model_move) and combine again.")
 
     # The body a JOIN landed in: the feature's single result body, or the target in direct mode. Its

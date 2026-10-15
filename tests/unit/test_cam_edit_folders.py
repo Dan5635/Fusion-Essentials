@@ -9,7 +9,6 @@ Pattern CREATION is intentionally NOT here — the API refuses it ("Strategy is 
 is folders + moving existing ops, and says so.
 """
 
-import json
 
 from conftest import FakeCAMFolder, FakeOperation, FakeSetup, _NamedCollection, load_tool, make_cam
 
@@ -108,9 +107,7 @@ def _install(monkeypatch, setups=None):
     return cam
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 # ── guards ───────────────────────────────────────────────────────────────────

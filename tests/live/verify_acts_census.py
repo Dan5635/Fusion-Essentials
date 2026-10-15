@@ -10,6 +10,8 @@ not created: it is a CENSUS row carrying the message the platform answered with,
 tests/generated/STRATEGY_COMPETENCE.md publishes beside the proven ones.
 """
 
+import time
+
 from verify_acts_cam import (
     MACHINING_EXTENSION, _all_cut, _launched_on, _offers, _op_deleted, _op_named, _reveal,
     _selected)
@@ -18,7 +20,28 @@ from verify_acts_hub import (
     _FLAT_AT, _FLANGE_R, _FLANGE_T, _GROOVE_AT, _HUB_X, _PART_END, _SLOT_AT, _setup_created,
     _THREAD_INSERT_AT, _TURN_AT)
 from verify_core import (
-    _RECALL, _ctx_get, _fg, _measured, _near, _needs, _num, _recall, _refused, _unless, _watch)
+    _RECALL, _ctx_get, _fg, _measured, _near, _needs, _num, _recall, _refused, _unless, _watch, facade)
+
+
+def _morph_completed(p):
+    """Read the one-operation MorphPair generation to completion with a bounded poll."""
+    call = facade("call")
+    for _ in range(60):
+        if p.get("completed") is True or (p.get("live_states") or {}).get("errored", 0):
+            break
+        time.sleep(1)
+        is_error, p = call("cam_get_status", {"handle": _RECALL["morph_generation"], "include_operations": True})
+        _measured("MorphPair status stays readable", p, not is_error and isinstance(p, dict))
+    live = p.get("live_states") or {}
+    return _measured("MorphPair completed valid and nonempty in its own generation", p,
+                     p.get("completed") is True and p.get("target") == "operation 'MorphPair'"
+                     and p.get("completion_basis") == "operation 'MorphPair'"
+                     and _num(p.get("elapsed_seconds")) and p["elapsed_seconds"] >= 0
+                     and live.get("valid") == 1 and live.get("total") == 1
+                     and all(live.get(k) == 0 for k in ("errored", "out_of_date", "unread", "nonfinite"))
+                     and _num(live.get("generating")) and _num(live.get("generating_settled"))
+                     and live["generating"] == live["generating_settled"]
+                     and (p.get("counts") or {}).get("empty_toolpaths") == 0)
 
 # The three cutters the hub's shop set does not carry: the cutting family refuses a mill by TYPE,
 # the hub's 12 mm thread mill in an 11 mm counterbore says "Tool doesn't fit.", and a probing
@@ -172,6 +195,53 @@ def _flange_top(p):
                      len(ms) == 1 and m.get("kind") == "planar_face"
                      and _near(pos[2], 0.0, 0.1) and nrm[2] > 0.999
                      and _num(m.get("area")) and m["area"] > 0)
+
+
+def _probe_type_inferred(p):
+    """A probe face selection reports the type Fusion inferred from that face."""
+    value = p.get("probing_type")
+    return _measured("one probe face selected with a readable inferred type",
+                     {"selections": p.get("selections"), "probing_type": value},
+                     p.get("selections") == 1 and isinstance(value, str) and bool(value)
+                     and value != "probing-unknown" and "probing_type_changed" not in p)
+
+
+def _probe_type_selected(p):
+    """A probe face selection reports the caller's requested probingType."""
+    return _measured("one probe face selected with probing-z",
+                     {"selections": p.get("selections"), "probing_type": p.get("probing_type")},
+                     p.get("selections") == 1 and p.get("probing_type") == "probing-z")
+
+
+def _probe_type_read(p):
+    """The independent operation parameter read still holds the explicitly selected probe type."""
+    parameters = p.get("parameters") or {}
+    rows = parameters.get("requested_parameters") or []
+    row = rows[0] if len(rows) == 1 else {}
+    return _measured("ProbeGeom probingType reads probing-z",
+                     {"operation": parameters.get("operation"), "parameters": rows},
+                     parameters.get("operation") == "ProbeGeom"
+                     and parameters.get("requested_parameter_count") == 1
+                     and row.get("name") == "probingType"
+                     and row.get("expression") == "'probing-z'")
+
+
+def _probe_type_inferred_read(p):
+    """The independent operation parameter read matches the type the selection returned."""
+    parameters = p.get("parameters") or {}
+    rows = parameters.get("requested_parameters") or []
+    row = rows[0] if len(rows) == 1 else {}
+    expression = row.get("expression")
+    inferred = _RECALL.get("inferred_probe_type")
+    return _measured("ProbeGeom inferred probingType reads back",
+                     {"operation": parameters.get("operation"), "parameters": rows,
+                      "selection_reply": inferred},
+                     parameters.get("operation") == "ProbeGeom"
+                     and parameters.get("requested_parameter_count") == 1
+                     and row.get("name") == "probingType"
+                     and isinstance(inferred, str) and bool(inferred)
+                     and inferred != "probing-unknown"
+                     and expression == f"'{inferred}'")
 
 
 def _wedge_flat(p):
@@ -393,6 +463,8 @@ _CENSUS_MILL = [
     ("find_geometry", {"target": HUB_COMP, "kind": "circular_edge", "radius": _FLANGE_R,
                        "nearest_to": [_HUB_X, 0, _LOWER_RIM_Z], "max_results": 1},
      _round_at(_FLANGE_R, _LOWER_RIM_Z), _fg("census_lower_rim")),
+    ("cam_get", {"include": ["strategies"], "setup": HUB_MILL_SETUP},
+     _offers(HUB_MILL_SETUP, "morph"), None),
     ("cam_create_operation",
      lambda c: {"setup": HUB_MILL_SETUP, "strategy": "morph", "name": "MorphPair",
                 "tool_scope": "document",
@@ -404,6 +476,15 @@ _CENSUS_MILL = [
                 "handles": [_ctx_get(c, "census_rim", "the flange-top circle"),
                             _ctx_get(c, "census_lower_rim", "the flange's underside rim")],
                 "generate": False}, _selected(2), None),
+    ("cam_generate", {"target": "MorphPair", "skip_valid": False},
+     _needs(MACHINING_EXTENSION, lambda p: p.get("launched") is True
+            and p.get("target") == "operation 'MorphPair'" and bool(p.get("handle"))),
+     ("morph_generation", _recall("morph_generation", lambda p: p["handle"]))),
+    ("cam_get_status", lambda c: {"handle": _ctx_get(c, "morph_generation", "MorphPair generation"),
+                                  "include_operations": True},
+     _needs(MACHINING_EXTENSION, _morph_completed), None),
+    ("cam_get", {"include": ["time"], "setup": HUB_MILL_SETUP},
+     _needs(MACHINING_EXTENSION, _all_cut(HUB_MILL_SETUP, 1, names=["MorphPair"])), None),
     # THE MANUAL NC PASS. This beat proves the CREATE and nothing more: measured, a generated manual
     # operation's time row answers "3 : Machining time could not be calculated." and it never
     # appears in empty_toolpaths, so neither oracle this act uses can judge it. It is taken back out
@@ -569,8 +650,35 @@ _CENSUS_EXT = [
     ("cam_select_geometry",
      lambda c: {"operation": "ProbeGeom", "selection": "probe",
                 "handles": [_ctx_get(c, "ext_top", "the flange top")],
-                "probing_type": "probing-z", "generate": False},
-     lambda p: _selected(1)(p) and p.get("probing_type") == "probing-z", None),
+                "probing_type": "probing-z", "generate": False}, _probe_type_selected, None),
+    ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
+                  "parameter_names": ["probingType"]}, _probe_type_read, None),
+    ("cam_select_geometry",
+     lambda c: {"operation": "ProbeGeom", "selection": "probe",
+                "handles": [_ctx_get(c, "ext_top", "the flange top")],
+                "generate": False}, _probe_type_inferred,
+     ("inferred_probe_type", _recall("inferred_probe_type", lambda p: p["probing_type"]))),
+    ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
+                  "parameter_names": ["probingType"]}, _probe_type_inferred_read, None),
+    ("cam_select_geometry",
+     lambda c: {"operation": "ProbeGeom", "selection": "probe",
+                "handles": [_ctx_get(c, "ext_wall", "the flange wall")], "generate": False},
+     lambda p: _measured("a different face re-infers probingType and says so",
+                         {k: p.get(k) for k in ("probing_type", "probing_type_before",
+                                                "probing_type_changed")},
+                         p.get("probing_type_changed") is True
+                         and p.get("probing_type_before") == "probing-z"
+                         and p.get("probing_type") != "probing-z"
+                         and "probingType read 'probing-z' before" in (p.get("note") or "")),
+     ("inferred_probe_type", _recall("inferred_probe_type", lambda p: p["probing_type"]))),
+    ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
+                  "parameter_names": ["probingType"]}, _probe_type_inferred_read, None),
+    ("cam_select_geometry",
+     lambda c: {"operation": "ProbeGeom", "selection": "probe",
+                "handles": [_ctx_get(c, "ext_top", "the flange top")],
+                "probing_type": "probing-z", "generate": False}, _probe_type_selected, None),
+    ("cam_get", {"include": ["parameters"], "operation": "ProbeGeom",
+                  "parameter_names": ["probingType"]}, _probe_type_read, None),
     ("cam_generate", {"target": HUB_MILL_SETUP, "skip_valid": True},
      _launched_on(HUB_MILL_SETUP, skip_valid=True), None),
 ]

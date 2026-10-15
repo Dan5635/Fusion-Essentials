@@ -50,9 +50,9 @@ def handler(joint_one: str = "", joint_two: str = "", ratio: float = 1.0) -> dic
         return error("Provide 'joint_one' and 'joint_two' - the two joints to link.")
     if j1name == j2name:
         return error("joint_one and joint_two must be different joints.")
-    design = _common.design()
-    if not design:
-        return error("No active design.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     root = safe(lambda: design.rootComponent)
     j1, amb1 = find_joint(design, j1name)
     j2, amb2 = find_joint(design, j2name)

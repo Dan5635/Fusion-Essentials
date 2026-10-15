@@ -4,7 +4,6 @@ Pinned: the active flag comes from wrapper EQUALITY (identity is measured unreli
 live Documents), so a DISTINCT wrapper that compares equal still reads active.
 """
 
-import json
 
 import pytest
 
@@ -13,9 +12,7 @@ from conftest import FakeApplication, FakeDocuments, FakeFusionDocument, load_to
 dm = load_tool("doc_new")
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class _EqualByHandle(FakeFusionDocument):

@@ -4,6 +4,7 @@ view even though they consume opposite sign conventions (view_screenshot's look_
 negation of view_set's view_direction); this pins that relationship so the two can't silently
 desync.
 """
+from conftest import install as _install_design
 
 import math
 from types import SimpleNamespace
@@ -176,35 +177,34 @@ class TestViewportHandsBackACopy:
         # assigning site in this family writes its camera back because a mutation of the read one
         # reaches no viewport. A fake sharing one mutable camera hides a site that forgot.
         assert live_api_facts.BEHAVIOR["viewport_camera_returns_copy"] is True
-        vp = _viewport()
+        vp = _viewport(cam=Camera())                 # orthographic: the type that has extents
         read = vp.camera
-        read.viewExtents = 999.0
-        assert vp.camera.viewExtents != 999.0
+        assert read.setExtents(999.0, 999.0) is True
+        assert vp.camera.getExtents() != [True, 999.0, 999.0]
         vp.camera = read
-        assert vp.camera.viewExtents == 999.0
+        assert vp.camera.getExtents() == [True, 999.0, 999.0]
 
 
-class _NoSmoothCamera:
+class _NoSmoothCamera(Camera):
     """A camera whose isSmoothTransition SETTER raises - the platform declining that flag."""
 
     def __init__(self):
-        c = Camera()
-        self.eye, self.target, self.upVector = c.eye, c.target, c.upVector
-        self.cameraType, self.isFitView = c.cameraType, c.isFitView
-        self.perspectiveAngle, self.viewExtents = c.perspectiveAngle, c.viewExtents
+        self._initializing = True
+        try:
+            super().__init__()
+        finally:
+            self._initializing = False
 
     @property
     def isSmoothTransition(self):
-        return True
+        return getattr(self, "_smooth_transition", True)
 
     @isSmoothTransition.setter
     def isSmoothTransition(self, value):
+        if getattr(self, "_initializing", False):
+            self._smooth_transition = value
+            return
         raise RuntimeError("isSmoothTransition unavailable")
-
-    def _copy(self):
-        dup = type(self).__new__(type(self))
-        dup.__dict__.update(self.__dict__)
-        return dup
 
 
 class TestApplyCamera:
@@ -368,6 +368,14 @@ class TestRestoreCamera:
         vc.restore_camera(vp, saved)
         assert vp._assigned[-1] is not saved
 
+    def test_a_non_square_pair_lands_without_becoming_its_maximum(self):
+        saved = Camera()
+        saved.setExtents(3.8, 3.2)
+        vp = _viewport(cam=Camera())
+        got, _ = vc.restore_camera(vp, saved)
+        assert got.getExtents() == [True, 3.8, 3.2]
+        assert vc.camera_restored(got, saved) is True
+
     def test_a_same_type_perspective_restore_is_one_assignment_without_extents(self):
         # MEASURED: a perspective camera's extents are a ratio to its eye distance, so the saved
         # extents are NOT written - the eye/target carry the framing on the fresh read's extents.
@@ -384,7 +392,7 @@ class TestRestoreCamera:
         assert (got.target.x, got.target.y, got.target.z) == (4, 5, 6)
         assert (got.upVector.x, got.upVector.y, got.upVector.z) == (0, 0, 1)
         assert got.perspectiveAngle == 0.7
-        assert got.viewExtents == 5.347
+        assert got._sides == (5.347, 5.347)
 
     def test_a_type_switch_lands_alone_before_the_eye_and_target(self):
         # MEASURED: a type switch rescales the eye to the viewport's current extents, so the
@@ -401,7 +409,7 @@ class TestRestoreCamera:
         assert first.cameraType == adsk.core.CameraTypes.PerspectiveCameraType
         assert (second.eye.x, second.eye.y, second.eye.z) == (1, 2, 3)
         assert (second.target.x, second.target.y, second.target.z) == (4, 5, 6)
-        assert second.viewExtents == 5.347          # never the saved 0.4 on a perspective restore
+        assert second._sides == (5.347, 5.347)      # never the saved 0.4 on a perspective restore
 
     def test_an_orthographic_restore_writes_its_window_after_the_switch(self):
         # MEASURED: an extents write is dropped when the type switches in the same assignment, so
@@ -416,7 +424,7 @@ class TestRestoreCamera:
         assert len(vp._assigned) == 2
         first, second = vp._assigned
         assert first.cameraType == adsk.core.CameraTypes.OrthographicCameraType
-        assert second.viewExtents == 55.0
+        assert second.getExtents() == [True, 55.0, 55.0]
         assert (second.eye.x, second.eye.y, second.eye.z) == (1, 2, 3)
         assert (second.target.x, second.target.y, second.target.z) == (4, 5, 6)
 
@@ -446,6 +454,24 @@ class TestRestoreCamera:
 
 
 class TestCameraRestored:
+    @pytest.mark.parametrize("field,value", [("cameraType", "different"),
+        ("upVector", FakePoint(1, 0, 0)), ("perspectiveAngle", .7), ("_sides", (3.8, 3.8)),
+        ("cameraType", None), ("upVector", None), ("perspectiveAngle", float("nan")),
+        ("_sides", (float("nan"), 3.2))])
+    def test_a_framing_field_that_differs_is_not_restored(self, field, value):
+        saved = Camera(perspective_angle=.4)
+        saved.setExtents(3.8, 3.2)
+        got = saved._copy()
+        setattr(got, field, value)
+        assert vc.camera_restored(got, saved) is False
+
+    @pytest.mark.parametrize("delta,expected", [(1e-6, True), (1.0001e-6, False)])
+    def test_extent_pair_comparison_includes_its_exact_tolerance(self, delta, expected):
+        saved = Camera(view_extents=0)
+        got = Camera(view_extents=0)
+        got.setExtents(delta, 0)
+        assert vc.camera_restored(got, saved) is expected
+
     def test_a_matching_read_back_is_restored(self):
         saved = Camera(eye=(1, 2, 3), target=(0, 0, 0))
         read_back = Camera(eye=(1, 2, 3), target=(0, 0, 0))
@@ -468,8 +494,73 @@ class TestCameraRestored:
         assert vc.camera_restored(read_back, saved) is True
 
 
+class TestHowMuchACameraShows:
+    """An orthographic camera's window is read and written through its extents; a perspective
+    camera has none, so showing more or less means moving its eye along the line of sight."""
+
+    @pytest.fixture
+    def points(self, monkeypatch):
+        import adsk.core
+        monkeypatch.setattr(adsk.core.Point3D, "create", lambda x, y, z: FakePoint(x, y, z))
+        return adsk.core.CameraTypes.PerspectiveCameraType
+
+    def test_the_larger_side_is_the_extent_and_a_write_sets_both_sides(self):
+        cam = Camera()
+        assert cam.setExtents(3.8, 3.2) is True
+        assert vc.view_extent(cam) == 3.8
+        assert vc.set_view_extent(cam, 7.5) is True and cam.getExtents() == [True, 7.5, 7.5]
+
+    def test_a_perspective_camera_has_no_extent_and_scales_by_its_eye(self, points):
+        cam = Camera(eye=(10, 2, 3), target=(4, 2, 3), camera_type=points, perspective_angle=0.4)
+        assert vc.view_extent(cam) is None
+        assert vc.scale_view(cam, 0.5) is True
+        assert (cam.eye.x, cam.eye.y, cam.eye.z) == (7.0, 2.0, 3.0)      # half the distance
+        assert (cam.target.x, cam.target.y, cam.target.z) == (4, 2, 3)
+
+    def test_an_orthographic_camera_scales_its_window_and_keeps_its_eye(self):
+        cam = Camera(eye=(10, 2, 3), target=(4, 2, 3), view_extents=6.0)
+        assert vc.scale_view(cam, 2.0) is True
+        assert cam.getExtents() == [True, 12.0, 12.0] and cam.eye.x == 10
+
+    @pytest.mark.parametrize("factor", [0.5, 2.0])
+    def test_relative_zoom_preserves_both_sides_of_a_nonsquare_window(self, factor):
+        cam = Camera(eye=(10, 2, 3), target=(4, 2, 3))
+        assert cam.setExtents(3.8, 3.2) is True
+        assert vc.scale_view(cam, factor) is True
+        assert cam.getExtents() == [True, 3.8 * factor, 3.2 * factor]
+        assert (cam.eye.x, cam.eye.y, cam.eye.z) == (10, 2, 3)
+
+    def test_a_false_extent_setter_refuses_both_relative_and_absolute_zoom(self, monkeypatch):
+        cam = Camera()
+        before = cam.getExtents()
+        monkeypatch.setattr(cam, "setExtents", lambda *_args: False)
+        assert vc.scale_view(cam, 2.0) is False
+        assert vc.set_view_extent(cam, 40.0) is False
+        assert cam.getExtents() == before
+
+    def test_an_orthographic_camera_whose_extents_do_not_read_is_not_moved(self):
+        cam = Camera(eye=(10, 2, 3), target=(4, 2, 3))
+        cam.getExtents = lambda: [False, 0.0, 0.0]
+        assert vc.scale_view(cam, 2.0) is False and cam.eye.x == 10
+
+    @pytest.mark.parametrize("read", [[True, float("nan"), 1.0], [True, 1.0], None, [True, True, 1.0]])
+    def test_extents_that_are_not_two_finite_numbers_are_no_extent(self, read):
+        cam = Camera()
+        cam.getExtents = lambda: read
+        assert vc.view_extent(cam) is None
+
+    def test_a_perspective_eye_is_put_where_its_angle_spans_the_extent(self, points):
+        cam = Camera(eye=(0, -20, 0), target=(0, 0, 0), camera_type=points, perspective_angle=0.5)
+        assert vc.show_extent(cam, 4.0) is True
+        assert cam.eye.distanceTo(cam.target) == pytest.approx(4.0 / (2 * math.tan(0.25)))
+
+    def test_a_perspective_camera_with_no_usable_angle_shows_nothing_new(self, points):
+        cam = Camera(eye=(0, -20, 0), target=(0, 0, 0), camera_type=points, perspective_angle=0.0)
+        assert vc.show_extent(cam, 4.0) is False and cam.eye.y == -20
+
+
 class TestOrthoExtentsFromPerspective:
-    """Switching camera type off perspective leaves viewExtents at the PERSPECTIVE value (measured
+    """Switching camera type off perspective leaves the extents at the PERSPECTIVE value (measured
     2705.1.25) - a named face view recomputes it so the apparent size survives the switch."""
 
     def test_a_perspective_camera_gets_extents_matching_its_apparent_size(self, monkeypatch):
@@ -480,7 +571,8 @@ class TestOrthoExtentsFromPerspective:
         vp = _viewport(cam=cam)
         vc.apply_named_view(vp, "top")
         expected = 2 * 20.0 * math.tan(0.5 / 2)
-        assert math.isclose(vp._assigned[-1].viewExtents, expected, rel_tol=1e-9)
+        ok, width, height = vp._assigned[-1].getExtents()
+        assert ok is True and width == height and math.isclose(width, expected, rel_tol=1e-9)
 
     def test_an_already_orthographic_camera_keeps_its_extents(self, monkeypatch):
         import adsk.core
@@ -488,7 +580,7 @@ class TestOrthoExtentsFromPerspective:
         cam = Camera(eye=(0, -20, 0), target=(0, 0, 0), view_extents=42.0)   # default: Orthographic
         vp = _viewport(cam=cam)
         vc.apply_named_view(vp, "top")
-        assert vp._assigned[-1].viewExtents == 42.0
+        assert vp._assigned[-1].getExtents() == [True, 42.0, 42.0]
 
 
 class TestApplyNamedViewEyeSide:
@@ -771,7 +863,7 @@ class TestIsolateForFit:
     refusal naming the other one's parameter."""
 
     def test_no_active_design_names_the_callers_own_input(self, monkeypatch):
-        monkeypatch.setattr(vc._common, "design", lambda: None)
+        _install_design(vc, None)
         ref = SimpleNamespace(name="focus")
         restore, target, err = vc.isolate_for_fit("Part:1", ref)
         assert restore is None and target is None
@@ -799,7 +891,7 @@ class TestIsolateForFit:
         comp = Comp()
         occ = make_occurrence(path="Part:1", component=comp)
         design = SimpleNamespace(rootComponent=MakeComp(occurrences=[occ]), allComponents=[comp])
-        monkeypatch.setattr(vc._common, "design", lambda: design)
+        _install_design(vc, design)
         monkeypatch.setattr(vc._common, "all_occurrences", lambda d: [occ])
         ref = SimpleNamespace(name="fit_to", resolve=lambda raw: ((occ, "occurrence"), None))
         restore, target, err = vc.isolate_for_fit("Part:1", ref)

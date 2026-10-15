@@ -133,9 +133,9 @@ def ruled_handler(edges=None, ruled_type="tangent", distance=None, units="mm",
                      f"the edge bounds - the direction is ignored, not applied. Pass "
                      f"ruled_type='direction' to sweep along '{direction}', or drop 'direction'.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     resolved, eerr = _EDGES.resolve(edges)
     if eerr:

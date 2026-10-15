@@ -142,9 +142,9 @@ def _recognize(body, vector, include_bosses):
 def handler(bodies=None, attack_vector=None, include_bosses: bool = False, units: str = "mm",
             max_results: int = _POCKETS_DEFAULT) -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design (open or create a document first).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     values, verr = _inputs.resolve_inputs(_SPEC, {"bodies": bodies, "units": units})
     if verr:
         return verr

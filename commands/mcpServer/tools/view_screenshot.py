@@ -12,8 +12,9 @@ import adsk.core
 from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
-from ._common import error, safe
+from ._common import ok, error, safe
 from . import _common
+from . import _drawing_common
 from . import _export
 from . import _inputs
 from . import _view_common
@@ -41,8 +42,7 @@ _FIT_TO = _inputs.TargetRef("fit_to", allow=("occurrence", "body", "mesh"),
         description="Isolates it for the shot (a body: its siblings hidden), then restores the view.")
 
 
-# The frame-on-one-occurrence isolate is shared with view_set(orient, focus=) - ONE visibility walk
-# and ONE restore contract, so a fix to either reaches both.
+# The ancestor/descendant path test the fit_to isolate walk in _view_common runs.
 _keep_visible = _view_common.keep_visible
 
 
@@ -54,9 +54,7 @@ def _isolate_for_fit(name):
 
 
 def _restore_message(restore_fit_to):
-    """The fit_to restore, plus the sentence naming any bulb it could not put back (None when
-    everything came back). A restore that did not take leaves the document changed by a READ tool,
-    so EVERY exit that reaches the isolate runs this, not just the successful capture."""
+    """The fit_to restore, plus the sentences naming what it left changed (None when nothing)."""
     return _view_common.restore_message(restore_fit_to, "fit_to", "for this shot")
 
 
@@ -74,7 +72,7 @@ def _restore_camera(vp, saved_camera):
                 "viewport is left at the capture camera - view_set(orient) re-aims it.")
     if not _view_common.camera_restored(read_back, saved_camera):
         return ("The camera could NOT be put back where it was before this shot: the read-back "
-                "eye/target do not match the saved camera. The viewport is left at the capture "
+                "camera framing does not match the saved camera. The viewport is left at the capture "
                 "camera - view_set(orient) re-aims it.")
     if smooth_error:
         return f"isSmoothTransition could not be reset restoring the camera: {smooth_error}."
@@ -128,6 +126,9 @@ def handler(view: str = "current", width: int = _WIDTH_DEFAULT, height: int = _H
 
     vp = app.activeViewport
     if not vp:
+        if _drawing_common.active_drawing() is not None:
+            return error("No viewport is available for this drawing. Export it with "
+                         "drawing_export(format='pdf', file_path=...) to inspect its sheets.")
         return error("No active viewport (is a document open?).")
 
     # The output path is prepared BEFORE the camera moves, so an unusable destination refuses
@@ -137,8 +138,8 @@ def handler(view: str = "current", width: int = _WIDTH_DEFAULT, height: int = _H
         return error(perr)
 
     # 'fit_to' frames the camera on ONE subject: the occurrence is isolated (a body's siblings are
-    # hidden) so fit() tightens onto it, and the restore puts the view back so a read tool leaves
-    # no permanent change.
+    # hidden) so fit() tightens onto it; the restore puts the visibility back, and a modified flag
+    # the isolate set stays set.
     saved_camera = None
     restore_fit_to = None
     want_fit = (fit_to or "").strip()
@@ -184,21 +185,25 @@ def handler(view: str = "current", width: int = _WIDTH_DEFAULT, height: int = _H
                         "the view direction before the fit.")
             elif want_fit_view:
                 vp.fit()
-            # zoom: scale the camera-to-target distance after fitting (>1 zooms OUT, <1 zooms IN).
+            # zoom: scale how much the view shows after fitting (>1 zooms OUT, <1 zooms IN).
             z = float(zoom or 1.0)
             if z and z != 1.0 and z > 0:
                 cam = vp.camera
                 try:
-                    cam.viewExtents = cam.viewExtents * z   # smaller extents = zoomed in
-                    _, zoom_smooth_error = _view_common.apply_camera(
+                    if not _view_common.scale_view(cam, z):
+                        raise RuntimeError("neither the camera's extents nor its eye took it")
+                    requested = _view_common.camera_frame(cam)
+                    landed, zoom_smooth_error = _view_common.apply_camera(
                         vp, cam, fit=False, smooth=_view_common.SCREENSHOT_GLIDE)
+                    if not _view_common.camera_restored(landed, requested):
+                        raise RuntimeError("the read-back camera framing does not match the requested zoom")
                     if zoom_smooth_error and not smooth_warning:
                         smooth_warning = f"isSmoothTransition could not be set: {zoom_smooth_error}."
                 except Exception as e:
                     # A dropped zoom is a request the image does not honour - say so rather than
                     # returning a fitted shot as if the zoom had applied.
-                    zoom_warning = (f"zoom={z} could NOT be applied ({e}) - the image is at the "
-                                    "fitted extents.")
+                    zoom_warning = (f"zoom={z} could NOT be applied ({e}) - the image shows the "
+                                    "camera framing that read back.")
         except Exception as e:
             # The orient failed AFTER the camera may already have moved and AFTER fit_to hid the
             # other occurrences, so this exit owes both restores: the camera goes back here or
@@ -234,7 +239,7 @@ def handler(view: str = "current", width: int = _WIDTH_DEFAULT, height: int = _H
                 if written:
                     content.append({"type": "text", "text": written})
                 content.append({"type": "image", "data": b64, "mimeType": "image/png"})
-                result = {"content": content, "isError": False}
+                result = ok(content=content)
     except Exception as e:
         result = error(f"Screenshot error: {e}")
 

@@ -77,9 +77,9 @@ def _disclose_subtree(out, ent_a, kind_a, ent_b, kind_b, inv, units):
 
 def handler(a: str = "", b: str = "", mode: str = "distance", units: str = "mm") -> dict:
     """See TOOL_DESCRIPTION."""
-    design = _common.design()
-    if not design:
-        return error("No active design. Open or create a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
 
     m = (mode or "distance").strip().lower()
     if m not in _MODES:

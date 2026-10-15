@@ -4,7 +4,7 @@
 """MCP building block: reposition bodies with a Move feature recorded in the timeline.
 
   model_move -> translate, move along an entity, rotate, or point-to-point a body as a parametric
-                timeline feature. WRITES.
+                timeline feature; translate a mesh body, judged by its nodes. WRITES.
 """
 
 import math
@@ -40,12 +40,13 @@ _POINT_TO_POINT = "point_to_point"
 
 RETURNS = [
     _outputs.ReturnsName("feature", of="feature", consumers=["design_delete_feature"],
-                         absent_when="no_timeline_feature"),
+                         absent_when="no_feature_object"),
     _outputs.ReturnsValue("displacement", "the measured geometry displacement proving the move took"),
 ]
 
 _MODE = _inputs.Choice("mode", (_TRANSLATE, _ALONG, _ROTATE, _POINT_TO_POINT), default=_TRANSLATE)
-_BODIES = _inputs.BodyRefList("bodies", kind="brep")
+_BODIES = _inputs.BodyRefList("bodies", kind="any",
+                             description="Mesh: translate only, in its own call.")
 _FACES = _inputs.GeometryHandleList("faces", require="face")
 _DX = _inputs.Distance("dx", allow_zero=True)
 _DY = _inputs.Distance("dy", allow_zero=True)
@@ -210,6 +211,87 @@ def _translation_cm(dx, dy, dz, scale_factor):
     return out, None
 
 
+def _mesh_nodes(body):
+    """A mesh body's node coordinates as one flat [x, y, z, ...] list of finite cm, or None."""
+    nodes = safe(lambda: [float(v) for v in body.mesh.nodeCoordinatesAsDouble])
+    if not nodes or len(nodes) % 3 or not all(math.isfinite(v) for v in nodes):
+        return None
+    return nodes
+
+
+def _node_miss(before, after, offsets_cm):
+    """The largest cm a node sits from where the translation puts it; None when they cannot pair."""
+    if before is None or after is None or len(before) != len(after):
+        return None
+    return max(abs(a - b - offsets_cm[i % 3]) for i, (b, a) in enumerate(zip(before, after)))
+
+
+def _move_meshes(design, ents, offsets_cm, scale_factor, units):
+    """Translate mesh bodies and judge the move by every node, since no feature object returns."""
+    root = safe(lambda: design.rootComponent)
+    names = [safe(lambda e=e: e.name) for e in ents]
+    for e, name in zip(ents, names):
+        if _common.same_component(safe(lambda e=e: e.parentComponent), root) is not True:
+            return error(f"model_move translates a mesh body the root component owns; '{name}' "
+                         f"reads owner '{safe(lambda e=e: e.parentComponent.name)}'. Move its "
+                         "occurrence with assembly_move.")
+    before = [_mesh_nodes(e) for e in ents]
+    unread = [n for n, b in zip(names, before) if b is None]
+    if unread:
+        return error(f"The nodes of {unread} did not read, so a move could not be checked; "
+                     "nothing was moved.")
+    count_before = _common.counted(lambda: design.timeline.count)
+    coll = adsk.core.ObjectCollection.create()
+    for e in ents:
+        coll.add(e)
+    feature, raised = None, None
+    try:
+        move_input = root.features.moveFeatures.createInput2(coll)
+        defined = move_input.defineAsTranslateXYZ(
+            adsk.core.ValueInput.createByReal(offsets_cm[0]),
+            adsk.core.ValueInput.createByReal(offsets_cm[1]),
+            adsk.core.ValueInput.createByReal(offsets_cm[2]), True)
+        if defined is not True:
+            return error(f"Fusion refused the mesh translation (the definition answered "
+                         f"{defined!r}), so nothing was moved. {_HINTS[_TRANSLATE]}")
+        feature = root.features.moveFeatures.add(move_input)
+    except Exception as e:
+        raised = str(e) or type(e).__name__
+    misses = [_node_miss(b, _mesh_nodes(e), offsets_cm) for b, e in zip(before, ents)]
+    still = [_node_miss(b, _mesh_nodes(e), [0.0, 0.0, 0.0]) for b, e in zip(before, ents)]
+    reread = " Re-read the mesh with mesh_get before retrying."
+    if raised is not None:
+        landed = ("its nodes read where they were" if all(s is not None and s <= _MOVE_EPS_CM
+                                                          for s in still)
+                  else "its nodes did not read back unchanged, so part of it may have landed")
+        return error(f"Move failed: {raised}. The mesh was re-read: {landed}.{reread}")
+    bad = [n for n, m in zip(names, misses) if m is None or m > _MOVE_TOL_CM]
+    if bad:
+        worst = max((m for m in misses if m is not None), default=None)
+        return error(f"Move reported success but the nodes of {bad} are not where the translation "
+                     f"puts them (largest miss {worst if worst is None else round(worst, 9)} cm)."
+                     + reread)
+    travel = (offsets_cm[0] ** 2 + offsets_cm[1] ** 2 + offsets_cm[2] ** 2) ** 0.5
+    payload = {"moved": True, "mode": _TRANSLATE, "displacement": round(travel / scale_factor, 6),
+               "units": units, "bodies": names, "body_kind": "mesh",
+               "nodes_checked": sum(len(b) // 3 for b in before),
+               "note": "Every mesh node sits where the translation puts it."}
+    if feature:
+        payload["feature"] = safe(lambda: feature.name)
+    else:
+        payload["no_feature_object"] = True
+        payload["note"] += " The move returned no feature object."
+    count_after = _common.counted(lambda: design.timeline.count)
+    if None not in (count_before, count_after):
+        payload["timeline_items_added"] = count_after - count_before
+        if count_after - count_before == 1 and not feature:
+            item = safe(lambda: design.timeline.item(design.timeline.markerPosition - 1).name)
+            payload["timeline_item"] = item
+            payload["note"] += (f" Its timeline item is '{item}'; an opposite move adds another "
+                                "item and removes none.")
+    return ok(payload)
+
+
 def handler(mode: str = "translate", bodies=None, faces=None, dx=None, dy=None, dz=None,
             distance=None, axis: str = "", angle_deg=None, from_point: str = "",
             to_point: str = "", units: str = "mm") -> dict:
@@ -259,14 +341,21 @@ def handler(mode: str = "translate", bodies=None, faces=None, dx=None, dy=None, 
             return error(f"mode 'point_to_point' needs {' and '.join(missing)} - a vertex handle "
                          "from find_geometry.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design. Create or open a document first (see doc_new).")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     comp = target_component(design)
 
     ents, eerr = _BODIES.resolve(bodies)
     if eerr:
         return error(eerr)
+    meshes = [e for e in ents if _inputs._is_mesh(e)]
+    if meshes and len(meshes) != len(ents):
+        return error("'bodies' mixes mesh and BRep bodies - move each kind in its own call.")
+    if meshes and mode_key != _TRANSLATE:
+        return error(f"A mesh body moves by mode 'translate' only - got '{mode_key}'.")
+    if meshes:
+        return _move_meshes(design, ents, offsets_cm, scale_factor, units)
     comp, axis_ctx, herr = _host_for(design, ents[0])
     if herr:
         return error(herr)
@@ -348,7 +437,7 @@ def handler(mode: str = "translate", bodies=None, faces=None, dx=None, dy=None, 
                  "assembly_move."),
     }
     if direct_no_feature:
-        payload["no_timeline_feature"] = True
+        payload["no_timeline_feature"] = payload["no_feature_object"] = True
         payload["note"] += " " + _common.DIRECT_FEATURE_NOTE
     else:
         payload["feature"] = safe(lambda: feature.name)
@@ -359,7 +448,8 @@ def handler(mode: str = "translate", bodies=None, faces=None, dx=None, dy=None, 
 
 
 TOOL_DESCRIPTION = (
-    "Move bodies as a timeline feature; assembly_move moves an occurrence.\n"
+    "Move BRep bodies as a timeline feature, or translate mesh bodies; assembly_move moves an "
+    "occurrence.\n"
     + _outputs.produces_block(RETURNS)
 )
 

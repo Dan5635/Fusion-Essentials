@@ -18,7 +18,6 @@ from . import _common
 from . import _geom
 from . import _inputs
 from . import _write_guard
-from .design_move_occurrence import _corner
 from ._joints import (DRIVES_ANGLE, DRIVES_ANY, DRIVES_SLIDE, all_joints as _all_joints,
                       find_joint as _find_joint,
                       find_joints_by_name as _find_joints_by_name,
@@ -30,6 +29,7 @@ from ._joints import (DRIVES_ANGLE, DRIVES_ANY, DRIVES_SLIDE, all_joints as _all
 # places two orientations under ~0.008 deg apart on the same reading.
 _MOVE_BAND_MM = 1e-3
 _MOVE_BAND_DEG = 0.01
+_OTHER_MOTION_CAP = 200
 
 # rotationValue lands on a 0.1 deg grid, so a stored angle sits at most half a step from the
 # command; a read-back inside that half-step landed the value. Measured by measure_api.py row
@@ -386,15 +386,24 @@ def _delta_deg(before, after):
     return round(math.degrees(math.acos(max(-1.0, min(1.0, (trace - 1.0) / 2.0)))), 4)
 
 
-def _moved_rows(members):
-    """(rows, readable) over [(occurrence, before-sample, before-corner)]: one row per member whose
-    placement changed by MORE than its band, farthest first, with 'geometry_moved_mm' (its own body
-    corner's travel) when that corner read on both sides. `readable` says at least one placement
-    read at both ends - what tells 'nothing moved' apart from 'the move could not be measured'."""
+def _own_corner(occ):
+    """The bbox-min corner (x, y, z) in cm over the bodies `occ` itself places, or None if unread."""
+    # Child occurrences are left out: one not grounded to this member stays where it is while the
+    # member is driven, so a corner taken over the whole subtree can sit on a body that never moved.
+    if occ is None:
+        return None
+    box = _geom.union_box(_geom._subtree_body_boxes(occ, 0))
+    return _geom._coords(safe(lambda: box.minPoint)) if box is not None else None
+
+
+def _moved_rows(members, unread=None):
+    """Changed placement rows, farthest first, and whether any placement pair read."""
     rows, readable = [], False
     for occ, before, corner_before in members:
         after = _placement(occ)
         dmm, ddeg = _delta_mm(before, after), _delta_deg(before, after)
+        if unread is not None and (dmm is None or ddeg is None):
+            unread.append(safe(lambda: occ.fullPathName) or safe(lambda: occ.name))
         if dmm is None and ddeg is None:
             continue
         readable = True
@@ -408,13 +417,52 @@ def _moved_rows(members):
             row["delta_mm"] = dmm
         if ddeg is not None:
             row["delta_deg"] = ddeg
-        corner_after = _corner(occ) if corner_before is not None else None
+        corner_after = _own_corner(occ) if corner_before is not None else None
         if corner_after is not None:
             row["geometry_moved_mm"] = round(
                 max(abs(a - b) for a, b in zip(corner_before, corner_after)) * 10.0, 4)
         rows.append((span, turn, row))
     rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
     return [r[2] for r in rows], readable
+
+
+def _other_motion_before(design, members):
+    """Capture bounded placed-occurrence samples apart from the joint's own members."""
+    collection = safe(lambda: design.rootComponent.allOccurrences)
+    total = _common.counted(lambda: collection.count)
+    member_tokens = [safe(lambda o=o: o.entityToken) for o in members if o is not None]
+    scope = {"total_occurrences": total, "sampled_occurrences": 0,
+             "cap": _OTHER_MOTION_CAP, "truncated": None,
+             "complete": total is not None,
+             "unread": [], "broken_occurrences": 0 if total is not None else None}
+    if total is None:
+        scope["complete"] = False
+        scope["unread"].append("occurrence census")
+        return [], scope
+    if any(not token for token in member_tokens):
+        scope["complete"] = False
+        scope["unread"].append("joint member placed identity")
+        return [], scope
+    samples = []
+    scope["truncated"] = total > _OTHER_MOTION_CAP
+    if scope["truncated"] or scope["truncated"] is None:
+        scope["complete"] = False
+    for index in range(min(total, _OTHER_MOTION_CAP)):
+        occurrence = safe(lambda index=index: collection.item(index))
+        if occurrence is not None and _common.broken_reference(occurrence)[0]:
+            scope["broken_occurrences"] += 1
+            scope["complete"] = False
+            continue
+        token = safe(lambda o=occurrence: o.entityToken)
+        if not token:
+            scope["complete"] = False
+            scope["unread"].append("placed occurrence identity")
+            continue
+        if token in member_tokens:
+            continue
+        samples.append((occurrence, _placement(occurrence), _own_corner(occurrence)))
+    scope["sampled_occurrences"] = len(samples)
+    return samples, scope
 
 
 def _off_grid_deg(angle):
@@ -444,9 +492,9 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
     if k is None:
         return error(f"Unknown units '{units}'. Use mm, cm, or in.")
 
-    design = _common.design()
-    if not design:
-        return error("No active design with components.")
+    design, design_refusal = _common.require_design()
+    if design_refusal is not None:
+        return design_refusal
     joint, ambiguous = _find_joint(design, joint_name)
     if ambiguous:
         return error(ambiguous)
@@ -548,7 +596,8 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
     occ_one, occ_two = safe(lambda: joint.occurrenceOne), safe(lambda: joint.occurrenceTwo)
     before_one, before_two = _placement(occ_one), _placement(occ_two)
     # The placement is the transform's CLAIM; each member's body corner is the EVIDENCE.
-    corner_one, corner_two = _corner(occ_one), _corner(occ_two)
+    corner_one, corner_two = _own_corner(occ_one), _own_corner(occ_two)
+    other_samples, motion_scope = _other_motion_before(design, (occ_one, occ_two))
     directions = {}
     if cm is not None:
         slide_dir = _geom.axis_vec(safe(lambda: jm.slideDirectionVector))
@@ -792,7 +841,7 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
                 _driven_this_session.add(_reg_key(doc_id, joint))
                 return error(
                     f"Drive of '{resolved_name}' moved the placement of '{row['occurrence']}' by "
-                    f"{row.get('delta_mm')} mm but its body geometry did not move "
+                    f"{row.get('delta_mm')} mm but its own body geometry did not move "
                     f"({carried} mm) - the transform is a claim, the body corner is the evidence. "
                     "Read the pose back with assembly_get.")
     if rows:
@@ -803,6 +852,12 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
                            "delta_mm is how far its origin moved (mm), delta_deg the angle between "
                            "its before and after orientation (a magnitude, no sense), "
                            "geometry_moved_mm how far its own body corner travelled.")
+        unread_geometry = [f"'{r['occurrence']}'" for r in rows[:2]
+                           if "geometry_moved_mm" not in r]
+        if unread_geometry:
+            result["note"] += (f" No body of {' or '.join(unread_geometry)} itself gave a box on "
+                               "both sides of the drive, so geometry_moved_mm is unread there - "
+                               "the placement change is not checked against geometry.")
     elif placement_readable:
         result["moved"] = None
         result["note"] += (f" 'moved' is null - neither member's placement changed by more than "
@@ -814,6 +869,22 @@ def handler(joint_name: str = "", angle_deg=None, distance=None, units: str = "m
         result.update(directions)
         result["note"] += (" The joint's own motion vector, read before the drive: "
                            + ", ".join(sorted(directions)) + ".")
+    other_rows, _ = _moved_rows(other_samples, motion_scope["unread"])
+    member_paths = [safe(lambda o=o: o.fullPathName) for o in (occ_one, occ_two) if o is not None]
+    paths_read = all(isinstance(path, str) and path for path in member_paths)
+    for row in other_rows:
+        path = row["occurrence"]
+        row["under_joint_member"] = (
+            any(path.startswith(member + "+") for member in member_paths)
+            if paths_read and isinstance(path, str) else None)
+    if motion_scope["unread"]:
+        motion_scope["complete"] = False
+    result["other_moved"] = other_rows
+    result["motion_scope"] = motion_scope
+    if other_rows or not motion_scope["complete"]:
+        result["note"] += (" other_moved samples other placed occurrences across this drive; "
+                           "motion_scope qualifies the scan. Read assembly_get(include=['poses']) "
+                           "for the remaining placements.")
     if partner:
         result["motion_link_partner"] = partner
         # The link's own STATE, beside the partner name - not keyed 'motion_link', which

@@ -10,6 +10,7 @@ import types
 import adsk.fusion
 import pytest
 
+import live_api_facts as _api_facts
 from conftest import (BRepBody, FakeApplication, FakeFeatures, FakeFormFeature, FakeFormFeatures,
                       FakeTimeline, FakeTimelineObject, FakeTSplineBodies, FakeTSplineBody,
                       FakeUserInterface, MakeComp, MakeDesign, _NamedCollection, error_message,
@@ -18,6 +19,8 @@ from conftest import (BRepBody, FakeApplication, FakeFeatures, FakeFormFeature, 
 fg = load_tool("form_get")
 tsm = load_tool("_tsm")
 fcommon = load_tool("_form_common")
+
+_DIRECT = _api_facts.ENUMS["fusion.DesignTypes"]["DirectDesignType"]
 
 
 def _form(name, comp, body_faces=6, volume=5.8, text=None, index=0):
@@ -59,12 +62,6 @@ def rig(monkeypatch):
 
 
 class TestFormGet:
-    def test_an_open_form_edit_reads_incomplete(self, rig):
-        rig.design.designType = 0
-        rig.ui.activeWorkspace = types.SimpleNamespace(id="TSplineEnvironment")
-        out = payload(fg.handler())
-        assert out["in_form_edit"] is True and out["complete"] is False
-
     def test_an_ambiguous_form_name_is_refused(self, rig):
         rig.add(rig.root, _form("Form1", rig.root, index=0))
         rig.add(rig.other, _form("Form1", rig.other, index=1))
@@ -120,6 +117,14 @@ class TestFormGet:
         out = payload(fg.handler(form="Root/Form1", include=["cage"], units="cm"))
         assert out["form"] == "Root/Form1" and out["cage"]["faces"] == cage["faces"]
 
+    def test_a_bare_index_that_also_names_a_form_refuses_and_the_listed_address_reads_back(self, rig):
+        cage = tsm.box([2.0, 2.0, 2.0], [1, 1, 1])
+        rig.add(rig.root, _form("Form1", rig.root, index=0))
+        rig.add(rig.root, _form("0", rig.root, text=tsm.emit(cage), index=5))
+        assert "(Root/Form1@0, Root/0@5)" in error_message(fg.handler(form="0", include=["cage"]))
+        out = payload(fg.handler(form="Root/0@5", include=["cage"], units="cm"))
+        assert out["form"] == "Root/0" and out["cage"]["faces"] == cage["faces"]
+
     @pytest.mark.parametrize("form,said", [
         ("", "include=['cage'] reads one Form and the design holds 2"),
         ("Extrude1", "no Form is named 'Extrude1' - the Forms: Root/Form1, Other/Form2"),
@@ -155,6 +160,13 @@ class TestFormGet:
         monkeypatch.setattr(fg, "_CAGE_MAX_CHARS", size - 1)
         out = payload(fg.handler(form="Form1", include=["cage"], units="cm"))
         assert out["cage"] is None and f"{size} characters" in out["cage_unrepresentable"][0]
+
+    def test_zero_forms_reading_direct_carries_the_open_edit_caveat(self, rig):
+        # A Form edit hides every Form (formFeatures.count reads 0 inside one), so an empty census
+        # while direct cannot say "no Forms exist" without the open-edit caveat.
+        rig.design.designType = _DIRECT
+        out = payload(fg.handler())
+        assert out["count"] == 0 and "Finish Form" in out["note"]
 
     def test_a_list_past_max_results_says_it_is_truncated(self, rig):
         for i in range(3):

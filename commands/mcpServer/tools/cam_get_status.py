@@ -13,7 +13,7 @@ from ..mcp_primitives.item import Item
 from ..mcp_primitives.registry import register
 from ._common import ok, error, safe
 from . import _cam_common   # the shared CAM substrate: live_readiness (the single job-health source)
-from ._write_guard import _active_identity, document_key
+from ._write_guard import _active_identity, document_key, on_key_renamed
 
 # The registry and the handles it mints live in _cam_common - the ONE registration path every
 # launch goes through. These names are those same objects.
@@ -35,6 +35,16 @@ def _release(key: str, entry: dict, elapsed: float, live=None) -> None:
                       "elapsed_seconds": elapsed, "tally": dict(live) if live else None}
     if len(_RELEASED) > _RELEASED_CAP:
         _RELEASED.popitem(last=False)
+
+
+def _carry_released_keys(old_key, new_key):
+    """Re-stamp released handles launched under a document key a save just changed."""
+    for released in _RELEASED.values():
+        if released.get("doc_key") == old_key:
+            released["doc_key"] = new_key
+
+
+on_key_renamed(_carry_released_keys)
 
 
 def _released_miss(key: str, released: dict) -> str:
@@ -113,7 +123,7 @@ def _collect_op_health(ops, labels=None):
     for i, o in enumerate(ops or []):
         facts = _cam_common.op_state_facts(o, cam)
         name = labels[i] if i < len(labels) else facts["name"]
-        if facts["has_error"]:
+        if facts["has_error"] and not _cam_common.op_is_suppressed(facts):
             out["errors"].append({"name": name, "error": (safe(lambda o=o: o.error) or "").strip()})
         if _cam_common.counts_as_warning(facts):
             out["warnings"].append({"name": name,
@@ -422,10 +432,8 @@ def _status_future(entry: dict, key: str, include_operations: bool) -> dict:
     payload["completed"] = completed
     payload["completion_basis"] = basis   # whose operations settled this verdict
     owned_readiness = _owned_future_readiness(live, key, future_done)
-    live = dict(live)
-    live["readiness"] = owned_readiness
     payload["live_states"] = live  # valid/out_of_date/errored/generating/suppressed (+ setup/program for document)
-    # A handle owns its incomplete Future, so the top-level and nested verdict are the same next step.
+    # The top-level verdict is the next step; live_states.readiness keeps the scope's live verdict.
     payload["readiness"] = owned_readiness
 
     if not completed:
@@ -495,8 +503,11 @@ def _scope_state(cam, target: str):
     owner = _cam_common.owning_setup(node)
     tally["setups_blocked"] = _cam_common.blocked_setup_records([owner] if owner is not None else [])
     warning_sample = (tally.get("samples") or {}).get("warning")
-    tally["readiness"] = _cam_common.readiness_verdict(tally, ops, warning_sample,
-                                                       tally["setups_blocked"])
+    tally["readiness"] = _cam_common.with_validity_clause(_cam_common.readiness_verdict(
+        tally, ops, warning_sample, tally["setups_blocked"]))
+    miss = _cam_common.validity_sync_miss()
+    if miss:
+        tally["validity_not_synced"] = miss     # absent = this call's sync ran
     return tally, f"{kind} '{node.name or want}'", (lambda: nodes), None
 
 
@@ -524,6 +535,7 @@ def _status_live(target: str, include_operations: bool) -> dict:
     "operations_total": live.get("total"),
     "live_states": live,           # valid/out_of_date/errored/generating/suppressed (+ setup/program for document)
     "readiness": live.get("readiness", ""),
+    "validity_synced": _cam_common.validity_synced(),
     }
 
     if not completed:

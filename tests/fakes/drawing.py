@@ -3,8 +3,10 @@
 
 """The drawing world: sheets, views, sketches, images, the create input and the exporters."""
 
+import math
 import sys
 import types
+import zlib
 
 import live_api_facts as _api_facts
 
@@ -57,6 +59,7 @@ def install_drawing(monkeypatch, **families):
         setattr(ns, name, members)
     ns.DrawingDocument = types.SimpleNamespace(
         cast=lambda doc: doc if isinstance(doc, FakeDrawingDocument) else None)
+    ns.RevisionTableRow = types.SimpleNamespace(create=lambda: _RevisionRow())
     monkeypatch.setattr(sys.modules["adsk"], "drawing", ns, raising=False)
     monkeypatch.setitem(sys.modules, "adsk.drawing", ns)
     return ns
@@ -89,8 +92,8 @@ class FakeDocumentSettings:
 
 @fusion_fake(live_type="View", facts=("shape-dump-drawing-world",))
 class FakeView:
-    """One drawing View: `type` is the only readable fact it carries - no name, scale or position -
-    and viewCurves is populated with items exposing no readable geometry."""
+    """One drawing View: `type` and viewCurves, whose items read a type and four points (start,
+    end, mid, center); a View carries no readable name, scale or position."""
     def __init__(self, view_type=None, curves=()):
         self.type = view_type
         self.viewCurves = _NamedCollection(list(curves))
@@ -284,10 +287,88 @@ class _CustomTable:
         return self._cells.get((r, c), "")
 
 
-def _bend_tables():
-    """Sheet.bendTables as measured: present, but carrying NO .count - a different shape from
-    customTables, which every 'tables' read must not assume."""
-    return types.SimpleNamespace()
+class _RevisionRow:
+    """One RevisionTable row bag: five settable texts plus sht/index/isVisible; no live SHAPES dump."""
+
+    def __init__(self, rev="", description="", date="", approved="", zone="", sht="", index=0,
+                visible=True):
+        self.rev, self.description, self.date = rev, description, date
+        self.approved, self.zone, self.sht = approved, zone, sht
+        self.index, self.isVisible = index, visible
+
+
+_TODAY_FAKE = "9/27/2026"     # an empty date cell reads Fusion's own locale-formatted today
+
+
+def _fill_date(row):
+    """`row`, its date cell defaulted to today's stand-in when the caller sent none."""
+    if not row.date:
+        row.date = _TODAY_FAKE
+    return row
+
+
+class _RevisionTable:
+    """A title row and a header row before the data rows; doAutoPopulateSheet fills sht."""
+
+    def __init__(self, rows, add_ok=True, header_rows=2, add_fails_at=None):
+        self._rows = list(rows)
+        self._add_ok = add_ok
+        self._header_rows = header_rows
+        self._add_fails_at = add_fails_at
+        self._add_calls = 0
+        self.calls = []
+
+    @property
+    def rowCount(self):
+        return sum(1 for r in self._rows if r.isVisible)
+
+    @property
+    def revisionTableRows(self):
+        # measured: a RevisionTableRowVector - len()/[i] work, no .count or .item at all.
+        return list(self._rows)
+
+    def addRevision(self, row):
+        self.calls.append(("addRevision", row))
+        allowed = self._add_ok and (self._add_fails_at is None
+                                    or self._add_calls < self._add_fails_at)
+        self._add_calls += 1
+        if not allowed:
+            return False
+        _fill_date(row)
+        row.index = len(self._rows)
+        self._rows.append(row)
+        return True
+
+    def updateRevisionRow(self, index, row):
+        self.calls.append(("updateRevisionRow", index))
+        if not 0 <= index < len(self._rows):
+            return False
+        if index < self._header_rows:
+            return True
+        target = self._rows[index]
+        for field in ("rev", "description", "date", "approved", "zone"):
+            value = getattr(row, field)
+            if value:                  # measured: an empty text leaves the cell unchanged
+                setattr(target, field, value)
+        return True
+
+    def deleteRow(self, index):
+        self.calls.append(("deleteRow", index))
+        if not 0 <= index < len(self._rows):
+            return False
+        if index < self._header_rows:
+            return True
+        del self._rows[index]
+        for i, r in enumerate(self._rows):
+            r.index = i
+        return True
+
+    def setRevisionVisibility(self, index, visible):
+        self.calls.append(("setRevisionVisibility", index, visible))
+        if not 0 <= index < len(self._rows):
+            return False
+        self._rows[index].isVisible = bool(visible)
+        return True
 
 
 @fusion_fake(live_type="Sheet", facts=("shape-dump-drawing-world",))
@@ -302,7 +383,8 @@ class FakeSheet:
                  rename_lands=True, size_raises=None, size_ignored=False,
                  orientation_raises=None, orientation_ignored=False, delete_ok=True,
                  tidy_ok=True, auto_dimension_ok=True, auto_dimension_input=None,
-                 modifies=True, copy_result="ok"):
+                 modifies=True, copy_result="ok", revision_table=None, revision_add_ok=True,
+                 revision_create_result="ok", revision_omit_title=False):
         self._name = name
         self._size = size
         self._orientation = orientation
@@ -333,8 +415,12 @@ class FakeSheet:
         tables = (custom_tables if isinstance(custom_tables, (list, tuple))
                  else [_CustomTable() for _ in range(custom_tables)])
         self.customTables = _NamedCollection(list(tables))
-        self.bendTables = _bend_tables()
+        self.bendTables = _NamedCollection([])
         self.images = FakeImages(self) if images is None else images
+        self._revision_table = revision_table
+        self._revision_add_ok = revision_add_ok
+        self._revision_create_result = revision_create_result
+        self._revision_omit_title = revision_omit_title
 
     @property
     def name(self):
@@ -428,6 +514,31 @@ class FakeSheet:
         if self._modifies and self._document is not None:
             self._document.isModified = True
         return self._auto_ok
+
+    def revisionTableInput(self):
+        return types.SimpleNamespace(revisionTableRows=[], doAutoPopulateSheet=False,
+                                     doAutoUpdateZone=False)
+
+    def addRevisionTable(self, table_input):
+        # measured: a new table lists a title row and a header row before the data rows;
+        # doAutoPopulateSheet fills sht.
+        if self._revision_create_result == "null":
+            return None
+        rows = list(getattr(table_input, "revisionTableRows", None) or [])
+        for r in rows:
+            r.sht = self._name
+            _fill_date(r)
+        header = _RevisionRow(rev="Rev", description="Description", date="Date",
+                              approved="Approved", zone="Zone", sht="Sheet Name")
+        title = [] if self._revision_omit_title else [_RevisionRow(zone="Revision History")]
+        all_rows = title + [header] + rows
+        for i, r in enumerate(all_rows):
+            r.index = i
+        self._revision_table = _RevisionTable(all_rows, add_ok=self._revision_add_ok)
+        return self._revision_table
+
+    def getRevisionTable(self):
+        return self._revision_table
 
 
 @fusion_fake(live_type="Sheets", facts=("shape-dump-drawing-world",))
@@ -737,3 +848,80 @@ def make_drawing_session(monkeypatch, document, **families):
     session = FakeApplication(active_document=document)
     monkeypatch.setattr(sys.modules["adsk"].core.Application, "get", lambda: session)
     return session
+
+
+def export_pdf_code(text):
+    """`text` as the hex codes export_pdf's font shows it with - each one off its Unicode value."""
+    return "".join(f"{ord(ch) + 7:04x}" for ch in text)
+
+
+def _pdf_stream(body, filter_name, predictor):
+    """One stream object's bytes: Flate-compressed under that filter name, raw under any other."""
+    data = zlib.compress(body) if filter_name == "FlateDecode" else body
+    how = "" if filter_name is None else (f" /Filter /{filter_name} /DecodeParms "
+                                          f"<< /Predictor {predictor} >>")
+    return f"<< /Length {len(data)}{how} >>\nstream\n".encode("ascii") + data + b"\nendstream"
+
+
+def export_pdf(pages, content_tail="", page_entries="", font_entries="/ToUnicode 4 0 R",
+               trailer_entries="", filter_name="FlateDecode", predictor=1, xobject=None,
+               cmap_tail=""):
+    """The bytes of a PDF in the shape a drawing_export file has: one page per entry of `pages`
+    ({label, size, origin, runs: [(text, x, y, layer, angle)]}, lengths in points), each run shown
+    through a ToUnicode font inside its layer. The keywords bend one part of that shape apiece."""
+    layers = sorted({run[3] for page in pages for run in page["runs"] if run[3]})
+    chars = sorted({ch for page in pages for run in page["runs"] for ch in run[0]})
+    cmap = ("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n"
+            "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+            f"{len(chars)} beginbfchar\n"
+            + "".join(f"<{export_pdf_code(ch)}> <{ord(ch):04x}>\n" for ch in chars)
+            + "endbfchar\n" + cmap_tail + "endcmap\n")
+    objects = {3: ("<< /Type /Font /Subtype /Type0 /BaseFont /ArialMT /Encoding /Identity-H "
+                   f"{font_entries} >>").encode("ascii"),
+               4: _pdf_stream(cmap.encode("ascii"), filter_name, predictor)}
+    layer_number = {name: 5 + i for i, name in enumerate(layers)}
+    for name, number in layer_number.items():
+        objects[number] = f"<< /Type /OCG /Name ({name}) >>".encode("latin-1")
+    following = 5 + len(layers)
+    resources = ("/Font << /F1 3 0 R >> /Properties << "
+                 + " ".join(f"/oc{n} {n} 0 R" for n in layer_number.values()) + " >>")
+    if xobject:
+        objects[following] = (f"<< /Type /XObject /Subtype /{xobject} /Length 0 >>\nstream\n"
+                              "\nendstream").encode("ascii")
+        resources += f" /XObject << /X1 {following} 0 R >>"
+        following += 1
+    kids, labels = [], []
+    for index, page in enumerate(pages):
+        (width, height), (left, bottom) = page.get("size", (1191, 842)), page.get("origin", (0, 0))
+        ops = ["q", "0.06 0 0 0.06 0 0 cm"] + (["/X1 Do"] if xobject else [])
+        for text, x, y, layer, angle in page["runs"]:
+            cos, sin = (round(f(math.radians(angle)), 6) for f in (math.cos, math.sin))
+            ops += ([f"/OC /oc{layer_number[layer]} BDC"] if layer else []) + [
+                "/F1 230.991 Tf", "BT",
+                f"{cos:.6f} {sin:.6f} {-sin:.6f} {cos:.6f} {x / 0.06:.3f} {y / 0.06:.3f} Tm",
+                "0 Tc", "100 Tz 0 Tr", f"<{export_pdf_code(text)}> Tj", "ET"] + (
+                    ["EMC"] if layer else [])
+        ops += ["Q", content_tail]
+        objects[following] = _pdf_stream("\n".join(ops).encode("ascii"), filter_name, predictor)
+        objects[following + 1] = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [{left} {bottom} {left + width} "
+            f"{bottom + height}] /Contents [{following} 0 R] /Resources << {resources} >> "
+            f"{page_entries} >>").encode("ascii")
+        kids.append(f"{following + 1} 0 R")
+        if page.get("label") is not None:
+            labels.append(f"{index} << /P <feff{page['label'].encode('utf-16-be').hex()}> >>")
+        following += 2
+    objects[1] = ("<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [" + " ".join(labels)
+                  + "] >> >>").encode("ascii")
+    objects[2] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>".encode("ascii")
+    out, offsets = bytearray(b"%PDF-1.7\n%\xde\xad\xbe\xef\n"), {}
+    for number in sorted(objects):
+        offsets[number] = len(out)
+        out += f"{number} 0 obj\n".encode("ascii") + objects[number] + b"\nendobj\n"
+    table = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii")
+    for number in sorted(objects):
+        out += f"{offsets[number]:010d} 00000 n \n".encode("ascii")
+    out += (f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R {trailer_entries} >>\n"
+            f"startxref\n{table}\n%%EOF\n").encode("ascii")
+    return bytes(out)

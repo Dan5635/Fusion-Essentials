@@ -7,6 +7,7 @@ occurrence target writes its COMPONENT; and only the fields that were given are 
 The fake models what the shared component fake does not: a metadata setter the platform normalizes
 or silently refuses, which is what the read-back exists to catch.
 """
+from conftest import install as _install_design
 
 import os
 import sys
@@ -120,6 +121,15 @@ class TestSet:
 
 
 class TestGuards:
+    def test_non_string_metadata_is_refused_before_either_setter(self, wire):
+        comp = MakeComp(name="Bracket", entity_token="T:b", part_number="FE-1",
+                        description="Existing")
+        wire(comp)
+        response = sm.handler(target="Bracket", part_number="FE-2", description=123)
+        assert response["isError"] is True
+        assert "description" in response["message"] and "string" in response["message"]
+        assert (comp.partNumber, comp.description) == ("FE-1", "Existing")
+
     def test_neither_field_is_refused_naming_both(self, wire):
         wire()
         msg = error_message(sm.handler(target="Bracket"))
@@ -191,8 +201,7 @@ class TestGuards:
         assert "did not resolve" in error_message(sm.handler(target="Ghost", part_number="FE-1"))
 
     def test_no_active_design_refused(self, monkeypatch):
-        monkeypatch.setattr(sm._common, "design", lambda: None)
-        monkeypatch.setattr(sm._inputs._common, "design", lambda: None)
+        _install_design(sm, None)
         assert "No active design" in error_message(sm.handler(target="Bracket", part_number="FE-1"))
 
     def test_ambiguous_component_name_is_refused_without_writing_either(self, wire):

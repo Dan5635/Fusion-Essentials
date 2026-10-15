@@ -6,7 +6,6 @@ handler that trusted the bool would report a deliverable that does not exist yet
 """
 
 import itertools
-import json
 import types
 
 import adsk.cam
@@ -71,9 +70,7 @@ def rig(monkeypatch, tmp_path):
     return _make
 
 
-def _payload(res):
-    assert res["isError"] is False, res
-    return json.loads(res["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _message(res):

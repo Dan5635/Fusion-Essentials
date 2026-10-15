@@ -37,7 +37,7 @@ def handler(file: str = "", project: str = "", folder: str = "", destination_fol
     if not dest:
         return error("Provide 'destination_folder' - the LOCAL folder to write the file into.")
 
-    df, meta, err = resolve_file_reference(file, project=project, folder=folder)
+    df, meta, err = resolve_file_reference(file, project=project, folder=folder, id_input=None)
     if err:
         return error(err)
 

@@ -10,7 +10,6 @@ single-file record behind data_get(file=...), whose projection, date conversion 
 are pinned at the bottom of this file.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -51,10 +50,7 @@ def cloud(monkeypatch):
     return _use
 
 
-def _payload(result):
-    """Unwrap a non-error result envelope into its parsed JSON payload."""
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 def _sample_project():
@@ -521,16 +517,15 @@ class TestProjectsListingTimeBudget:
 # ── file_facts_handler: ONE file's record (data_get(file=...)) ──────────────
 #
 # Resolution is stubbed out here (it is _data_common's job, covered in test__data_common.py);
-# what is pinned is the PROJECTION: which fields land, users flattened, dates converted, and the two
-# link reads - one that is safe while unshared, one that RAISES while unshared.
+# what is pinned is the PROJECTION: which fields land, users flattened, dates converted, and the
+# shared-link read.
 
 class _CloudFile(FakeDataFile):
     """A cloud file carrying the metadata the facts read projects on top of the shared file's
-    identity: the description, dates, users, state flags and the two link reads. publicLink is a
-    property because its measured state on an unshared file is a RAISE, which only a property can
-    do."""
+    identity: the description, dates, users, state flags and the shared link. It carries no
+    publicLink member, so a read of one shows up in the payload."""
 
-    def __init__(self, public_link=None, description="a note", date_created=None,
+    def __init__(self, description="a note", date_created=None,
                  date_modified=None, created_by=None, last_updated_by=None, shared_link=None,
                  is_read_only=False, is_in_use=False, **kwargs):
         super().__init__(**kwargs)
@@ -542,13 +537,6 @@ class _CloudFile(FakeDataFile):
         self.sharedLink = shared_link
         self.isReadOnly = is_read_only
         self.isInUse = is_in_use
-        self._public = public_link
-
-    @property
-    def publicLink(self):
-        if isinstance(self._public, Exception):
-            raise self._public
-        return self._public
 
 
 class _UnreadableLinkFile(_CloudFile):
@@ -569,7 +557,7 @@ def _unshared_link():
 
 def _full_file(cls=_CloudFile, **overrides):
     """The file every facts projection is read off: identity, the v2-of-3 version pair, dates,
-    users, location, and an UNSHARED link pair - the state whose publicLink raises."""
+    users, location, and an UNSHARED shared link."""
     fields = dict(
         name="probe_note.txt", file_id="urn:lin:AAA", version_id="urn:lin:AAA?version=2",
         extension="sql", web_url="https://example/AAA", version=2, latest_version=3,
@@ -580,8 +568,6 @@ def _full_file(cls=_CloudFile, **overrides):
         parent_folder=FakeDataFolder("Docs"),
         parent_project=FakeDataProject("Sample Project", project_id="proj-1"),
         shared_link=_unshared_link(),
-        public_link=RuntimeError("3 : No public link available. Use sharedLink.isShared to "
-                                 "create a public link."),
     )
     fields.update(overrides)
     return cls(**fields)
@@ -669,23 +655,16 @@ class TestFileFacts:
         assert out["shared_link"]["link_url"] == "https://a360/x"
         assert out["shared_link"]["is_password_required"] is True
 
-    def test_the_raising_public_link_is_caught_and_reported_not_sunk(self, resolves):
-        # publicLink RAISES on an unshared file - the whole read must still succeed, carrying the
-        # reason rather than a bare false.
-        resolves(_full_file())
-        result = dm.file_facts_handler(file="urn:lin:AAA")
-        out = _payload(result)
-        assert out["public_link"]["available"] is False
-        assert "No public link available" in out["public_link"]["reason"]
-
-    def test_a_present_public_link_is_published(self, resolves):
-        resolves(_full_file(public_link="https://a360.co/abc"))
+    def test_the_shared_link_is_the_only_link_the_record_carries(self, resolves):
+        resolves(_full_file(shared_link=_ns(isShared=True, linkURL="https://a360/x",
+                                            isDownloadAllowed=True, isPasswordRequired=False)))
         out = _payload(dm.file_facts_handler(file="urn:lin:AAA"))
-        assert out["public_link"] == {"available": True, "url": "https://a360.co/abc"}
+        assert "public_link" not in out
+        assert [key for key in out if "link" in key] == ["shared_link"]
+        assert out["shared_link"]["is_shared"] is True
 
     def test_an_unreadable_shared_link_does_not_sink_the_read(self, resolves):
-        resolves(_full_file(cls=_UnreadableLinkFile, name="x.txt",
-                            public_link="https://a360.co/abc"))
+        resolves(_full_file(cls=_UnreadableLinkFile, name="x.txt"))
         out = _payload(dm.file_facts_handler(file="urn:lin:AAA"))
         assert out["shared_link"] == {"readable": False}
         assert out["file"]["name"] == "x.txt"

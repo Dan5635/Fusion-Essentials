@@ -127,6 +127,14 @@ def _empty_setup_names(empty):
     return names
 
 
+def _document_setup_groups(cam):
+    """(populated, empty) setups from the document's operation census."""
+    populated, empty = [], []
+    for setup in setups(cam):
+        (populated if operations_under(setup) else empty).append(setup)
+    return populated, empty
+
+
 def _document_verdict(cam):
     """(verdict, checked, empty_setups, err) for the whole document. checkAllToolpaths RAISES "the
     operations are not CAM objects" on some documents, so the per-setup AND is the fallback, and a
@@ -134,9 +142,7 @@ def _document_verdict(cam):
     try:
         return cam.checkAllToolpaths(), "checkAllToolpaths", [], None
     except Exception as first:
-        populated, empty = [], []
-        for s in setups(cam):
-            (populated if operations_under(s) else empty).append(s)
+        populated, empty = _document_setup_groups(cam)
         try:
             return _and_children(cam, populated), _FALLBACK, empty, None
         except Exception as second:
@@ -235,6 +241,8 @@ def handler(scope: str = "", max_results: int = _ROWS_CAP,
     empty_setups = []
     if suppressed_excluded:
         verdict, checked, verr = _active_verdict(cam, ops, label)
+        if target is None:
+            _, empty_setups = _document_setup_groups(cam)
     elif target is None:
         verdict, checked, empty_setups, verr = _document_verdict(cam)
     else:
@@ -285,7 +293,7 @@ def handler(scope: str = "", max_results: int = _ROWS_CAP,
 
 
 TOOL_DESCRIPTION = (
-    "Check whether CAM toolpaths are generated and up to date.\n"
+    "Check CAM toolpath validity.\n"
     + _outputs.produces_block(RETURNS)
 )
 
@@ -294,8 +302,7 @@ tool = (
     .add_input_property("scope", {"type": "string"})
     .add_input_property("max_results", {"type": "integer"})
     .add_input_property("include_suppressed", {"type": "boolean",
-            "description": "Suppressing flips hasToolpath to False and only cam_generate "
-                           "brings it back."})
+            "description": "Suppressing flips hasToolpath to False; only cam_generate brings it back."})
     .strict_schema()
 )
 item = Item.create_tool_item(tool=tool, write="read", handler=handler, run_on_main_thread=True)

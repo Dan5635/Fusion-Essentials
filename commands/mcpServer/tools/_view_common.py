@@ -15,11 +15,11 @@ from . import _geom
 
 MAP_BLURB = (
     "view_direction/look_direction/up_vector/is_ortho_face/apply_camera/apply_named_view/"
-    "restore_camera/camera_restored/capture_png_b64 - camera math + capture; "
-    "standoff_distance/STANDOFF_FALLBACK_CM - standoff; activate_workspace - activate, read back; "
-    "DISPLAY_FOLDERS/all_display_components - clutter; "
-    "keep_visible/all_bodies/same_body/isolate_for_fit/restore_message/focus_box - one-subject "
-    "frame")
+    "restore_camera/camera_frame/camera_restored/capture_png_b64 - camera; "
+    "view_extent/set_view_extent/scale_view/show_extent - zoom; "
+    "standoff_distance/STANDOFF_FALLBACK_CM; activate_workspace; "
+    "DISPLAY_FOLDERS/all_display_components; "
+    "keep_visible/all_bodies/same_body/isolate_for_fit/restore_message/focus_box - frame")
 
 app = adsk.core.Application.get()
 
@@ -151,6 +151,11 @@ def same_body(a, b):
     return not (pa and pb) or pa == pb
 
 
+def document_modified():
+    """The active document's isModified: True, False, or None when it does not read."""
+    return _common.read_flag(lambda: _common.app.activeDocument.isModified)
+
+
 def _relight(entities):
     """Turn each bulb back on and answer the names whose read-back did NOT come back True - the one
     restore both isolate_for_fit's early exit and its restore() report their stuck bulbs from."""
@@ -204,6 +209,7 @@ def isolate_for_fit(name, ref):
         # The kind quotes the caller's whole value back, so the echo is substituted into its message.
         return None, None, err.replace(name, _common.short_ref(name)) if err and name else err
     target, kind = resolved
+    modified_before = document_modified()
     prev = []
     if kind in ("body", "mesh"):
         # A single-body root design places no occurrence at all, so the subject is the BODY and the
@@ -224,16 +230,18 @@ def isolate_for_fit(name, ref):
             ident = _common.native_identity(target)
             shared = ident is not None and any(
                 _common.native_identity(b) == ident for b in prev)
-            stuck = _relight(prev)
+            def restore_hidden():
+                return _relight(prev)
+            restore_hidden.hidden = "bodies"
+            restore_hidden.modified_before = modified_before
+            restoration = restore_message(restore_hidden, ref.name, "for the requested frame")
             msg = (f"{ref.name}: hiding the other bodies turned the SUBJECT's own bulb off, which "
                    f"this call never wrote"
                    + (f" - another placement of the same body was hidden, so '{_common.short_ref(name)}' "
                       "shares one bulb with it and cannot be lit alone." if shared else ".")
                    + " Frame the occurrence by its fullPathName instead. Nothing was captured.")
-            if stuck:
-                msg += (f" {len(stuck)} bulb(s) did NOT come back on: "
-                        f"{', '.join(str(s) for s in stuck[:5])} - the document is left with those "
-                        "hidden; view_set(action='show', target=...) restores them.")
+            if restoration:
+                msg += " " + restoration
             return None, None, msg
     isolated = None
     isolation_before = []
@@ -306,29 +314,38 @@ def isolate_for_fit(name, ref):
     # and the isolation on an occurrence one rather than one word for both.
     restore.hidden = "bodies" if kind in ("body", "mesh") else "occurrences"
     restore.isolated = isolated is not None
+    restore.modified_before = modified_before
     return restore, target, None
 
 
 def restore_message(restore, label, purpose):
-    """Run an isolate_for_fit restore and return the sentence naming what it could NOT put back, or
-    None when everything came back."""
+    """Run an isolate_for_fit restore; the sentences naming what it left changed, or None."""
     if not restore:
         return None
     try:
         stuck = restore() or []
     except Exception as e:
         stuck = [f"the restore raised: {e}"]
-    if not stuck:
-        return None
+    parts = []
     hidden = getattr(restore, "hidden", "occurrences")
-    named = ", ".join(str(s) for s in stuck[:5])
-    if getattr(restore, "isolated", False):
-        return (f"{label} isolated the subject {purpose} and could NOT put {len(stuck)} thing(s) "
-                f"back: {named}. The document is left changed.")
-    return (f"{label} hid the other {hidden} {purpose} and could NOT turn "
-            f"{len(stuck)} of them back on: {named}. "
-            f"The document is left with those {hidden} hidden - view_set(action='show', "
-            "target=...) restores them.")
+    isolated = getattr(restore, "isolated", False)
+    acted = "isolated the subject" if isolated else f"hid the other {hidden}"
+    if stuck:
+        named = ", ".join(str(s) for s in stuck[:5])
+        if isolated:
+            parts.append(f"{label} {acted} {purpose} and could NOT put {len(stuck)} "
+                         f"thing(s) back: {named}. The document is left changed.")
+        else:
+            parts.append(f"{label} {acted} {purpose} and could NOT turn "
+                         f"{len(stuck)} of them back on: {named}. The document is left with "
+                         f"those {hidden} hidden - view_set(action='show', target=...) restores "
+                         "them.")
+    # Read after the restore ran, so a flag its own writes set is counted too.
+    if getattr(restore, "modified_before", None) is False and document_modified() is True:
+        parts.append(f"{label} {acted} {purpose}, which Fusion records as a document "
+                     "modification: the document read unmodified before this call and reads "
+                     "modified now - doc_get shows it, doc_save clears it.")
+    return " ".join(parts) or None
 
 # eye - target direction per named view, not pre-normalized; view_direction() normalizes on read.
 # Fusion is Z-up: a positive z aims the camera down at the TOP face, so an iso-bottom-* entry
@@ -406,6 +423,60 @@ def standoff_distance(cam):
     return dist, None
 
 
+def _extents(cam):
+    """(width, height) in cm of the window an orthographic camera shows, or None: a perspective
+    camera has no extents and raises on the read."""
+    got = _common.safe(lambda: tuple(cam.getExtents()))
+    if not got or len(got) != 3 or got[0] is not True:
+        return None
+    sides = got[1:]
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in sides):
+        return None
+    return sides
+
+
+def view_extent(cam):
+    """The larger side, in cm, of the window an orthographic camera shows; None on a perspective
+    camera or when the extents do not read."""
+    sides = _extents(cam)
+    return None if sides is None else max(sides)
+
+
+def set_view_extent(cam, extent):
+    """Give an orthographic camera a window `extent` cm on both sides - the larger side is what
+    governs the view. False when the camera answered no; a perspective camera raises."""
+    return cam.setExtents(extent, extent) is True
+
+
+def show_extent(cam, extent):
+    """Make `cam` show a window `extent` cm across at its target: an orthographic window set, a
+    perspective eye put at the distance whose view angle spans it. False when neither applied."""
+    if view_extent(cam) is not None:
+        return set_view_extent(cam, extent)
+    angle = _common.safe(lambda: cam.perspectiveAngle)
+    reach = _common.safe(lambda: cam.eye.distanceTo(cam.target))
+    if not angle or not reach or reach <= 0 or not 0 < angle < math.pi:
+        return False
+    return scale_view(cam, extent / (2 * reach * math.tan(angle / 2)))
+
+
+def scale_view(cam, factor):
+    """Show `factor` times as much through `cam`: an orthographic window scaled, a perspective eye
+    moved along its line of sight. False when neither could be written."""
+    sides = _extents(cam)
+    if sides is not None:
+        return cam.setExtents(sides[0] * factor, sides[1] * factor) is True
+    kind = _common.safe(lambda: cam.cameraType)
+    eye, target = _common.safe(lambda: cam.eye), _common.safe(lambda: cam.target)
+    if kind is None or kind == adsk.core.CameraTypes.OrthographicCameraType             or eye is None or target is None:
+        return False
+    cam.eye = adsk.core.Point3D.create(target.x + (eye.x - target.x) * factor,
+                                       target.y + (eye.y - target.y) * factor,
+                                       target.z + (eye.z - target.z) * factor)
+    return True
+
+
 # A glide (isSmoothTransition True) blocks the assignment ~0.6 s while the viewport animates on
 # screen and reads back the LANDED camera (measured 2705.1.25), so a capture or a restore check
 # after it sees the final view. The screenshot tools glide so a watcher sees the shot happen.
@@ -432,19 +503,32 @@ def apply_camera(vp, cam, fit=False, smooth=False):
 _EYE_TARGET_TOLERANCE_CM = 1e-6
 
 
+def camera_frame(cam):
+    """Immutable pose, projection, angle and orthographic extent pair, or None when unreadable."""
+    kind = _common.safe(lambda: cam.cameraType)
+    values = _common.safe(lambda: [getattr(getattr(cam, field), axis)
+        for field in ("eye", "target", "upVector") for axis in ("x", "y", "z")]
+        + [cam.perspectiveAngle])
+    if kind is None or values is None:
+        return None
+    if kind == adsk.core.CameraTypes.OrthographicCameraType:
+        sides = _extents(cam)
+        if sides is None:
+            return None
+        values.extend(sides)
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in values):
+        return None
+    return kind, tuple(values)
+
+
 def camera_restored(read_back, saved, tol=_EYE_TARGET_TOLERANCE_CM):
-    """Whether a restored camera's eye AND target read within 'tol' cm of the saved camera's - the
-    read-back proof a restore actually landed, not just that the assignment ran."""
-    vals = _common.safe(lambda: (
-        read_back.eye.x, read_back.eye.y, read_back.eye.z,
-        saved.eye.x, saved.eye.y, saved.eye.z,
-        read_back.target.x, read_back.target.y, read_back.target.z,
-        saved.target.x, saved.target.y, saved.target.z))
-    if vals is None:
-        return False
-    rex, rey, rez, sex, sey, sez, rtx, rty, rtz, stx, sty, stz = vals
-    return (abs(rex - sex) <= tol and abs(rey - sey) <= tol and abs(rez - sez) <= tol
-            and abs(rtx - stx) <= tol and abs(rty - sty) <= tol and abs(rtz - stz) <= tol)
+    """Whether landed framing matches a saved camera or its immutable camera_frame within tolerance."""
+    got = camera_frame(read_back)
+    want = saved if isinstance(saved, tuple) else camera_frame(saved)
+    return (got is not None and want is not None and got[0] == want[0]
+            and len(got[1]) == len(want[1])
+            and all(abs(a - b) <= tol for a, b in zip(got[1], want[1])))
 
 
 def restore_camera(vp, saved, smooth=False):
@@ -462,7 +546,9 @@ def restore_camera(vp, saved, smooth=False):
         fresh = vp.camera
     fresh.perspectiveAngle = saved.perspectiveAngle
     if saved.cameraType == adsk.core.CameraTypes.OrthographicCameraType:
-        fresh.viewExtents = saved.viewExtents
+        sides = _extents(saved)
+        if sides is None or fresh.setExtents(*sides) is not True:
+            raise RuntimeError("the saved orthographic camera's extents could not be restored")
     fresh.eye = saved.eye
     fresh.target = saved.target
     fresh.upVector = saved.upVector
@@ -501,7 +587,8 @@ def apply_named_view(vp, name, fit=False, smooth=False):
     _, smooth_error = apply_camera(vp, cam, fit=False, smooth=smooth)
     if ortho_extents is not None and not fit:
         again = vp.camera
-        again.viewExtents = ortho_extents
+        if not set_view_extent(again, ortho_extents):
+            raise RuntimeError("the orthographic view's extents could not be set")
         _, again_error = apply_camera(vp, again, fit=False, smooth=smooth)
         smooth_error = smooth_error or again_error
     if fit:

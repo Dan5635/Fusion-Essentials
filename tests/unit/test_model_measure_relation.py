@@ -6,8 +6,8 @@ exactly at tolerance. The reason-to-exist case - parallel-but-OFFSET axes must F
 pinned explicitly. Entity RESOLUTION is TargetRef's job (tested elsewhere); here the two resolve seams
 + the measureManager are stubbed, and fake cylinder/planar-face geometry drives the extraction+math.
 """
+from conftest import install as _install_design
 
-import json
 import math
 import types
 
@@ -27,7 +27,7 @@ _REAL_A, _REAL_B = mr._A.resolve, mr._B.resolve
 @pytest.fixture(autouse=True)
 def _restore(monkeypatch):
     """Stub the design seam; restore the entity resolvers after each test."""
-    monkeypatch.setattr(mr._common, "design", lambda: object())
+    _install_design(mr, object())
     yield
     mr._A.resolve, mr._B.resolve = _REAL_A, _REAL_B
 
@@ -64,9 +64,7 @@ def _dir_at(theta_deg):
     return (math.sin(t), 0.0, math.cos(t))
 
 
-def _payload(result):
-    assert result["isError"] is False, result
-    return json.loads(result["content"][0]["text"])
+from conftest import payload as _payload
 
 
 class _MR:
@@ -81,7 +79,7 @@ def _install_mgr(monkeypatch, result, raises=False):
             if raises:
                 raise RuntimeError("measurement failed")
             return result
-    monkeypatch.setattr(mr.app, "measureManager", _Mgr())
+    monkeypatch.setattr(mr.app, "measureManager", _Mgr(), raising=False)
 
 
 # ── coaxial: the tool's reason to exist ───────────────────────────────────────
@@ -369,7 +367,7 @@ def _install_child_mgr(monkeypatch, pair_result, gaps):
             if key in gaps:
                 return _MR(gaps[key])
             return pair_result
-    monkeypatch.setattr(mr.app, "measureManager", _Mgr())
+    monkeypatch.setattr(mr.app, "measureManager", _Mgr(), raising=False)
 
 
 class TestNestedTargetDisclosure:
@@ -628,7 +626,7 @@ class TestGuards:
         assert res["isError"] is True and "tolerance_deg" in error_message(res).lower()
 
     def test_no_active_design_errors(self, monkeypatch):
-        monkeypatch.setattr(mr._common, "design", lambda: None)
+        _install_design(mr, None)
         res = mr.handler(relation="coaxial")
         assert res["isError"] is True and "design" in error_message(res).lower()
 

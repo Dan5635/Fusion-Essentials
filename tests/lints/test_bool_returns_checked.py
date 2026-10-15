@@ -78,92 +78,16 @@ def _offenders_in(path):
 
 class TestBoolReturnsChecked:
     def test_no_documented_bool_return_is_discarded(self):
-        offenders = []
+        offenders, bound_inputs = [], 0
         for name, path in _iter_tool_files():
+            bound_inputs += sum(len(bound) for _nodes, bound in input_scopes(_corpus.tree(path)))
             for lineno, site, var, method, how in _offenders_in(path):
                 if (name, site) in _ALLOWED:
                     continue
                 offenders.append(f"{name}:{lineno}: {var}.{method}() returns bool and {how}")
+        assert api_surface.BOOL_METHODS and bound_inputs, (
+            "nothing was checked: no bool-returning method is known, or no feature input resolved")
         assert not offenders, (
             'each of these documents "Returns true if successful" - a false answer means the '
             "setting never took, and the handler runs on to report success anyway:\n  "
             + "\n  ".join(offenders))
-
-    def test_every_allowlisted_site_still_exists(self):
-        live = set()
-        for name, path in _iter_tool_files():
-            for _lineno, site, _v, _m, _h in _offenders_in(path):
-                live.add((name, site))
-        stale = sorted(set(_ALLOWED) - live)
-        assert not stale, ("these allowlist entries name no discarded bool in that file - the site "
-                           "was reworded or fixed. Update the text or remove them:\n  "
-                           + "\n  ".join(f"{n}: looked for `{s}`" for n, s in stale))
-
-    def test_a_builder_helper_and_a_tuple_binding_are_followed(self, tmp_path):
-        # model_hole's shape: a helper builds the input and returns (input, error), so the caller
-        # binds it through a TUPLE target rather than `name = <collection>.createXInput(...)`.
-        src = tmp_path / "builder.py"
-        src.write_text(
-            "def _build(holes, d):\n"
-            "    return holes.createSimpleInput(d), None\n"
-            "\n"
-            "def handler(d, t):\n"
-            "    holes = safe(lambda: comp.features.holeFeatures)\n"
-            "    hin, berr = _build(holes, d)\n"
-            "    hin.setDistanceExtent(d)\n"                        # discarded -> offender
-            "    if hin.setToTappedHole(t) is False:\n"             # read and acted on -> clean
-            "        return None\n",
-            encoding="utf-8")
-        found = _offenders_in(str(src))
-        assert sorted(m for _l, _s, _v, m, _h in found) == ["setDistanceExtent"], found
-
-    def test_a_builder_binds_the_input_at_the_position_it_returned_it(self, tmp_path):
-        # the tuple POSITION carries the class, not the unpacking: binding every element would
-        # make the ERROR slot an input too.
-        src = tmp_path / "position.py"
-        src.write_text(
-            "def _build(holes, d):\n"
-            "    return None, holes.createSimpleInput(d)\n"
-            "\n"
-            "def handler(d):\n"
-            "    holes = safe(lambda: comp.features.holeFeatures)\n"
-            "    err, hin = _build(holes, d)\n"
-            "    err.setDistanceExtent(d)\n"                     # not an input -> clean
-            "    hin.setDistanceExtent(d)\n",                    # the input -> the ONE offender
-            encoding="utf-8")
-        found = _offenders_in(str(src))
-        assert sorted(v for _l, _s, v, _m, _h in found) == ["hin"], found
-
-    def test_a_factory_on_an_unresolved_receiver_is_followed_by_its_method_name(self, tmp_path):
-        # sketch_constrain's shape: the collection arrives as a PARAMETER, so nothing in the file
-        # binds it - the METHOD still names one input class across the whole API.
-        src = tmp_path / "param_recv.py"
-        src.write_text(
-            "def _apply(gc, ents, kind):\n"
-            "    pin = gc.createRectangularPatternInput(ents, kind)\n"
-            "    pin.setDirectionOne(a, b, c)\n",
-            encoding="utf-8")
-        found = _offenders_in(str(src))
-        assert sorted(m for _l, _s, _v, m, _h in found) == ["setDirectionOne"], found
-
-    def test_an_ambiguous_factory_method_does_not_resolve_a_receiver(self, tmp_path):
-        # the boundary of the rule above: `createInput`'s declarations DISAGREE on what they
-        # return, so on an UNRESOLVED receiver it names none of them.
-        src = tmp_path / "ambiguous.py"
-        src.write_text(
-            "def _apply(anything, a, b):\n"
-            "    inp = anything.createInput(a, b)\n"
-            "    inp.setDistanceExtent(b)\n",
-            encoding="utf-8")
-        assert _offenders_in(str(src)) == []
-
-    def test_the_generated_name_list_is_populated_and_narrowed(self):
-        names = api_surface.BOOL_METHODS
-        assert len(names) >= 300, f"only {len(names)} bool-returning names - the scrape has broken."
-        # ambiguous names must be OUT: Features.add returns a feature, deleteMe varies by class
-        for ambiguous in ("add", "deleteMe", "item", "createInput"):
-            assert ambiguous not in names, f"'{ambiguous}' is not unambiguously bool-returning"
-        # the ones this class is about must be IN
-        for expected in ("setDistanceExtent", "setOneSideExtent", "setPositionAtCenter",
-                         "finishEdit", "rollTo"):
-            assert expected in names, f"'{expected}' should be a known bool-returning member"

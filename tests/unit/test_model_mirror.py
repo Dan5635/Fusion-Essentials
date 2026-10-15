@@ -54,7 +54,9 @@ def timeline(*objs):
     than it sits at is rejected here rather than silently pinning an unreachable candidate."""
     for i, obj in enumerate(objs):
         assert obj.index == i, f"timeline fake: object {obj.name} reports index {obj.index} at {i}"
-    return _NamedCollection(objs)
+    collection = _NamedCollection(objs)
+    collection.timelineGroups = _NamedCollection()
+    return collection
 
 
 class _MirrorFeatures:

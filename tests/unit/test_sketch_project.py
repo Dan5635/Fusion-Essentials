@@ -10,13 +10,15 @@ entity and the plane, a partial result is an ok that names the zero contributors
 entities are reported as '<type>:<index>' refs computed from the per-collection count delta. The
 actual BRep projection is a live side-effect covered by the post-reload verification pass.
 """
+from conftest import install as _install_design
 
 import types
 
 import pytest
 
-from conftest import (BRepBody, MakeComp, Sketch, SketchCurves, _NamedCollection, load_tool,
-                      make_design, make_source_document, install, payload as _payload)
+from conftest import (BRepBody, BRepFace, MakeComp, Sketch, SketchCurves, _NamedCollection,
+                      error_message, load_tool, make_design, make_source_document, install,
+                      payload as _payload)
 
 sp = load_tool("sketch_project")
 
@@ -490,7 +492,7 @@ class TestGuards:
 
     def test_no_active_design(self, monkeypatch):
         install(sp, make_design())
-        sp._common.design = lambda: None
+        _install_design(sp, None)
         res = sp.handler(entities="E1")
         assert res["isError"] is True and "design" in res["message"].lower()
 
@@ -1134,3 +1136,408 @@ class TestSourceComponentScope:
         res = sp.handler(action="into_sketch", sketch_name="Target", source_component="Beta",
                          entities="F1")
         assert res["isError"] is True and "'source_component' applies only to" in res["message"]
+
+
+# -- include and cut_edges: one Sketch call per source ----------------------------------------
+
+
+def _end(z):
+    return types.SimpleNamespace(geometry=types.SimpleNamespace(x=0.0, y=0.0, z=z))
+
+
+class _PerSourceSketch(FakeSketch):
+    """include / projectCutEdges called once per source. `makes` maps a source's name to the z of
+    each curve it yields (an empty list is a body the plane misses); `raises_on` names a source
+    whose call raises."""
+
+    def __init__(self, makes, raises_on=None, **kw):
+        super().__init__(**kw)
+        self.makes, self.raises_on, self.per_source_calls = makes, raises_on, []
+
+    def _per_source(self, source):
+        self.per_source_calls.append(source)
+        if source.name == self.raises_on:
+            raise RuntimeError("3 : invalid argument entity")
+        made = []
+        for z in self.makes.get(source.name, []):
+            curve = _Created()
+            curve.startSketchPoint, curve.endSketchPoint = _end(0.0), _end(z)
+            made.append(curve)
+        self._grow({"line": len(made)})
+        return made
+
+    include = projectCutEdges = _per_source
+
+
+def _named(*names):
+    return [BRepBody(name=n, entity_token="tok-" + n) for n in names]
+
+
+class TestInclude:
+    def test_each_entity_is_included_by_its_own_call_and_off_plane_curves_are_counted(self, run):
+        sk = _PerSourceSketch({"EdgeA": [1.0], "FaceB": [0.0, 0.0, 2.0, 2.0]})
+        sources = _named("EdgeA", "FaceB")
+        out, _ = run("include", sketch=sk, entities_out=sources, entities="h1,h2")
+        assert sk.per_source_calls == sources
+        assert out["created_count"] == 5 and out["off_plane_count"] == 3
+        assert out["per_source"] == [{"source": "EdgeA", "created": 1},
+                                     {"source": "FaceB", "created": 4}]
+        assert "not flattened" in out["note"] and "action='into_sketch'" in out["note"]
+
+    def test_a_failure_on_a_later_entity_says_what_already_landed(self, run):
+        sk = _PerSourceSketch({"EdgeA": [1.0]}, raises_on="FaceB")
+        out, _ = run("include", raw=True, sketch=sk, entities_out=_named("EdgeA", "FaceB"),
+                     entities="h1,h2")
+        assert out["isError"] is True and "failed on 'FaceB'" in out["message"]
+        assert "1 entity(ies) from the earlier source(s) ARE in the sketch" in out["message"]
+
+    def test_an_include_that_creates_nothing_is_an_error(self, run):
+        sk = _PerSourceSketch({})
+        out, _ = run("include", raw=True, sketch=sk, entities_out=_named("EdgeA"), entities="h1")
+        assert out["isError"] is True and "returned no sketch entities" in out["message"]
+
+    def test_bodies_are_refused_for_include(self, run):
+        out, sk = run("include", raw=True, entities="h1", bodies="Body1")
+        assert out["isError"] is True and "'bodies' applies only to" in out["message"]
+
+
+class TestCutEdges:
+    def test_a_missed_body_is_named_beside_the_one_that_was_cut(self, run):
+        sk = _PerSourceSketch({"Cut": [0.0] * 4, "Missed": []})
+        out, _ = run("cut_edges", sketch=sk, bodies_out=_named("Cut", "Missed"),
+                     bodies="Cut,Missed")
+        assert [c.name for c in sk.per_source_calls] == ["Cut", "Missed"]
+        assert out["created_count"] == 4
+        assert out["per_source"][1] == {"source": "Missed", "created": 0}
+        assert "The plane does not cut Missed" in out["note"]
+
+    def test_a_plane_that_cuts_no_body_is_an_error_naming_them(self, run):
+        sk = _PerSourceSketch({"Missed": []}, plane="XZ")
+        out, _ = run("cut_edges", raw=True, sketch=sk, bodies_out=_named("Missed"),
+                     bodies="Missed")
+        assert out["isError"] is True
+        assert "(XZ) cuts none of: Missed" in out["message"]
+
+    def test_no_bodies_is_refused(self, run):
+        out, sk = run("cut_edges", raw=True)
+        assert out["isError"] is True and "needs 'bodies'" in out["message"]
+
+    def test_entities_are_refused_for_cut_edges(self, run):
+        out, sk = run("cut_edges", raw=True, entities="h1", bodies="Body1")
+        assert out["isError"] is True and "'entities' applies only to" in out["message"]
+
+
+class TestPerSourceFailureWording:
+    def test_a_failure_on_the_first_source_does_not_claim_nothing_was_added(self, run):
+        sk = _PerSourceSketch({}, raises_on="EdgeA")
+        out, _ = run("include", raw=True, sketch=sk, entities_out=_named("EdgeA"), entities="h1")
+        assert out["isError"] is True and "Nothing was added" not in out["message"]
+        assert "Re-read the sketch with sketch_get" in out["message"]
+
+    def test_returned_entities_without_a_census_rise_are_not_called_nothing(self, run):
+        sk = _PerSourceSketch({"EdgeA": [1.0]})
+        sk._grow = lambda counts: 0
+        out, _ = run("include", raw=True, sketch=sk, entities_out=_named("EdgeA"), entities="h1")
+        assert out["isError"] is True
+        assert "returned 1 entity(ies) but the entity counts" in out["message"]
+
+
+# ── isoparametric: constant-parameter curves on one face ─────────────────────
+
+class SketchCurveVector:
+    """The measured curve result vector: length, iteration and index; local double."""
+    def __init__(self, items, unreadable=False):
+        self._items, self._unreadable = list(items), unreadable
+
+    def __len__(self):
+        if self._unreadable:
+            raise RuntimeError("vector did not read")
+        return len(self._items)
+
+    def __getitem__(self, i):
+        return self._items[i]
+
+
+class _IsoInput:
+    """IsoparametricCurveInput: the direction flag and the two mode setters. Local double."""
+    def __init__(self, face, answer):
+        self.face, self._answer, self.mode = face, answer, None
+
+    def setDistributed(self, value):
+        self.mode = ("distributed", value)
+        return self._answer
+
+    def setSingle(self, is_physical, value):
+        self.mode = ("single", is_physical, value)
+        return self._answer
+
+
+class _IsoCurves:
+    """SketchIsoparametricCurves on a FakeSketch. `kind`/`count` shape what a call builds (count
+    None = one per requested curve); `reads` overrides definition fields, and a field mapped to
+    None is unreadable. Local double."""
+    def __init__(self, sketch, kind="circle", count=None, links=None, setter=True, raises=None,
+                 reads=None, no_input=False, unreadable=False):
+        self.sketch, self.kind, self.curve_count, self.links = sketch, kind, count, links
+        self.setter, self.raises, self.reads = setter, raises, reads or {}
+        self.no_input, self.unreadable = no_input, unreadable
+        self.inputs, self.calls, self.count = [], [], 0
+
+    def createInput(self, face):
+        if self.no_input:
+            return None
+        self.inputs.append(_IsoInput(face, self.setter))
+        return self.inputs[-1]
+
+    def _build(self, iso_input, linked):
+        self.calls.append("add" if linked else "addUnlinked")
+        if self.raises:
+            raise RuntimeError(self.raises)
+        asked = int(iso_input.mode[-1][1]) if iso_input.mode[0] == "distributed" else 1
+        n = asked if self.curve_count is None else self.curve_count
+        points_per_curve = {"circle": 1, "line": 2, "arc": 3}.get(self.kind, 1)
+        self.sketch._grow({self.kind: n, "point": points_per_curve * n})
+        flags = self.links if self.links is not None else (linked,)
+        return SketchCurveVector([_Created(is_linked=flags[i % len(flags)]) for i in range(n)],
+                                 self.unreadable)
+
+    def add(self, iso_input):
+        curves = self._build(iso_input, True)
+        self.count += 1
+        single = iso_input.mode[0] == "single"
+        value = iso_input.mode[-1][1]
+        fields = {"isUDirection": iso_input.isUDirection, "isSingle": single,
+                  "value": value, **self.reads}
+        made = types.SimpleNamespace(resultCurves=curves, quantityOrDistance=types.SimpleNamespace(
+            name="d16", expression="0.5" if single else str(int(value))))
+        for key in ("isUDirection", "isSingle"):
+            if fields[key] is not None:
+                setattr(made, key, fields[key])
+        if fields["value"] is not None:
+            made.quantityOrDistance.value = fields["value"]
+        return made
+
+    def addUnlinked(self, iso_input):
+        return self._build(iso_input, False)
+
+
+@pytest.fixture
+def iso(run, monkeypatch):
+    """Drive action='isoparametric' on a FakeSketch with one native face of its own component;
+    returns (payload or raw result, the _IsoCurves double)."""
+    import adsk.core
+    monkeypatch.setattr(adsk.core.ValueInput, "createByReal", lambda v: ("real", v))
+
+    def _run(face=None, raw=False, faces=None, **kw):
+        sk = FakeSketch(base={"point": 1})
+        placed_child = kw.pop("placed_child", False)
+        root = (MakeComp(name="Root", entity_token="root") if placed_child
+                else sk.parentComponent)
+        _install_design(sp, types.SimpleNamespace(rootComponent=root))
+        fake = _IsoCurves(sk, **{k: kw.pop(k) for k in list(kw) if k in (
+            "kind", "count", "links", "setter", "raises", "reads", "no_input", "unreadable")})
+        sk.sketchCurves.sketchIsoparametricCurves = fake
+        own = BRepFace(surface=None, body=BRepBody("Shaft", parent_component=sk.parentComponent))
+        _run.own = own
+        picked = face(own) if callable(face) else (face or own)
+        out, _ = run("isoparametric", sketch=sk, raw=raw, target_faces=["h1"],
+                     faces_out=faces if faces is not None else [picked], **kw)
+        return out, fake
+    return _run
+
+
+class TestIsoparametric:
+    def test_a_quantity_builds_a_linked_distributed_definition_and_reports_what_read_back(self, iso):
+        out, fake = iso(quantity=3, iso_direction="v")
+        made = fake.inputs[0]
+        assert made.face is iso.own and made.isUDirection is False
+        assert made.mode == ("distributed", ("real", 3.0)) and fake.calls == ["add"]
+        assert out["created_count"] == 3 and out["quantity"] == 3 and "at" not in out
+        assert out["linked"] is True and out["link_requested"] is True
+        assert out["entity_refs"] == ["circle:0", "circle:1", "circle:2",
+                                      "point:1", "point:2", "point:3"]
+        assert out["parameter"] == "d16" and out["parameter_expression"] == "3"
+        assert "read back as linked" in out["note"] and "'d16' = '3'" in out["note"]
+        assert sp.RETURNS[0].assert_present(out) == ""
+
+    def test_at_builds_one_proportional_curve_in_u_by_default(self, iso):
+        out, fake = iso(at=0.5, kind="line")
+        assert fake.inputs[0].isUDirection is True
+        assert fake.inputs[0].mode == ("single", False, ("real", 0.5))
+        assert out["at"] == 0.5 and "quantity" not in out and out["iso_direction"] == "u"
+        assert out["created_count"] == 1
+
+    def test_link_false_calls_add_unlinked_and_reads_the_vector_it_returns(self, iso):
+        out, fake = iso(quantity=2, link=False)
+        assert fake.calls == ["addUnlinked"]
+        assert out["created_count"] == 2 and out["linked"] is False
+        assert out["iso_direction_requested"] == "u" and out["quantity_requested"] == 2
+        assert "iso_direction" not in out and "quantity" not in out
+        assert "parameter" not in out and "read back as not linked" in out["note"]
+        single, fake = iso(at=0.5, iso_direction="v", link=False)
+        assert single["iso_direction_requested"] == "v" and single["at_requested"] == 0.5
+        assert "iso_direction" not in single and "at" not in single
+
+    def test_a_hole_can_split_one_requested_position_into_two_curves(self, iso):
+        out, fake = iso(at=0.5, kind="line", count=2)
+        assert out["created_count"] == 2 and out["at"] == 0.5
+        assert "1 position(s) were requested and 2 curve(s) read back." in out["note"]
+        assert out["entity_refs"] == ["line:0", "line:1", "point:1", "point:2",
+                                      "point:3", "point:4"]
+
+    @pytest.mark.parametrize("kw,named", [
+        ({}, "needs exactly one of 'quantity'"),
+        ({"quantity": 2, "at": 0.5}, "got quantity=2, at=0.5"),
+        ({"quantity": 0}, "'quantity' must be a whole number from 1 to 100 per call; got 0"),
+        ({"quantity": 101}, "from 1 to 100 per call; got 101"),
+        ({"quantity": 2.5}, "got 2.5"),
+        ({"quantity": True}, "got True"),
+        ({"at": -0.001}, "'at' must be a number from 0 to 1; got -0.001"),
+        ({"at": 1.001}, "got 1.001"),
+        ({"at": "half"}, "got 'half'"),
+        ({"quantity": 2, "iso_direction": "w"}, "'iso_direction' must be one of: u, v"),
+    ])
+    def test_a_bad_request_is_refused_before_any_input_is_built(self, iso, kw, named):
+        out, fake = iso(raw=True, **kw)
+        assert named in error_message(out)
+        if not kw:
+            assert "that many positions" in error_message(out)
+            assert "one position" in error_message(out)
+        assert fake.inputs == [] and fake.calls == []
+
+    @pytest.mark.parametrize("kw,mode", [
+        ({"quantity": 1}, ("distributed", ("real", 1.0))),
+        ({"at": 0}, ("single", False, ("real", 0.0))),
+        ({"at": 1}, ("single", False, ("real", 1.0))),
+    ])
+    def test_the_edge_values_of_each_range_reach_fusion(self, iso, kw, mode):
+        out, fake = iso(**kw)
+        assert fake.inputs[0].mode == mode and out["created_count"] == 1
+
+    def test_the_quantity_cap_itself_reaches_fusion(self, iso):
+        out, fake = iso(quantity=100)
+        assert fake.inputs[0].mode == ("distributed", ("real", 100.0))
+        assert out["created_count"] == 100
+
+    @pytest.mark.parametrize("count,refused", [(1000, False), (1001, True)])
+    def test_the_curve_read_cap_has_an_exact_boundary(self, iso, count, refused):
+        out, fake = iso(raw=True, quantity=100, count=count)
+        assert bool(out.get("isError")) is refused
+        if refused:
+            assert "curves did not read back within 1000" in error_message(out)
+        else:
+            assert _payload(out)["created_count"] == 1000
+
+    def test_the_schema_carries_the_same_quantity_cap_as_the_guard(self):
+        schema = sp.tool.to_dict()["inputSchema"]["properties"]["quantity"]
+        assert schema == {"type": "integer", "minimum": 1, "maximum": sp._ISO_QUANTITY_MAX}
+
+    def test_two_faces_are_refused_naming_the_count(self, iso):
+        out, fake = iso(raw=True, quantity=2, faces=["F1", "F2"])
+        assert "takes ONE face in 'target_faces'; got 2" in error_message(out)
+        assert fake.inputs == []
+
+    def test_a_face_of_another_component_is_refused_before_any_input_is_built(self, iso):
+        other = BRepFace(surface=None, body=BRepBody(
+            "Lid", parent_component=MakeComp(name="Other", entity_token="other")))
+        out, fake = iso(raw=True, quantity=2, face=other)
+        msg = error_message(out)
+        assert "BRepFace on Lid, which is not read as belonging to component 'Comp1'" in msg
+        assert "root-owned sketch and root-owned face" in msg and fake.inputs == []
+
+    def test_a_proxy_of_the_sketch_components_own_face_is_built_on_its_native_face(self, iso):
+        out, fake = iso(quantity=2, face=lambda own: BRepFace(
+            surface=None, body_name="Shaft", assembly_context=object(), native_object=own))
+        assert fake.inputs[0].face is iso.own and out["created_count"] == 2
+
+    def test_placed_child_sketch_refuses_before_creating_curves(self, iso):
+        out, fake = iso(raw=True, quantity=3, placed_child=True)
+        assert "non-root sketch can land away from the face" in error_message(out)
+        assert "root-owned sketch and root-owned face" in error_message(out)
+        assert fake.inputs == [] and fake.calls == []
+
+    def test_a_setter_that_answers_false_stops_before_add(self, iso):
+        out, fake = iso(raw=True, quantity=3, setter=False)
+        assert "setDistributed answered False" in error_message(out)
+        assert "nothing was added" in out["message"] and fake.calls == []
+
+    def test_an_input_that_is_not_created_stops_before_add(self, iso):
+        out, fake = iso(raw=True, at=0.5, no_input=True)
+        assert "createInput answered nothing" in error_message(out) and fake.calls == []
+
+    def test_a_raise_from_add_carries_fusions_text(self, iso):
+        out, fake = iso(raw=True, quantity=2, raises="3 : invalid argument face")
+        assert "SketchIsoparametricCurves.add failed on BRepFace on Shaft" in error_message(out)
+        assert "3 : invalid argument face" in out["message"]
+
+    def test_no_curve_created_is_an_error(self, iso):
+        out, fake = iso(raw=True, quantity=2, count=0)
+        assert "add created no curve on BRepFace on Shaft" in error_message(out)
+        assert "gained: no addressable entity" in out["message"]
+        assert "One empty isoparametric definition remains" in out["message"]
+        assert "design_get(include=['timeline'])" in out["message"]
+        assert fake.count == 1
+
+    def test_curves_that_do_not_read_back_are_an_error_naming_what_the_sketch_gained(self, iso):
+        out, fake = iso(raw=True, quantity=2, link=False, unreadable=True)
+        msg = error_message(out)
+        assert "addUnlinked answered a SketchCurveVector" in msg and "result is unverified" in msg
+        assert "gained: circle:0, circle:1, point:1, point:2" in msg
+
+    def test_curves_that_all_read_unlinked_against_link_true_are_an_error(self, iso):
+        out, fake = iso(raw=True, quantity=2, links=(False,))
+        msg = error_message(out)
+        assert "link=true was requested, but all 2 curve(s) add created" in msg
+        assert "read back as NOT linked" in msg and "gained: circle:0" in msg
+
+    def test_a_split_link_read_is_disclosed_not_errored(self, iso):
+        out, fake = iso(quantity=2, links=(True, False))
+        assert out["linked"] is None
+        assert "link=true is the request, not a confirmed state" in out["note"]
+
+    @pytest.mark.parametrize("reads,named", [
+        ({"value": 2.0}, "value reads 2.0, requested 3.0"),
+        ({"isUDirection": True}, "iso_direction reads 'u', requested 'v'"),
+        ({"isSingle": True}, "single reads True, requested False"),
+    ])
+    def test_a_definition_that_reads_back_differently_is_an_error_and_says_what_remains(
+            self, iso, reads, named):
+        out, fake = iso(raw=True, quantity=3, iso_direction="v", reads=reads)
+        msg = error_message(out)
+        assert named in msg and "Its 3 curve(s) REMAIN" in msg and "gained: circle:0" in msg
+
+    @pytest.mark.parametrize("drift,refused", [(0.5e-6, False), (2e-6, True)])
+    def test_the_value_tolerance_passes_inside_and_refuses_outside(self, iso, drift, refused):
+        out, fake = iso(raw=True, at=0.5, reads={"value": 0.5 + drift})
+        assert bool(out.get("isError")) is refused
+
+    def test_an_unread_definition_field_is_named_in_an_ok_reply(self, iso):
+        out, fake = iso(quantity=3, reads={"isSingle": None, "value": None})
+        assert out["created_count"] == 3
+        assert "Not read back off the definition: single, value." in out["note"]
+
+    def test_a_curve_count_other_than_the_quantity_is_stated(self, iso):
+        out, fake = iso(quantity=3, count=5)
+        assert out["created_count"] == 5
+        assert "3 position(s) were requested and 5 curve(s) read back." in out["note"]
+
+    def test_a_matching_count_adds_no_count_sentence(self, iso):
+        out, fake = iso(quantity=3)
+        assert "were requested" not in out["note"]
+
+    def test_curves_of_a_kind_with_no_ref_get_the_shortfall_sentence(self, iso):
+        # only the two points land in an addressable collection, so the curves have no ref
+        out, fake = iso(quantity=2, kind="unaddressable")
+        assert out["entity_refs"] == ["point:1", "point:2"]
+        assert "have no '<type>:<index>' ref" in out["note"]
+        assert "have no '<type>:<index>' ref" not in iso(quantity=2)[0]["note"]
+
+    def test_iso_inputs_are_refused_on_other_actions_even_at_zero(self, run):
+        out, sk = run("include", raw=True, entities="h1", at=0)
+        assert "'at' applies only to action='isoparametric'" in error_message(out)
+        out, sk = run("into_sketch", raw=True, entities="h1", quantity=2)
+        assert "'quantity' applies only to action='isoparametric'" in error_message(out)
+
+    def test_entities_are_refused_on_isoparametric(self, iso):
+        out, fake = iso(raw=True, quantity=2, entities="h1")
+        assert "'entities' applies only to" in error_message(out) and fake.inputs == []
