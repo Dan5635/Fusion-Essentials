@@ -668,10 +668,10 @@ def entitlement_clause(exc, needs, alternative):
     return f" This operation requires the {needs}; {alternative}."
 
 
-def short_ref(value):
-    """A caller's value as a message echoes it: the head, a cut marked with the full length."""
+def short_ref(value, cap=_ECHO_CHARS):
+    """A value as a message echoes it: the first `cap` characters, a cut marked with the full length."""
     s = "" if value is None else str(value)
-    return s if len(s) <= _ECHO_CHARS else s[:_ECHO_CHARS] + f"... ({len(s)} chars)"
+    return s if len(s) <= cap else s[:cap] + f"... ({len(s)} chars)"
 
 
 def told_apart(rows):

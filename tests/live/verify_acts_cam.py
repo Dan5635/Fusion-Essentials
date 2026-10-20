@@ -6342,6 +6342,21 @@ _SEEDED_LIBRARY_ROWS = [
     ("sys_execute_script", _seed_library_after, _seed_library_stored, None),
 ]
 
+# A Local library loads its saved non-ASCII text back mis-decoded and doubles it on every save, so a
+# local add or edit carrying U+00D8 / U+00B0 is refused; the stored seed then reads back unchanged.
+_LOCAL_TEXT_GUARD_ROWS = [
+    ("cam_edit_tools", lambda c: {"action": "add", "scope": "local",
+      "library": _RECALL["seed_library_reply"]["url"],
+      "add_tools": [{"from_type": "drill", "description": "3in Ø drill 118°"}]},
+     _refused("add_tools entry 0", "'description' (U+00D8)", "nothing was written"), None),
+    ("cam_edit_tools", lambda c: {"action": "edit", "scope": "local",
+      "library": _RECALL["seed_library_reply"]["url"], "tool": 0,
+      "parameters": {"tool_description": "'90° edit'"}},
+     _refused("'tool_description' (U+00B0)", "nothing was written"), None),
+    _seeded_library_list(1),
+    ("sys_execute_script", _seed_library_after, _seed_library_stored, None),
+]
+
 
 _CAM_LOOKUP_GUARDS = [
     ("view_switch_workspace", {"workspace": "manufacture"}, "ok", None),
@@ -6357,3 +6372,4 @@ _CAM_LOOKUP_GUARDS = [
 ]
 
 _CAM_LOOKUP_GUARDS += _SEEDED_LIBRARY_ROWS
+_CAM_LOOKUP_GUARDS += _LOCAL_TEXT_GUARD_ROWS

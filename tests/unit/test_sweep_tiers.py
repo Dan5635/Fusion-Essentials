@@ -285,7 +285,7 @@ def test_actual_compiled_and_fixture_scripts_carry_all_conservative_requirements
             requirements = policy.call_requirements(tool, args if isinstance(args, dict) else {},
                 declaration["effects"] if declaration is not None else None)
             assert {(value, "needs") for value in requirements} <= set(sweep.verify_core.step_conditions(expect)), name
-    assert count == 270
+    assert count == 271
     fixture_count = 0
     for family in set(sweep.FAMILY_PROGRAM.values()):
         rows = fixture_steps(family)

@@ -15,7 +15,7 @@ from ..mcp_primitives.tool import Tool
 from ..mcp_primitives.item import Item, Verification
 from ..mcp_primitives.registry import register
 from ._common import (CM_TO_UNIT, iter_collection, named_with_remainder, ok, error, read_flag,
-                      safe)
+                      safe, short_ref, unwrap)
 from ._cam_common import (asset_leaf, asset_leaf_keys, assets_named, get_cam, expression_error,
                           library_assets, quote_expression, tool_dimension_value,
                           unquote_expression)
@@ -43,6 +43,51 @@ _SCOPE_READ_ONLY = (
     "'{action}' was refused. Copy the tool out instead: action='list' at this scope for its "
     "libraries and their tools, then action='add' at scope='document' (or local) with "
     "add_tools=[{{library_url, index}}].")
+
+# Measured: a Local library file is saved as UTF-8 and loaded back as Latin-1, so non-ASCII text
+# (U+00D8 -> U+00C3 U+0098) doubles on every save. The document library round-trips it unchanged.
+_ASCII_ONLY_SCOPES = ("local",)
+_ASCII_REMEDY = ("Use ASCII instead (e.g. 'Dia.' for U+00D8, 'deg' for U+00B0) and retry; "
+                 "nothing was written.")
+# How much of one parameter's before/after expression an edit reply echoes.
+_EXPRESSION_ECHO_MAX = 400
+
+
+def _non_ascii_fields(value, path=""):
+    """[(path, first non-ASCII char)] for every string under a JSON-shaped `value` holding one."""
+    if isinstance(value, str):
+        bad = next((c for c in value if ord(c) > 127), None)
+        return [(path or "value", bad)] if bad else []
+    if isinstance(value, dict):
+        return [row for k, v in value.items()
+                for row in _non_ascii_fields(v, f"{path}.{k}" if path else str(k))]
+    if isinstance(value, (list, tuple)):
+        return [row for i, v in enumerate(value) for row in _non_ascii_fields(v, f"{path}[{i}]")]
+    return []
+
+
+def _tool_text_fields(tool):
+    """_non_ascii_fields over the tool's own JSON, or None when toJson does not read."""
+    d = safe(lambda: _json_loads(tool.toJson()))
+    return _non_ascii_fields(d) if d is not None else None
+
+
+def _ascii_refusal(scope, where, rows):
+    """The refusal for a write that would store non-ASCII text at `scope`, else None."""
+    if scope not in _ASCII_ONLY_SCOPES or not rows:
+        return None
+    named = named_with_remainder([f"'{p}' (U+{ord(c):04X})" for p, c in rows])
+    return (f"{where} holds non-ASCII text in {named}. A {scope} library stores non-ASCII text "
+            "mis-decoded and doubles it on every later save. " + _ASCII_REMEDY)
+
+
+def _stored_non_ascii(target):
+    """'tool <i>: <field>' for each library tool whose JSON text holds non-ASCII."""
+    out = []
+    for i, t in enumerate(target.tools):
+        rows = _tool_text_fields(t) if t is not None else None
+        out.extend(f"tool {i}: {p}" for p, _c in rows or [])
+    return out
 
 
 # ── target abstraction: a uniform view over document-lib vs shared-lib ───────
@@ -846,7 +891,7 @@ def _sized_rows(target, add_tools, built, fields, assigned):
     return rows
 
 
-def _do_add(target, add_tools):
+def _do_add(target, add_tools, scope="document"):
     if not add_tools:
         return error("Provide 'add_tools' - entries to add. Each: {from_type:'drill'} (create from a "
                      "sample of that type) or {library_url, index} (copy an existing tool); optional "
@@ -861,6 +906,13 @@ def _do_add(target, add_tools):
             return error(terr)
         built.append(t)
         sized_fields.append(field)
+    for i, (ref, t) in enumerate(zip(add_tools, built)):
+        rows = _tool_text_fields(t)
+        own = {k: ref[k] for k in ("product_id", "vendor") if k in ref}
+        rows = _non_ascii_fields(ref) if rows is None else rows + _non_ascii_fields(own)
+        refusal = _ascii_refusal(scope, f"add_tools entry {i}", list(dict.fromkeys(rows)))
+        if refusal:
+            return error(refusal)
     # Auto-assign a FREE tool_number to each new tool. A cloned sample keeps the sample's number, so
     # two adds would collide and cam_post refuses duplicate tool numbers; hand out the next free one
     # (skipping every number already in the library, and each one just assigned in this call).
@@ -949,12 +1001,16 @@ def _formula_source(params, name, before_expr):
     return ref if safe(lambda: params.itemByName(ref)) is not None else None
 
 
-def _do_edit(target, tool_index, parameters):
+def _do_edit(target, tool_index, parameters, scope="document"):
     tools = target.tools
     if tool_index is None or not (0 <= tool_index < len(tools)):
         return error(f"Provide a valid 'tool' index (0..{len(tools) - 1}).")
     if not parameters:
         return error("Provide 'parameters' {name: expression} to set on the tool.")
+    refusal = _ascii_refusal(scope, f"The edit of tool {tool_index}",
+                             _non_ascii_fields({n: str(e) for n, e in parameters.items()}))
+    if refusal:
+        return error(refusal)
     tool = tools[tool_index]
     params = safe(lambda: tool.parameters)
     # validate ALL parameter names before applying any
@@ -1028,7 +1084,10 @@ def _do_edit(target, tool_index, parameters):
     reached = target.operations_by_tool(tool) if target.is_document else None
     if target.is_document:
         note += " " + _reach_note(reached)
-    out = {"edited": len(changed), "tool": tool_index, "changed": changed,
+    # A corrupted text field can run to megabytes; the reply echoes each expression's head only.
+    echoed = [dict(rec, before=short_ref(rec["before"], _EXPRESSION_ECHO_MAX),
+                   after=short_ref(rec["after"], _EXPRESSION_ECHO_MAX)) for rec in changed]
+    out = {"edited": len(changed), "tool": tool_index, "changed": echoed,
            "verified_in_memory_only": in_memory_only,
            "note": note}
     if reached:
@@ -1071,11 +1130,15 @@ def _preset_note(target, done, in_memory_only=False):
             + " 'presets' lists this tool's preset names.")
 
 
-def _do_add_preset(target, tool_index, spec):
+def _do_add_preset(target, tool_index, spec, scope="document"):
     """Add ONE named preset (its own cutting data) to a tool already in the library."""
     tool, presets, name, gerr = _preset_tool(target, tool_index, spec)
     if gerr:
         return error(gerr)
+    refusal = _ascii_refusal(scope, f"The preset for tool {tool_index}",
+                             _non_ascii_fields(spec, "preset"))
+    if refusal:
+        return error(refusal)
     if _presets_named(presets, name):
         return error(f"The tool already has a preset named '{name}' - remove it first "
                      "(action='remove_preset') or pick another name.")
@@ -1254,6 +1317,9 @@ def _do_create_library(scope, name, seed_tools):
         t, terr = _source_tool(ref["library_url"], ref["index"])
         if terr:
             return error(terr)
+        refusal = _ascii_refusal(scope, f"Seed {position}", _tool_text_fields(t) or [])
+        if refusal:
+            return error(refusal)
         resolved.append(t)
     # A ToolLibrary's truth is its tool count, so a new empty one reads False: test for None.
     lib = safe(lambda: _empty_library())
@@ -1352,6 +1418,20 @@ def read_library(scope: str = "document", library: str = "", tool_type: str = ""
     return _do_list(target, tool_type)
 
 
+def _stored_text_warning(scope, result, target):
+    """`result` with a warning naming the library's non-ASCII text fields, at an ASCII-only scope."""
+    if scope not in _ASCII_ONLY_SCOPES:
+        return result
+    payload, _failed = unwrap(result)
+    rows = _stored_non_ascii(target) if payload is not None else []
+    if not rows:
+        return result
+    payload.setdefault("warnings", []).append(
+        f"{len(rows)} text field(s) in this {scope} library hold non-ASCII text, which every save "
+        f"of it doubles: {named_with_remainder(rows)}. Edit them to ASCII with action='edit'.")
+    return ok(payload)
+
+
 def handler(action: str = "list", scope: str = "document", library: str = "",
             add_tools=None, remove_indices=None, tool=None, parameters=None,
             tool_type: str = "", preset=None) -> dict:
@@ -1381,16 +1461,19 @@ def handler(action: str = "list", scope: str = "document", library: str = "",
     if terr:
         return error(terr)
 
+    result = None
     if action == "add":
-        return _do_add(target, add_tools or [])
-    if action == "remove":
-        return _do_remove(target, remove_indices or [])
-    if action == "edit":
-        return _do_edit(target, tool, parameters)
-    if action == "add_preset":
-        return _do_add_preset(target, tool, preset)
-    if action == "remove_preset":
-        return _do_remove_preset(target, tool, preset)
+        result = _do_add(target, add_tools or [], scope)
+    elif action == "remove":
+        result = _do_remove(target, remove_indices or [])
+    elif action == "edit":
+        result = _do_edit(target, tool, parameters, scope)
+    elif action == "add_preset":
+        result = _do_add_preset(target, tool, preset, scope)
+    elif action == "remove_preset":
+        result = _do_remove_preset(target, tool, preset)
+    if result is not None:
+        return _stored_text_warning(scope, result, target)
     if action == "where_used":
         return _do_where_used(target, tool)
     if action == "parameters":

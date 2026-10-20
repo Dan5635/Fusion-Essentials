@@ -750,9 +750,15 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - Auto-assigned tool number(s)
 - but the library re-read from its url holds numbers
 - - the assignment did not reach the stored library.
+- 'where_used' is only available for the document library (scope='document') - a shared library has no operations.
+- Provide a valid 'tool' index (0..
+- operationsByTool did not answer for the tool at index
+- , so which operations run it is UNKNOWN - that is not 'used by none'. Re-read the library with action='list' and retry.
+- Operations that use this tool.
+- This tool is not used by any operation.
+- Every parameter's name/expression/value (null where unreadable, or non-scalar - see value_kind). Lengths in 'value' are internal centimetres; 'expression' carries the tool's own unit. 'formula_sour...
 - Provide 'remove_indices' - the tool indices to remove.
 - Index/indices out of range (library has
-- Provide a valid 'tool' index (0..
 - Provide 'parameters' {name: expression} to set on the tool.
 - Tool has no parameter(s):
 - . (Read the tool's parameters first.)
@@ -773,12 +779,6 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - ) - the removal is refused rather than picking one of them.
 - ) reported failure - preset '
 - preset(s) of that name survive on the tool - the removal did not take.
-- 'where_used' is only available for the document library (scope='document') - a shared library has no operations.
-- operationsByTool did not answer for the tool at index
-- , so which operations run it is UNKNOWN - that is not 'used by none'. Re-read the library with action='list' and retry.
-- Operations that use this tool.
-- This tool is not used by any operation.
-- Every parameter's name/expression/value (null where unreadable, or non-scalar - see value_kind). Lengths in 'value' are internal centimetres; 'expression' carries the tool's own unit. 'formula_sour...
 - scope='{scope}' is the libraries this Fusion installation ships, which this tool only READS - '{action}' was refused. Copy the tool out instead: action='list' at this scope for its libraries and th...
 - Cannot resolve  library '': the library walk was capped, so uniqueness or absence is unknown. Choose an enumerated library URL instead; URLs outside this walk cannot be resolved. See cam_get(includ...
 - Summary rows only (diameter/flutes/type/description/number/product identity). For a tool's FULL parameter list - every dimension by name/expression/value - call action='parameters' with that tool's...
@@ -799,6 +799,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - importToolLibrary returned a URL but no library loads back from it - the create is unconfirmed at ''. Inspect that library before retrying; it was not rolled back.
 - Created library at '' reads  tools, expected . Seed persistence is unconfirmed; inspect that library before retrying. It was not rolled back.
 - '' names  presets on library tool  (indices ). Choose an unambiguous tool or repair duplicate preset names before assignment.
+- text field(s) in this  library hold non-ASCII text, which every save of it doubles: . Edit them to ASCII with action='edit'.
 
 ### `cam_export_setup`
 - Provide 'setup' - an additive setup name (see cam_get).

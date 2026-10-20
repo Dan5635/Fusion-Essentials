@@ -3592,3 +3592,107 @@ class TestReadLibraryEntryPoint:
         refusal = ct.read_library(tool_index=0, preset="finish")
         assert refusal["isError"] is True
         assert "2 presets" in refusal["message"] and "indices [0, 1]" in refusal["message"]
+
+
+_DIA = "\u00d8"          # the Haas description's diameter sign
+_DEG = "\u00b0"          # and its degree sign
+
+
+class TestLocalNonAsciiGuard:
+    """Measured: a Local library saves non-ASCII text as UTF-8 and loads it back as Latin-1, so every
+    save doubles it. A write that would store it at scope='local' is refused before anything lands."""
+
+    def test_a_local_add_whose_description_is_non_ascii_is_refused_before_the_add(self, monkeypatch):
+        tgt = _install(monkeypatch)
+        res = ct.handler(action="add", scope="local", library="L",
+                         add_tools=[{"from_type": "drill", "description": f"3in {_DIA} 45{_DEG}"}])
+        assert res["isError"] is True
+        assert "'description' (U+00D8)" in res["message"] and "add_tools entry 0" in res["message"]
+        assert len(tgt.tools) == 2 and tgt.persisted == 0
+
+    def test_the_same_add_at_document_scope_lands(self, monkeypatch):
+        tgt = _install(monkeypatch, _Target(tools=[], is_document=True))
+        out = _payload(ct.handler(action="add", scope="document",
+                                  add_tools=[{"from_type": "drill", "description": f"{_DIA} 6"}]))
+        assert out["added"] == 1 and tgt.tools[0].desc == f"{_DIA} 6"
+
+    def test_text_copied_from_the_source_tool_is_refused_by_its_field(self, monkeypatch):
+        src = _Tool("ascii")
+        src.holder = {"description": f"CAT40 90{_DEG}", "segments": []}
+        tgt = _install(monkeypatch, src=_SrcLib([src]))
+        res = ct.handler(action="add", scope="local", library="L",
+                         add_tools=[{"library_url": "u", "index": 0}])
+        assert res["isError"] is True and "'holder.description' (U+00B0)" in res["message"]
+        assert len(tgt.tools) == 2 and tgt.persisted == 0
+
+    def test_a_local_edit_to_non_ascii_is_refused_and_the_parameter_is_untouched(self, monkeypatch):
+        tgt = _install(monkeypatch, _Target(tools=[_Tool("EM")]))
+        res = ct.handler(action="edit", scope="local", library="L", tool=0,
+                         parameters={"tool_description": f"'90{_DEG} edit'"})
+        assert res["isError"] is True and "'tool_description' (U+00B0)" in res["message"]
+        assert tgt.tools[0].parameters.itemByName("tool_description").expression == "EM"
+        assert tgt.persisted == 0
+
+    def test_a_local_preset_named_in_non_ascii_is_refused_before_it_is_created(self, monkeypatch):
+        tool = _tool_with_presets("EM")
+        tgt = _install(monkeypatch, _Target(tools=[tool]))
+        res = ct.handler(action="add_preset", scope="local", library="L", tool=0,
+                         preset={"name": f"Alu {_DIA}"})
+        assert res["isError"] is True and "'preset.name' (U+00D8)" in res["message"]
+        assert tool.presets.count == 0 and tgt.persisted == 0
+
+    def test_a_local_create_library_seed_holding_non_ascii_imports_nothing(self, monkeypatch):
+        libs = _install_create(monkeypatch)
+        monkeypatch.setattr(ct, "_source_tool", lambda url, idx: (_Tool(f"{_DIA} seed"), None))
+        res = ct.handler(action="create_library", scope="local", library="X",
+                         add_tools=[{"library_url": "u", "index": 0}])
+        assert res["isError"] is True and "Seed 0" in res["message"]
+        assert libs.imported == []
+
+    def test_a_local_write_names_the_stored_non_ascii_fields_it_compounds(self, monkeypatch):
+        tgt = _install(monkeypatch, _Target(tools=[_Tool("EM", tool_numberOfFlutes="3"),
+                                                   _Tool("\u00c3\u0098 drill")]))
+        out = _payload(ct.handler(action="edit", scope="local", library="L", tool=0,
+                                  parameters={"tool_numberOfFlutes": "4"}))
+        assert tgt.persisted == 1
+        assert len(out["warnings"]) == 1 and "tool 1: description" in out["warnings"][0]
+        assert "tool 0:" not in out["warnings"][0]
+
+    def test_a_document_write_carries_no_text_warning(self, monkeypatch):
+        _install(monkeypatch, _Target(tools=[_Tool("EM", tool_numberOfFlutes="3"), _Tool(f"{_DIA} drill")],
+                                            is_document=True))
+        out = _payload(ct.handler(action="edit", scope="document", tool=0,
+                                  parameters={"tool_numberOfFlutes": "4"}))
+        assert "warnings" not in out
+
+
+class TestEditEchoCap:
+    def test_a_huge_before_is_echoed_capped_and_the_edit_still_lands(self, monkeypatch):
+        huge = "'" + "x" * 5000 + "'"
+        tgt = _install(monkeypatch, _Target(tools=[_Tool("EM", tool_comment=huge)]))
+        out = _payload(ct.handler(action="edit", scope="local", library="L", tool=0,
+                                  parameters={"tool_comment": "'short'"}))
+        rec = out["changed"][0]
+        assert rec["before"] == huge[:400] + "... (5002 chars)" and rec["after"] == "'short'"
+        assert tgt.tools[0].parameters.itemByName("tool_comment").expression == "'short'"
+
+    def test_a_huge_after_is_checked_in_full_against_the_store(self, monkeypatch):
+        huge = "'" + "y" * 5000 + "'"
+        tgt = _install(monkeypatch, _Target(tools=[_Tool("EM", tool_comment="''")]))
+        out = _payload(ct.handler(action="edit", scope="local", library="L", tool=0,
+                                  parameters={"tool_comment": huge}))
+        assert out["changed"][0]["after"].endswith("... (5002 chars)")
+        tgt.reread_param = lambda index, name: huge[:-2] + "'"
+        res = ct.handler(action="edit", scope="local", library="L", tool=0,
+                         parameters={"tool_comment": huge})
+        assert res["isError"] is True and "did not persist" in res["message"]
+
+    def test_a_rollback_restores_the_full_before_not_its_echo(self, monkeypatch):
+        huge = "'" + "z" * 5000 + "'"
+        tool = _Tool("EM", tool_comment=huge)
+        _replace(tool.parameters, _BrokenParam("tool_diameter", "8."))
+        _install(monkeypatch, _Target(tools=[tool]))
+        res = ct.handler(action="edit", scope="local", library="L", tool=0,
+                         parameters={"tool_comment": "'c'", "tool_diameter": "Nope * 2"})
+        assert res["isError"] is True and "Rolled back all 2" in res["message"]
+        assert tool.parameters.itemByName("tool_comment").expression == huge
