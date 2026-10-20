@@ -728,6 +728,10 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - No hub folder to create the library in.
 - addition is unconfirmed: library count reads
 - . Nothing was imported.
+- Nothing was created at local. Create the library in Fusion's Tool Library (right-click Local > New library), then fill it with action='add', scope='local', library='
+- Hub team libraries use a different write path importToolLibrary doesn't satisfy - create Hub libraries in the UI.
+- The local listing gained
+- anyway; inspect it before retrying.
 - Preset names belong to this library tool before operation assignment. Pass preset= with the same library_tool to read one cutting recipe.
 - 'library_tool' needs a named library at this scope. List libraries, then pass library= and its tool index.
 - is not a tool index in this library (0..
@@ -796,6 +800,7 @@ are omitted; this is the GUIDANCE layer, not input validation.)
 - , and read back from the document tool library - a document read-back shows the change is present, not that it was stored; doc_save stores the document.
 - operationsByTool did not answer for the tool at index , so which operations run it is UNKNOWN - that is not 'used by none'. Re-read the library with action='list' and retry.
 - create_library seed  has : a seed copies one existing tool and takes exactly 'library_url' (a string) and 'index' (an integer). 'from_type' and the overrides apply to action='add' only. Nothing was...
+- Nothing was created at local. Create the library in Fusion's Tool Library (right-click Local > New library), then fill it with action='add', scope='local', library=''.
 - importToolLibrary returned a URL but no library loads back from it - the create is unconfirmed at ''. Inspect that library before retrying; it was not rolled back.
 - Created library at '' reads  tools, expected . Seed persistence is unconfirmed; inspect that library before retrying. It was not rolled back.
 - '' names  presets on library tool  (indices ). Choose an unambiguous tool or repair duplicate preset names before assignment.

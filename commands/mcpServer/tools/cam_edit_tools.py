@@ -1225,6 +1225,12 @@ def _listed_url(libs, root, new_url):
     return safe(lambda: hits[0].toString()) if len(hits) == 1 else None
 
 
+def _listed_strings(libs, root):
+    """The url strings of every library under root, or None when the bounded walk was capped."""
+    listed, truncated = library_assets(libs, root)
+    return None if truncated else {str(safe(lambda a=a: a.toString())) for a in listed}
+
+
 def _do_create_library(scope, name, seed_tools):
     """Create + persist a NEW tool library at a shared scope (Local/Cloud/Hub). Fusion360 is read-only;
     document scope can't host a new library. Seeds validated before the persistent write."""
@@ -1270,12 +1276,24 @@ def _do_create_library(scope, name, seed_tools):
         if count != index + 1:
             return error(f"Seed {index} addition is unconfirmed: library count reads {count}, "
                          f"expected {index + 1}. Nothing was imported.")
+    listed_before = _listed_strings(libs, root) if scope == "local" else None
     try:
         new_url = libs.importToolLibrary(lib, root, name)
     except Exception as e:
-        hint = (" Hub team libraries use a different write path importToolLibrary doesn't satisfy - "
-                "create Hub libraries in the UI." if scope == "hub" else "")
-        return error(f"Creating library '{name}' at {scope} failed: {e}.{hint}")
+        failed = f"Creating library '{name}' at {scope} failed: {str(e).rstrip('.')}."
+        if scope == "hub":
+            return error(failed + " Hub team libraries use a different write path importToolLibrary "
+                         "doesn't satisfy - create Hub libraries in the UI.")
+        listed_after = _listed_strings(libs, root) if listed_before is not None else None
+        if listed_after is None:
+            return error(failed)
+        appeared = sorted(listed_after - listed_before)
+        if appeared:
+            return error(f"{failed} The local listing gained {', '.join(appeared)} anyway; inspect "
+                         "it before retrying.")
+        return error(f"{failed} Nothing was created at local. Create the library in Fusion's Tool "
+                     "Library (right-click Local > New library), then fill it with action='add', "
+                     f"scope='local', library='{name}'.")
     if not new_url:
         return error(f"Creating library '{name}' at {scope} returned no URL.")
     stored = safe(lambda: libs.toolLibraryAtURL(new_url))

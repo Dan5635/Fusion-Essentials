@@ -3463,6 +3463,40 @@ class TestCreateLibraryGuards:
         assert res["isError"] is True and "No hub folder" in res["message"]
         assert len(libs.imported) == 0
 
+    @staticmethod
+    def _failing_import(libs, gains=()):
+        """importToolLibrary raises like Fusion's '3 : Tool library import failed.'; the Local
+        listing reads `gains` added after the failed call."""
+        listing = [_URL_C("toollibraryroot://Local/Library")]
+        def importToolLibrary(lib, dest, name):
+            listing.extend(_URL_C(g) for g in gains)
+            raise RuntimeError("3 : Tool library import failed.")
+        libs.importToolLibrary = importToolLibrary
+        libs.childAssetURLs = lambda url: list(listing)
+
+    def test_a_failed_local_import_that_created_nothing_names_the_ui_remedy(self, monkeypatch):
+        libs = _install_create(monkeypatch)
+        self._failing_import(libs)
+        res = ct.handler(action="create_library", scope="local", library="Shop Set")
+        assert res["isError"] is True
+        assert "at local failed: 3 : Tool library import failed. Nothing was created" in res["message"]
+        assert "New library" in res["message"] and "library='Shop Set'" in res["message"]
+
+    def test_a_failed_local_import_that_left_a_library_says_so(self, monkeypatch):
+        libs = _install_create(monkeypatch)
+        self._failing_import(libs, gains=["toollibraryroot://Local/Shop Set"])
+        res = ct.handler(action="create_library", scope="local", library="Shop Set")
+        assert res["isError"] is True
+        assert "gained toollibraryroot://Local/Shop Set anyway" in res["message"]
+        assert "Nothing was created" not in res["message"]
+
+    def test_a_failed_cloud_import_claims_nothing_about_the_listing(self, monkeypatch):
+        libs = _install_create(monkeypatch)
+        self._failing_import(libs)
+        res = ct.handler(action="create_library", scope="cloud", library="X")
+        assert res["isError"] is True
+        assert res["message"].endswith("failed: 3 : Tool library import failed.")
+
     def test_a_seed_that_is_not_an_object(self, monkeypatch):
         libs = _install_create(monkeypatch)
         res = ct.handler(action="create_library", scope="local", library="X", add_tools=["u:0"])
